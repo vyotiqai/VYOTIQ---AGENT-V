@@ -43,7 +43,7 @@ describe('ToolGroup', () => {
       toolItem('t1', 'read', 'a.ts', 'running', { startedAt: Date.now() }),
       toolItem('t2', 'search', 'query', 'running')
     ]
-    render(<ToolGroup tools={tools} running defaultOpen />)
+    render(<ToolGroup tools={tools} defaultOpen />)
     expect(screen.getByText('Exploring')).toBeTruthy()
     expect(screen.getByText('1 file and 1 search')).toBeTruthy()
   })
@@ -53,7 +53,7 @@ describe('ToolGroup', () => {
       toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 7_000 }),
       toolItem('t2', 'search', 'query', 'done')
     ]
-    render(<ToolGroup tools={tools} running={false} />)
+    render(<ToolGroup tools={tools} />)
     expect(screen.getByText('Explored')).toBeTruthy()
     expect(screen.getByText('1 file and 1 search')).toBeTruthy()
     expect(screen.getByText('6s')).toBeTruthy()
@@ -64,7 +64,7 @@ describe('ToolGroup', () => {
       toolItem('t1', 'read', 'a.ts', 'fail', { startedAt: 1_000, endedAt: 2_000 })
     ]
     tools[0]!.tool.content = 'Cancelled'
-    render(<ToolGroup tools={tools} running={false} />)
+    render(<ToolGroup tools={tools} />)
     expect(screen.getByText('Exploration interrupted')).toBeTruthy()
     expect(screen.queryByText('Explored')).toBeNull()
   })

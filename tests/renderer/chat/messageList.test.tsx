@@ -46,7 +46,7 @@ describe('MessageList', () => {
       ...toolGroup('beta', ['beta-only.ts'])
     ]
 
-    render(<MessageList items={items} running={false} />)
+    render(<MessageList items={items} />)
 
     expect(screen.getByText('First look.')).toBeTruthy()
     expect(screen.getByText('Explored')).toBeTruthy()
@@ -70,7 +70,6 @@ describe('MessageList', () => {
     const { rerender } = render(
       <MessageList
         items={items}
-        running
         restoreScrollTop={100}
         scrollRestoreToken={1}
         onScrollTopChange={scrollTopSpy}
@@ -92,7 +91,6 @@ describe('MessageList', () => {
         items={[
           { kind: 'message', id: 'msg-1', role: 'assistant', content: 'Hello world', streaming: true }
         ]}
-        running
         restoreScrollTop={250}
         scrollRestoreToken={1}
         onScrollTopChange={scrollTopSpy}
@@ -110,7 +108,7 @@ describe('MessageList', () => {
       content: `Line ${i}`
     }))
 
-    const { container } = render(<MessageList items={items} running={false} />)
+    const { container } = render(<MessageList items={items} />)
     const scroll = container.querySelector('[aria-live="polite"]') as HTMLDivElement | null
     expect(scroll).toBeTruthy()
     if (scroll) {
@@ -129,7 +127,7 @@ describe('MessageList', () => {
     const tools = toolGroup('tail', ['one.ts', 'two.ts', 'three.ts'])
     const items: UiItem[] = [...pad, ...tools]
 
-    const { container } = render(<MessageList items={items} running={false} />)
+    const { container } = render(<MessageList items={items} />)
     const scroll = container.querySelector('[aria-live="polite"]') as HTMLDivElement | null
     expect(scroll).toBeTruthy()
     if (scroll) {
@@ -149,7 +147,7 @@ describe('MessageList', () => {
       { kind: 'message', id: 'msg-1', role: 'assistant', content: 'Streaming', streaming: true }
     ]
 
-    render(<MessageList items={items} running />)
+    render(<MessageList items={items} />)
 
     expect(scrollIntoView).not.toHaveBeenCalled()
   })

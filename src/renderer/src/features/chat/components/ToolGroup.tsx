@@ -71,7 +71,6 @@ function NestedToolRow({
 export const ToolGroup = memo(function ToolGroup({
   tools,
   groupTiming,
-  running,
   labels = DEFAULT_LABELS,
   maxVisibleTools = 5,
   defaultOpen,
@@ -81,7 +80,6 @@ export const ToolGroup = memo(function ToolGroup({
 }: {
   tools: Extract<UiItem, { kind: 'tool' }>[]
   groupTiming?: Extract<UiItem, { kind: 'tool' }>['groupTiming']
-  running: boolean
   labels?: ToolGroupLabels
   maxVisibleTools?: number
   defaultOpen?: boolean
@@ -92,8 +90,8 @@ export const ToolGroup = memo(function ToolGroup({
   const uiTools = useMemo(() => tools.map((item) => item.tool), [tools])
   const resolvedGroupTiming = groupTiming ?? tools[0]?.groupTiming
   const props = useMemo(
-    () => mapToolGroupProps(uiTools, { running, groupTiming: resolvedGroupTiming }),
-    [uiTools, running, resolvedGroupTiming]
+    () => mapToolGroupProps(uiTools, { groupTiming: resolvedGroupTiming }),
+    [uiTools, resolvedGroupTiming]
   )
 
   const { state, nestedTools, summary } = props

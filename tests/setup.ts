@@ -18,6 +18,14 @@ if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') {
   })
 }
 
+// `globals: false` means Testing Library never registers its own auto-cleanup, so
+// rendered trees would stay mounted for the rest of the file and their timers can
+// outlive the environment.
+if (typeof document !== 'undefined') {
+  const { cleanup } = await import('@testing-library/react')
+  afterEach(cleanup)
+}
+
 afterEach(() => {
   resetActiveRunsForTests()
   vi.clearAllMocks()

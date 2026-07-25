@@ -16,7 +16,7 @@ describe('mapToolGroupProps', () => {
   it('maps pending state when group is open and tools are running', () => {
     const result = mapToolGroupProps(
       [tool('t1', 'read', 'src/a.ts', 'running'), tool('t2', 'search', 'query', 'running')],
-      { running: true, groupTiming: { startedAt: 1_000 } }
+      { groupTiming: { startedAt: 1_000 } }
     )
     expect(result.state).toBe('pending')
     expect(result.nestedTools).toHaveLength(2)
@@ -32,17 +32,24 @@ describe('mapToolGroupProps', () => {
         tool('t2', 'terminal', 'pnpm test'),
         tool('t3', 'search', 'foo')
       ],
-      { running: false, groupTiming: { startedAt: 1_000, endedAt: 7_000 } }
+      { groupTiming: { startedAt: 1_000, endedAt: 7_000 } }
     )
     expect(result.state).toBe('completed')
     expect(result.summary).toBe('1 file, 1 search, and 1 command')
     expect(result.elapsedDisplay).toBe('6s')
   })
 
+  it('completes a finished group whose timing is still open', () => {
+    const result = mapToolGroupProps([tool('t1', 'read', 'src/a.ts'), tool('t2', 'search', 'q')], {
+      groupTiming: { startedAt: 1_000 }
+    })
+    expect(result.state).toBe('completed')
+  })
+
   it('maps interrupted state from cancelled tool content', () => {
     const result = mapToolGroupProps(
       [tool('t1', 'read', 'src/a.ts', 'fail', 'Cancelled')],
-      { running: false, groupTiming: { startedAt: 1_000, endedAt: 2_000 } }
+      { groupTiming: { startedAt: 1_000, endedAt: 2_000 } }
     )
     expect(result.state).toBe('interrupted')
   })
@@ -50,7 +57,7 @@ describe('mapToolGroupProps', () => {
   it('maps MCP tools to search category with tool name title', () => {
     const result = mapToolGroupProps(
       [tool('t1', 'mcp__github__list_issues', 'vyotiq', 'done')],
-      { running: false, groupTiming: { startedAt: 1_000, endedAt: 2_000 } }
+      { groupTiming: { startedAt: 1_000, endedAt: 2_000 } }
     )
     expect(result.nestedTools[0]?.category).toBe('search')
     expect(result.nestedTools[0]?.title).toBe('list_issues')
@@ -59,7 +66,6 @@ describe('mapToolGroupProps', () => {
 
   it('uses basename for file tool subtitles', () => {
     const result = mapToolGroupProps([tool('t1', 'read', 'src/components/Chat.tsx')], {
-      running: false,
       groupTiming: { startedAt: 1_000, endedAt: 2_000 }
     })
     expect(result.nestedTools[0]?.subtitle).toBe('Chat.tsx')

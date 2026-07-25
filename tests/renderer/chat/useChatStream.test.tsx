@@ -33,6 +33,21 @@ describe('useChatStream', () => {
     }
   })
 
+  it('clears state when workspace changes', async () => {
+    const { result, rerender } = renderHook(
+      ({ ws }: { ws: string | null }) => useChatStream(ws),
+      { initialProps: { ws: '/a' as string | null } }
+    )
+
+    await act(async () => {
+      await result.current.send('hello')
+    })
+    expect(result.current.items.length).toBeGreaterThan(0)
+
+    rerender({ ws: '/b' })
+    expect(result.current.items).toEqual([])
+    expect(result.current.messages).toEqual([])
+  })
 
   it('includes tool history in the next chatStart payload', async () => {
     const { result } = renderHook(() => useChatStream('/ws'))
@@ -660,7 +675,7 @@ describe('useChatStream', () => {
     const tools = result.current.items.filter((i) => i.kind === 'tool')
     expect(tools).toHaveLength(1)
     expect(tools[0]).toMatchObject({
-      id: 'pending_0',
+      id: 'c1',
       tool: { id: 'c1', name: 'read', summary: 'a.ts', status: 'running' }
     })
   })
@@ -862,7 +877,7 @@ describe('useChatStream', () => {
     const tools = result.current.items.filter((i) => i.kind === 'tool')
     expect(tools).toHaveLength(1)
     expect(tools[0]).toMatchObject({
-      id: 'pending_0',
+      id: 'call-real',
       tool: {
         id: 'call-real',
         name: 'read',
@@ -915,12 +930,109 @@ describe('useChatStream', () => {
     const tools = result.current.items.filter((i) => i.kind === 'tool')
     expect(tools).toHaveLength(2)
     expect(tools[0]).toMatchObject({
-      id: 'pending_0',
+      id: 'call-a',
       tool: { id: 'call-a', summary: 'a.ts', argsPreview: '{"path":"a.ts"}' }
     })
     expect(tools[1]).toMatchObject({
-      id: 'pending_1',
+      id: 'call-b',
       tool: { id: 'call-b', summary: 'b.ts', argsPreview: '{"path":"b.ts"}' }
+    })
+  })
+
+  it('keeps one Thought row and one tool stretch across a multi-step turn', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('refactor')
+    })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({ type: 'thinking_delta', runId: 'run-1', text: 'First I read.' })
+      handler?.({
+        type: 'assistant_message',
+        runId: 'run-1',
+        content: '',
+        thinking: 'First I read.',
+        toolCalls: [{ id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }]
+      })
+      handler?.({
+        type: 'tool_result',
+        runId: 'run-1',
+        toolCallId: 'c1',
+        name: 'read',
+        summary: 'a.ts',
+        ok: true,
+        content: 'body'
+      })
+      handler?.({ type: 'thinking_delta', runId: 'run-1', text: 'Now I edit.' })
+      handler?.({
+        type: 'assistant_message',
+        runId: 'run-1',
+        content: '',
+        thinking: 'Now I edit.',
+        toolCalls: [{ id: 'c2', name: 'edit', arguments: '{"path":"a.ts"}' }]
+      })
+      handler?.({
+        type: 'tool_result',
+        runId: 'run-1',
+        toolCallId: 'c2',
+        name: 'edit',
+        summary: 'a.ts',
+        ok: true,
+        content: 'ok'
+      })
+      handler?.({ type: 'assistant_message', runId: 'run-1', content: 'Refactored.' })
+      handler?.({ type: 'status', runId: 'run-1', status: 'done' })
+    })
+
+    const thinkingRows = result.current.items.filter((i) => i.kind === 'message' && i.thinking)
+    expect(thinkingRows).toHaveLength(1)
+    const reasoning = thinkingRows[0]
+    if (reasoning?.kind === 'message') {
+      expect(reasoning.thinking).toBe('First I read.\n\nNow I edit.')
+    }
+
+    // Tool rows stay adjacent, so the transcript renders them as a single group.
+    const kinds = result.current.items.map((i) => i.kind)
+    const firstTool = kinds.indexOf('tool')
+    const lastTool = kinds.lastIndexOf('tool')
+    expect(lastTool - firstTool).toBe(1)
+    expect(kinds.slice(firstTool, lastTool + 1).every((k) => k === 'tool')).toBe(true)
+  })
+
+  it('completes the live row when a tool_result id drifts from its tool_start', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('read')
+    })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        toolCallId: 'call-start',
+        name: 'read',
+        summary: 'a.ts'
+      })
+      handler?.({
+        type: 'tool_result',
+        runId: 'run-1',
+        toolCallId: 'call-drifted',
+        name: 'read',
+        summary: 'a.ts',
+        ok: true,
+        content: 'body'
+      })
+    })
+
+    const tools = result.current.items.filter((i) => i.kind === 'tool')
+    expect(tools).toHaveLength(1)
+    expect(tools[0]).toMatchObject({
+      id: 'call-drifted',
+      tool: { id: 'call-drifted', name: 'read', status: 'done', content: 'body' }
     })
   })
 
@@ -1008,6 +1120,68 @@ describe('useChatStream', () => {
       (i) => i.kind === 'tool' && i.tool.status === 'running'
     )
     expect(liveTool).toBeUndefined()
+  })
+
+  it('keeps the live turn streaming when a prior invoke terminates late', async () => {
+    chatStart.mockResolvedValue({ ok: true, data: { runId: 'run-1', invokeId: 1 } })
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('first')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running', invokeId: 1 })
+      handler?.({ type: 'assistant_message', runId: 'run-1', content: 'done', invokeId: 1 })
+      handler?.({ type: 'status', runId: 'run-1', status: 'done', invokeId: 1 })
+    })
+    expect(result.current.running).toBe(false)
+
+    chatStart.mockResolvedValue({ ok: true, data: { runId: 'run-1', invokeId: 2 } })
+    await act(async () => {
+      await result.current.send('follow up')
+    })
+
+    // The live turn is already past `running`, which is what defeats a sequence-only guard.
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running', invokeId: 2 })
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        toolCallId: 'c9',
+        name: 'read',
+        summary: 'a.ts',
+        invokeId: 2
+      })
+      handler?.({ type: 'status', runId: 'run-1', status: 'done', invokeId: 1 })
+    })
+
+    expect(result.current.running).toBe(true)
+    expect(
+      result.current.items.some((i) => i.kind === 'tool' && i.tool.status === 'running')
+    ).toBe(true)
+
+    await act(async () => {
+      handler?.({
+        type: 'tool_result',
+        runId: 'run-1',
+        toolCallId: 'c9',
+        name: 'read',
+        summary: 'a.ts',
+        ok: true,
+        content: 'body',
+        invokeId: 2
+      })
+      handler?.({ type: 'assistant_message', runId: 'run-1', content: 'here', invokeId: 2 })
+      handler?.({ type: 'status', runId: 'run-1', status: 'done', invokeId: 2 })
+    })
+
+    expect(result.current.running).toBe(false)
+    expect(
+      result.current.items.some((i) => i.kind === 'tool' && i.tool.status === 'running')
+    ).toBe(false)
+    expect(
+      result.current.items.some((i) => i.kind === 'tool' && i.tool.status === 'done')
+    ).toBe(true)
   })
 
   it('passes the same runId on follow-up send', async () => {

@@ -3,6 +3,7 @@ import type {
   AgentEvent,
   ChatMessage,
   ChatStartRequest,
+  ChatStartResult,
   IpcResult,
   ListModelsResult,
   ListRunsResult,
@@ -50,7 +51,7 @@ export interface VyotiqApi {
     baseUrl?: string
     forceRefresh?: boolean
   }) => Promise<IpcResult<ListModelsResult>>
-  chatStart: (payload: ChatStartRequest) => Promise<IpcResult<{ runId: string }>>
+  chatStart: (payload: ChatStartRequest) => Promise<IpcResult<ChatStartResult>>
   chatCancel: (runId: string) => Promise<IpcResult<true>>
   onChatEvent: (handler: (event: AgentEvent) => void) => () => void
   listRuns: (workspacePath: string) => Promise<IpcResult<ListRunsResult>>

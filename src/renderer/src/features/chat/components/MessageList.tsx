@@ -148,7 +148,6 @@ const MessageListItem = memo(function MessageListItem({
 
 function VirtualRowBlock({
   row,
-  running,
   onImageClick,
   onLoadToolContent,
   onThinkingToggle,
@@ -156,7 +155,6 @@ function VirtualRowBlock({
   showThinking = true
 }: {
   row: VirtualRow
-  running: boolean
   onImageClick: (url: string, label: string) => void
   onLoadToolContent?: (toolCallId: string) => Promise<string | null>
   onThinkingToggle?: (messageId: string, expanded: boolean) => void
@@ -172,7 +170,6 @@ function VirtualRowBlock({
         <ToolGroup
           tools={row.tools}
           groupTiming={first?.groupTiming}
-          running={running}
           expandedToolId={expandedTool?.id}
           onToolToggle={onToolToggle}
           onLoadFullContent={onLoadToolContent}
@@ -195,7 +192,6 @@ function VirtualRowBlock({
 
 export function MessageList({
   items,
-  running,
   reserveComposerSpace,
   restoreScrollTop,
   scrollRestoreToken,
@@ -206,7 +202,6 @@ export function MessageList({
   showThinking = true
 }: {
   items: UiItem[]
-  running: boolean
   reserveComposerSpace?: boolean
   restoreScrollTop?: number
   scrollRestoreToken?: number
@@ -456,7 +451,6 @@ export function MessageList({
       <div key={row.id}>
         <VirtualRowBlock
           row={row}
-          running={running}
           onImageClick={onImageClick}
           onLoadToolContent={onLoadToolContent}
           onThinkingToggle={onThinkingToggle}
@@ -468,7 +462,6 @@ export function MessageList({
   }, [
     useVirtual,
     displayRows,
-    running,
     onImageClick,
     onLoadToolContent,
     onThinkingToggle,
@@ -514,7 +507,6 @@ export function MessageList({
                   {row.kind === 'tool-group' ? (
                     <VirtualRowBlock
                       row={row}
-                      running={running}
                       onImageClick={onImageClick}
                       onLoadToolContent={onLoadToolContent}
                       onThinkingToggle={onThinkingToggle}

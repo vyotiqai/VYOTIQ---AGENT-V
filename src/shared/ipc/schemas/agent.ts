@@ -55,41 +55,51 @@ export function IpcResultSchema<T extends z.ZodTypeAny>(data: T) {
 
 export type IpcResult<T> = { ok: true; data: T } | { ok: false; error: string }
 
+/**
+ * Fields on every agent event. `invokeId` identifies the chatStart invoke that produced
+ * the event: a run is reused across turns, so runId alone cannot tell a live event apart
+ * from one arriving late from the previous turn.
+ */
+const eventBase = {
+  runId: z.string(),
+  invokeId: z.number().int().min(1).optional()
+}
+
 export const AgentEventSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('text_delta'),
-    runId: z.string(),
+    ...eventBase,
     text: z.string()
   }),
   z.object({
     type: z.literal('thinking_delta'),
-    runId: z.string(),
+    ...eventBase,
     text: z.string(),
     step: z.number().int().min(1).optional()
   }),
   z.object({
     type: z.literal('thinking_done'),
-    runId: z.string(),
+    ...eventBase,
     text: z.string().optional(),
     step: z.number().int().min(1).optional()
   }),
   z.object({
     type: z.literal('tool_start'),
-    runId: z.string(),
+    ...eventBase,
     toolCallId: z.string(),
     name: z.string(),
     summary: z.string()
   }),
   z.object({
     type: z.literal('tool_call_delta'),
-    runId: z.string(),
+    ...eventBase,
     toolCallId: z.string(),
     name: z.string().optional(),
     argumentsDelta: z.string()
   }),
   z.object({
     type: z.literal('tool_result'),
-    runId: z.string(),
+    ...eventBase,
     toolCallId: z.string(),
     name: z.string(),
     summary: z.string(),
@@ -100,18 +110,18 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('status'),
-    runId: z.string(),
+    ...eventBase,
     status: z.enum(['running', 'cancelled', 'error', 'done'])
   }),
   z.object({
     type: z.literal('error'),
-    runId: z.string(),
+    ...eventBase,
     message: z.string(),
     code: z.string().optional()
   }),
   z.object({
     type: z.literal('assistant_message'),
-    runId: z.string(),
+    ...eventBase,
     content: z.string(),
     thinking: z.string().optional(),
     toolCalls: z
@@ -126,20 +136,20 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('compaction'),
-    runId: z.string(),
+    ...eventBase,
     summary: z.string(),
     tokenEstimate: z.number().int().min(0).optional()
   }),
   z.object({
     type: z.literal('step_budget'),
-    runId: z.string(),
+    ...eventBase,
     step: z.number().int().min(1),
     maxSteps: z.number().int().min(1),
     ratio: z.number().min(0).max(1)
   }),
   z.object({
     type: z.literal('step_usage'),
-    runId: z.string(),
+    ...eventBase,
     step: z.number().int().min(1),
     inputTokens: z.number().int().min(0).optional(),
     outputTokens: z.number().int().min(0).optional(),
@@ -148,7 +158,7 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('context_usage'),
-    runId: z.string(),
+    ...eventBase,
     step: z.number().int().min(1),
     estimatedTokens: z.number().int().min(0),
     inputTokens: z.number().int().min(0).optional(),
@@ -165,6 +175,12 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
   })
 ])
 export type AgentEvent = z.infer<typeof AgentEventSchema>
+
+export const ChatStartResultSchema = z.object({
+  runId: z.string(),
+  invokeId: z.number().int().min(1)
+})
+export type ChatStartResult = z.infer<typeof ChatStartResultSchema>
 
 export const RunSummarySchema = z.object({
   runId: z.string(),

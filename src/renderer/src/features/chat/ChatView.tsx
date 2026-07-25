@@ -200,7 +200,6 @@ export function ChatView({
             </div>
             <MessageList
               items={items}
-              running={running}
               reserveComposerSpace
               restoreScrollTop={restoreScrollTop}
               scrollRestoreToken={scrollRestoreToken}

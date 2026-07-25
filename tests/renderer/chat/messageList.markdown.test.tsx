@@ -25,7 +25,7 @@ describe('MessageList markdown', () => {
       }
     ]
 
-    render(<MessageList items={items} running={false} />)
+    render(<MessageList items={items} />)
     expect(screen.getByText('Bold')).toBeTruthy()
     expect(screen.getByText('code')).toBeTruthy()
   })
@@ -40,7 +40,7 @@ describe('MessageList markdown', () => {
       }
     ]
 
-    render(<MessageList items={items} running={false} />)
+    render(<MessageList items={items} />)
     expect(screen.getByText('Bold user')).toBeTruthy()
     expect(screen.getByText('code')).toBeTruthy()
   })
@@ -56,7 +56,7 @@ describe('MessageList markdown', () => {
       }
     ]
 
-    const { container, rerender } = render(<MessageList items={items} running />)
+    const { container, rerender } = render(<MessageList items={items} />)
     expect(container.querySelector('.streaming-caret-inline')).toBeTruthy()
     expect(screen.getByText('Partial **bold')).toBeTruthy()
 
@@ -71,7 +71,6 @@ describe('MessageList markdown', () => {
             streaming: false
           }
         ]}
-        running={false}
       />
     )
 

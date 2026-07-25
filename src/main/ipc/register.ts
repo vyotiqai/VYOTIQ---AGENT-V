@@ -25,6 +25,7 @@ import {
   type IpcResult,
   type Settings,
   type AgentEvent,
+  type ChatStartResult,
   type ChatMessage,
   type ListRunsResult,
   type RunSummary,
@@ -321,7 +322,7 @@ export function registerIpc(): void {
     }
   )
 
-  ipcMain.handle(IPC.chatStart, async (event, raw): Promise<IpcResult<{ runId: string }>> => {
+  ipcMain.handle(IPC.chatStart, async (event, raw): Promise<IpcResult<ChatStartResult>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
       const req = ChatStartRequestSchema.parse(raw)
@@ -371,9 +372,12 @@ export function registerIpc(): void {
                 workspacePath: req.workspacePath,
                 resume
               }
-        const batcher = new ChatEventBatcher((ev) => {
-          if (!wc.isDestroyed()) wc.send(IPC.chatEvent, ev)
-        })
+        // Stamp the invoke on every event so the renderer can tell a live event apart
+        // from one arriving late from the previous turn of the same run.
+        const sendEvent = (ev: AgentEvent): void => {
+          if (!wc.isDestroyed()) wc.send(IPC.chatEvent, { ...ev, invokeId })
+        }
+        const batcher = new ChatEventBatcher(sendEvent)
         try {
           for await (const ev of runAgent(agentInput)) {
             const terminal = isTerminalChatEvent(ev as AgentEvent)
@@ -389,12 +393,8 @@ export function registerIpc(): void {
               scope: 'ipc',
               correlationId: runId
             })
-            if (!terminalSent && !wc.isDestroyed()) {
-              wc.send(IPC.chatEvent, {
-                type: 'status',
-                runId,
-                status: 'cancelled'
-              } satisfies AgentEvent)
+            if (!terminalSent) {
+              sendEvent({ type: 'status', runId, status: 'cancelled' })
             }
             return
           }
@@ -405,18 +405,9 @@ export function registerIpc(): void {
             correlationId: runId,
             err
           })
-          if (!terminalSent && !wc.isDestroyed()) {
-            wc.send(IPC.chatEvent, {
-              type: 'error',
-              runId,
-              message,
-              code: 'AGENT_LOOP'
-            } satisfies AgentEvent)
-            wc.send(IPC.chatEvent, {
-              type: 'status',
-              runId,
-              status: 'error'
-            } satisfies AgentEvent)
+          if (!terminalSent) {
+            sendEvent({ type: 'error', runId, message, code: 'AGENT_LOOP' })
+            sendEvent({ type: 'status', runId, status: 'error' })
           }
         } finally {
           batcher.flush()
@@ -424,7 +415,7 @@ export function registerIpc(): void {
         }
       })()
 
-      return ok({ runId })
+      return ok({ runId, invokeId })
     } catch (err) {
       return failFrom(err, IPC.chatStart)
     }

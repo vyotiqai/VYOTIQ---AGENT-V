@@ -63,10 +63,22 @@ export function inferToolStatus(content: MessageContent, ok?: boolean): 'done' |
   return 'done'
 }
 
+/** Join a turn's reasoning steps into the single Thought row the turn renders. */
+export function mergeThinking(previous: string | undefined, next: string): string {
+  const before = previous?.trim() ?? ''
+  const after = next.trim()
+  if (!before) return after
+  if (!after || before.endsWith(after)) return before
+  return `${before}\n\n${after}`
+}
+
 /** Rebuild chat UI items from persisted messages (includes tool rows). */
 export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
   const items: UiItem[] = []
   const pendingCalls = new Map<string, { name: string; arguments: string }>()
+  // A tool-loop turn reasons once per step. All of it belongs to the turn's first
+  // assistant row so the transcript shows one Thought row and one tool stretch.
+  let turnReasoningIdx = -1
 
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i]
@@ -79,12 +91,19 @@ export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
         content: contentDisplayText(m.content),
         images: images.length ? images : undefined
       })
+      turnReasoningIdx = -1
       continue
     }
 
     if (m.role === 'assistant') {
       const text = contentDisplayText(m.content)
-      if (text || m.thinking) {
+      const reasoningTarget = turnReasoningIdx >= 0 ? items[turnReasoningIdx] : undefined
+      if (!text && m.thinking && reasoningTarget?.kind === 'message') {
+        items[turnReasoningIdx] = {
+          ...reasoningTarget,
+          thinking: mergeThinking(reasoningTarget.thinking, m.thinking)
+        }
+      } else if (text || m.thinking) {
         items.push({
           kind: 'message',
           id: messageUiId('assistant', i),
@@ -92,6 +111,7 @@ export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
           content: text,
           thinking: m.thinking
         })
+        if (turnReasoningIdx < 0) turnReasoningIdx = items.length - 1
       }
       if (m.toolCalls?.length) {
         for (const tc of m.toolCalls) {

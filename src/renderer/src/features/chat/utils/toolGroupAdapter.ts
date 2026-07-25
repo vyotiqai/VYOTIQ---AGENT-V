@@ -93,15 +93,12 @@ function isInterrupted(tools: UiToolRow[]): boolean {
   return tools.some((tool) => INTERRUPTED_CONTENT.has(tool.content ?? ''))
 }
 
-function deriveState(
-  tools: UiToolRow[],
-  groupTiming: UiGroupTiming | undefined,
-  running: boolean
-): ToolGroupState {
+function deriveState(tools: UiToolRow[], groupTiming: UiGroupTiming | undefined): ToolGroupState {
+  // Only this group's own tools decide whether it is still working. Keying off the
+  // run-wide running flag kept every group with unclosed timing on "Exploring" for the
+  // rest of the turn, long after its tools had finished.
   const hasRunning = tools.some((tool) => tool.status === 'running')
-  const isPending = groupTiming?.endedAt == null && (running || hasRunning)
-
-  if (isPending) return 'pending'
+  if (hasRunning && groupTiming?.endedAt == null) return 'pending'
   if (isInterrupted(tools)) return 'interrupted'
   return 'completed'
 }
@@ -109,7 +106,6 @@ function deriveState(
 export function mapToolGroupProps(
   tools: UiToolRow[],
   options: {
-    running: boolean
     groupTiming?: UiGroupTiming
   }
 ): ToolGroupProps {
@@ -121,7 +117,7 @@ export function mapToolGroupProps(
     status: tool.status
   }))
 
-  const state = deriveState(tools, options.groupTiming, options.running)
+  const state = deriveState(tools, options.groupTiming)
   const { groupTiming } = options
 
   let elapsedMs: number | null = null

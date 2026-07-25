@@ -38,6 +38,43 @@ describe('messagesToUiItems', () => {
     }
   })
 
+  it('merges a tool loopturn reasoning into one row with a contiguous tool stretch', () => {
+    const messages: ChatMessage[] = [
+      { role: 'user', content: 'refactor' },
+      {
+        role: 'assistant',
+        content: '',
+        thinking: 'First I read the file.',
+        toolCalls: [{ id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }]
+      },
+      { role: 'tool', toolCallId: 'c1', toolName: 'read', content: 'body' },
+      {
+        role: 'assistant',
+        content: '',
+        thinking: 'Now I edit it.',
+        toolCalls: [{ id: 'c2', name: 'edit', arguments: '{"path":"a.ts"}' }]
+      },
+      { role: 'tool', toolCallId: 'c2', toolName: 'edit', content: 'ok' },
+      { role: 'assistant', content: 'Refactored.' }
+    ]
+
+    const items = messagesToUiItems(messages)
+    expect(items.map((i) => i.kind)).toEqual([
+      'message',
+      'message',
+      'tool',
+      'tool',
+      'message'
+    ])
+    const reasoning = items[1]
+    if (reasoning.kind === 'message') {
+      expect(reasoning.thinking).toBe('First I read the file.\n\nNow I edit it.')
+      expect(reasoning.content).toBe('')
+    }
+    const thinkingRows = items.filter((i) => i.kind === 'message' && i.thinking)
+    expect(thinkingRows).toHaveLength(1)
+  })
+
   it('marks empty tool results as done when replaying a run', () => {
     const messages: ChatMessage[] = [
       {

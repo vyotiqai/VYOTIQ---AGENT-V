@@ -261,6 +261,23 @@ describe('registerIpc', () => {
       }
     })
 
+    it('stamps the invoke on streamed and catch-path events', async () => {
+      runAgentMock.mockImplementation(async function* () {
+        yield { type: 'text_delta', runId: 'run-test', text: 'partial' } satisfies AgentEvent
+        throw new Error('boom')
+      })
+
+      const handler = handlers.get(IPC.chatStart)
+      await handler!({ sender: mockWc }, chatStartPayload)
+      await flushAsync()
+
+      const events = chatEvents()
+      expect(events.length).toBeGreaterThan(0)
+      for (const ev of events) {
+        expect(ev.invokeId).toBe(42)
+      }
+    })
+
     it('reuses existing runId when run exists and is not active', async () => {
       runExistsMock.mockReturnValue(true)
       isActiveMock.mockReturnValue(false)
@@ -278,7 +295,7 @@ describe('registerIpc', () => {
         }
       )
 
-      expect(result).toEqual({ ok: true, data: { runId: 'existing-run' } })
+      expect(result).toEqual({ ok: true, data: { runId: 'existing-run', invokeId: 42 } })
       expect(runAgentMock).toHaveBeenCalledWith(
         expect.objectContaining({
           runId: 'existing-run',
