@@ -38,7 +38,7 @@ function toolGroup(groupKey: string, summaries: string[]): UiItem[] {
 }
 
 describe('MessageList', () => {
-  it('renders tool groups with ToolGroup and single tools with ToolRow', () => {
+  it('keeps the narration between tool batches on the page', () => {
     const items: UiItem[] = [
       { kind: 'message', id: 'a1', role: 'assistant', content: 'First look.' },
       ...toolGroup('alpha', ['alpha-one.ts', 'alpha-two.ts']),
@@ -49,16 +49,35 @@ describe('MessageList', () => {
     render(<MessageList items={items} />)
 
     expect(screen.getByText('First look.')).toBeTruthy()
-    expect(screen.getByText('Explored')).toBeTruthy()
-    expect(screen.getByText('2 files')).toBeTruthy()
     expect(screen.getByText('Next batch.')).toBeTruthy()
-    expect(screen.getByText(/beta-only\.ts/)).toBeTruthy()
-    expect(screen.queryByText(/Worked for/i)).toBeNull()
+    // Narration separates the two batches, so each keeps its own header.
+    expect(screen.getAllByText('Read')).toHaveLength(2)
+    expect(screen.getByText('2 files')).toBeTruthy()
+    expect(screen.getByText('1 file')).toBeTruthy()
 
-    const body = document.querySelector('[aria-live="polite"]')?.textContent ?? ''
-    expect(body.indexOf('First look.')).toBeLessThan(body.indexOf('Explored'))
-    expect(body.indexOf('2 files')).toBeLessThan(body.indexOf('Next batch.'))
-    expect(body.indexOf('Next batch.')).toBeLessThan(body.indexOf('beta-only'))
+    const body = document.querySelector('[data-transcript-scroll]')?.textContent ?? ''
+    expect(body.indexOf('First look.')).toBeLessThan(body.indexOf('Next batch.'))
+  })
+
+  it('streams assistant text and reasoning inline, mid tool loop', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'audit it' },
+      ...toolGroup('alpha', ['alpha-one.ts']),
+      {
+        kind: 'message',
+        id: 'a2',
+        role: 'assistant',
+        content: 'Now checking how the router is wired.',
+        thinking: 'The table is built up front.',
+        thinkingStreaming: true,
+        streaming: true
+      }
+    ]
+
+    render(<MessageList items={items} />)
+
+    expect(screen.getByText('Now checking how the router is wired.')).toBeTruthy()
+    expect(screen.getByText('The table is built up front.')).toBeTruthy()
   })
 
   it('does not re-apply scroll restore when restoreScrollTop updates without a new token', () => {
@@ -76,7 +95,7 @@ describe('MessageList', () => {
       />
     )
 
-    const container = document.querySelector('[aria-live="polite"]') as HTMLDivElement
+    const container = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
     expect(container).toBeTruthy()
 
     const initialScrollTop = container.scrollTop
@@ -109,11 +128,34 @@ describe('MessageList', () => {
     }))
 
     const { container } = render(<MessageList items={items} />)
-    const scroll = container.querySelector('[aria-live="polite"]') as HTMLDivElement | null
+    const scroll = container.querySelector('[data-transcript-scroll]') as HTMLDivElement | null
     expect(scroll).toBeTruthy()
     if (scroll) {
       Object.defineProperty(scroll, 'clientHeight', { value: 480, configurable: true })
     }
+    expect(document.querySelectorAll('[data-index]').length).toBeLessThan(items.length)
+  })
+
+  it('stays virtualized while the last row streams', () => {
+    const items: UiItem[] = Array.from({ length: VIRTUALIZE_THRESHOLD + 5 }, (_, i) => ({
+      kind: 'message' as const,
+      id: `m-${i}`,
+      role: 'assistant' as const,
+      content: `Line ${i}`
+    }))
+    items[items.length - 1] = {
+      kind: 'message',
+      id: 'streaming',
+      role: 'assistant',
+      content: 'still writing',
+      streaming: true
+    }
+
+    const { container } = render(<MessageList items={items} />)
+
+    // Only the virtual branch sizes the column to the total scroll height.
+    const column = container.querySelector('[data-chat-column]') as HTMLElement | null
+    expect(column?.style.height).toBeTruthy()
     expect(document.querySelectorAll('[data-index]').length).toBeLessThan(items.length)
   })
 
@@ -128,7 +170,7 @@ describe('MessageList', () => {
     const items: UiItem[] = [...pad, ...tools]
 
     const { container } = render(<MessageList items={items} />)
-    const scroll = container.querySelector('[aria-live="polite"]') as HTMLDivElement | null
+    const scroll = container.querySelector('[data-transcript-scroll]') as HTMLDivElement | null
     expect(scroll).toBeTruthy()
     if (scroll) {
       Object.defineProperty(scroll, 'clientHeight', { value: 480, configurable: true })

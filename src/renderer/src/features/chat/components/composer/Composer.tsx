@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ProviderId, ServiceTier } from '@shared/ipc'
+import type { AttachedFile, ProviderId, ServiceTier } from '@shared/ipc'
 import { buildUserContent } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { Alert, cn } from '@renderer/lib/ui'
@@ -10,6 +10,7 @@ import { ComposerAttachments } from './ComposerAttachments'
 import { ComposerStatus } from './ComposerStatus'
 import { useComposerDraft } from './useComposerDraft'
 import { useComposerImages, MAX_IMAGES } from './useComposerImages'
+import { useComposerFiles, ATTACHMENT_ACCEPT, MAX_FILES, isImageFile } from './useComposerFiles'
 import { useComposerModels } from './useComposerModels'
 
 const HERO_HINT =
@@ -39,9 +40,13 @@ export function Composer({
   composerPlaceholder,
   bannerError,
   runNotice,
-  runCacheHint,
+  incomplete,
+  onContinue,
   contextUsage,
+  onCompactContext,
   onDismissError,
+  leading,
+  trailing,
   variant = 'dock',
   className
 }: {
@@ -63,14 +68,24 @@ export function Composer({
   onServiceTierChange?: (tier: ServiceTier) => void
   chatSettings: EffectiveChatSettings
   onChatSettingsChange: (patch: ChatSettingsPatch) => void
-  onSend: (text: string, images?: string[]) => boolean | void | Promise<boolean | void>
+  onSend: (
+    text: string,
+    images?: string[],
+    files?: AttachedFile[]
+  ) => boolean | void | Promise<boolean | void>
   onStop: () => void
   composerPlaceholder?: string
   bannerError?: string | null
   runNotice?: string | null
-  runCacheHint?: string | null
+  incomplete?: import('@renderer/lib/hooks/createChatStreamController').IncompleteTurnState | null
+  onContinue?: () => void
   contextUsage?: import('./ContextMeter').ContextUsageState | null
+  onCompactContext?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
   onDismissError?: () => void
+  /** Docked chrome floating just above the composer, e.g. the change pills. */
+  leading?: React.ReactNode
+  /** Docked chrome below the composer, e.g. the repository line. */
+  trailing?: React.ReactNode
   variant?: ComposerVariant
   className?: string
 }) {
@@ -87,16 +102,38 @@ export function Composer({
     removeImage
   } = useComposerImages()
 
+  const {
+    files,
+    setFiles,
+    fileError,
+    setFileError,
+    extracting,
+    addFiles,
+    removeFile
+  } = useComposerFiles()
+
   const { text, setText, canSend, submit, onKeyDown } = useComposerDraft({
     draft,
     onDraftChange,
     images,
     setImages,
     setImageError,
+    files,
+    setFiles,
+    setFileError,
     running,
     disabled,
     onSend
   })
+
+  const onPickAttachments = async (list: FileList | null): Promise<void> => {
+    if (!list?.length) return
+    const picked = Array.from(list)
+    const imageFiles = picked.filter(isImageFile)
+    const documents = picked.filter((file) => !isImageFile(file))
+    if (imageFiles.length) await onPickImages(imageFiles)
+    if (documents.length) await addFiles(documents)
+  }
 
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [browsedProvider, setBrowsedProvider] = useState<ProviderId>(provider)
@@ -130,7 +167,7 @@ export function Composer({
     <div
       className={cn(
         isDock
-          ? 'pointer-events-none absolute inset-x-0 bottom-0 z-sticky pb-3'
+          ? 'pointer-events-none absolute inset-x-0 bottom-0 z-sticky bg-bg pb-3 before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-8 before:bg-gradient-to-t before:from-bg before:to-transparent'
           : 'shrink-0 w-full pb-0 pt-0',
         isDock ? CHAT_GUTTER : '',
         className
@@ -147,6 +184,10 @@ export function Composer({
           </Alert>
         ) : null}
 
+        {isDock && leading ? (
+          <div className="pointer-events-auto shrink-0">{leading}</div>
+        ) : null}
+
         <form
           onSubmit={submit}
           className={cn(
@@ -160,13 +201,13 @@ export function Composer({
           <input
             ref={fileRef}
             type="file"
-            accept="image/*"
+            accept={ATTACHMENT_ACCEPT}
             multiple
             className="hidden"
             aria-hidden
             tabIndex={-1}
             onChange={(e) => {
-              void onPickImages(e.target.files)
+              void onPickAttachments(e.target.files)
               e.target.value = ''
             }}
           />
@@ -174,8 +215,12 @@ export function Composer({
           <ComposerAttachments
             images={images}
             imageError={imageError}
+            files={files}
+            fileError={fileError}
+            extracting={extracting}
             running={running}
             onRemove={removeImage}
+            onRemoveFile={removeFile}
           />
 
           <ComposerTextarea
@@ -194,10 +239,10 @@ export function Composer({
             variant={variant}
             disabled={disabled}
             locked={locked}
-            imagesCount={images.length}
+            imagesCount={images.length + files.length}
             onAttachClick={() => {
-              if (images.length >= MAX_IMAGES) {
-                setImageError(`You can attach up to ${MAX_IMAGES} images.`)
+              if (images.length >= MAX_IMAGES && files.length >= MAX_FILES) {
+                setImageError(`You can attach up to ${MAX_IMAGES} images and ${MAX_FILES} files.`)
                 return
               }
               fileRef.current?.click()
@@ -229,6 +274,7 @@ export function Composer({
             canSend={canSend}
             onStop={onStop}
             contextUsage={contextUsage}
+            onCompactContext={onCompactContext}
           />
         </form>
 
@@ -236,9 +282,13 @@ export function Composer({
           className={isDock ? 'pointer-events-auto' : undefined}
           modelsWarning={modelsWarning}
           runNotice={runNotice}
-          runCacheHint={runCacheHint}
-          running={running}
+          incomplete={incomplete}
+          onContinue={onContinue}
         />
+
+        {isDock && trailing ? (
+          <div className="pointer-events-auto shrink-0">{trailing}</div>
+        ) : null}
 
         {!isDock ? (
         <p className="m-0 mt-4 text-center text-xs leading-relaxed tracking-[var(--vy-tracking)] text-muted">

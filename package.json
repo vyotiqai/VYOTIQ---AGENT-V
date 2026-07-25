@@ -30,11 +30,13 @@
     "@sentry/react": "10.62.0",
     "@tanstack/react-virtual": "^3.14.8",
     "electron-log": "^5.4.4",
+    "gpt-tokenizer": "^3.4.0",
     "react-markdown": "^10.1.0",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",
     "shiki": "^4.3.1",
     "tree-kill": "^1.2.2",
+    "unpdf": "^1.6.2",
     "zod": "^3.25.76"
   },
   "devDependencies": {

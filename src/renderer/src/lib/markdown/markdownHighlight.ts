@@ -54,13 +54,20 @@ function resolveLanguage(lang: string): SupportedLanguage | null {
   return LANGUAGE_ALIASES[normalized] ?? null
 }
 
+/** The grammar to use for a file, or null when we have none for that extension. */
+export function languageFromPath(path: string): string | null {
+  const name = path.split(/[/\\]/).pop() ?? ''
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0) return null
+  return resolveLanguage(name.slice(dot + 1))
+}
+
 function resolveTheme(): 'github-dark' | 'github-light' {
   if (typeof document === 'undefined') return 'github-light'
   return document.documentElement.dataset.theme === 'dark' ? 'github-dark' : 'github-light'
 }
 
-/** Returns highlighted HTML, or null when the language is unsupported or loading fails. */
-export async function highlightCode(text: string, lang: string): Promise<string | null> {
+async function prepare(lang: string): Promise<{ core: HighlighterCore; language: string } | null> {
   const language = resolveLanguage(lang)
   if (!language) return null
   try {
@@ -69,7 +76,41 @@ export async function highlightCode(text: string, lang: string): Promise<string 
       await core.loadLanguage(await LANGUAGE_LOADERS[language]())
       loadedLanguages.add(language)
     }
-    return core.codeToHtml(text, { lang: language, theme: resolveTheme() })
+    return { core, language }
+  } catch {
+    return null
+  }
+}
+
+/** Returns highlighted HTML, or null when the language is unsupported or loading fails. */
+export async function highlightCode(text: string, lang: string): Promise<string | null> {
+  const ready = await prepare(lang)
+  if (!ready) return null
+  try {
+    return ready.core.codeToHtml(text, { lang: ready.language, theme: resolveTheme() })
+  } catch {
+    return null
+  }
+}
+
+export type CodeToken = { text: string; color?: string }
+
+/**
+ * Highlight to one token list per line rather than to HTML.
+ *
+ * A diff needs to own its own row markup — gutter, sign column, per-row tint —
+ * so it cannot use the `<pre>` that `highlightCode` produces, but it still wants
+ * the same colours. One entry per line of `text`, or null if we cannot help.
+ */
+export async function highlightToLines(text: string, lang: string): Promise<CodeToken[][] | null> {
+  const ready = await prepare(lang)
+  if (!ready) return null
+  try {
+    const { tokens } = ready.core.codeToTokens(text, {
+      lang: ready.language,
+      theme: resolveTheme()
+    })
+    return tokens.map((line) => line.map((token) => ({ text: token.content, color: token.color })))
   } catch {
     return null
   }

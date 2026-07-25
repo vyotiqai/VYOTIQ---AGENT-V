@@ -1,51 +1,53 @@
 import { cn } from '@renderer/lib/ui/cn'
+import type { IncompleteTurnState } from '@renderer/lib/hooks/createChatStreamController'
 
 export function ComposerStatus({
   modelsWarning,
   runNotice,
-  runCacheHint,
-  running,
+  incomplete,
+  onContinue,
   className
 }: {
   modelsWarning?: string | null
   runNotice?: string | null
-  runCacheHint?: string | null
-  running: boolean
+  incomplete?: IncompleteTurnState | null
+  onContinue?: () => void
   className?: string
 }) {
-  if (!modelsWarning && !runNotice && !runCacheHint && !running) return null
-
   const statusText = runNotice ?? modelsWarning
 
+  if (incomplete && onContinue) {
+    return (
+      <p
+        className={cn(
+          'm-0 flex items-center justify-end gap-2 px-2.5 text-right text-[11px] leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]',
+          className
+        )}
+        role="status"
+      >
+        <span>{incomplete.message}</span>
+        <button
+          type="button"
+          onClick={onContinue}
+          className="shrink-0 rounded-md border border-subtle px-1.5 py-0.5 font-medium text-fg transition-colors hover:bg-hover"
+        >
+          Continue
+        </button>
+      </p>
+    )
+  }
+
+  if (!statusText) return null
+
   return (
-    <div className={cn('mt-1.5 flex flex-col items-end gap-1 px-2', className)}>
-      {statusText ? (
-        <p
-          className="m-0 max-w-full text-right text-xs leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]"
-          role="status"
-        >
-          {statusText}
-        </p>
-      ) : running ? (
-        <span
-          className="inline-flex items-center text-xs tracking-[var(--vy-tracking)] text-muted"
-          role="status"
-          aria-label="Working"
-        >
-          <span
-            className="size-2 shrink-0 rounded-full border border-muted bg-surface-2 animate-pulse"
-            aria-hidden
-          />
-        </span>
-      ) : null}
-      {runCacheHint ? (
-        <p
-          className="m-0 max-w-full text-right text-xs leading-snug tracking-[var(--vy-tracking)] text-success [overflow-wrap:anywhere]"
-          role="status"
-        >
-          {runCacheHint}
-        </p>
-      ) : null}
-    </div>
+    <p
+      className={cn(
+        'm-0 px-2.5 text-right text-[11px] leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]',
+        className
+      )}
+      role="status"
+    >
+      {statusText}
+    </p>
   )
 }

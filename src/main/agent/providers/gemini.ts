@@ -1,8 +1,17 @@
 import type { ChatMessage, MessageContent, ModelInfo } from '../../../shared/ipc'
-import { contentToText } from '../../../shared/ipc'
+import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
 import { baseModelInfo, looksLikeChatModel, parseDataUrl } from './normalize'
-import type { LlmProvider, ListModelsRequest, ProviderChatRequest, StreamChunk, ToolCall, TokenUsage } from './types'
+import type {
+  LlmProvider,
+  ListModelsRequest,
+  ProviderChatRequest,
+  StopReason,
+  StreamChunk,
+  ToolCall,
+  TokenUsage
+} from './types'
+import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
@@ -35,14 +44,20 @@ export function parseGeminiUsage(usageMetadata: Record<string, unknown>): TokenU
         : typeof usageMetadata.total_token_count === 'number'
           ? usageMetadata.total_token_count
           : undefined,
-    cachedInputTokens: cached
+    cachedInputTokens: cached,
+    reasoningTokens:
+      typeof usageMetadata.thoughtsTokenCount === 'number'
+        ? usageMetadata.thoughtsTokenCount
+        : typeof usageMetadata.thoughts_token_count === 'number'
+          ? usageMetadata.thoughts_token_count
+          : undefined
   }
 }
 
 function toGeminiParts(content: MessageContent): Array<Record<string, unknown>> {
   if (typeof content === 'string') return [{ text: content }]
   const parts: Array<Record<string, unknown>> = []
-  for (const p of content) {
+  for (const p of providerContentParts(content)) {
     if (p.type === 'text') {
       parts.push({ text: p.text })
       continue
@@ -289,9 +304,11 @@ export const geminiProvider: LlmProvider = {
 
     let toolIndex = 0
     let lastUsage: TokenUsage | undefined
+    let stopReason: StopReason | undefined
     const pendingCalls = new Map<string, ToolCall>()
+    const drops = { dropped: 0 }
 
-    for await (const event of iterateSseJson(res, req.signal)) {
+    for await (const event of iterateSseJson(res, req.signal, drops)) {
       if (event.error) {
         const errObj = event.error as { message?: string } | string
         const message =
@@ -310,6 +327,8 @@ export const geminiProvider: LlmProvider = {
       }
 
       const candidates = event.candidates as Array<Record<string, unknown>> | undefined
+      const finishReason = candidates?.[0]?.finishReason
+      if (finishReason) stopReason = normalizeStopReason(finishReason)
       const parts = (candidates?.[0]?.content as Record<string, unknown>)?.parts as
         | Array<Record<string, unknown>>
         | undefined
@@ -342,6 +361,11 @@ export const geminiProvider: LlmProvider = {
       yield { type: 'tool_call', toolCall: call }
     }
 
-    yield { type: 'done', usage: lastUsage }
+    yield {
+      type: 'done',
+      usage: lastUsage,
+      stopReason,
+      malformedChunks: drops.dropped || undefined
+    }
   }
 }

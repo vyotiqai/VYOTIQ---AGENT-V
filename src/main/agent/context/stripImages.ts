@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../../../shared/ipc'
+import { providerContentParts } from '../../../shared/ipc'
 
 const OMIT = '[image omitted: model does not support vision]'
 
@@ -8,8 +9,8 @@ export function stripImagesFromMessages(messages: ChatMessage[]): ChatMessage[] 
     if (typeof m.content === 'string') return m
     const hasImage = m.content.some((p) => p.type === 'image_url')
     if (!hasImage) return m
-    const text = m.content
-      .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+    const text = providerContentParts(m.content)
+      .filter((p) => p.type === 'text')
       .map((p) => p.text)
       .join('\n')
       .trim()

@@ -1,4 +1,5 @@
 import type { ChatMessage, ModelInfo } from '../../../shared/ipc'
+import { flattenFileParts } from '../../../shared/ipc'
 import type { LlmProvider } from '../providers/types'
 import { anthropicNativeOptions } from './anthropicContext'
 import { allocateBudget, compactionTriggerTokens, contentWindow } from './budget'
@@ -20,6 +21,7 @@ import {
   type ContextLayerBreakdown
 } from './types'
 import { stripImagesFromMessages } from './stripImages'
+import { buildWorkspaceRulesSection } from './rules'
 import { buildWorkspaceSnapshotAsync } from './workspaceSnapshot'
 import { logger } from '../../../shared/logger'
 
@@ -92,6 +94,7 @@ function capHarness(text: string, maxTokens: number): string {
 function buildSystem(parts: {
   harness: string
   workspace: string
+  rules: string
   memoryIndex: string
   memoryState: string
   contract?: string
@@ -101,6 +104,11 @@ function buildSystem(parts: {
 }): string {
   const sections: string[] = []
   sections.push(capHarness(parts.harness, parts.budgets.system))
+  if (parts.rules.trim()) {
+    // Between the harness and the run contract: project conventions outrank the
+    // generic harness but yield to what the user asked for in this run.
+    sections.push(capText(parts.rules.trim(), Math.floor(parts.budgets.system * 0.5)))
+  }
   if (parts.contract?.trim()) {
     sections.push(`## Run contract\n${capText(parts.contract.trim(), Math.floor(parts.budgets.system * 0.4))}`)
   }
@@ -119,7 +127,9 @@ function buildSystem(parts: {
     sections.push(
       [
         '## Prior session summary',
-        parts.compaction.summary,
+        // Summaries accumulate across compactions, so this needs a cap like every
+        // other section or it can crowd out the harness it sits beside.
+        capText(parts.compaction.summary, mw),
         '',
         '_Context was compacted. Promote durable facts into `.vyotiq/memory/` (`index.md` / `state.md` / `notes/`) via memory_write — chat history may be truncated._'
       ].join('\n')
@@ -136,7 +146,7 @@ function computeLayers(
   budgets: ReturnType<typeof allocateBudget>
 ): ContextLayerBreakdown {
   return {
-    system: estimateTextTokens(system),
+    system: estimateTextTokens(system, model),
     history: estimateMessagesTokens(messages, model),
     tools: toolsJsonEstimate,
     buffer: budgets.buffer
@@ -193,7 +203,10 @@ export async function assembleContext(
   const triggerRatio = input.compactionTriggerRatio ?? 0.7
   const window = contentWindow(input.model)
 
-  const workspace = await buildWorkspaceSnapshotAsync(input.workspacePath, input.goal)
+  const [workspace, rules] = await Promise.all([
+    buildWorkspaceSnapshotAsync(input.workspacePath, input.goal),
+    buildWorkspaceRulesSection(input.workspacePath)
+  ])
   const [memoryIndex, memoryState] = input.workspacePath
     ? await Promise.all([
         readMemoryIndexAsync(input.workspacePath),
@@ -201,7 +214,15 @@ export async function assembleContext(
       ])
     : ['', '']
 
-  let messages = trimToolResults([...input.messages])
+  // Attachments stay their own part in the transcript, but no provider knows
+  // that shape — inline them as text before anything measures or sends them.
+  let messages = trimToolResults(
+    input.messages.map((message) =>
+      typeof message.content === 'string'
+        ? message
+        : { ...message, content: flattenFileParts(message.content) }
+    )
+  )
   if (!modelAcceptsVision(input.model)) {
     messages = stripImagesFromMessages(messages)
   }
@@ -211,6 +232,7 @@ export async function assembleContext(
   const systemDraft = buildSystem({
     harness: input.harness,
     workspace,
+    rules,
     memoryIndex,
     memoryState,
     contract: input.contract,
@@ -239,18 +261,19 @@ export async function assembleContext(
         contextWindow: window
       })
       if (record) {
-        compaction = record
         messages = preserveRecentMessages(messages, keepRecent, budgets.history, input.model)
+        compaction = record
         contextShrunk = true
       }
     }
   }
 
-  messages = trimHistoryToBudget(messages, budgets.history)
+  messages = trimHistoryToBudget(messages, budgets.history, input.model)
 
   let system = buildSystem({
     harness: input.harness,
     workspace,
+    rules,
     memoryIndex,
     memoryState,
     contract: input.contract,
@@ -265,11 +288,12 @@ export async function assembleContext(
 
   if (estimated > window) {
     const priorLen = messages.length
-    messages = trimHistoryToBudget(messages, Math.floor(budgets.history * 0.5))
+    messages = trimHistoryToBudget(messages, Math.floor(budgets.history * 0.5), input.model)
     if (messages.length < priorLen) contextShrunk = true
     system = buildSystem({
       harness: input.harness,
       workspace,
+      rules,
       memoryIndex,
       memoryState,
       contract: input.contract,
@@ -294,12 +318,13 @@ export async function assembleContext(
           contextWindow: window
         })
         if (record) {
-          compaction = record
           messages = preserveRecentMessages(messages, Math.max(2, Math.floor(keepRecent / 2)), budgets.history, input.model)
+          compaction = record
           contextShrunk = true
           system = buildSystem({
             harness: input.harness,
             workspace,
+            rules,
             memoryIndex,
             memoryState,
             contract: input.contract,

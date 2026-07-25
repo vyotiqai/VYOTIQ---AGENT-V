@@ -1,6 +1,15 @@
 import { MCP_TOOL_PREFIX } from '../mcp'
 
-const READ_ONLY_BUILTIN = new Set(['read', 'search', 'memory_list', 'memory_read'])
+const READ_ONLY_BUILTIN = new Set([
+  'read',
+  'search',
+  'glob',
+  'grep',
+  'list_dir',
+  'web_fetch',
+  'memory_list',
+  'memory_read'
+])
 
 /** Built-in tools safe to run in parallel (read-only, no workspace mutation). */
 export function isReadOnlyTool(name: string): boolean {

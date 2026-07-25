@@ -17,7 +17,7 @@ vi.mock('electron', () => ({
 }))
 
 import { appendMessage, loadMessages, saveCompaction } from '@main/agent/state'
-import { resolveRunDir } from '@main/storage/paths'
+import { resolveRunDir, workspaceSessionsRoot } from '@main/storage/paths'
 
 describe('atomic run persistence', () => {
   beforeEach(() => {
@@ -48,6 +48,16 @@ describe('atomic run persistence', () => {
     expect(messages[0]?.content).toBe('hello')
     expect(existsSync(join(dir, 'messages.jsonl.tmp'))).toBe(false)
     expect(readFileSync(join(dir, 'messages.jsonl'), 'utf8')).toContain('"hello"')
+  })
+
+  it('keeps resolved run directories inside the workspace sessions root', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'vyotiq-atomic-escape-'))
+    const sessions = workspaceSessionsRoot(workspace)
+
+    expect(resolveRunDir(workspace, 'good-run')).toBe(join(sessions, 'good-run'))
+    for (const runId of ['..', join('..', '..', '..'), '../sibling', userData]) {
+      expect(() => resolveRunDir(workspace, runId)).toThrow(/run id/i)
+    }
   })
 
   it('writes compaction.json atomically', () => {

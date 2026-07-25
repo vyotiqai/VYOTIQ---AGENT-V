@@ -1,5 +1,5 @@
-import type { ChatMessage } from '../../../shared/ipc'
-import { contentToText } from '../../../shared/ipc'
+import type { ChatMessage, MessageContent } from '../../../shared/ipc'
+import { contentHasImage, contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
 import {
   normalizeEffortForOpenAiResponses,
@@ -7,7 +7,8 @@ import {
   type ProviderReasoningState
 } from '../../../shared/reasoning'
 import { serviceTierForApiBody } from '../../../shared/domain/serviceTier'
-import type { ProviderChatRequest, StreamChunk, ToolCall, TokenUsage } from './types'
+import type { ProviderChatRequest, StopReason, StreamChunk, ToolCall, TokenUsage } from './types'
+import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
@@ -68,13 +69,27 @@ export function toResponsesInput(
       continue
     }
     if (m.role === 'user') {
-      out.push({
-        role: 'user',
-        content: typeof m.content === 'string' ? m.content : contentToText(m.content)
-      })
+      out.push({ role: 'user', content: toResponsesUserContent(m.content) })
     }
   }
   return out
+}
+
+/**
+ * Responses uses `input_text` / `input_image` parts rather than the chat
+ * completions shape. Flattening to text here would silently drop the image the
+ * user attached, so build the parts array whenever one is present.
+ */
+export function toResponsesUserContent(
+  content: MessageContent
+): string | Array<Record<string, unknown>> {
+  if (typeof content === 'string') return content
+  if (!contentHasImage(content)) return contentToText(content)
+  return providerContentParts(content).map((part) =>
+    part.type === 'image_url'
+      ? { type: 'input_image', image_url: part.url }
+      : { type: 'input_text', text: part.text }
+  )
 }
 
 function toResponsesTools(tools: ProviderChatRequest['tools']): Array<Record<string, unknown>> {
@@ -153,12 +168,26 @@ export async function* streamOpenAiResponses(
   }
 
   const pending = new Map<string, ToolCall>()
+  const itemIdToCallId = new Map<string, string>()
   const outputItems: unknown[] = []
   let responseId: string | undefined
   let thinkingText = ''
   let lastUsage: TokenUsage | undefined
+  let stopReason: StopReason | undefined
+  let toolCallIndex = 0
+  const toolCallIndexes = new Map<string, number>()
 
-  for await (const event of iterateSseJson(res, req.signal)) {
+  const indexForCall = (callId: string): number => {
+    const existing = toolCallIndexes.get(callId)
+    if (existing !== undefined) return existing
+    const next = toolCallIndex++
+    toolCallIndexes.set(callId, next)
+    return next
+  }
+
+  const drops = { dropped: 0 }
+
+  for await (const event of iterateSseJson(res, req.signal, drops)) {
     const type = event.type as string | undefined
     const response = event.response as Record<string, unknown> | undefined
     if (response && typeof response.id === 'string') responseId = response.id
@@ -173,6 +202,21 @@ export async function* streamOpenAiResponses(
       if (delta) {
         thinkingText += delta
         yield { type: 'thinking_delta', text: delta }
+      }
+    }
+
+    if (type === 'response.output_item.added') {
+      const item = event.item as Record<string, unknown> | undefined
+      if (item?.type === 'function_call') {
+        const itemId = typeof item.id === 'string' ? item.id : ''
+        const callId = String(item.call_id ?? item.id ?? `call_${pending.size}`)
+        if (itemId) itemIdToCallId.set(itemId, callId)
+        const call: ToolCall = {
+          id: callId,
+          name: String(item.name ?? ''),
+          arguments: ''
+        }
+        pending.set(callId, call)
       }
     }
 
@@ -204,7 +248,9 @@ export async function* streamOpenAiResponses(
     }
 
     if (type === 'response.function_call_arguments.delta') {
-      const callId = String(event.call_id ?? '')
+      const callId = String(
+        event.call_id ?? itemIdToCallId.get(String(event.item_id ?? '')) ?? ''
+      )
       const delta = event.delta as string | undefined
       if (callId && delta) {
         const existing = pending.get(callId) ?? { id: callId, name: '', arguments: '' }
@@ -212,26 +258,45 @@ export async function* streamOpenAiResponses(
         pending.set(callId, existing)
         yield {
           type: 'tool_call_delta',
-          toolCallDelta: { index: pending.size, id: callId, arguments: delta }
+          toolCallDelta: { index: indexForCall(callId), id: callId, arguments: delta }
         }
       }
     }
 
+    if (type === 'response.incomplete' || type === 'response.failed') {
+      const details = response?.incomplete_details as Record<string, unknown> | undefined
+      stopReason = normalizeStopReason(details?.reason) ?? (type === 'response.failed' ? 'error' : 'unknown')
+      if (type === 'response.failed') {
+        const errObj = response?.error as { message?: string } | undefined
+        const message = errObj?.message ?? 'OpenAI response failed'
+        logProviderFailure('openai', 'stream', {})
+        yield { type: 'error', error: message }
+        return
+      }
+    }
+
     if (type === 'response.completed' || type === 'response.done') {
-      const usage = (event.response as Record<string, unknown> | undefined)?.usage as
-        | Record<string, unknown>
-        | undefined
+      const details = response?.incomplete_details as Record<string, unknown> | undefined
+      // `incomplete_details` is present even on a terminal `completed` frame when the
+      // response was cut short, so prefer it over the event name.
+      stopReason = normalizeStopReason(details?.reason) ?? stopReason ?? 'stop'
+      const usage = response?.usage as Record<string, unknown> | undefined
       if (usage) {
-        const details = usage.output_tokens_details as Record<string, unknown> | undefined
+        const outputDetails = usage.output_tokens_details as Record<string, unknown> | undefined
+        const inputDetails = usage.input_tokens_details as Record<string, unknown> | undefined
         lastUsage = {
           inputTokens:
             typeof usage.input_tokens === 'number' ? usage.input_tokens : undefined,
           outputTokens:
             typeof usage.output_tokens === 'number' ? usage.output_tokens : undefined,
           totalTokens: typeof usage.total_tokens === 'number' ? usage.total_tokens : undefined,
+          cachedInputTokens:
+            inputDetails && typeof inputDetails.cached_tokens === 'number'
+              ? inputDetails.cached_tokens
+              : undefined,
           reasoningTokens:
-            details && typeof details.reasoning_tokens === 'number'
-              ? details.reasoning_tokens
+            outputDetails && typeof outputDetails.reasoning_tokens === 'number'
+              ? outputDetails.reasoning_tokens
               : undefined
         }
       }
@@ -243,6 +308,8 @@ export async function* streamOpenAiResponses(
   yield {
     type: 'done',
     usage: lastUsage,
+    stopReason,
+    malformedChunks: drops.dropped || undefined,
     reasoningState:
       outputItems.length || responseId
         ? {

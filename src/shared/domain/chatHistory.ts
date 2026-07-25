@@ -18,7 +18,8 @@ export function appendToolResult(
   messages: ChatMessage[],
   toolCallId: string,
   name: string,
-  content: string
+  content: string,
+  ok?: boolean
 ): ChatMessage[] {
   return [
     ...messages,
@@ -26,7 +27,8 @@ export function appendToolResult(
       role: 'tool',
       toolCallId,
       toolName: name,
-      content
+      content,
+      ...(ok !== undefined ? { ok } : {})
     }
   ]
 }

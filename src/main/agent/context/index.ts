@@ -1,7 +1,14 @@
 export { assembleContext, estimateToolsJson } from './assemble'
 export { allocateBudget, contextWindowFor, effectiveWindow, compactionTriggerTokens, contentWindow } from './budget'
 export { compactMessages, preserveRecentMessages } from './compact'
-export { estimateMessagesTokens, estimateTextTokens, effectiveInputTokens } from './estimate'
+export {
+  estimateContentTokens,
+  estimateMessagesTokens,
+  estimateTextTokens,
+  effectiveInputTokens
+} from './estimate'
+export { encodingForModel, resetTokenizerCache } from './tokenizer'
+export { estimateImageTokens, imageDimensionsFromDataUrl, imageTokensForDimensions } from './imageTokens'
 export {
   ensureMemoryLayout,
   listMemoryNotes,
@@ -18,5 +25,11 @@ export { trimToolResults } from './toolTrim'
 export { dropOldestTurn, trimHistoryToBudget } from './historyTrim'
 export { stripImagesFromMessages } from './stripImages'
 export { buildWorkspaceSnapshot, buildWorkspaceSnapshotAsync, clearWorkspaceSnapshotCache } from './workspaceSnapshot'
+export {
+  buildWorkspaceRulesSection,
+  clearRulesCache,
+  formatWorkspaceRules,
+  readWorkspaceRules
+} from './rules'
 export { promoteCompactionToMemory } from './memoryPromote'
 export type { AssembleResult, CompactionRecord, AssembleInput } from './types'

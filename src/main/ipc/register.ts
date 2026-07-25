@@ -4,6 +4,7 @@ import { IPC } from '../../shared/channels'
 import {
   ChatStartRequestSchema,
   CancelRunRequestSchema,
+  CompactRunRequestSchema,
   SetSettingsRequestSchema,
   SetSecretRequestSchema,
   ClearSecretRequestSchema,
@@ -20,13 +21,19 @@ import {
   WorkspacesSetActiveRequestSchema,
   WorkspacesUpdateUiStateRequestSchema,
   WorkspacesSetSettingsOverrideRequestSchema,
+  GitStatusRequestSchema,
+  GitCommitRequestSchema,
+  ToolApprovalResponseSchema,
+  ExtractAttachmentRequestSchema,
   ok,
   fail,
+  type ExtractAttachmentResult,
   type IpcResult,
   type Settings,
   type AgentEvent,
   type ChatStartResult,
   type ChatMessage,
+  type CompactRunResult,
   type ListRunsResult,
   type RunSummary,
   type SecretsStatus,
@@ -35,7 +42,9 @@ import {
   type TelemetryStatus,
   type McpStatusResult,
   type WorkspacesState,
-  type ActiveRunsResult
+  type ActiveRunsResult,
+  type GitStatus,
+  type GitCommitResult
 } from '../../shared/ipc'
 import { resolveOllamaListBaseUrl } from '../../shared/providers'
 import { existsSync, mkdirSync } from 'fs'
@@ -48,6 +57,13 @@ import { syncMcpServers, getMcpServerStatus, refreshMcpServers } from '@main/age
 import { setSecret, clearSecret, getSecret, secretStatus } from '@main/settings/secrets'
 import { ChatEventBatcher } from './streamBatch'
 import { runAgent, createRunId } from '../agent/loop'
+import { compactRunNow, CompactionUnavailableError } from '../agent/compactRun'
+import { extractAttachment } from '../attachments/extract'
+import {
+  cancelPendingApprovals,
+  registerApprovalSender,
+  resolveToolApproval
+} from '../agent/toolApproval'
 import { listProviderModels } from '../agent/providers'
 import { clearModelCache } from '../agent/providers/modelCache'
 import {
@@ -76,6 +92,7 @@ import {
   setWorkspaceSettingsOverride
 } from '@main/workspace/workspaces'
 import { workspacePathsEqual } from '../../shared/workspacePath'
+import { commitAll, readGitStatus } from '@main/git/git'
 import { applyTitleBarTheme } from '@main/app/window'
 import { logsDirectory } from '../logging/init'
 import { applySentryTelemetry, isSentryBuildConfigured } from '../logging/sentry'
@@ -85,6 +102,11 @@ export { chatCancelResult }
 function senderOk(event: Electron.IpcMainInvokeEvent): boolean {
   const win = BrowserWindow.fromWebContents(event.sender)
   return Boolean(win && !win.isDestroyed())
+}
+
+/** Git runs commands in a directory, so only ever in one the user has opened. */
+function isOpenWorkspace(path: string): boolean {
+  return getWorkspaces().openPaths.some((open) => workspacePathsEqual(open, path))
 }
 
 function isTerminalStatusEvent(ev: AgentEvent): boolean {
@@ -378,6 +400,11 @@ export function registerIpc(): void {
           if (!wc.isDestroyed()) wc.send(IPC.chatEvent, { ...ev, invokeId })
         }
         const batcher = new ChatEventBatcher(sendEvent)
+        const releaseApprovalSender = registerApprovalSender(runId, (request) => {
+          // The gate is parked on this prompt, so it has to jump the event batcher.
+          batcher.flush()
+          if (!wc.isDestroyed()) wc.send(IPC.toolApprovalRequest, request)
+        })
         try {
           for await (const ev of runAgent(agentInput)) {
             const terminal = isTerminalChatEvent(ev as AgentEvent)
@@ -411,6 +438,8 @@ export function registerIpc(): void {
           }
         } finally {
           batcher.flush()
+          releaseApprovalSender()
+          cancelPendingApprovals(runId)
           clearRunAbort(runId, invokeId)
         }
       })()
@@ -421,6 +450,29 @@ export function registerIpc(): void {
     }
   })
 
+  ipcMain.handle(IPC.toolApprovalResponse, async (event, raw): Promise<IpcResult<boolean>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const response = ToolApprovalResponseSchema.parse(raw)
+      return ok(resolveToolApproval(response))
+    } catch (err) {
+      return failFrom(err, IPC.toolApprovalResponse)
+    }
+  })
+
+  ipcMain.handle(
+    IPC.attachmentExtract,
+    async (event, raw): Promise<IpcResult<ExtractAttachmentResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = ExtractAttachmentRequestSchema.parse(raw)
+        return ok(await extractAttachment(req))
+      } catch (err) {
+        return failFrom(err, IPC.attachmentExtract)
+      }
+    }
+  )
+
   ipcMain.handle(IPC.chatCancel, async (event, raw): Promise<IpcResult<true>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
@@ -429,6 +481,25 @@ export function registerIpc(): void {
       return chatCancelResult(runId)
     } catch (err) {
       return failFrom(err, IPC.chatCancel)
+    }
+  })
+
+  ipcMain.handle(IPC.chatCompact, async (event, raw): Promise<IpcResult<CompactRunResult>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = CompactRunRequestSchema.parse(raw)
+      if (isActive(req.runId)) {
+        return fail('Stop the run before compacting its history.')
+      }
+      logger.info('Manual compaction requested', {
+        scope: 'ipc',
+        correlationId: req.runId,
+        channel: IPC.chatCompact
+      })
+      return ok(await compactRunNow(req))
+    } catch (err) {
+      if (err instanceof CompactionUnavailableError) return fail(err.message)
+      return failFrom(err, IPC.chatCompact)
     }
   })
 
@@ -521,6 +592,28 @@ export function registerIpc(): void {
       return ok(listActiveRuns())
     } catch (err) {
       return failFrom(err, IPC.runsActive)
+    }
+  })
+
+  ipcMain.handle(IPC.gitStatus, async (event, raw): Promise<IpcResult<GitStatus | null>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = GitStatusRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      return ok(await readGitStatus(req.workspacePath))
+    } catch (err) {
+      return failFrom(err, IPC.gitStatus)
+    }
+  })
+
+  ipcMain.handle(IPC.gitCommit, async (event, raw): Promise<IpcResult<GitCommitResult>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = GitCommitRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      return ok(await commitAll(req.workspacePath, req.message, req.push === true))
+    } catch (err) {
+      return failFrom(err, IPC.gitCommit)
     }
   })
 

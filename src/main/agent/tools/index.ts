@@ -6,7 +6,15 @@ import { invokeMcpTool, parseMcpToolName } from '../mcp'
 import { toolRead } from './read'
 import { toolEdit } from './edit'
 import { toolSearch } from './search'
+import { toolGlob } from './glob'
+import { toolGrep } from './grep'
+import { toolListDir } from './listDir'
+import { toolMultiEdit, type MultiEditEntry } from './multiEdit'
+import { toolDelete } from './deletePath'
+import { toolTodoWrite, type TodoItem } from './todo'
+import { toolWebFetch } from './webFetch'
 import { isFindstrNoMatchContent, isDirMissingPathContent, toolTerminal } from './terminal'
+import { runSubagent, SubagentDepthError } from '../subagent'
 import { toolMemoryList, toolMemoryRead, toolMemoryWrite } from './memory'
 
 export interface ToolResult {
@@ -17,10 +25,21 @@ export interface ToolResult {
   failureLogged?: boolean
 }
 
+/** Run-scoped state a handler may need beyond the workspace path. */
+export type ToolExecutionContext = {
+  /** Directory of the run that issued the call; absent outside a run. */
+  runDir?: string
+  /** Nesting level of the caller: 0 for the top-level run, 1 inside a sub-agent. */
+  depth?: number
+  /** Live progress from a long-running tool, surfaced under its transcript row. */
+  onProgress?: (update: { kind: 'text' | 'thinking' | 'tool' | 'done'; text: string }) => void
+}
+
 type ToolHandler = (
   workspace: string,
   args: Record<string, unknown>,
-  signal: AbortSignal
+  signal: AbortSignal,
+  context: ToolExecutionContext
 ) => Promise<ToolResult> | ToolResult
 
 function throwIfAborted(signal: AbortSignal): void {
@@ -78,7 +97,9 @@ const BUILTIN_HANDLERS: Record<string, ToolHandler> = {
     const path = String(args.path ?? '')
     const offset = typeof args.offset === 'number' ? args.offset : undefined
     const limit = typeof args.limit === 'number' ? args.limit : undefined
-    const content = toolRead(workspace, path, { offset, limit })
+    const startLine = typeof args.startLine === 'number' ? args.startLine : undefined
+    const endLine = typeof args.endLine === 'number' ? args.endLine : undefined
+    const content = toolRead(workspace, path, { offset, limit, startLine, endLine })
     throwIfAborted(signal)
     return toolOk('read', path, content.slice(0, 100_000))
   },
@@ -99,6 +120,90 @@ const BUILTIN_HANDLERS: Record<string, ToolHandler> = {
     const content = await toolSearch(workspace, query, maxResults, signal, regex)
     throwIfAborted(signal)
     return toolOk('search', query, content)
+  },
+  glob: async (workspace, args, signal) => {
+    throwIfAborted(signal)
+    const pattern = String(args.pattern ?? '')
+    const maxResults = typeof args.maxResults === 'number' ? args.maxResults : undefined
+    const content = await toolGlob(workspace, pattern, maxResults, signal)
+    throwIfAborted(signal)
+    return toolOk('glob', pattern, content)
+  },
+  grep: async (workspace, args, signal) => {
+    throwIfAborted(signal)
+    const pattern = String(args.pattern ?? '')
+    const content = await toolGrep(
+      workspace,
+      pattern,
+      {
+        include: typeof args.include === 'string' ? args.include : undefined,
+        caseSensitive: args.caseSensitive === true,
+        contextLines: typeof args.contextLines === 'number' ? args.contextLines : undefined,
+        maxResults: typeof args.maxResults === 'number' ? args.maxResults : undefined
+      },
+      signal
+    )
+    throwIfAborted(signal)
+    return toolOk('grep', pattern, content)
+  },
+  list_dir: (workspace, args, signal) => {
+    throwIfAborted(signal)
+    const path = typeof args.path === 'string' && args.path.trim() ? args.path : '.'
+    return toolOk('list_dir', path, toolListDir(workspace, path))
+  },
+  multi_edit: (workspace, args, signal) => {
+    throwIfAborted(signal)
+    const edits = (Array.isArray(args.edits) ? args.edits : []) as MultiEditEntry[]
+    const content = toolMultiEdit(workspace, edits)
+    return toolOk('multi_edit', `${edits.length} files`, content)
+  },
+  delete: (workspace, args, signal) => {
+    throwIfAborted(signal)
+    const path = String(args.path ?? '')
+    const content = toolDelete(workspace, path, args.recursive === true)
+    return toolOk('delete', path, content)
+  },
+  todo_write: (_workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    const todos = (Array.isArray(args.todos) ? args.todos : []) as TodoItem[]
+    const { content } = toolTodoWrite(context.runDir ?? '', todos, args.merge === true)
+    return toolOk('todo_write', `${todos.length} tasks`, content)
+  },
+  web_fetch: async (_workspace, args, signal) => {
+    throwIfAborted(signal)
+    const url = String(args.url ?? '')
+    const content = await toolWebFetch(
+      url,
+      {
+        maxChars: typeof args.maxChars === 'number' ? args.maxChars : undefined,
+        timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined
+      },
+      signal
+    )
+    throwIfAborted(signal)
+    return toolOk('web_fetch', url, content)
+  },
+  subagent: async (workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    const task = String(args.task ?? '')
+    const summary = task.slice(0, 80)
+    let outcome: Awaited<ReturnType<typeof runSubagent>>
+    try {
+      outcome = await runSubagent({
+        task,
+        context: typeof args.context === 'string' ? args.context : undefined,
+        workspace,
+        signal,
+        depth: context.depth ?? 0,
+        maxSteps: typeof args.maxSteps === 'number' ? args.maxSteps : undefined,
+        emit: context.onProgress
+      })
+    } catch (err) {
+      if (err instanceof SubagentDepthError) return toolFail('subagent', summary, err.message)
+      throw err
+    }
+    if (!outcome.ok) return toolFail('subagent', summary, outcome.report)
+    return toolOk('subagent', summary, outcome.report)
   },
   terminal: async (workspace, args, signal) => {
     const command = String(args.command ?? '')
@@ -132,7 +237,8 @@ export async function executeTool(
   name: string,
   argsJson: string,
   workspace: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  context: ToolExecutionContext = {}
 ): Promise<ToolResult> {
   throwIfAborted(signal)
 
@@ -164,7 +270,7 @@ export async function executeTool(
   }
 
   try {
-    return await handler(workspace, args, signal)
+    return await handler(workspace, args, signal, context)
   } catch (err) {
     if (isAbortError(err)) {
       logger.warn('Tool aborted', { scope: 'tools', tool: name })

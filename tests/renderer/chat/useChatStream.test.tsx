@@ -4,6 +4,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { useChatStream } from '@renderer/lib/hooks/useChatStream'
+import { buildTranscriptRows } from '@renderer/features/chat/utils/transcriptRows'
 import type { AgentEvent } from '@shared/ipc'
 
 type Handler = (event: AgentEvent) => void
@@ -939,7 +940,7 @@ describe('useChatStream', () => {
     })
   })
 
-  it('keeps one Thought row and one tool stretch across a multi-step turn', async () => {
+  it('gives every step of a turn its own reasoning row, in place', async () => {
     const { result } = renderHook(() => useChatStream('/ws'))
 
     await act(async () => {
@@ -987,18 +988,94 @@ describe('useChatStream', () => {
     })
 
     const thinkingRows = result.current.items.filter((i) => i.kind === 'message' && i.thinking)
-    expect(thinkingRows).toHaveLength(1)
-    const reasoning = thinkingRows[0]
-    if (reasoning?.kind === 'message') {
-      expect(reasoning.thinking).toBe('First I read.\n\nNow I edit.')
-    }
+    expect(thinkingRows.map((row) => row.kind === 'message' && row.thinking)).toEqual([
+      'First I read.',
+      'Now I edit.'
+    ])
 
-    // Tool rows stay adjacent, so the transcript renders them as a single group.
-    const kinds = result.current.items.map((i) => i.kind)
-    const firstTool = kinds.indexOf('tool')
-    const lastTool = kinds.lastIndexOf('tool')
-    expect(lastTool - firstTool).toBe(1)
-    expect(kinds.slice(firstTool, lastTool + 1).every((k) => k === 'tool')).toBe(true)
+    // Each step reads top to bottom: what the model thought, then what it did.
+    const shape = result.current.items.map((item) =>
+      item.kind === 'tool' ? `tool:${item.tool.name}` : item.thinking || item.content
+    )
+    expect(shape).toEqual([
+      'refactor',
+      'First I read.',
+      'tool:read',
+      'Now I edit.',
+      'tool:edit',
+      'Refactored.'
+    ])
+
+    // Which is what the transcript renders: reasoning inline, per step.
+    expect(buildTranscriptRows(result.current.items).map((row) => row.kind)).toEqual([
+      'user',
+      'turn',
+      'thinking',
+      'activity',
+      'thinking',
+      'card',
+      'text'
+    ])
+  })
+
+  it('renders narration, reasoning and a command card while the run is still live', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('audit it')
+    })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({ type: 'thinking_delta', runId: 'run-1', text: 'Start with the router.' })
+      handler?.({
+        type: 'assistant_message',
+        runId: 'run-1',
+        content: '',
+        thinking: 'Start with the router.',
+        toolCalls: [{ id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }]
+      })
+      handler?.({
+        type: 'tool_result',
+        runId: 'run-1',
+        toolCallId: 'c1',
+        name: 'read',
+        summary: 'a.ts',
+        ok: true,
+        content: 'body'
+      })
+      handler?.({ type: 'text_delta', runId: 'run-1', text: 'The table is built up front.' })
+      handler?.({
+        type: 'assistant_message',
+        runId: 'run-1',
+        content: 'The table is built up front.',
+        toolCalls: [{ id: 'c2', name: 'terminal', arguments: '{"command":"npm test"}' }]
+      })
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        toolCallId: 'c2',
+        name: 'terminal',
+        summary: 'npm test'
+      })
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    })
+
+    const rows = buildTranscriptRows(result.current.items)
+    expect(rows.map((row) => row.kind)).toEqual([
+      'user',
+      'turn',
+      'thinking',
+      'activity',
+      'text',
+      'card'
+    ])
+    const narration = rows.find((row) => row.kind === 'text')
+    expect(narration?.kind === 'text' && narration.item.content).toBe(
+      'The table is built up front.'
+    )
+    const card = rows.find((row) => row.kind === 'card')
+    expect(card?.kind === 'card' && card.item.tool.status).toBe('running')
   })
 
   it('completes the live row when a tool_result id drifts from its tool_start', async () => {

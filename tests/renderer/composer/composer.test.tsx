@@ -89,7 +89,7 @@ describe('Composer', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Send$/i }))
 
     await waitFor(() => {
-      expect(onSend).toHaveBeenCalledWith('keep me', undefined)
+      expect(onSend).toHaveBeenCalledWith('keep me', undefined, undefined)
     })
     await waitFor(() => {
       expect(ta.value).toBe('keep me')
@@ -131,6 +131,74 @@ describe('Composer', () => {
     expect(within(listbox).getByText('gpt-4o')).toBeTruthy()
   })
 
+  it('attaches a document and sends its extracted text', async () => {
+    const extractAttachment = vi.fn(async () => ({
+      ok: true as const,
+      data: { name: 'spec.md', mime: 'text/markdown', text: 'rules here', truncated: false }
+    }))
+    // @ts-expect-error test bridge
+    window.vyotiq.extractAttachment = extractAttachment
+    const onSend = vi.fn()
+    render(
+      <Composer
+        provider="ollama"
+        model="qwen2.5"
+        running={false}
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+        onProviderModel={vi.fn()}
+        onSend={onSend}
+        onStop={vi.fn()}
+      />
+    )
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['rules here'], 'spec.md', { type: 'text/markdown' })
+    Object.defineProperty(fileInput, 'files', { value: [file] })
+    fireEvent.change(fileInput)
+
+    await waitFor(() => {
+      expect(screen.getByText('spec.md')).toBeTruthy()
+    })
+    expect(extractAttachment).toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: /^Send$/i }))
+    await waitFor(() => {
+      expect(onSend).toHaveBeenCalledWith('', undefined, [
+        { type: 'file', name: 'spec.md', mime: 'text/markdown', text: 'rules here' }
+      ])
+    })
+  })
+
+  it('surfaces the reason a document could not be read', async () => {
+    // @ts-expect-error test bridge
+    window.vyotiq.extractAttachment = vi.fn(async () => ({
+      ok: false as const,
+      error: 'scan.pdf has no extractable text (it may be a scan)'
+    }))
+    render(
+      <Composer
+        provider="ollama"
+        model="qwen2.5"
+        running={false}
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+        onProviderModel={vi.fn()}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+      />
+    )
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['%PDF'], 'scan.pdf', { type: 'application/pdf' })
+    Object.defineProperty(fileInput, 'files', { value: [file] })
+    fireEvent.change(fileInput)
+
+    await waitFor(() => {
+      expect(screen.getByText(/no extractable text/i)).toBeTruthy()
+    })
+  })
+
   it('disables textarea while a run is in progress', () => {
     render(
       <Composer
@@ -147,6 +215,6 @@ describe('Composer', () => {
 
     const ta = screen.getByRole('textbox', { name: /^Message$/i }) as HTMLTextAreaElement
     expect(ta.disabled).toBe(true)
-    expect(screen.getByRole('status', { name: /working/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Stop$/i })).toBeTruthy()
   })
 })

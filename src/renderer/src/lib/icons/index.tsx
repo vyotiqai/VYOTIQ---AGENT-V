@@ -265,8 +265,31 @@ export function IconMemory(props: IconProps) {
   )
 }
 
+/** Git branch — a trunk with one fork merging off it. */
+export function IconBranch(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="7" cy="6" r="2" />
+      <circle cx="7" cy="18" r="2" />
+      <circle cx="17" cy="8" r="2" />
+      <path d="M7 8v8M17 10v1a3 3 0 0 1-3 3h-4" />
+    </Svg>
+  )
+}
+
+export function IconRefresh(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M20 11a8 8 0 1 0-2.3 5.7" />
+      <path d="M20 4v7h-7" />
+    </Svg>
+  )
+}
+
 const ICONS = {
   send: IconSend,
+  branch: IconBranch,
+  refresh: IconRefresh,
   arrowUp: IconArrowUp,
   stop: IconStop,
   folder: IconFolder,

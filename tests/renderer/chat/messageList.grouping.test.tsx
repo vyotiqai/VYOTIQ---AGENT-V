@@ -40,14 +40,15 @@ function toolGroup(groupKey: string, summaries: string[]): UiItem[] {
 describe('MessageList', () => {
   it('expands and collapses tool groups independently', () => {
     const items: UiItem[] = [
+      { kind: 'message', id: 'u-1', role: 'user', content: 'First task' },
       ...toolGroup('alpha', ['alpha-one.ts', 'alpha-two.ts']),
-      { kind: 'message', id: 'msg-1', role: 'assistant', content: 'Done with first batch.' },
+      { kind: 'message', id: 'u-2', role: 'user', content: 'Second task' },
       ...toolGroup('beta', ['beta-one.ts', 'beta-two.ts'])
     ]
 
     render(<MessageList items={items} />)
 
-    const toggles = screen.getAllByRole('button', { name: /Explored 2 files/i })
+    const toggles = screen.getAllByRole('button', { name: /Read 2 files/i })
     expect(toggles).toHaveLength(2)
     for (const toggle of toggles) {
       expect(toggle.getAttribute('aria-expanded')).toBe('false')
@@ -68,7 +69,7 @@ describe('MessageList', () => {
     expect(screen.queryByText('alpha-one.ts')).toBeNull()
   })
 
-  it('renders a message timestamp from its persisted time', () => {
+  it('does not render timestamps in the transcript', () => {
     const items: UiItem[] = [
       {
         kind: 'message',
@@ -81,8 +82,6 @@ describe('MessageList', () => {
 
     render(<MessageList items={items} />)
 
-    const time = screen.getByRole('time')
-    expect(time.getAttribute('datetime')).toBe('2026-07-24T15:30:00.000Z')
-    expect(time.textContent?.length).toBeGreaterThan(0)
+    expect(screen.queryByRole('time')).toBeNull()
   })
 })

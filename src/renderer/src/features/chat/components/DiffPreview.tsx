@@ -1,0 +1,98 @@
+import { memo, useMemo } from 'react'
+import { cn } from '@renderer/lib/ui'
+import type { DiffLine } from '../utils/toolCardData'
+import { useDiffHighlight, type DiffTokens } from './useDiffHighlight'
+
+/** Enough of the change to recognise it without turning the transcript into a file. */
+const COLLAPSED_LINES = 14
+
+const SIGN: Record<DiffLine['kind'], string> = {
+  add: '+',
+  del: '-',
+  context: '',
+  gap: ''
+}
+
+function LineText({ line, tokens }: { line: DiffLine; tokens?: readonly { text: string; color?: string }[] }) {
+  if (!tokens?.length) return <>{line.text || '\u00a0'}</>
+
+  return (
+    <>
+      {tokens.map((token, index) => (
+        <span key={index} style={token.color ? { color: token.color } : undefined}>
+          {token.text}
+        </span>
+      ))}
+    </>
+  )
+}
+
+export const DiffPreview = memo(function DiffPreview({
+  lines,
+  path,
+  expanded
+}: {
+  lines: DiffLine[]
+  /** Used to pick a grammar for syntax colours. */
+  path: string
+  expanded?: boolean
+}) {
+  // Only the rendered slice is highlighted, and always from the first line, so
+  // the grammar keeps the context it needs without tokenising a whole file.
+  const visible = useMemo(
+    () => (expanded ? lines : lines.slice(0, COLLAPSED_LINES)),
+    [lines, expanded]
+  )
+  const tokens: DiffTokens = useDiffHighlight(visible, path)
+
+  if (!lines.length) return null
+  const hidden = lines.length - visible.length
+
+  return (
+    <div className="overflow-hidden font-mono text-[11px] leading-[1.6]">
+      {visible.map((line, index) => {
+        if (line.kind === 'gap') {
+          return (
+            <div
+              key={`gap-${index}`}
+              className="h-3 border-y border-border/60 bg-surface-2/40"
+              aria-hidden
+            />
+          )
+        }
+
+        return (
+          <div
+            key={`${line.kind}-${index}`}
+            className={cn(
+              'flex min-w-0',
+              line.kind === 'add' && 'diff-row-add',
+              line.kind === 'del' && 'diff-row-del'
+            )}
+          >
+            <span className="w-9 shrink-0 select-none pr-2 text-right tabular-nums text-tertiary/70">
+              {line.lineNumber ?? ''}
+            </span>
+            <span
+              className={cn(
+                'w-3 shrink-0 select-none',
+                line.kind === 'add' && 'text-success',
+                line.kind === 'del' && 'text-danger'
+              )}
+            >
+              {SIGN[line.kind]}
+            </span>
+            <span className="min-w-0 flex-1 whitespace-pre-wrap pr-2 text-fg/85 [overflow-wrap:anywhere]">
+              <LineText line={line} tokens={tokens.get(index)} />
+            </span>
+          </div>
+        )
+      })}
+      {hidden > 0 ? (
+        <p className="m-0 px-2 py-1 text-[10px] text-tertiary">
+          {hidden} more {hidden === 1 ? 'line' : 'lines'}
+        </p>
+      ) : null}
+    </div>
+  )
+})

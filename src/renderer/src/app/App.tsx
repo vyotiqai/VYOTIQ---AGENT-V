@@ -20,6 +20,9 @@ import { logger } from '@shared/logger'
 
 type SettingsSection = 'general' | 'providers' | 'agent' | 'advanced'
 
+/** Sent as a visible user turn when resuming a run that was cut short. */
+const CONTINUE_PROMPT = 'Continue from where you stopped.'
+
 export function App() {
   const {
     settings,
@@ -361,14 +364,25 @@ export function App() {
           needsWorkspaceForMigration={registry?.needsWorkspaceForMigration}
           pendingMigrationCount={registry?.pendingMigrationCount}
           items={chat.items}
-          activityRows={chat.activityRows}
           running={chat.running}
           error={chatError}
           runNotice={chat.runNotice}
-          runCacheHint={chat.runCacheHint}
+          incomplete={chat.incomplete}
+          onContinue={() => void chatActions?.send(CONTINUE_PROMPT)}
           contextUsage={chat.contextUsage}
+          onCompactContext={
+            activeWorkspace && chat.runId
+              ? async () => {
+                  const res = await window.vyotiq.chatCompact(activeWorkspace, chat.runId!)
+                  if (!res.ok) return { ok: false as const, message: res.error }
+                  return {
+                    ok: true as const,
+                    message: `Summarized ${res.data.messagesBefore - res.data.keptMessages} messages; ${res.data.keptMessages} kept verbatim.`
+                  }
+                }
+              : undefined
+          }
           operationalError={operationalError}
-          runsError={activeContext?.runsError}
           hasWorkspace={Boolean(activeWorkspace)}
           workspacePath={activeWorkspace}
           provider={effectiveChatSettings.provider}
@@ -388,8 +402,8 @@ export function App() {
           onServiceTierChange={onServiceTierChange}
           chatSettings={effectiveChatSettings}
           onChatSettingsChange={onChatSettingsChange}
-          onSend={async (text, images) => {
-            return chatActions?.send(text, images) ?? false
+          onSend={async (text, images, files) => {
+            return chatActions?.send(text, images, files) ?? false
           }}
           onStop={() => void chatActions?.stop()}
           onDismissError={onDismissChatBanner}
@@ -412,6 +426,16 @@ export function App() {
           onToolToggle={
             activeController
               ? (toolCallId, expanded) => activeController.setToolExpanded(toolCallId, expanded)
+              : undefined
+          }
+          onGroupToggle={
+            activeController
+              ? (anchorId, expanded) => activeController.setGroupExpanded(anchorId, expanded)
+              : undefined
+          }
+          onApprovalDecision={
+            activeController
+              ? (requestId, decision) => void activeController.respondToApproval(requestId, decision)
               : undefined
           }
         />

@@ -1,41 +1,49 @@
 import type { ChatMessage, MessageContent } from '../../../shared/ipc'
-import { contentToText } from '../../../shared/ipc'
+import { attachedFileToText, contentToText } from '../../../shared/ipc'
 import type { ModelInfo } from '../../../shared/ipc/schemas/providers'
 import type { TokenUsage } from '../providers/types'
+import { estimateImageTokens } from './imageTokens'
+import { countTextTokens, encodingForModel, type EncodingName } from './tokenizer'
 
-export function estimateTextTokens(text: string): number {
-  if (!text) return 0
-  return Math.ceil(text.length / 4)
+export function estimateTextTokens(text: string, model?: ModelInfo): number {
+  return countTextTokens(text, encodingForModel(model))
 }
 
-export function estimateContentTokens(content: MessageContent): number {
-  if (typeof content === 'string') return estimateTextTokens(content)
+export function estimateContentTokens(content: MessageContent, model?: ModelInfo): number {
+  return countContentTokens(content, encodingForModel(model))
+}
+
+function countContentTokens(content: MessageContent, encoding: EncodingName): number {
+  if (typeof content === 'string') return countTextTokens(content, encoding)
   let n = 0
   for (const part of content) {
-    if (part.type === 'text') n += estimateTextTokens(part.text)
-    else n += 800
+    if (part.type === 'image_url') n += estimateImageTokens(part.url)
+    else if (part.type === 'file') n += countTextTokens(attachedFileToText(part), encoding)
+    else n += countTextTokens(part.text, encoding)
   }
   return n
 }
 
-export function estimateMessagesTokens(
-  messages: ChatMessage[],
-  _model?: ModelInfo
-): number {
+export function estimateMessagesTokens(messages: ChatMessage[], model?: ModelInfo): number {
+  const encoding = encodingForModel(model)
   let n = 0
   for (const message of messages) {
-    n += estimateContentTokens(message.content)
-    if (message.thinking) n += estimateTextTokens(message.thinking)
+    n += countContentTokens(message.content, encoding)
+    if (message.thinking) n += countTextTokens(message.thinking, encoding)
     if (message.reasoningState) {
-      n += estimateTextTokens(JSON.stringify(message.reasoningState))
+      n += countTextTokens(JSON.stringify(message.reasoningState), encoding)
     }
     if (message.toolCalls) {
       for (const toolCall of message.toolCalls) {
-        n += estimateTextTokens(toolCall.name) + estimateTextTokens(toolCall.arguments)
+        n +=
+          countTextTokens(toolCall.name, encoding) +
+          countTextTokens(toolCall.arguments, encoding)
       }
     }
     if (message.role === 'tool') {
-      n += estimateTextTokens(message.toolName ?? '') + estimateTextTokens(contentToText(message.content))
+      n +=
+        countTextTokens(message.toolName ?? '', encoding) +
+        countTextTokens(contentToText(message.content), encoding)
     }
   }
   return n

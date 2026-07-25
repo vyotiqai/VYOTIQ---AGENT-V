@@ -16,7 +16,7 @@ export function useComposerImages() {
   const [images, setImages] = useState<string[]>([])
   const [imageError, setImageError] = useState<string | null>(null)
 
-  const onPickImages = async (files: FileList | null): Promise<void> => {
+  const onPickImages = async (files: FileList | File[] | null): Promise<void> => {
     if (!files?.length) return
     const room = MAX_IMAGES - images.length
     if (room <= 0) {

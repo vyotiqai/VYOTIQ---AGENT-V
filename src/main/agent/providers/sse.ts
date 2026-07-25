@@ -23,6 +23,7 @@ export async function* iterateSseData(
     return data
   }
 
+  let finished = false
   try {
     while (true) {
       if (signal.aborted) {
@@ -40,7 +41,10 @@ export async function* iterateSseData(
         throw readErr
       }
       const { done, value } = readResult
-      if (done) break
+      if (done) {
+        finished = true
+        break
+      }
 
       buffer += decoder.decode(value, { stream: true })
       const parts = buffer.split('\n')
@@ -74,6 +78,9 @@ export async function* iterateSseData(
     const data = flush()
     if (data !== null && data !== '[DONE]') yield data
   } finally {
+    if (!finished) {
+      await reader.cancel().catch(() => undefined)
+    }
     try {
       reader.releaseLock()
     } catch {
@@ -87,16 +94,25 @@ function formatStreamReadError(err: unknown): string {
   return String(err)
 }
 
+/**
+ * Counts frames a stream had to discard. Silently swallowing them turns a
+ * corrupted stream into a plausible-looking short answer, so callers surface
+ * the count once the stream ends.
+ */
+export type SseDropCounter = { dropped: number }
+
 export async function* iterateSseJson(
   res: Response,
-  signal: AbortSignal
+  signal: AbortSignal,
+  drops?: SseDropCounter
 ): AsyncGenerator<Record<string, unknown>> {
   for await (const data of iterateSseData(res, signal)) {
     if (!data.trim()) continue
     try {
       yield JSON.parse(data) as Record<string, unknown>
     } catch {
-      // skip malformed / partial JSON
+      if (drops) drops.dropped++
+      logProviderFailure('sse', 'parse', { bytes: data.length })
     }
   }
 }

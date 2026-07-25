@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../../../shared/ipc'
+import type { ModelInfo } from '../../../shared/ipc/schemas/providers'
 import { estimateMessagesTokens } from './estimate'
 
 /**
@@ -60,10 +61,11 @@ export function dropOldestTurn(messages: ChatMessage[]): ChatMessage[] {
 /** Fit history under a token budget without breaking tool-call pairs. */
 export function trimHistoryToBudget(
   messages: ChatMessage[],
-  historyBudget: number
+  historyBudget: number,
+  model?: ModelInfo
 ): ChatMessage[] {
   let msgs = messages
-  while (msgs.length > 2 && estimateMessagesTokens(msgs) > historyBudget) {
+  while (msgs.length > 2 && estimateMessagesTokens(msgs, model) > historyBudget) {
     const trimmed = dropOldestTurn(msgs)
     if (trimmed.length >= msgs.length) break
     msgs = trimmed

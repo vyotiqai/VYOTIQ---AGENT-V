@@ -1,12 +1,13 @@
 import type { ChatMessage } from '../../../shared/ipc'
-import { contentToText } from '../../../shared/ipc'
+import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
 import {
   normalizeEffortForGeminiInteractions,
   trailingToolMessages,
   type ProviderReasoningState
 } from '../../../shared/reasoning'
-import type { ProviderChatRequest, StreamChunk, ToolCall, TokenUsage } from './types'
+import type { ProviderChatRequest, StopReason, StreamChunk, ToolCall, TokenUsage } from './types'
+import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
@@ -16,6 +17,13 @@ export function serializeToolArgs(value: unknown): string {
   if (typeof value === 'string') return value
   if (typeof value === 'object') return JSON.stringify(value)
   return String(value)
+}
+
+/** Split a base64 data URL into the mime type and payload Gemini expects. */
+function inlineDataFromUrl(url: string): { mime_type: string; data: string } | null {
+  const match = /^data:([^;,]+);base64,(.+)$/s.exec(url)
+  if (!match) return null
+  return { mime_type: match[1], data: match[2] }
 }
 
 export function toInteractionsInput(
@@ -29,23 +37,39 @@ export function toInteractionsInput(
 
   for (const m of source) {
     if (m.role === 'user') {
-      parts.push({
-        type: 'text',
-        text: typeof m.content === 'string' ? m.content : contentToText(m.content)
-      })
+      if (typeof m.content === 'string') {
+        parts.push({ type: 'text', text: m.content })
+        continue
+      }
+      // Flattening to text here would drop the attached image entirely.
+      for (const part of providerContentParts(m.content)) {
+        if (part.type === 'text') {
+          if (part.text) parts.push({ type: 'text', text: part.text })
+          continue
+        }
+        const inline = inlineDataFromUrl(part.url)
+        if (inline) parts.push({ type: 'inline_data', inline_data: inline })
+      }
     } else if (m.role === 'assistant') {
       const text = typeof m.content === 'string' ? m.content : contentToText(m.content)
       if (text) parts.push({ type: 'text', text })
     } else if (m.role === 'tool') {
+      // Native function responses keep the tool loop intelligible to the model;
+      // a `[tool:name] ...` text blob reads as user input on the next turn.
       parts.push({
-        type: 'text',
-        text: `[tool:${m.toolName ?? 'tool'}] ${typeof m.content === 'string' ? m.content : contentToText(m.content)}`
+        type: 'function_response',
+        function_response: {
+          id: m.toolCallId,
+          name: m.toolName ?? 'tool',
+          response: {
+            output: typeof m.content === 'string' ? m.content : contentToText(m.content)
+          }
+        }
       })
     }
   }
 
   if (parts.length === 1 && parts[0].type === 'text') return String(parts[0].text)
-  if (!parts.length) return continuing ? '' : ''
   return parts
 }
 
@@ -119,8 +143,11 @@ export async function* streamGeminiInteractions(
   const pending = new Map<string, ToolCall>()
   let thinkingText = ''
   let lastUsage: TokenUsage | undefined
+  let stopReason: StopReason | undefined
 
-  for await (const event of iterateSseJson(res, req.signal)) {
+  const drops = { dropped: 0 }
+
+  for await (const event of iterateSseJson(res, req.signal, drops)) {
     const eventType = event.event_type as string | undefined
     const interaction = event.interaction as Record<string, unknown> | undefined
     if (interaction && typeof interaction.id === 'string') interactionId = interaction.id
@@ -157,7 +184,11 @@ export async function* streamGeminiInteractions(
       if (step?.type === 'thought') thoughtSteps.push(step)
     }
 
-    if (eventType === 'interaction.completed') {
+    if (eventType === 'interaction.completed' || eventType === 'interaction.incomplete') {
+      stopReason =
+        normalizeStopReason(interaction?.finish_reason) ??
+        normalizeStopReason((interaction?.incomplete_details as Record<string, unknown> | undefined)?.reason) ??
+        (eventType === 'interaction.incomplete' ? 'unknown' : 'stop')
       const usage = interaction?.usage as Record<string, unknown> | undefined
       if (usage) {
         lastUsage = {
@@ -185,5 +216,11 @@ export async function* streamGeminiInteractions(
         }
       : undefined
 
-  yield { type: 'done', usage: lastUsage, reasoningState }
+  yield {
+    type: 'done',
+    usage: lastUsage,
+    stopReason,
+    malformedChunks: drops.dropped || undefined,
+    reasoningState
+  }
 }

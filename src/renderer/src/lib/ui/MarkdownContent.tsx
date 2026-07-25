@@ -12,96 +12,72 @@ import remarkGfm from 'remark-gfm'
 import rehypeSanitize from 'rehype-sanitize'
 import { CodeBlockCopyButton } from './CodeBlockCopyButton'
 import { highlightCode } from '@renderer/lib/markdown/markdownHighlight'
+import {
+  balanceOutsideFences,
+  closeOpenFence,
+  trailingOpenFenceBody
+} from '@renderer/lib/markdown/fenceUtils'
 import { markdownSanitizeSchema, sanitizeHighlightedHtml } from '@renderer/lib/markdown/markdownSanitize'
 import { cn } from './cn'
+import { useDocumentTheme } from './useDocumentTheme'
 
-function closeFenceMarker(content: string, marker: string): string {
-  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const fences = content.match(new RegExp(`^${escaped}`, 'gm'))
-  if (fences && fences.length % 2 === 1) {
-    return `${content}\n${marker}`
-  }
-  return content
-}
+export { trailingOpenFenceBody } from '@renderer/lib/markdown/fenceUtils'
 
-/** Close an unclosed ``` or ~~~ fence so streaming partials still parse as code. */
-export function closeOpenFence(content: string): string {
-  let result = closeFenceMarker(content, '```')
-  result = closeFenceMarker(result, '~~~')
-  return result
-}
-
+/** Close an unclosed fence so streaming partials still parse as code. */
 export function prepareStreamingMarkdown(content: string): string {
   return closeOpenFence(content)
 }
 
 /** Balance unclosed inline markdown when a stream completes. */
 export function balanceIncompleteMarkdown(content: string): string {
-  const openBacktick = ((content.match(/^```/gm) ?? []).length % 2) === 1
-  const openTilde = ((content.match(/^~~~/gm) ?? []).length % 2) === 1
-  if (openBacktick || openTilde) {
-    return closeOpenFence(content)
-  }
-
-  let result = content
-  const doubleStars = (result.match(/(?<!\\)\*\*/g) ?? []).length
-  if (doubleStars % 2 === 1) {
-    result += '**'
-  }
-
-  const backticks = (result.match(/(?<!\\)`/g) ?? []).length
-  if (backticks % 2 === 1) {
-    result += '`'
-  }
-
-  return result
+  return balanceOutsideFences(content)
 }
 
-function useDocumentTheme(): string {
-  const [theme, setTheme] = useState(() =>
-    typeof document !== 'undefined' ? (document.documentElement.dataset.theme ?? 'light') : 'light'
-  )
+const highlightCache = new Map<string, string>()
 
-  useEffect(() => {
-    const root = document.documentElement
-    const sync = (): void => {
-      setTheme(root.dataset.theme ?? 'light')
-    }
-    sync()
-    const mo = new MutationObserver(sync)
-    mo.observe(root, { attributes: true, attributeFilter: ['data-theme'] })
-    return () => mo.disconnect()
-  }, [])
-
-  return theme
+function highlightCacheKey(text: string, lang: string, theme: string): string {
+  return `${theme}\0${lang}\0${text}`
 }
 
 function FencedCodeBlock({
   text,
   className,
-  streaming = false
+  unstable = false
 }: {
   text: string
   className?: string
-  streaming?: boolean
+  /** Still being streamed, so highlighting it would be re-thrown away next delta. */
+  unstable?: boolean
 }) {
-  const [html, setHtml] = useState<string | null>(null)
   const lang = className?.replace(/^language-/, '') ?? ''
   const theme = useDocumentTheme()
+  const cacheKey = highlightCacheKey(text, lang, theme)
+  const [html, setHtml] = useState<string | null>(() =>
+    unstable ? null : (highlightCache.get(cacheKey) ?? null)
+  )
 
   useEffect(() => {
-    if (streaming) {
+    if (unstable) {
       setHtml(null)
       return
     }
+    const cached = highlightCache.get(cacheKey)
+    if (cached) {
+      setHtml(cached)
+      return
+    }
     let cancelled = false
+    setHtml(null)
     void highlightCode(text, lang).then((result) => {
-      if (!cancelled) setHtml(result ? sanitizeHighlightedHtml(result) : null)
+      if (cancelled) return
+      const next = result ? sanitizeHighlightedHtml(result) : null
+      if (next) highlightCache.set(cacheKey, next)
+      setHtml(next)
     })
     return () => {
       cancelled = true
     }
-  }, [text, lang, streaming, theme])
+  }, [text, lang, unstable, theme, cacheKey])
 
   if (html) {
     return (
@@ -127,10 +103,10 @@ function FencedCodeBlock({
 
 function FencedCodePre({
   children,
-  streaming = false
+  openFenceBody
 }: {
   children?: ReactNode
-  streaming?: boolean
+  openFenceBody: string | null
 }) {
   const child = Children.toArray(children).find(isValidElement) as
     | ReactElement<{ className?: string; children?: ReactNode }>
@@ -145,10 +121,11 @@ function FencedCodePre({
 
   const className = child.props.className ?? ''
   const text = String(child.props.children ?? '').replace(/\n$/, '')
-  return <FencedCodeBlock text={text} className={className} streaming={streaming} />
+  const unstable = openFenceBody !== null && text.replace(/\n+$/, '') === openFenceBody.replace(/\n+$/, '')
+  return <FencedCodeBlock text={text} className={className} unstable={unstable} />
 }
 
-function buildMarkdownComponents(streaming: boolean) {
+function buildMarkdownComponents(openFenceBody: string | null) {
   return {
     a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
       <a href={href} target="_blank" rel="noreferrer noopener" className="text-fg-strong underline">
@@ -162,8 +139,6 @@ function buildMarkdownComponents(streaming: boolean) {
       className?: string
       children?: React.ReactNode
     }) => {
-      // Block fences are handled by `pre` → FencedCodeBlock; this path is inline only.
-      // Still render language-* as plain block text when nested under pre extraction.
       if (codeClass?.includes('language-')) {
         return <code className={cn('block font-mono text-[0.85em]', codeClass)}>{children}</code>
       }
@@ -172,7 +147,7 @@ function buildMarkdownComponents(streaming: boolean) {
       )
     },
     pre: ({ children }: { children?: React.ReactNode }) => (
-      <FencedCodePre streaming={streaming}>{children}</FencedCodePre>
+      <FencedCodePre openFenceBody={openFenceBody}>{children}</FencedCodePre>
     )
   }
 }
@@ -190,7 +165,11 @@ export function MarkdownContent({
     () => (streaming ? prepareStreamingMarkdown(content) : balanceIncompleteMarkdown(content)),
     [streaming, content]
   )
-  const components = useMemo(() => buildMarkdownComponents(streaming), [streaming])
+  const openFenceBody = useMemo(
+    () => (streaming ? trailingOpenFenceBody(content) : null),
+    [streaming, content]
+  )
+  const components = useMemo(() => buildMarkdownComponents(openFenceBody), [openFenceBody])
 
   if (!content && !streaming) return null
 
@@ -210,7 +189,6 @@ export function MarkdownContent({
           {markdown}
         </Markdown>
       ) : null}
-      {streaming ? <span className="streaming-caret-inline" aria-hidden /> : null}
     </div>
   )
 }

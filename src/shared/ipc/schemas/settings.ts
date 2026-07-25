@@ -29,6 +29,22 @@ const ThinkingPrefsSchema = z.object({
   thinkingEffort: ThinkingEffortSchema
 })
 
+/**
+ * `mutating` gates only tools that change the workspace or run commands;
+ * `all` gates every tool including reads. Default is `off` — approval is opt-in.
+ */
+export const ToolApprovalModeSchema = z.enum(['off', 'mutating', 'all'])
+export type ToolApprovalMode = z.infer<typeof ToolApprovalModeSchema>
+
+export const ToolApprovalSettingsSchema = z.object({
+  mode: ToolApprovalModeSchema.default('off'),
+  /** Tool names the user chose to always allow, persisted per workspace. */
+  allowlist: z.array(z.string()).default([])
+})
+export type ToolApprovalSettings = z.infer<typeof ToolApprovalSettingsSchema>
+
+export const DEFAULT_TOOL_APPROVAL: ToolApprovalSettings = { mode: 'off', allowlist: [] }
+
 export const SettingsSchema = z.object({
   provider: ProviderIdSchema,
   model: z.string().min(1),
@@ -47,7 +63,8 @@ export const SettingsSchema = z.object({
   recentModels: z.array(z.string()).max(5).default([]),
   thinkingPrefsByProvider: z.record(ProviderIdSchema, ThinkingPrefsSchema).default({}),
   serviceTierByModel: z.record(z.string(), ServiceTierSchema).default({}),
-  serviceTier: ServiceTierSchema.default('default')
+  serviceTier: ServiceTierSchema.default('default'),
+  toolApproval: ToolApprovalSettingsSchema.default(DEFAULT_TOOL_APPROVAL)
 })
 export type Settings = z.infer<typeof SettingsSchema>
 
@@ -69,7 +86,8 @@ export const DEFAULT_SETTINGS: Settings = {
   recentModels: [],
   thinkingPrefsByProvider: {},
   serviceTierByModel: {},
-  serviceTier: 'default'
+  serviceTier: 'default',
+  toolApproval: DEFAULT_TOOL_APPROVAL
 }
 
 export const SetSettingsRequestSchema = SettingsSchema.partial()

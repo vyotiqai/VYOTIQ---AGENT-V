@@ -9,6 +9,8 @@ vi.mock('@main/agent/tools', () => ({
 
 import { executeStepToolCalls } from '@main/agent/executeStepTools'
 
+type TestCtx = Parameters<typeof executeStepToolCalls>[1]
+
 function makeCtx(signal: AbortSignal, failedToolKeys = new Map<string, number>()) {
   const events: AgentEvent[] = []
   const messages: unknown[] = []
@@ -21,7 +23,7 @@ function makeCtx(signal: AbortSignal, failedToolKeys = new Map<string, number>()
       failedToolKeys,
       appendMessage: (msg: unknown) => messages.push(msg),
       appendEvent: (ev: AgentEvent) => events.push(ev)
-    },
+    } as unknown as TestCtx,
     events,
     messages
   }
@@ -117,6 +119,40 @@ describe('executeStepToolCalls', () => {
 
     expect(second.messages[0]?.content).toMatch(/Repeated failure #2/)
     expect(second.messages[0]?.content).toMatch(/File not found/)
+  })
+
+  it('feeds a denied approval back as a tool failure without running the tool', async () => {
+    executeTool.mockResolvedValue({ ok: true, summary: 'write', content: 'wrote' })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    ctx.approval = {
+      authorize: async () => ({ allowed: false, reason: 'The user denied permission to run write.' })
+    }
+    const outcome = await executeStepToolCalls(
+      [{ id: 'c1', name: 'write', arguments: '{"path":"a.ts","contents":"x"}' }],
+      ctx
+    )
+
+    expect(executeTool).not.toHaveBeenCalled()
+    expect(outcome.stepToolsOk).toBe(false)
+    expect(outcome.messages[0]?.content).toMatch(/denied permission/)
+    expect(outcome.messages[0]?.ok).toBe(false)
+  })
+
+  it('emits tool_start live and persists ok on tool messages', async () => {
+    const live: AgentEvent[] = []
+    executeTool.mockResolvedValue({ ok: false, summary: 'file', content: 'permission denied' })
+
+    const { ctx, events } = makeCtx(new AbortController().signal)
+    ctx.emitLiveEvent = (ev) => live.push(ev)
+    const outcome = await executeStepToolCalls(
+      [{ id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }],
+      ctx
+    )
+
+    expect(live.some((ev) => ev.type === 'tool_start' && ev.toolCallId === 'c1')).toBe(true)
+    expect(events.some((ev) => ev.type === 'tool_start' && ev.toolCallId === 'c1')).toBe(true)
+    expect(outcome.messages[0]?.ok).toBe(false)
   })
 
   it('runs read-only tools serially when maxParallelReadTools is 1', async () => {

@@ -35,8 +35,55 @@ export function isRetriableNetworkError(err: unknown): boolean {
   return false
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve()
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    function onAbort(): void {
+      clearTimeout(timer)
+      resolve()
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+const BASE_BACKOFF_MS = 250
+const MAX_RETRY_AFTER_MS = 30_000
+
+/** `Retry-After` is either delta-seconds or an HTTP date. Ignore anything else. */
+export function retryAfterMs(header: string | null, now = Date.now()): number | undefined {
+  if (!header) return undefined
+  const raw = header.trim()
+  if (!raw) return undefined
+
+  if (/^\d+$/.test(raw)) {
+    return Math.min(Number(raw) * 1000, MAX_RETRY_AFTER_MS)
+  }
+  const at = Date.parse(raw)
+  if (Number.isNaN(at)) return undefined
+  return Math.min(Math.max(0, at - now), MAX_RETRY_AFTER_MS)
+}
+
+/** Full jitter over the linear backoff so concurrent runs stop retrying in lockstep. */
+function backoffMs(attempt: number): number {
+  const ceiling = attempt * BASE_BACKOFF_MS
+  return Math.round(ceiling / 2 + Math.random() * (ceiling / 2))
+}
+
+/**
+ * An unread body keeps the socket checked out of the connection pool, so the
+ * retry opens a new connection and the old one lingers until the server times
+ * it out.
+ */
+async function discardBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel()
+  } catch {
+    // Body already consumed or the connection is gone; nothing to release.
+  }
 }
 
 export async function fetchWithRetry(
@@ -51,7 +98,10 @@ export async function fetchWithRetry(
     try {
       const response = await fetch(url, init)
       if ((response.status >= 500 || response.status === 429) && attempt < maxAttempts) {
-        await delay(attempt * 250)
+        const retryAfter = retryAfterMs(response.headers?.get('retry-after') ?? null)
+        await discardBody(response)
+        await delay(retryAfter ?? backoffMs(attempt), init.signal)
+        if (init.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
         continue
       }
       return response
@@ -59,7 +109,8 @@ export async function fetchWithRetry(
       lastError = err
       if (init.signal?.aborted) throw err
       if (!isRetriableNetworkError(err) || attempt >= maxAttempts) throw err
-      await delay(attempt * 250)
+      await delay(backoffMs(attempt), init.signal)
+      if (init.signal?.aborted) throw err
     }
   }
 

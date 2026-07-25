@@ -3,11 +3,36 @@ import { z } from 'zod'
 export const MAX_IMAGE_BYTES = 4 * 1024 * 1024
 export const MAX_IMAGE_DATA_URL_CHARS = Math.ceil(MAX_IMAGE_BYTES * (4 / 3)) + 128
 
+/** Raw bytes an attachment may carry before extraction; PDFs are the heavy case. */
+export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+/** Base64 of `MAX_ATTACHMENT_BYTES`, rejected before main allocates the buffer. */
+export const MAX_ATTACHMENT_DATA_CHARS = Math.ceil(MAX_ATTACHMENT_BYTES * (4 / 3)) + 128
+/** Extracted text kept per attachment, so one document cannot eat the context. */
+export const MAX_ATTACHMENT_CHARS = 120_000
+
+/**
+ * A run id becomes a directory name under the workspace sessions root, so it must
+ * never contain a separator or a `..` segment. Generated ids are UUIDs.
+ */
+export const RunIdSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^[A-Za-z0-9._-]+$/, 'Invalid run id')
+  .refine((value) => value !== '.' && value !== '..', 'Invalid run id')
+
 export const ContentPartSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('text'), text: z.string() }),
   z.object({
     type: z.literal('image_url'),
     url: z.string().min(1).max(MAX_IMAGE_DATA_URL_CHARS)
+  }),
+  z.object({
+    /** A document the user attached, already reduced to text in the main process. */
+    type: z.literal('file'),
+    name: z.string().min(1).max(400),
+    mime: z.string().max(200),
+    text: z.string().max(MAX_ATTACHMENT_CHARS)
   })
 ])
 export type ContentPart = z.infer<typeof ContentPartSchema>
@@ -20,6 +45,8 @@ export const ChatMessageSchema = z.object({
   content: MessageContentSchema,
   toolCallId: z.string().optional(),
   toolName: z.string().optional(),
+  /** Whether the tool call succeeded; persisted for accurate reload without events.jsonl. */
+  ok: z.boolean().optional(),
   toolCalls: z
     .array(
       z.object({
@@ -54,6 +81,18 @@ export function IpcResultSchema<T extends z.ZodTypeAny>(data: T) {
 }
 
 export type IpcResult<T> = { ok: true; data: T } | { ok: false; error: string }
+
+/**
+ * Why a turn ended without finishing its work. Drives the Continue affordance:
+ * the run is over, but the model was cut off rather than done.
+ */
+export const IncompleteReasonSchema = z.enum([
+  'truncated',
+  'empty_response',
+  'filtered',
+  'max_steps'
+])
+export type IncompleteReason = z.infer<typeof IncompleteReasonSchema>
 
 /**
  * Fields on every agent event. `invokeId` identifies the chatStart invoke that produced
@@ -109,6 +148,14 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     contentTruncated: z.boolean().optional()
   }),
   z.object({
+    /** Live progress from a nested sub-agent, shown under the calling tool row. */
+    type: z.literal('subagent_update'),
+    ...eventBase,
+    parentToolCallId: z.string(),
+    kind: z.enum(['text', 'thinking', 'tool', 'done']),
+    text: z.string()
+  }),
+  z.object({
     type: z.literal('status'),
     ...eventBase,
     status: z.enum(['running', 'cancelled', 'error', 'done'])
@@ -139,6 +186,23 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     ...eventBase,
     summary: z.string(),
     tokenEstimate: z.number().int().min(0).optional()
+  }),
+  z.object({
+    type: z.literal('incomplete'),
+    ...eventBase,
+    reason: IncompleteReasonSchema,
+    step: z.number().int().min(1).optional(),
+    /** Human-readable explanation shown next to the Continue action. */
+    message: z.string()
+  }),
+  z.object({
+    /**
+     * A retry is about to re-stream this step from scratch. The renderer must drop
+     * the text and thinking it already showed, or the retried output appends to it.
+     */
+    type: z.literal('stream_reset'),
+    ...eventBase,
+    step: z.number().int().min(1)
   }),
   z.object({
     type: z.literal('step_budget'),
@@ -204,7 +268,7 @@ export type PersistedEvent = z.infer<typeof PersistedEventSchema>
 
 export const LoadRunEventsRequestSchema = z.object({
   workspacePath: z.string().min(1),
-  runId: z.string()
+  runId: RunIdSchema
 })
 export type LoadRunEventsRequest = z.infer<typeof LoadRunEventsRequestSchema>
 
@@ -214,7 +278,7 @@ export const ChatStartRequestSchema = z
     newMessages: z.array(ChatMessageSchema).optional(),
     incremental: z.boolean().optional(),
     workspacePath: z.string().min(1),
-    runId: z.string().optional()
+    runId: RunIdSchema.optional()
   })
   .superRefine((val, ctx) => {
     if (val.incremental) {
@@ -245,8 +309,49 @@ export const ChatStartRequestSchema = z
 export type ChatStartRequest = z.infer<typeof ChatStartRequestSchema>
 
 export const CancelRunRequestSchema = z.object({
-  runId: z.string()
+  runId: RunIdSchema
 })
+
+export const CompactRunRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  runId: RunIdSchema
+})
+export type CompactRunRequest = z.infer<typeof CompactRunRequestSchema>
+
+export const CompactRunResultSchema = z.object({
+  summary: z.string(),
+  tokenEstimate: z.number().int().min(0),
+  /** Messages the working set was reduced to, for the confirmation message. */
+  keptMessages: z.number().int().min(0),
+  messagesBefore: z.number().int().min(0)
+})
+export type CompactRunResult = z.infer<typeof CompactRunResultSchema>
+
+/**
+ * A gated tool call waiting on the user. The loop is parked on this request, so
+ * the renderer must either answer it or cancel the run.
+ */
+export const ToolApprovalRequestSchema = z.object({
+  requestId: z.string().min(1),
+  runId: z.string().min(1),
+  toolCallId: z.string().min(1),
+  name: z.string().min(1),
+  summary: z.string(),
+  /** Raw arguments so the card can show exactly what would run. */
+  argsPreview: z.string(),
+  /** False for read-only tools, which are only gated in `all` mode. */
+  mutating: z.boolean()
+})
+export type ToolApprovalRequest = z.infer<typeof ToolApprovalRequestSchema>
+
+export const ToolApprovalDecisionSchema = z.enum(['once', 'session', 'always', 'deny'])
+export type ToolApprovalDecision = z.infer<typeof ToolApprovalDecisionSchema>
+
+export const ToolApprovalResponseSchema = z.object({
+  requestId: z.string().min(1),
+  decision: ToolApprovalDecisionSchema
+})
+export type ToolApprovalResponse = z.infer<typeof ToolApprovalResponseSchema>
 
 export const ListRunsRequestSchema = z.object({
   workspacePath: z.string().min(1)
@@ -254,13 +359,13 @@ export const ListRunsRequestSchema = z.object({
 
 export const LoadRunRequestSchema = z.object({
   workspacePath: z.string().min(1),
-  runId: z.string()
+  runId: RunIdSchema
 })
 
 export const LoadToolResultRequestSchema = z.object({
   workspacePath: z.string().min(1),
-  runId: z.string(),
-  toolCallId: z.string()
+  runId: RunIdSchema,
+  toolCallId: z.string().min(1)
 })
 export type LoadToolResultRequest = z.infer<typeof LoadToolResultRequestSchema>
 
@@ -271,13 +376,13 @@ export type LoadToolResultResult = z.infer<typeof LoadToolResultResultSchema>
 
 export const DeleteRunRequestSchema = z.object({
   workspacePath: z.string().min(1),
-  runId: z.string()
+  runId: RunIdSchema
 })
 export type DeleteRunRequest = z.infer<typeof DeleteRunRequestSchema>
 
 export const RenameRunRequestSchema = z.object({
   workspacePath: z.string().min(1),
-  runId: z.string(),
+  runId: RunIdSchema,
   goal: z.string().min(1)
 })
 export type RenameRunRequest = z.infer<typeof RenameRunRequestSchema>
@@ -313,13 +418,74 @@ export function contentImages(content: MessageContent): string[] {
   return content.filter((p) => p.type === 'image_url').map((p) => p.url)
 }
 
+export type AttachedFile = Extract<ContentPart, { type: 'file' }>
+
+/** Renderer hands raw bytes to main, which owns the parsers and the caps. */
+export const ExtractAttachmentRequestSchema = z.object({
+  name: z.string().min(1).max(400),
+  mime: z.string().max(200).default(''),
+  /** Base64 of the file bytes, capped at `MAX_ATTACHMENT_BYTES` once decoded. */
+  data: z.string().min(1).max(MAX_ATTACHMENT_DATA_CHARS)
+})
+export type ExtractAttachmentRequest = z.infer<typeof ExtractAttachmentRequestSchema>
+
+export const ExtractAttachmentResultSchema = z.object({
+  name: z.string(),
+  mime: z.string(),
+  text: z.string(),
+  /** True when the document was longer than `MAX_ATTACHMENT_CHARS`. */
+  truncated: z.boolean()
+})
+export type ExtractAttachmentResult = z.infer<typeof ExtractAttachmentResultSchema>
+
+export function contentFiles(content: MessageContent): AttachedFile[] {
+  if (typeof content === 'string') return []
+  return content.filter((p): p is AttachedFile => p.type === 'file')
+}
+
+/** Render an attachment the way the model should read it: named, then quoted. */
+export function attachedFileToText(file: AttachedFile): string {
+  return `<attachment name="${file.name}" type="${file.mime || 'text/plain'}">\n${file.text}\n</attachment>`
+}
+
+/**
+ * Collapse attachments into plain text parts.
+ *
+ * Providers only understand text and images, so a `file` part must be flattened
+ * before the request is built. It stays a distinct part until then so the
+ * transcript can show it as an attachment chip rather than a wall of quoted text.
+ */
+export function flattenFileParts(content: MessageContent): MessageContent {
+  if (typeof content === 'string') return content
+  if (!content.some((p) => p.type === 'file')) return content
+  const parts: ContentPart[] = content.map((part) =>
+    part.type === 'file' ? { type: 'text' as const, text: attachedFileToText(part) } : part
+  )
+  return parts
+}
+
+/** The only part shapes a provider request understands. */
+export type ProviderContentPart =
+  | Extract<ContentPart, { type: 'text' }>
+  | Extract<ContentPart, { type: 'image_url' }>
+
+/** Provider-facing view of a content array, with attachments inlined as text. */
+export function providerContentParts(content: ContentPart[]): ProviderContentPart[] {
+  return content.map((part) =>
+    part.type === 'file' ? { type: 'text' as const, text: attachedFileToText(part) } : part
+  )
+}
+
 export function contentToText(content: MessageContent): string {
   if (typeof content === 'string') return content
   const text = contentDisplayText(content)
+  const files = contentFiles(content)
   const imageCount = contentImages(content).length
-  if (!imageCount) return text
-  const marker = imageCount === 1 ? '[image]' : `[${imageCount} images]`
-  return [text, marker].filter(Boolean).join('\n').trim()
+  const markers: string[] = []
+  for (const file of files) markers.push(attachedFileToText(file))
+  if (imageCount) markers.push(imageCount === 1 ? '[image]' : `[${imageCount} images]`)
+  if (!markers.length) return text
+  return [text, ...markers].filter(Boolean).join('\n').trim()
 }
 
 export function contentHasImage(content: MessageContent): boolean {
@@ -327,12 +493,20 @@ export function contentHasImage(content: MessageContent): boolean {
   return content.some((p) => p.type === 'image_url')
 }
 
-export function buildUserContent(text: string, images?: string[]): MessageContent {
+export function buildUserContent(
+  text: string,
+  images?: string[],
+  files?: AttachedFile[]
+): MessageContent {
   const trimmed = text.trim()
   const validImages = images?.filter((url) => url) ?? []
-  if (!validImages.length) return trimmed
+  const validFiles = files?.filter((file) => file.name && file.text) ?? []
+  if (!validImages.length && !validFiles.length) return trimmed
   const parts: ContentPart[] = []
   if (trimmed) parts.push({ type: 'text', text: trimmed })
+  for (const file of validFiles) {
+    parts.push({ type: 'file', name: file.name, mime: file.mime, text: file.text })
+  }
   for (const url of validImages) {
     parts.push({ type: 'image_url', url })
   }

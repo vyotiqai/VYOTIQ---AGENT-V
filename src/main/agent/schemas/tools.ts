@@ -4,14 +4,23 @@ import { zodToJsonSchema } from './zodToJsonSchema'
 
 const readArgs = z.object({
   path: z.string().describe('Relative or absolute path inside the workspace'),
+  startLine: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe('First line to return, 1-based inclusive. Prefer this over offset/limit.'),
+  endLine: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe('Last line to return, 1-based inclusive. Defaults to end of file.'),
   offset: z
     .number()
     .optional()
-    .describe('Byte offset for partial reads of large files (default 0)'),
-  limit: z
-    .number()
-    .optional()
-    .describe('Max bytes to read from offset (for large files)')
+    .describe('Byte offset; only for files too large to slice by line'),
+  limit: z.number().optional().describe('Max bytes to read from offset')
 })
 
 const editArgs = z
@@ -36,6 +45,79 @@ const searchArgs = z.object({
 const terminalArgs = z.object({
   command: z.string().describe('Shell command to run'),
   timeoutMs: z.number().optional().describe('Timeout in ms (default 60000)')
+})
+
+const globArgs = z.object({
+  pattern: z
+    .string()
+    .describe('Glob over workspace-relative paths, e.g. src/**/*.ts or **/{README,LICENSE}*'),
+  maxResults: z.number().int().min(1).optional().describe('Max paths to return (default 100)')
+})
+
+const grepArgs = z.object({
+  pattern: z.string().describe('Regular expression matched against each line'),
+  include: z.string().optional().describe('Glob limiting which files are searched'),
+  caseSensitive: z.boolean().optional().describe('Default false'),
+  contextLines: z
+    .number()
+    .int()
+    .min(0)
+    .max(5)
+    .optional()
+    .describe('Lines of context around each hit (default 0)'),
+  maxResults: z.number().int().min(1).optional().describe('Max matching lines (default 60)')
+})
+
+const listDirArgs = z.object({
+  path: z.string().optional().describe('Workspace-relative directory (default workspace root)')
+})
+
+const multiEditArgs = z.object({
+  edits: z
+    .array(
+      z.object({
+        path: z.string().describe('File path inside the workspace'),
+        contents: z.string().optional().describe('Full file contents to write'),
+        diff: z.string().optional().describe('Unified diff to apply instead of full contents')
+      })
+    )
+    .min(1)
+    .describe('Edits applied together; if any fails, none are written')
+})
+
+const deleteArgs = z.object({
+  path: z.string().describe('File or directory inside the workspace'),
+  recursive: z.boolean().optional().describe('Required to delete a non-empty directory')
+})
+
+const todoWriteArgs = z.object({
+  todos: z
+    .array(
+      z.object({
+        id: z.string().describe('Stable id so status updates can find the task again'),
+        content: z.string().describe('What the task is'),
+        status: z.enum(['pending', 'in_progress', 'completed', 'cancelled'])
+      })
+    )
+    .describe('The full task list, or the subset to update when merge=true'),
+  merge: z
+    .boolean()
+    .optional()
+    .describe('Merge these entries into the existing list instead of replacing it')
+})
+
+const webFetchArgs = z.object({
+  url: z.string().describe('Absolute http(s) URL. Private and loopback hosts are rejected.'),
+  maxChars: z.number().int().min(1000).optional().describe('Cap on returned text (default 40000)'),
+  timeoutMs: z.number().int().min(1000).optional().describe('Request timeout (default 20000)')
+})
+
+const subagentArgs = z.object({
+  task: z
+    .string()
+    .describe('Self-contained investigation for the sub-agent, including what to report back'),
+  context: z.string().optional().describe('Findings so far that save the sub-agent re-deriving them'),
+  maxSteps: z.number().int().min(1).max(16).optional().describe('Step budget (default 8)')
 })
 
 const memoryListArgs = z.object({})
@@ -66,6 +148,46 @@ const TOOL_REGISTRY = {
     description:
       'Search filenames and text file contents. Default: case-insensitive substring. Set regex=true for regex. Ignores node_modules, .git, and build dirs.',
     schema: searchArgs
+  },
+  glob: {
+    description:
+      'List workspace files whose path matches a glob (**, *, ?, {a,b}). Gitignore-aware. Use this to find files by name or extension instead of shelling out.',
+    schema: globArgs
+  },
+  grep: {
+    description:
+      'Regex search across text file contents, reporting every matching line with optional context. Use search for a quick filename-or-content lookup; use grep when you need all the hits.',
+    schema: grepArgs
+  },
+  list_dir: {
+    description:
+      'List one directory level with file sizes, skipping gitignored and build directories.',
+    schema: listDirArgs
+  },
+  multi_edit: {
+    description:
+      'Apply several file edits atomically: if any edit fails to apply, no file is written. Prefer this over repeated edit calls for a coordinated change.',
+    schema: multiEditArgs
+  },
+  delete: {
+    description:
+      'Delete a file, or a directory when recursive=true. Scoped to the workspace root.',
+    schema: deleteArgs
+  },
+  todo_write: {
+    description:
+      'Record the task list for this run so progress is visible. Keep at most one task in_progress, and update status as work completes.',
+    schema: todoWriteArgs
+  },
+  web_fetch: {
+    description:
+      'Fetch a public http(s) URL and return it as text (HTML is converted to markdown). Size- and time-capped; private and loopback hosts are rejected.',
+    schema: webFetchArgs
+  },
+  subagent: {
+    description:
+      'Delegate a read-only investigation to a nested agent that returns one written report. Use it for open-ended searching whose intermediate output you do not need; it cannot edit files or run commands, and it cannot start further sub-agents.',
+    schema: subagentArgs
   },
   terminal: {
     description:

@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  fetchWithRetry,
   isRetriableNetworkError,
   isRetriableProviderMessage,
+  retryAfterMs,
   RetriableStreamError
 } from '@main/agent/providers/fetchWithRetry'
 
@@ -35,5 +37,82 @@ describe('RetriableStreamError', () => {
     const err = new RetriableStreamError('stream ended', inner)
     expect(err.name).toBe('RetriableStreamError')
     expect(err.cause).toBe(inner)
+  })
+})
+
+describe('retryAfterMs', () => {
+  it('reads delta-seconds', () => {
+    expect(retryAfterMs('2')).toBe(2000)
+  })
+
+  it('reads an HTTP date relative to now', () => {
+    const now = Date.parse('2026-01-01T00:00:00Z')
+    expect(retryAfterMs('Thu, 01 Jan 2026 00:00:05 GMT', now)).toBe(5000)
+  })
+
+  it('clamps a far-future date to the cap', () => {
+    const now = Date.parse('2026-01-01T00:00:00Z')
+    expect(retryAfterMs('Thu, 01 Jan 2027 00:00:00 GMT', now)).toBe(30_000)
+  })
+
+  it('ignores missing or unparseable values', () => {
+    expect(retryAfterMs(null)).toBeUndefined()
+    expect(retryAfterMs('soon')).toBeUndefined()
+  })
+})
+
+describe('fetchWithRetry', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function response(status: number, headers: Record<string, string> = {}): Response {
+    return new Response(status === 204 ? null : 'body', { status, headers })
+  }
+
+  it('drains the body of a retried 5xx so the connection is released', async () => {
+    const cancel = vi.fn().mockResolvedValue(undefined)
+    const failing = response(503)
+    Object.defineProperty(failing, 'body', { value: { cancel } })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(failing)
+      .mockResolvedValueOnce(response(200))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const res = await fetchWithRetry('https://example.test', {})
+
+    expect(res.status).toBe(200)
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('waits for Retry-After on a 429 instead of the default backoff', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response(429, { 'retry-after': '1' }))
+      .mockResolvedValueOnce(response(200))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const started = Date.now()
+    const res = await fetchWithRetry('https://example.test', {})
+
+    expect(res.status).toBe(200)
+    // The default jittered backoff for attempt 1 tops out at 250ms.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(900)
+  })
+
+  it('stops retrying once the caller aborts', async () => {
+    const controller = new AbortController()
+    const fetchMock = vi.fn().mockImplementation(async () => {
+      controller.abort()
+      return response(503)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      fetchWithRetry('https://example.test', { signal: controller.signal })
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })

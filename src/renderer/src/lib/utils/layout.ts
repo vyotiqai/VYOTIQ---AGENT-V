@@ -7,12 +7,36 @@ export const CHAT_COLUMN_MAX = 'max-w-[720px]'
 /** Centered chat column — transcript and composer share this wrapper. */
 export const CHAT_COLUMN = `mx-auto w-full ${CHAT_COLUMN_MAX}`
 
+/**
+ * Vertical rhythm. Applied as padding on each row rather than flex gap so the
+ * virtualizer (which measures offsetHeight and positions rows absolutely) and
+ * the plain flow layout produce identical spacing.
+ */
+export const TRANSCRIPT_ROW_GAP = 'pb-2'
+
+/** Lead-in above a user prompt that opens a new turn. */
+export const TRANSCRIPT_TURN_GAP = 'pt-6'
+
+/** User prompt block surface. */
+export const USER_PROMPT_SURFACE =
+  'rounded-lg border border-border bg-card px-3.5 py-2.5 text-sm leading-relaxed tracking-[-0.006em] text-fg [overflow-wrap:anywhere]'
+
+/** Quiet activity row — no fill, no border. */
+export const ACTIVITY_ROW = 'text-xs tracking-[var(--vy-tracking)]'
+
+/** One line of a disclosure list: label, detail, trailing meta. */
+export const DISCLOSURE_ROW =
+  'flex min-w-0 items-baseline gap-1.5 rounded-sm py-1 text-xs vy-transition hover:opacity-80'
+
+/** Tool card chrome. */
+export const TOOL_CARD_SURFACE = 'overflow-hidden rounded-lg border border-border'
+export const TOOL_CARD_HEADER = 'px-3 py-2 text-xs'
+/** Body content owns its own padding so a diff can run edge to edge. */
+export const TOOL_CARD_BODY = 'overflow-hidden border-t border-border bg-surface'
+
 /** Subtle floating surface shared by docked composer. */
 export const FLOATING_CHROME =
-  'rounded-xl border border-border/50 bg-bg/70 backdrop-blur-sm motion-reduce:animate-none'
-
-export const FLOATING_CHROME_SHADOW_TOP =
-  'shadow-[0_4px_24px_-8px_rgb(0_0_0/0.4)] animate-chrome-drop-in'
+  'rounded-xl border border-border/50 bg-bg motion-reduce:animate-none'
 
 export const FLOATING_CHROME_SHADOW_BOTTOM =
   'shadow-[0_8px_32px_-12px_rgb(0_0_0/0.45)] animate-chrome-rise-in'

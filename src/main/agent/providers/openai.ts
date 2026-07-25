@@ -1,5 +1,5 @@
 import type { ChatMessage, ContentPart, MessageContent, ModelInfo, ProviderId } from '../../../shared/ipc'
-import { contentToText } from '../../../shared/ipc'
+import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
 import { normalizeOllamaHost } from '../../../shared/providers'
 import { parseProviderReasoningState, normalizeEffortForOpenAiCompatReasoning } from '../../../shared/reasoning'
@@ -10,8 +10,17 @@ import {
   normalizeOpenAiStyleModels,
   parseDataUrl
 } from './normalize'
-import type { LlmProvider, ListModelsRequest, ProviderChatRequest, StreamChunk, ToolCall, TokenUsage } from './types'
+import type {
+  LlmProvider,
+  ListModelsRequest,
+  ProviderChatRequest,
+  StopReason,
+  StreamChunk,
+  ToolCall,
+  TokenUsage
+} from './types'
 import { streamOpenAiResponses } from './openaiResponses'
+import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
@@ -51,7 +60,7 @@ function toOpenAiContent(
 ): string | Array<Record<string, unknown>> {
   if (typeof content === 'string') return content
   const parts: Array<Record<string, unknown>> = []
-  for (const p of content) {
+  for (const p of providerContentParts(content)) {
     if (p.type === 'text') {
       parts.push({ type: 'text', text: p.text })
       continue
@@ -496,8 +505,10 @@ export function createOpenAiCompatibleProvider(
       let lastUsage: TokenUsage | undefined
       let reasoningContent = ''
       let reasoningDetails: unknown
+      let stopReason: StopReason | undefined
+      const drops = { dropped: 0 }
 
-      for await (const chunk of iterateSseJson(res, req.signal)) {
+      for await (const chunk of iterateSseJson(res, req.signal, drops)) {
         const usage = parseOpenAiCompatUsage(chunk.usage)
         if (usage) lastUsage = usage
 
@@ -579,6 +590,7 @@ export function createOpenAiCompatibleProvider(
         }
 
         const finish = choices?.[0]?.finish_reason
+        if (finish) stopReason = normalizeStopReason(finish)
         if (finish === 'tool_calls' && pending.size > 0) {
           for (const call of pending.values()) {
             yield { type: 'tool_call', toolCall: call }
@@ -596,6 +608,8 @@ export function createOpenAiCompatibleProvider(
       yield {
         type: 'done',
         usage: lastUsage,
+        stopReason,
+        malformedChunks: drops.dropped || undefined,
         reasoningState:
           reasoningContent || reasoningDetails !== undefined
             ? {

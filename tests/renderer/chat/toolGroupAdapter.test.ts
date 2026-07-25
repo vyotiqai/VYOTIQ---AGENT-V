@@ -70,4 +70,31 @@ describe('mapToolGroupProps', () => {
     })
     expect(result.nestedTools[0]?.subtitle).toBe('Chat.tsx')
   })
+
+  it('shows the line range a ranged read asked for', () => {
+    const row = tool('t1', 'read', 'src/app.css')
+    row.argsPreview = JSON.stringify({ path: 'src/app.css', startLine: 12, endLine: 48 })
+    const result = mapToolGroupProps([row], { groupTiming: { startedAt: 1 } })
+    expect(result.nestedTools[0]?.subtitle).toBe('app.css L12-48')
+  })
+
+  it('marks an open-ended read range rather than inventing its end', () => {
+    const row = tool('t1', 'read', 'src/app.css')
+    row.argsPreview = JSON.stringify({ startLine: 12 })
+    const result = mapToolGroupProps([row], { groupTiming: { startedAt: 1 } })
+    expect(result.nestedTools[0]?.subtitle).toBe('app.css L12+')
+  })
+
+  it('derives the range from the text when a whole file came back', () => {
+    const row = tool('t1', 'read', 'a.css', 'done', 'one\ntwo\nthree\n')
+    const result = mapToolGroupProps([row], { groupTiming: { startedAt: 1 } })
+    expect(result.nestedTools[0]?.subtitle).toBe('a.css L1-3')
+  })
+
+  it('stays silent about the range when only a preview arrived', () => {
+    const row = tool('t1', 'read', 'a.css', 'done', 'one\ntwo')
+    row.contentTruncated = true
+    const result = mapToolGroupProps([row], { groupTiming: { startedAt: 1 } })
+    expect(result.nestedTools[0]?.subtitle).toBe('a.css')
+  })
 })

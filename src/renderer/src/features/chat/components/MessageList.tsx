@@ -1,14 +1,31 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Icon } from '@renderer/lib/icons'
-import { ImageChip, MarkdownContent, cn } from '@renderer/lib/ui'
+import { cn } from '@renderer/lib/ui'
 import type { UiItem } from '@shared/transcript'
-import { formatDisplayTime } from '@shared/utils/timeFormat'
-import { CHAT_COLUMN, CHAT_GUTTER } from '@renderer/lib/utils/layout'
-import { buildVirtualRows, estimateVirtualRowSize, type VirtualRow } from '../utils/virtualRows'
-import { ToolRow } from './ToolRow'
-import { ToolGroup } from './ToolGroup'
+import type { ToolApprovalDecision } from '@shared/ipc'
+import {
+  CHAT_COLUMN,
+  CHAT_GUTTER,
+  TRANSCRIPT_ROW_GAP,
+  TRANSCRIPT_TURN_GAP
+} from '@renderer/lib/utils/layout'
+import {
+  buildTranscriptRows,
+  estimateTranscriptRowSize,
+  isTurnWorkRow,
+  rowLeadingGap,
+  type TranscriptRow
+} from '../utils/transcriptRows'
+import { ChangeSummary } from './ChangeSummary'
+import { MessageFooter } from './MessageFooter'
 import { ThinkingBlock } from './ThinkingBlock'
+import { ToolApprovalCard } from './ToolApprovalCard'
+import { ToolCard } from './ToolCard'
+import { ToolGroup } from './ToolGroup'
+import { TurnSummary } from './TurnSummary'
+import { UserPrompt } from './UserPrompt'
+import { MarkdownContent } from '@renderer/lib/ui'
 
 const NEAR_BOTTOM_PX = 80
 /** Virtualize long transcripts to avoid O(n) renders per stream delta. */
@@ -24,21 +41,6 @@ function structuralKey(items: UiItem[]): string {
   return items
     .map((item) => (item.kind === 'tool' ? `${item.id}:${item.tool.status}` : item.id))
     .join('|')
-}
-
-function TimestampSlot({ at, className }: { at?: string; className?: string }) {
-  return (
-    <time
-      className={cn(
-        'mb-1 block h-[14px] text-[10px] leading-[14px] text-tertiary',
-        !at && 'invisible',
-        className
-      )}
-      dateTime={at}
-    >
-      {at ? formatDisplayTime(at) : '\u00a0'}
-    </time>
-  )
 }
 
 function ImageLightbox({ url, label, onClose }: { url: string; label: string; onClose: () => void }) {
@@ -76,119 +78,119 @@ function ImageLightbox({ url, label, onClose }: { url: string; label: string; on
   )
 }
 
-const MessageListItem = memo(function MessageListItem({
-  item,
-  onImageClick,
-  onLoadToolContent,
-  onThinkingToggle,
-  onToolToggle,
-  showThinking = true
-}: {
-  item: UiItem
-  onImageClick: (url: string, label: string) => void
-  onLoadToolContent?: (toolCallId: string) => Promise<string | null>
-  onThinkingToggle?: (messageId: string, expanded: boolean) => void
-  onToolToggle?: (toolCallId: string, expanded: boolean) => void
-  showThinking?: boolean
-}) {
-  if (item.kind === 'message' && item.role === 'user') {
-    return (
-      <div className="flex flex-col items-start">
-        <TimestampSlot at={item.at} />
-        <div className="max-w-[min(680px,94%)] rounded-bubble bg-user-bubble px-3.5 py-2.5 text-sm leading-relaxed tracking-[-0.006em] text-fg [overflow-wrap:anywhere]">
-          {item.content ? <MarkdownContent content={item.content} streaming={false} /> : null}
-          {item.images?.length ? (
-            <div className={cn('flex flex-wrap gap-1.5', item.content ? 'mt-2' : null)}>
-              {item.images.map((url, imageIndex) => (
-                <ImageChip
-                  key={`${item.id}-${imageIndex}`}
-                  url={url}
-                  label={`Image ${imageIndex + 1}`}
-                  onClick={() => onImageClick(url, `Image ${imageIndex + 1}`)}
-                />
-              ))}
-            </div>
-          ) : null}
-        </div>
-      </div>
-    )
-  }
+/**
+ * Spacing lives on the row itself (padding, not margin) so virtualized rows —
+ * which are absolutely positioned and measured by offsetHeight — get the exact
+ * same rhythm as the plain flow layout.
+ */
+function rowSpacingClass(row: TranscriptRow): string {
+  return cn(TRANSCRIPT_ROW_GAP, rowLeadingGap(row) > 0 && TRANSCRIPT_TURN_GAP)
+}
 
-  if (item.kind === 'tool') {
-    return (
-      <div className="flex max-w-[720px] flex-col gap-0.5">
-        <TimestampSlot at={item.at} className="px-2" />
-        <ToolRow
-          tool={item.tool}
-          expanded={item.toolExpanded}
-          onToggle={(next) => onToolToggle?.(item.id, next)}
-          onLoadFullContent={onLoadToolContent}
-        />
-      </div>
-    )
-  }
+function isRowStreaming(row: TranscriptRow): boolean {
+  if (row.kind === 'text') return row.item.streaming === true
+  if (row.kind === 'thinking') return row.item.thinkingStreaming === true
+  return false
+}
 
-  return (
-    <div className="flex max-w-[720px] flex-col items-start">
-      <TimestampSlot at={item.at} />
-      {showThinking && (item.thinking || item.thinkingStreaming) ? (
-        <ThinkingBlock
-          content={item.thinking ?? ''}
-          streaming={item.thinkingStreaming}
-          expanded={item.thinkingExpanded}
-          onToggle={(next) => onThinkingToggle?.(item.id, next)}
-        />
-      ) : null}
-      {item.content ? (
-        <MarkdownContent content={item.content} streaming={item.streaming} />
-      ) : null}
-    </div>
-  )
-})
-
-function VirtualRowBlock({
+const TranscriptRowBlock = memo(function TranscriptRowBlock({
   row,
   onImageClick,
   onLoadToolContent,
   onThinkingToggle,
   onToolToggle,
+  onGroupToggle,
+  onTurnToggle,
+  onApprovalDecision,
+  turnCollapsed = false,
   showThinking = true
 }: {
-  row: VirtualRow
+  row: TranscriptRow
   onImageClick: (url: string, label: string) => void
   onLoadToolContent?: (toolCallId: string) => Promise<string | null>
   onThinkingToggle?: (messageId: string, expanded: boolean) => void
   onToolToggle?: (toolCallId: string, expanded: boolean) => void
+  onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
+  onTurnToggle?: (turnIndex: number) => void
+  onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void
+  turnCollapsed?: boolean
   showThinking?: boolean
 }) {
-  if (row.kind === 'tool-group') {
-    const first = row.tools[0]
-    const expandedTool = row.tools.find((tool) => tool.toolExpanded)
+  if (row.kind === 'user') {
+    return <UserPrompt item={row.item} onImageClick={onImageClick} />
+  }
+
+  if (row.kind === 'turn') {
     return (
-      <div className="flex max-w-[720px] flex-col gap-0.5">
-        <TimestampSlot at={first?.at} className="px-2" />
-        <ToolGroup
-          tools={row.tools}
-          groupTiming={first?.groupTiming}
-          expandedToolId={expandedTool?.id}
-          onToolToggle={onToolToggle}
-          onLoadFullContent={onLoadToolContent}
-        />
+      <TurnSummary
+        span={row.span}
+        collapsed={turnCollapsed}
+        onToggle={() => onTurnToggle?.(row.turnIndex)}
+      />
+    )
+  }
+
+  if (row.kind === 'thinking') {
+    if (!showThinking) return null
+    return (
+      <ThinkingBlock
+        content={row.item.thinking ?? ''}
+        streaming={row.item.thinkingStreaming}
+        expanded={row.item.thinkingExpanded}
+        onToggle={(next) => onThinkingToggle?.(row.item.id, next)}
+      />
+    )
+  }
+
+  if (row.kind === 'text') {
+    return (
+      <div className="group/message">
+        <MarkdownContent content={row.item.content} streaming={row.item.streaming} />
+        {row.final && !row.item.streaming ? (
+          <MessageFooter content={row.item.content} at={row.item.at} />
+        ) : null}
       </div>
     )
   }
 
+  if (row.kind === 'changes') {
+    return <ChangeSummary files={row.files} />
+  }
+
+  if (row.kind === 'approval') {
+    return <ToolApprovalCard approval={row.approval} onDecide={onApprovalDecision} />
+  }
+
+  if (row.kind === 'activity') {
+    const expandedToolIds = new Set(
+      row.tools.filter((tool) => tool.toolExpanded).map((tool) => tool.id)
+    )
+    const anchor = row.tools[0]!
+    return (
+      <ToolGroup
+        tools={row.tools}
+        expandedToolIds={expandedToolIds}
+        groupExpanded={anchor.groupExpanded}
+        onGroupToggle={
+          onGroupToggle ? (expanded) => onGroupToggle(anchor.id, expanded) : undefined
+        }
+        onToolToggle={onToolToggle}
+        onLoadFullContent={onLoadToolContent}
+      />
+    )
+  }
+
   return (
-    <MessageListItem
+    <ToolCard
       item={row.item}
-      onImageClick={onImageClick}
-      onLoadToolContent={onLoadToolContent}
-      onThinkingToggle={onThinkingToggle}
-      onToolToggle={onToolToggle}
-      showThinking={showThinking}
+      expanded={row.item.toolExpanded}
+      // Without a host that persists the choice the card owns its own state,
+      // so it still opens instead of swallowing the click.
+      onToggle={onToolToggle ? (next) => onToolToggle(row.item.id, next) : undefined}
+      onLoadFullContent={onLoadToolContent}
     />
   )
-}
+})
 
 export function MessageList({
   items,
@@ -199,6 +201,8 @@ export function MessageList({
   onLoadToolContent,
   onThinkingToggle,
   onToolToggle,
+  onGroupToggle,
+  onApprovalDecision,
   showThinking = true
 }: {
   items: UiItem[]
@@ -209,6 +213,8 @@ export function MessageList({
   onLoadToolContent?: (toolCallId: string) => Promise<string | null>
   onThinkingToggle?: (messageId: string, expanded: boolean) => void
   onToolToggle?: (toolCallId: string, expanded: boolean) => void
+  onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
+  onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void
   showThinking?: boolean
 }) {
   const endRef = useRef<HTMLDivElement>(null)
@@ -223,10 +229,12 @@ export function MessageList({
     () => !restoreScrollTop || restoreScrollTop <= 0
   )
   const [lightbox, setLightbox] = useState<{ url: string; label: string } | null>(null)
+  const [collapsedTurns, setCollapsedTurns] = useState<ReadonlySet<number>>(() => new Set())
   const [virtualized, setVirtualized] = useState(() => items.length >= VIRTUALIZE_THRESHOLD)
   const modeFlipScrollRef = useRef<number | null>(null)
   const prevUseVirtualRef = useRef(items.length >= VIRTUALIZE_THRESHOLD)
   const prevStructuralKeyRef = useRef<string | null>(null)
+
   useEffect(() => {
     const el = containerRef.current
     let next: boolean | null = null
@@ -236,21 +244,34 @@ export function MessageList({
     if (el) modeFlipScrollRef.current = el.scrollTop
     setVirtualized(next)
   }, [items.length, virtualized])
-  const hasStreamingItems = useMemo(
-    () =>
-      items.some(
-        (item) =>
-          item.kind === 'message' && (item.streaming === true || item.thinkingStreaming === true)
-      ),
-    [items]
-  )
-  const useVirtual = virtualized && !hasStreamingItems
+
+  // Dropping out of virtual mode while streaming re-rendered every row of the
+  // transcript on every delta, which is the exact case virtualization exists for.
+  const useVirtual = virtualized
   const itemsStructuralKey = useMemo(() => structuralKey(items), [items])
-  const displayRows = useMemo(() => buildVirtualRows(items), [items])
-  const virtualRows = useMemo(
-    () => (useVirtual ? displayRows : []),
-    [displayRows, useVirtual]
-  )
+  const allRows = useMemo(() => buildTranscriptRows(items), [items])
+  const displayRows = useMemo(() => {
+    let rows = allRows
+    if (!showThinking) rows = rows.filter((row) => row.kind !== 'thinking')
+    if (collapsedTurns.size === 0) return rows
+    return rows.filter((row) => !(collapsedTurns.has(row.turnIndex) && isTurnWorkRow(row)))
+  }, [allRows, collapsedTurns, showThinking])
+  const virtualRows = useMemo(() => (useVirtual ? displayRows : []), [displayRows, useVirtual])
+  const streamingRowId = useMemo(() => {
+    for (let i = displayRows.length - 1; i >= 0; i--) {
+      const row = displayRows[i]!
+      if ((row.kind === 'text' || row.kind === 'thinking') && isRowStreaming(row)) return row.id
+    }
+    return null
+  }, [displayRows])
+  const virtualLiveAnnouncement = useMemo(() => {
+    if (!useVirtual || !streamingRowId) return ''
+    const row = displayRows.find((r) => r.id === streamingRowId)
+    if (!row) return ''
+    if (row.kind === 'text') return row.item.content.trim()
+    if (row.kind === 'thinking') return row.item.thinking?.trim() ?? ''
+    return ''
+  }, [useVirtual, streamingRowId, displayRows])
 
   restoreScrollTopRef.current = restoreScrollTop ?? 0
 
@@ -258,13 +279,40 @@ export function MessageList({
     setLightbox({ url, label })
   }, [])
 
+  const onTurnToggle = useCallback((turnIndex: number) => {
+    setCollapsedTurns((prev) => {
+      const next = new Set(prev)
+      if (!next.delete(turnIndex)) next.add(turnIndex)
+      return next
+    })
+  }, [])
+
+  const streamingRowElRef = useRef<HTMLDivElement | null>(null)
+
   const virtualizer = useVirtualizer({
     count: virtualRows.length,
     enabled: useVirtual,
     getScrollElement: () => containerRef.current,
-    estimateSize: (index) => estimateVirtualRowSize(virtualRows[index]!),
+    estimateSize: (index) => estimateTranscriptRowSize(virtualRows[index]!),
     overscan: 8,
     getItemKey: (index) => virtualRows[index]?.id ?? index
+  })
+
+  const measureStreamingRow = useCallback(
+    (el: HTMLDivElement | null) => {
+      streamingRowElRef.current = el
+      virtualizer.measureElement(el)
+    },
+    [virtualizer]
+  )
+
+  // The streaming row grows on every delta. ResizeObserver-driven measurement
+  // lands a frame late, so remeasure it directly and leave every other row on
+  // the cached size.
+  useLayoutEffect(() => {
+    const el = streamingRowElRef.current
+    if (!useVirtual || !el) return
+    virtualizer.measureElement(el)
   })
 
   useLayoutEffect(() => {
@@ -439,22 +487,26 @@ export function MessageList({
     [onScrollTopChange]
   )
 
-  const columnClass = cn(
-    'flex w-full flex-col gap-2.5',
-    CHAT_COLUMN,
-    reserveComposerSpace && 'pb-28'
-  )
+  const columnClass = cn('flex w-full flex-col', CHAT_COLUMN)
+
+  const dockReserveStyle = reserveComposerSpace
+    ? ({ paddingBottom: 'var(--vy-dock-h, 8rem)' } as const)
+    : undefined
 
   const simpleBlocks = useMemo(() => {
     if (useVirtual) return []
     return displayRows.map((row) => (
-      <div key={row.id}>
-        <VirtualRowBlock
+      <div key={row.id} className={rowSpacingClass(row)}>
+        <TranscriptRowBlock
           row={row}
           onImageClick={onImageClick}
           onLoadToolContent={onLoadToolContent}
           onThinkingToggle={onThinkingToggle}
           onToolToggle={onToolToggle}
+          onGroupToggle={onGroupToggle}
+          onTurnToggle={onTurnToggle}
+          onApprovalDecision={onApprovalDecision}
+          turnCollapsed={collapsedTurns.has(row.turnIndex)}
           showThinking={showThinking}
         />
       </div>
@@ -462,24 +514,34 @@ export function MessageList({
   }, [
     useVirtual,
     displayRows,
+    collapsedTurns,
     onImageClick,
     onLoadToolContent,
     onThinkingToggle,
     onToolToggle,
+    onGroupToggle,
+    onTurnToggle,
+    onApprovalDecision,
     showThinking
   ])
 
   return (
     <>
+      {useVirtual ? (
+        <div className="sr-only" aria-live="polite" aria-atomic="true">
+          {virtualLiveAnnouncement}
+        </div>
+      ) : null}
       <div
         ref={containerRef}
-        className={cn(
-          'flex min-h-0 flex-1 flex-col overflow-auto py-2.5 sm:py-3',
-          CHAT_GUTTER
-        )}
-        aria-live="polite"
-        aria-relevant="additions"
-        aria-atomic="false"
+        data-transcript-scroll
+        className={cn('flex min-h-0 flex-1 flex-col overflow-auto pt-4', CHAT_GUTTER)}
+        style={dockReserveStyle}
+        // Virtual rows mount on scroll, so announcing additions there would read
+        // the transcript back as the user scrolls. Only announce real appends.
+        aria-live={useVirtual ? undefined : 'polite'}
+        aria-relevant={useVirtual ? undefined : 'additions'}
+        aria-atomic={useVirtual ? undefined : 'false'}
         onScroll={(e) => handleScroll(e.currentTarget.scrollTop)}
       >
         {useVirtual ? (
@@ -491,11 +553,13 @@ export function MessageList({
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const row = virtualRows[virtualRow.index]
               if (!row) return null
+              const streaming = row.id === streamingRowId
               return (
                 <div
                   key={virtualRow.key}
                   data-index={virtualRow.index}
-                  ref={virtualizer.measureElement}
+                  ref={streaming ? measureStreamingRow : virtualizer.measureElement}
+                  className={rowSpacingClass(row)}
                   style={{
                     position: 'absolute',
                     top: 0,
@@ -504,25 +568,18 @@ export function MessageList({
                     transform: `translateY(${virtualRow.start}px)`
                   }}
                 >
-                  {row.kind === 'tool-group' ? (
-                    <VirtualRowBlock
-                      row={row}
-                      onImageClick={onImageClick}
-                      onLoadToolContent={onLoadToolContent}
-                      onThinkingToggle={onThinkingToggle}
-                      onToolToggle={onToolToggle}
-                      showThinking={showThinking}
-                    />
-                  ) : (
-                    <MessageListItem
-                      item={row.item}
-                      onImageClick={onImageClick}
-                      onLoadToolContent={onLoadToolContent}
-                      onThinkingToggle={onThinkingToggle}
-                      onToolToggle={onToolToggle}
-                      showThinking={showThinking}
-                    />
-                  )}
+                  <TranscriptRowBlock
+                    row={row}
+                    onImageClick={onImageClick}
+                    onLoadToolContent={onLoadToolContent}
+                    onThinkingToggle={onThinkingToggle}
+                    onToolToggle={onToolToggle}
+                    onGroupToggle={onGroupToggle}
+                    onTurnToggle={onTurnToggle}
+                    onApprovalDecision={onApprovalDecision}
+                    turnCollapsed={collapsedTurns.has(row.turnIndex)}
+                    showThinking={showThinking}
+                  />
                 </div>
               )
             })}

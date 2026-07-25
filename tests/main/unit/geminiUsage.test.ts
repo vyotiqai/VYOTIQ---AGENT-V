@@ -14,8 +14,26 @@ describe('parseGeminiUsage', () => {
       inputTokens: 1200,
       outputTokens: 80,
       totalTokens: 1280,
-      cachedInputTokens: 400
+      cachedInputTokens: 400,
+      reasoningTokens: undefined
     })
+  })
+
+  it('parses thinking tokens as reasoning tokens', () => {
+    expect(
+      parseGeminiUsage({
+        promptTokenCount: 1200,
+        candidatesTokenCount: 80,
+        totalTokenCount: 1400,
+        thoughtsTokenCount: 120
+      }).reasoningTokens
+    ).toBe(120)
+    expect(
+      parseGeminiUsage({
+        prompt_token_count: 1200,
+        thoughts_token_count: 64
+      }).reasoningTokens
+    ).toBe(64)
   })
 
   it('parses snake_case usage metadata', () => {
@@ -30,7 +48,8 @@ describe('parseGeminiUsage', () => {
       inputTokens: 900,
       outputTokens: 50,
       totalTokens: 950,
-      cachedInputTokens: 300
+      cachedInputTokens: 300,
+      reasoningTokens: undefined
     })
   })
 
@@ -45,7 +64,8 @@ describe('parseGeminiUsage', () => {
       inputTokens: 100,
       outputTokens: 20,
       totalTokens: 120,
-      cachedInputTokens: undefined
+      cachedInputTokens: undefined,
+      reasoningTokens: undefined
     })
   })
 })

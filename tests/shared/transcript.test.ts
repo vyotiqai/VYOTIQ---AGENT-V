@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from '@shared/ipc'
-import { inferToolStatus, messagesToUiItems, applyEventTimestamps } from '@shared/transcript'
+import { inferToolStatus, messagesToUiItems, applyEventTimestamps, isMeaningfulThinking, duplicatesReasoning } from '@shared/transcript'
 
 describe('messagesToUiItems', () => {
   it('rebuilds user, assistant, and tool rows in order', () => {
@@ -38,7 +38,7 @@ describe('messagesToUiItems', () => {
     }
   })
 
-  it('merges a tool loopturn reasoning into one row with a contiguous tool stretch', () => {
+  it('keeps each step reasoning above the calls it explains', () => {
     const messages: ChatMessage[] = [
       { role: 'user', content: 'refactor' },
       {
@@ -63,16 +63,13 @@ describe('messagesToUiItems', () => {
       'message',
       'message',
       'tool',
+      'message',
       'tool',
       'message'
     ])
-    const reasoning = items[1]
-    if (reasoning.kind === 'message') {
-      expect(reasoning.thinking).toBe('First I read the file.\n\nNow I edit it.')
-      expect(reasoning.content).toBe('')
-    }
-    const thinkingRows = items.filter((i) => i.kind === 'message' && i.thinking)
-    expect(thinkingRows).toHaveLength(1)
+    expect(items[1]).toMatchObject({ thinking: 'First I read the file.', content: '' })
+    expect(items[3]).toMatchObject({ thinking: 'Now I edit it.', content: '' })
+    expect(items[5]).toMatchObject({ content: 'Refactored.' })
   })
 
   it('marks empty tool results as done when replaying a run', () => {
@@ -229,6 +226,52 @@ describe('messagesToUiItems', () => {
     expect(items[3]).toMatchObject({ id: 'c2', tool: { status: 'done' } })
     expect(items[4]).toMatchObject({ content: 'Exploring sources.' })
     expect(items[5]).toMatchObject({ id: 'c3', tool: { status: 'done' } })
+  })
+})
+
+describe('transcript display helpers', () => {
+  it('treats placeholder punctuation as non-meaningful thinking', () => {
+    expect(isMeaningfulThinking('.')).toBe(false)
+    expect(isMeaningfulThinking('…')).toBe(false)
+    expect(isMeaningfulThinking('planned approach')).toBe(true)
+  })
+
+  it('keeps narration between tool batches, streaming or not', () => {
+    const narration = {
+      kind: 'message',
+      id: 'a2',
+      role: 'assistant',
+      content: 'Continuing the audit in the router next.'
+    } as const
+
+    expect(duplicatesReasoning(narration)).toBe(false)
+    expect(duplicatesReasoning({ ...narration, streaming: true })).toBe(false)
+  })
+
+  it('hides text a reasoning model already said in its thinking', () => {
+    const passage = 'The router builds its table before the first request arrives.'
+
+    expect(
+      duplicatesReasoning({
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        content: passage,
+        thinking: `Let me check.\n\n${passage}`
+      })
+    ).toBe(true)
+  })
+
+  it('does not treat a shared phrase as a duplicate', () => {
+    expect(
+      duplicatesReasoning({
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        content: 'Done.',
+        thinking: 'Done. Now I will summarize what changed for the reader.'
+      })
+    ).toBe(false)
   })
 })
 
@@ -548,5 +591,68 @@ describe('applyEventTimestamps', () => {
       expect(tool.at).toBe('2026-07-24T12:00:02.000Z')
       expect(tool.tool.status).toBe('done')
     }
+  })
+
+  it('replays subagent_update events onto the parent tool row', () => {
+    const items = messagesToUiItems([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'subagent', arguments: '{}' }]
+      },
+      { role: 'tool', toolCallId: 'c1', toolName: 'subagent', content: 'report', ok: true }
+    ])
+    const enriched = applyEventTimestamps(items, [
+      {
+        at: '2026-07-24T12:00:00.000Z',
+        event: {
+          type: 'subagent_update',
+          runId: 'r1',
+          parentToolCallId: 'c1',
+          kind: 'thinking',
+          text: 'Checking files'
+        }
+      },
+      {
+        at: '2026-07-24T12:00:01.000Z',
+        event: {
+          type: 'subagent_update',
+          runId: 'r1',
+          parentToolCallId: 'c1',
+          kind: 'done',
+          text: 'Finished'
+        }
+      }
+    ])
+    const tool = enriched.find((i) => i.kind === 'tool')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind === 'tool') {
+      expect(tool.subagent).toEqual([
+        { kind: 'thinking', text: 'Checking files' },
+        { kind: 'done', text: 'Finished' }
+      ])
+    }
+  })
+})
+
+describe('messagesToUiItems tool ok', () => {
+  it('uses persisted ok flag instead of content heuristics', () => {
+    const items = messagesToUiItems([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'read', arguments: '{}' }]
+      },
+      {
+        role: 'tool',
+        toolCallId: 'c1',
+        toolName: 'read',
+        content: 'permission denied',
+        ok: false
+      }
+    ])
+    const tool = items.find((i) => i.kind === 'tool')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind === 'tool') expect(tool.tool.status).toBe('fail')
   })
 })

@@ -1,10 +1,16 @@
-import type { AgentEvent, ChatMessage, PersistedEvent } from '@shared/ipc'
+import type {
+  AgentEvent,
+  AttachedFile,
+  ChatMessage,
+  IncompleteReason,
+  PersistedEvent,
+  ToolApprovalDecision,
+  ToolApprovalRequest
+} from '@shared/ipc'
 import {
   emptyStepUsageTotals,
-  formatCacheHintFromTotals,
   mergeStepUsageTotals,
   stepUsageFromEvent,
-  summarizeStepUsageFromEvents,
   type StepUsageTotals
 } from '@shared/utils/runTelemetry'
 import { buildUserContent, contentDisplayText, contentImages } from '@shared/ipc'
@@ -13,7 +19,7 @@ import {
   appendToolResult,
   messagesForNextTurn
 } from '@shared/chatHistory'
-import { activityPanelRowsFromEvents, isActivityPanelEvent, isAgentEvent, type ActivityRow } from '@shared/eventUtils'
+import { isAgentEvent } from '@shared/eventUtils'
 import { toLogErr } from '@shared/errors'
 import { logger } from '@shared/logger'
 import {
@@ -21,6 +27,7 @@ import {
   applyEventTimestamps,
   mergeThinking,
   messageUiId,
+  uiAttachments,
   type UiItem
 } from '@shared/transcript'
 import { summarizeToolArgs } from '@shared/toolSummary'
@@ -30,6 +37,8 @@ import {
   summarizeContextUsageFromEvents
 } from '@shared/utils/contextUsage'
 
+/** A sub-agent's progress is a live view, not a log; keep the recent tail. */
+const MAX_SUBAGENT_ENTRIES = 40
 const CANCEL_RECOVERY_POLL_MS = 500
 const CANCEL_RECOVERY_TIMEOUT_MS = 5_000
 
@@ -301,6 +310,39 @@ function withCanonicalToolId(
   }
 }
 
+/**
+ * Streaming deltas hit one known row per frame. Copying the array and swapping
+ * that index keeps every other row's object identity, so memoized rows skip
+ * re-rendering, and avoids running a closure over the whole transcript.
+ */
+function replaceAt(items: UiItem[], index: number, next: UiItem): UiItem[] {
+  const copy = items.slice()
+  copy[index] = next
+  return copy
+}
+
+/** Drop pending approval prompts, either one answered or all of them. */
+function clearApprovals(items: UiItem[], requestId?: string): UiItem[] {
+  let changed = false
+  const next = items.map((item) => {
+    if (item.kind !== 'tool' || !item.approval) return item
+    if (requestId && item.approval.requestId !== requestId) return item
+    changed = true
+    const { approval: _approval, ...rest } = item
+    return rest
+  })
+  return changed ? next : items
+}
+
+/** Search from the tail: the row a delta targets is almost always the last one. */
+function findMessageIndex(items: UiItem[], id: string): number {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i]
+    if (item.kind === 'message' && item.id === id) return i
+  }
+  return -1
+}
+
 function runningToolIndices(items: UiItem[]): number[] {
   const out: number[] = []
   for (let i = 0; i < items.length; i++) {
@@ -338,15 +380,42 @@ function errorFromPersisted(events: PersistedEvent[]): string | null {
   return null
 }
 
+function incompleteFromPersisted(events: PersistedEvent[]): IncompleteTurnState | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]?.event
+    if (!isAgentEvent(event)) continue
+    if (event.type === 'incomplete') {
+      return { reason: event.reason, message: event.message }
+    }
+  }
+  return null
+}
+
+function hydrateFromDisk(kept: ChatMessage[], events: PersistedEvent[]) {
+  return {
+    messages: kept,
+    error: errorFromPersisted(events),
+    incomplete: incompleteFromPersisted(events),
+    contextUsage: summarizeContextUsageFromEvents(events),
+    items: applyEventTimestamps(messagesToUiItems(kept), events)
+  }
+}
+
+/** A turn that ended before the work was finished, offering a Continue affordance. */
+export type IncompleteTurnState = {
+  reason: IncompleteReason
+  message: string
+}
+
 export type ChatStreamState = {
   items: UiItem[]
   messages: ChatMessage[]
-  activityRows: ActivityRow[]
   running: boolean
   runId: string | null
   error: string | null
   runNotice: string | null
-  runCacheHint: string | null
+  /** Survives the terminal status event, unlike `runNotice`. */
+  incomplete: IncompleteTurnState | null
   contextUsage: ContextUsageState | null
   runStartedAt: number | null
   runTerminalTick: number
@@ -356,7 +425,7 @@ export type ChatStreamState = {
 
 export type ChatStreamController = ChatStreamState & {
   workspacePath: string
-  send: (text: string, images?: string[]) => Promise<boolean>
+  send: (text: string, images?: string[], files?: AttachedFile[]) => Promise<boolean>
   stop: () => Promise<void>
   reset: () => void
   loadTranscript: (loaded: ChatMessage[], events?: PersistedEvent[]) => void
@@ -370,6 +439,11 @@ export type ChatStreamController = ChatStreamState & {
   setThinkingExpanded: (messageId: string, expanded: boolean) => void
   /** Persist tool detail expand/collapse across virtual list remounts. */
   setToolExpanded: (toolCallId: string, expanded: boolean) => void
+  /** Persist an activity group's disclosure state, keyed by its first tool row. */
+  setGroupExpanded: (anchorToolCallId: string, expanded: boolean) => void
+  /** Park a gated tool call on its transcript row until the reader answers. */
+  handleApprovalRequest: (request: ToolApprovalRequest) => void
+  respondToApproval: (requestId: string, decision: ToolApprovalDecision) => Promise<void>
   /** Reload transcript from disk when a run finished but IPC was missed. */
   syncFromDisk: (runId: string) => Promise<boolean>
   handleEvent: (event: AgentEvent) => void
@@ -393,7 +467,7 @@ export function createChatStreamController(
   const listeners = new Set<() => void>()
   const closedRuns = new Set<string>()
   let assistantId: string | null = null
-  /** Row that owns the whole turn's reasoning, so a tool loop renders one Thought row. */
+  /** Row that owns the current step's reasoning, cleared when the step closes. */
   let reasoningId: string | null = null
   /** Next reasoning delta opens a new step, so it needs a break from the previous one. */
   let reasoningSegmentBreak = false
@@ -420,7 +494,6 @@ export function createChatStreamController(
     { toolCallId: string; name?: string; argumentsDelta: string }
   >()
   const toolContentCache = new Map<string, string>()
-  const thinkingCollapsedByUser = new Set<string>()
 
   const applyToolCallDelta = (
     items: UiItem[],
@@ -435,21 +508,21 @@ export function createChatStreamController(
       (existing?.kind === 'tool' ? existing.tool.argsPreview ?? '' : '') + event.argumentsDelta
     const summarized = summarizeToolArgs(toolName || 'tool', argsPreview)
     if (existing?.kind === 'tool') {
-      return items.map((item, i) =>
-        i === existingIdx && item.kind === 'tool'
-          ? withCanonicalToolId(
-              {
-                ...item,
-                tool: {
-                  ...item.tool,
-                  name: toolName || item.tool.name,
-                  argsPreview,
-                  summary: summarized || item.tool.summary || ''
-                }
-              },
-              event.toolCallId
-            )
-          : item
+      return replaceAt(
+        items,
+        existingIdx,
+        withCanonicalToolId(
+          {
+            ...existing,
+            tool: {
+              ...existing.tool,
+              name: toolName || existing.tool.name,
+              argsPreview,
+              summary: summarized || existing.tool.summary || ''
+            }
+          },
+          event.toolCallId
+        )
       )
     }
     return appendTool(
@@ -486,8 +559,10 @@ export function createChatStreamController(
       const text = pendingThinkingDelta
       pendingThinkingDelta = ''
       const id = reasoningId
-      const exists = items.some((item) => item.kind === 'message' && item.id === id)
-      if (!exists) {
+      const index = findMessageIndex(items, id)
+      if (index < 0) {
+        // `thinkingExpanded` stays unset: it records the reader's own choice, and
+        // leaving it blank lets the block follow the stream on its own.
         items = insertAssistantItem(items, {
           kind: 'message',
           id,
@@ -495,20 +570,16 @@ export function createChatStreamController(
           content: '',
           thinking: text,
           thinkingStreaming: true,
-          thinkingExpanded: !thinkingCollapsedByUser.has(id),
           streaming: false
         })
       } else {
-        items = items.map((item) => {
-          if (item.kind !== 'message' || item.id !== id) return item
-          const prior = item.thinking ?? ''
-          return {
-            ...item,
-            thinking:
-              reasoningSegmentBreak && prior.trim() ? `${prior.trimEnd()}\n\n${text}` : prior + text,
-            thinkingStreaming: true,
-            thinkingExpanded: thinkingCollapsedByUser.has(id) ? item.thinkingExpanded : true
-          }
+        const current = items[index] as Extract<UiItem, { kind: 'message' }>
+        const prior = current.thinking ?? ''
+        items = replaceAt(items, index, {
+          ...current,
+          thinking:
+            reasoningSegmentBreak && prior.trim() ? `${prior.trimEnd()}\n\n${text}` : prior + text,
+          thinkingStreaming: true
         })
       }
       reasoningSegmentBreak = false
@@ -521,8 +592,8 @@ export function createChatStreamController(
       const text = pendingTextDelta
       pendingTextDelta = ''
       const id = assistantId
-      const exists = items.some((item) => item.kind === 'message' && item.id === id)
-      if (!exists) {
+      const index = findMessageIndex(items, id)
+      if (index < 0) {
         items = insertAssistantItem(items, {
           kind: 'message',
           id,
@@ -531,11 +602,12 @@ export function createChatStreamController(
           streaming: true
         })
       } else {
-        items = items.map((item) =>
-          item.kind === 'message' && item.id === id
-            ? { ...item, content: item.content + text, streaming: true }
-            : item
-        )
+        const current = items[index] as Extract<UiItem, { kind: 'message' }>
+        items = replaceAt(items, index, {
+          ...current,
+          content: current.content + text,
+          streaming: true
+        })
       }
       changed = true
     } else {
@@ -599,12 +671,11 @@ export function createChatStreamController(
   const state: ChatStreamState = {
     items: [],
     messages: [],
-    activityRows: [],
     running: false,
     runId,
     error: null,
     runNotice: null,
-    runCacheHint: null,
+    incomplete: null,
     contextUsage: null,
     runStartedAt: null,
     runTerminalTick: 0,
@@ -643,10 +714,9 @@ export function createChatStreamController(
     patch({
       items: [],
       messages: [],
-      activityRows: [],
       error: null,
       runNotice: null,
-      runCacheHint: null,
+      incomplete: null,
       contextUsage: null,
       runId: null,
       running: false,
@@ -683,12 +753,6 @@ export function createChatStreamController(
     }
 
     if (ignoreStreamEvents) return
-
-    if (isActivityPanelEvent(event)) {
-      patch({
-        activityRows: [...state.activityRows, { at: new Date().toISOString(), event }]
-      })
-    }
 
     if (
       event.type !== 'text_delta' &&
@@ -738,8 +802,8 @@ export function createChatStreamController(
         ? state.items
         : closeOpenGroupTimings(state.items)
       const exists = base.some((i) => i.kind === 'message' && i.id === id)
-      // Reasoning from a later step folds into the row that already owns this turn's
-      // Thought, rather than opening a second one and splitting the tool stretch.
+      // This step's reasoning already streamed into a row of its own; fold the
+      // final text back into that row rather than opening a second Thought.
       const reasoningTarget =
         event.thinking && reasoningId && reasoningId !== id ? reasoningId : null
       let nextItems = reasoningTarget
@@ -779,8 +843,10 @@ export function createChatStreamController(
           streaming: false,
           at: messageAt
         })
-        if (!reasoningId && event.thinking) reasoningId = id
       }
+      // The step is over. Whatever the model reasons about next belongs beside
+      // the calls that reasoning leads to, not appended to the step just closed.
+      reasoningId = null
       const nextMessages = appendAssistantWithTools(
         state.messages,
         event.content,
@@ -849,6 +915,8 @@ export function createChatStreamController(
             ? withCanonicalToolId(
                 {
                   ...item,
+                  // The call is settled, so any prompt it was waiting on is moot.
+                  approval: undefined,
                   tool: {
                     ...item.tool,
                     name: event.name,
@@ -884,11 +952,23 @@ export function createChatStreamController(
         state.messages,
         event.toolCallId,
         event.name,
-        event.content ?? event.summary
+        event.content ?? event.summary,
+        event.ok
       )
       patch({
         items: closeTrailingGroupIfIdle(nextItems),
         messages: nextMessages
+      })
+    } else if (event.type === 'subagent_update') {
+      const idx = findToolRowIndex(state.items, event.parentToolCallId)
+      const item = idx >= 0 ? state.items[idx] : undefined
+      if (!item || item.kind !== 'tool') return
+      const entries = [...(item.subagent ?? []), { kind: event.kind, text: event.text }]
+      patch({
+        items: replaceAt(state.items, idx, {
+          ...item,
+          subagent: entries.slice(-MAX_SUBAGENT_ENTRIES)
+        })
       })
     } else if (event.type === 'error') {
       lastRunErrorMessage = event.message
@@ -900,6 +980,24 @@ export function createChatStreamController(
       })
       patch({
         error: event.message
+      })
+    } else if (event.type === 'stream_reset') {
+      // Drop the aborted attempt's output so the retry does not append to it.
+      pendingTextDelta = ''
+      pendingThinkingDelta = ''
+      const discardIds = new Set([assistantId, reasoningId].filter((id): id is string => !!id))
+      if (discardIds.size) {
+        patch({
+          items: state.items.map((item) =>
+            item.kind === 'message' && discardIds.has(item.id)
+              ? { ...item, content: '', thinking: item.thinking ? '' : item.thinking }
+              : item
+          )
+        })
+      }
+    } else if (event.type === 'incomplete') {
+      patch({
+        incomplete: { reason: event.reason, message: event.message }
       })
     } else if (event.type === 'compaction') {
       patch({
@@ -913,17 +1011,15 @@ export function createChatStreamController(
       const usage = stepUsageFromEvent(event)
       if (usage) {
         usageTotals = mergeStepUsageTotals(usageTotals, usage)
-        const hint = formatCacheHintFromTotals(usageTotals)
-        const partial: Partial<ChatStreamState> = {}
-        if (hint) partial.runCacheHint = hint
         if (state.contextUsage) {
-          partial.contextUsage = {
-            ...state.contextUsage,
-            stepUsage: usageTotals,
-            updatedAt: new Date().toISOString()
-          }
+          patch({
+            contextUsage: {
+              ...state.contextUsage,
+              stepUsage: usageTotals,
+              updatedAt: new Date().toISOString()
+            }
+          })
         }
-        if (Object.keys(partial).length > 0) patch(partial)
       }
     } else if (event.type === 'context_usage') {
       const ctx = contextUsageFromEvent(event, usageTotals)
@@ -968,12 +1064,11 @@ export function createChatStreamController(
           runId: sessionRunId,
           runStartedAt: null,
           runNotice: null,
-          runCacheHint: null,
           runTerminalTick: state.runTerminalTick + 1,
           ...(event.status === 'error' && !state.error
             ? { error: lastRunErrorMessage ?? 'Run failed' }
             : {}),
-          items: closeOpenGroupTimings(state.items).map((item) => {
+          items: clearApprovals(closeOpenGroupTimings(state.items)).map((item) => {
             if (item.kind === 'message' && (item.streaming || item.thinkingStreaming)) {
               return { ...item, streaming: false, thinkingStreaming: false }
             }
@@ -1001,14 +1096,19 @@ export function createChatStreamController(
     }
   }
 
-  const send = async (text: string, images?: string[]): Promise<boolean> => {
+  const send = async (
+    text: string,
+    images?: string[],
+    files?: AttachedFile[]
+  ): Promise<boolean> => {
     const trimmed = text.trim()
-    if ((!trimmed && !images?.length) || state.running || state.transcriptLoading) return false
+    if ((!trimmed && !images?.length && !files?.length) || state.running || state.transcriptLoading)
+      return false
     if (!workspacePath) {
       patch({ error: 'Pick a workspace before starting a chat.' })
       return false
     }
-    patch({ error: null, runNotice: null, runCacheHint: null })
+    patch({ error: null, runNotice: null, incomplete: null })
     lastRunErrorMessage = null
     usageTotals = emptyStepUsageTotals()
     pendingCancel = false
@@ -1018,12 +1118,13 @@ export function createChatStreamController(
     if (activeInvokeId != null) supersededInvokeIds.add(activeInvokeId)
     activeInvokeId = null
     turnSeq += 1
-    const content = buildUserContent(text, images)
+    const content = buildUserContent(text, images, files)
     const user: ChatMessage = { role: 'user', content }
     const priorMessages = state.messages
     const nextMessages = messagesForNextTurn([...priorMessages, user])
     const userItemId = messageUiId('user', nextMessages.length - 1)
     const imageUrls = contentImages(content)
+    const attachments = uiAttachments(content)
     const displayText = contentDisplayText(content)
     const sentAt = new Date().toISOString()
     patch({
@@ -1034,6 +1135,7 @@ export function createChatStreamController(
         role: 'user',
         content: displayText,
         images: imageUrls.length ? imageUrls : undefined,
+        attachments: attachments.length ? attachments : undefined,
         at: sentAt
       })
     })
@@ -1130,15 +1232,12 @@ export function createChatStreamController(
     awaitingRun = false
     pendingCancel = false
     patch({
-      messages: kept,
-      error: null,
+      ...hydrateFromDisk(kept, events),
       runId: null,
       pendingRun: false,
       running: false,
       runStartedAt: null,
-      runTerminalTick: state.runTerminalTick + 1,
-      activityRows: activityPanelRowsFromEvents(events),
-      items: applyEventTimestamps(messagesToUiItems(kept), events)
+      runTerminalTick: state.runTerminalTick + 1
     })
     onTerminal?.()
     return true
@@ -1208,16 +1307,7 @@ export function createChatStreamController(
     activeInvokeId = null
     usageTotals = emptyStepUsageTotals()
     toolContentCache.clear()
-    const cacheHint = summarizeStepUsageFromEvents(rows)
-    const contextUsage = summarizeContextUsageFromEvents(rows)
-    patch({
-      messages: kept,
-      error: errorFromPersisted(rows),
-      runCacheHint: cacheHint,
-      contextUsage,
-      activityRows: activityPanelRowsFromEvents(rows),
-      items: applyEventTimestamps(messagesToUiItems(kept), rows)
-    })
+    patch(hydrateFromDisk(kept, rows))
   }
 
   /** Replace session UI and cancel any in-flight run on this controller. */
@@ -1279,10 +1369,7 @@ export function createChatStreamController(
         if (eventsRes.ok) events = eventsRes.data
       }
       if (events.length > 0) {
-        patch({
-          items: applyEventTimestamps(state.items, events),
-          activityRows: activityPanelRowsFromEvents(events)
-        })
+        patch({ items: applyEventTimestamps(state.items, events) })
       }
       return
     }
@@ -1302,11 +1389,7 @@ export function createChatStreamController(
       if (eventsRes.ok) events = eventsRes.data
     }
     const kept = messagesForNextTurn(res.data.messages)
-    patch({
-      messages: kept,
-      items: applyEventTimestamps(messagesToUiItems(kept), events),
-      activityRows: activityPanelRowsFromEvents(events)
-    })
+    patch(hydrateFromDisk(kept, events))
   }
 
   const setToolExpanded = (toolCallId: string, expanded: boolean): void => {
@@ -1319,13 +1402,73 @@ export function createChatStreamController(
     })
   }
 
+  const setGroupExpanded = (anchorToolCallId: string, expanded: boolean): void => {
+    patch({
+      items: state.items.map((item) =>
+        item.kind === 'tool' && (item.id === anchorToolCallId || item.tool.id === anchorToolCallId)
+          ? { ...item, groupExpanded: expanded }
+          : item
+      )
+    })
+  }
+
+  const handleApprovalRequest = (request: ToolApprovalRequest): void => {
+    if (closedRuns.has(request.runId)) return
+    if (runId && request.runId !== runId) return
+
+    const approval = {
+      requestId: request.requestId,
+      toolName: request.name,
+      summary: request.summary,
+      argsPreview: request.argsPreview,
+      mutating: request.mutating
+    }
+    const idx = findToolRowIndex(state.items, request.toolCallId)
+    if (idx < 0 || state.items[idx]?.kind !== 'tool') {
+      // The row should already exist, but the loop is parked either way: show
+      // the prompt on a row of its own rather than stalling with no way out.
+      patch({
+        items: [
+          ...state.items,
+          {
+            kind: 'tool' as const,
+            id: request.toolCallId,
+            tool: {
+              id: request.toolCallId,
+              name: request.name,
+              summary: request.summary,
+              status: 'running' as const
+            },
+            approval
+          }
+        ]
+      })
+      return
+    }
+    patch({
+      items: replaceAt(state.items, idx, { ...state.items[idx], approval })
+    })
+  }
+
+  const respondToApproval = async (
+    requestId: string,
+    decision: ToolApprovalDecision
+  ): Promise<void> => {
+    patch({ items: clearApprovals(state.items, requestId) })
+    const res = await window.vyotiq?.respondToolApproval?.(requestId, decision)
+    if (res && !res.ok) {
+      logger.warn('Tool approval response rejected', {
+        scope: 'chat',
+        err: toLogErr(res.error)
+      })
+    }
+  }
+
   const clearError = (): void => {
     patch({ error: null })
   }
 
   const setThinkingExpanded = (messageId: string, expanded: boolean): void => {
-    if (expanded) thinkingCollapsedByUser.delete(messageId)
-    else thinkingCollapsedByUser.add(messageId)
     patch({
       items: state.items.map((item) =>
         item.kind === 'message' && item.id === messageId
@@ -1411,8 +1554,8 @@ export function createChatStreamController(
     get runNotice() {
       return state.runNotice
     },
-    get runCacheHint() {
-      return state.runCacheHint
+    get incomplete() {
+      return state.incomplete
     },
     get contextUsage() {
       return state.contextUsage
@@ -1429,9 +1572,6 @@ export function createChatStreamController(
     get transcriptLoading() {
       return state.transcriptLoading
     },
-    get activityRows() {
-      return state.activityRows
-    },
     workspacePath,
     send,
     stop,
@@ -1443,6 +1583,9 @@ export function createChatStreamController(
     loadToolContent,
     setThinkingExpanded,
     setToolExpanded,
+    setGroupExpanded,
+    handleApprovalRequest,
+    respondToApproval,
     syncFromDisk,
     handleEvent,
     subscribe,

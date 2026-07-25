@@ -1,9 +1,18 @@
 import type { ChatMessage, MessageContent, ModelInfo } from '../../../shared/ipc'
-import { contentToText } from '../../../shared/ipc'
+import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
 import type { AnthropicThinkingBlock } from '../../../shared/reasoning'
 import { baseModelInfo, parseDataUrl } from './normalize'
-import type { LlmProvider, ListModelsRequest, ProviderChatRequest, StreamChunk, ToolCall, TokenUsage } from './types'
+import type {
+  LlmProvider,
+  ListModelsRequest,
+  ProviderChatRequest,
+  StopReason,
+  StreamChunk,
+  ToolCall,
+  TokenUsage
+} from './types'
+import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
@@ -22,7 +31,7 @@ function mergeContent(a: unknown, b: unknown): Array<Record<string, unknown>> {
 function toAnthropicContent(content: MessageContent): string | Array<Record<string, unknown>> {
   if (typeof content === 'string') return content
   const blocks: Array<Record<string, unknown>> = []
-  for (const p of content) {
+  for (const p of providerContentParts(content)) {
     if (p.type === 'text') {
       blocks.push({ type: 'text', text: p.text })
       continue
@@ -442,33 +451,57 @@ export const anthropicProvider: LlmProvider = {
     const toolCalls = new Map<number, ToolCall>()
     let currentIndex = -1
     let lastUsage: TokenUsage | undefined
+    let stopReason: StopReason | undefined
     let compactionText = ''
     const thinkingBlocks: AnthropicThinkingBlock[] = []
     let currentThinkingText = ''
     let currentBlockType: 'thinking' | 'redacted_thinking' | null = null
 
-    for await (const event of iterateSseJson(res, req.signal)) {
+    const drops = { dropped: 0 }
+
+    function applyUsage(usage: Record<string, unknown> | undefined): void {
+      if (!usage) return
+      const hasInput = typeof usage.input_tokens === 'number'
+      const hasCacheRead = typeof usage.cache_read_input_tokens === 'number'
+      const hasCacheCreate = typeof usage.cache_creation_input_tokens === 'number'
+      const hasOutput = typeof usage.output_tokens === 'number'
+      const hasReasoning = typeof usage.thinking_tokens === 'number'
+
+      const baseInput = hasInput ? usage.input_tokens : (lastUsage?.inputTokens ?? 0)
+      const read = hasCacheRead ? usage.cache_read_input_tokens : (lastUsage?.cachedInputTokens ?? 0)
+      const created = hasCacheCreate ? usage.cache_creation_input_tokens : 0
+      const inputTokens =
+        hasInput || hasCacheRead || hasCacheCreate
+          ? (baseInput as number) + (read as number) + (created as number)
+          : lastUsage?.inputTokens
+      const outputTokens = hasOutput ? usage.output_tokens : lastUsage?.outputTokens
+      const cachedInputTokens = hasCacheRead
+        ? usage.cache_read_input_tokens
+        : lastUsage?.cachedInputTokens
+      const reasoningTokens = hasReasoning ? usage.thinking_tokens : lastUsage?.reasoningTokens
+
+      const next: TokenUsage = {
+        inputTokens: inputTokens as number | undefined,
+        outputTokens: outputTokens as number | undefined,
+        cachedInputTokens: cachedInputTokens as number | undefined,
+        reasoningTokens: reasoningTokens as number | undefined
+      }
+      if (next.inputTokens !== undefined && next.outputTokens !== undefined) {
+        next.totalTokens = next.inputTokens + next.outputTokens
+      }
+      lastUsage = next
+    }
+
+    for await (const event of iterateSseJson(res, req.signal, drops)) {
       const type = event.type as string
+      if (type === 'message_start') {
+        const message = event.message as Record<string, unknown> | undefined
+        applyUsage(message?.usage as Record<string, unknown> | undefined)
+      }
       if (type === 'message_delta') {
-        const usage = event.usage as Record<string, unknown> | undefined
-        if (usage) {
-          const cacheRead =
-            typeof usage.cache_read_input_tokens === 'number'
-              ? usage.cache_read_input_tokens
-              : undefined
-          const reasoningTokens =
-            typeof usage.thinking_tokens === 'number' ? usage.thinking_tokens : undefined
-          lastUsage = {
-            inputTokens: typeof usage.input_tokens === 'number' ? usage.input_tokens : undefined,
-            outputTokens:
-              typeof usage.output_tokens === 'number' ? usage.output_tokens : undefined,
-            cachedInputTokens: cacheRead,
-            reasoningTokens
-          }
-          if (lastUsage.inputTokens !== undefined && lastUsage.outputTokens !== undefined) {
-            lastUsage.totalTokens = lastUsage.inputTokens + lastUsage.outputTokens
-          }
-        }
+        const delta = event.delta as Record<string, unknown> | undefined
+        if (delta?.stop_reason) stopReason = normalizeStopReason(delta.stop_reason)
+        applyUsage(event.usage as Record<string, unknown> | undefined)
       }
       if (type === 'content_block_delta') {
         const delta = event.delta as Record<string, unknown>
@@ -559,6 +592,8 @@ export const anthropicProvider: LlmProvider = {
     yield {
       type: 'done',
       usage: lastUsage,
+      stopReason,
+      malformedChunks: drops.dropped || undefined,
       compaction: compactionText.trim() || undefined,
       reasoningState:
         thinkingBlocks.length > 0

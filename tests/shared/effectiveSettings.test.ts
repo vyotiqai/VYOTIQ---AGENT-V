@@ -38,8 +38,17 @@ describe('resolveEffectiveSettings', () => {
       showThinking: false,
       compactionTriggerRatio: 0.85,
       keepRecentTurns: 20,
-      memoryAutoPromote: false
+      memoryAutoPromote: false,
+      toolApproval: DEFAULT_SETTINGS.toolApproval
     })
+  })
+
+  it('takes the tool approval policy from the workspace override', () => {
+    const effective = resolveEffectiveSettings(DEFAULT_SETTINGS, {
+      useOverride: true,
+      toolApproval: { mode: 'mutating', allowlist: ['terminal'] }
+    })
+    expect(effective.toolApproval).toEqual({ mode: 'mutating', allowlist: ['terminal'] })
   })
 
   it('falls back to global for missing override fields', () => {

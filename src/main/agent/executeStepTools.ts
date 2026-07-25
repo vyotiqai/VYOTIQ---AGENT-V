@@ -6,6 +6,8 @@ import { toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
 import type { ToolCall } from './providers/types'
 import { executeTool } from '@main/agent/tools'
 import { isReadOnlyTool, MAX_PARALLEL_READ_TOOLS } from './tools/classify'
+import { repairToolArgs } from './toolArgsRepair'
+import type { ToolApprovalGate } from './toolApproval'
 
 export type ToolStepContext = {
   runId: string
@@ -18,24 +20,44 @@ export type ToolStepContext = {
   failedToolKeys?: Map<string, number>
   /** Override parallel read batch size (e.g. 1 after consecutive failure steps). */
   maxParallelReadTools?: number
+  /** Present only when the workspace opted into tool approval. */
+  approval?: ToolApprovalGate
+  /** Streams events while a tool is still running (sub-agent progress). */
+  emitLiveEvent?: (ev: AgentEvent) => void
 }
 
-function repeatFailureHint(
+/**
+ * Applied in call order after a batch settles, not inside the parallel workers:
+ * whichever call happens to finish first should not decide who gets the hint.
+ */
+function applyRepeatFailureHint(
   ctx: ToolStepContext,
-  call: ToolCall,
-  summary: string,
-  content: string,
-  ok: boolean
-): string {
-  if (ok || !ctx.failedToolKeys || !isExpectedToolError(content)) return content
-  const key = `${call.name}:${summary}`
+  outcome: ToolOutcome
+): ToolOutcome {
+  const key = outcome.failureKey
+  if (!key || !ctx.failedToolKeys) return outcome
   const count = (ctx.failedToolKeys.get(key) ?? 0) + 1
   ctx.failedToolKeys.set(key, count)
-  if (count < 2) return content
-  return [
-    `[Repeated failure #${count} for ${summary} — stop guessing paths; read README/manifests, then use search or dir.]`,
-    content
-  ].join('\n')
+  if (count < 2) return outcome
+
+  const summary = key.slice(key.indexOf(':') + 1)
+  const prefix = `[Repeated failure #${count} for ${summary} — stop guessing paths; read README/manifests, then use search or dir.]`
+  const withHint = (text: string): string => [prefix, text].join('\n')
+
+  return {
+    ...outcome,
+    message: {
+      ...outcome.message,
+      content: withHint(
+        typeof outcome.message.content === 'string' ? outcome.message.content : ''
+      )
+    },
+    events: outcome.events.map((ev) =>
+      ev.type === 'tool_result' && ev.content !== undefined
+        ? { ...ev, content: withHint(ev.content) }
+        : ev
+    )
+  }
 }
 
 function isMalformedToolCall(call: ToolCall): string | null {
@@ -49,15 +71,45 @@ function isMalformedToolCall(call: ToolCall): string | null {
   return null
 }
 
-async function runSingleTool(
-  call: ToolCall,
-  ctx: ToolStepContext
-): Promise<{
+/**
+ * A truncated stream leaves structurally unfinished arguments that are still
+ * usable once the punctuation is closed. Repair before validation so one lost
+ * frame does not cost the model a whole tool call.
+ */
+function withRepairedArguments(call: ToolCall, ctx: ToolStepContext): ToolCall {
+  const raw = call.arguments || '{}'
+  try {
+    JSON.parse(raw)
+    return call
+  } catch {
+    const repaired = repairToolArgs(raw)
+    if (!repaired) return call
+    logger.warn('Repaired truncated tool call arguments', {
+      scope: 'agent',
+      code: 'TOOL_ARGS',
+      correlationId: ctx.runId,
+      tool: call.name || 'unknown'
+    })
+    return { ...call, arguments: repaired }
+  }
+}
+
+type ToolOutcome = {
   ok: boolean
   events: AgentEvent[]
   message: ChatMessage
-}> {
+  /** `name:summary` when this was an expected failure eligible for a repeat hint. */
+  failureKey?: string
+}
+
+function emitToolStart(ctx: ToolStepContext, event: AgentEvent): void {
+  ctx.appendEvent(event)
+  ctx.emitLiveEvent?.(event)
+}
+
+async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<ToolOutcome> {
   const events: AgentEvent[] = []
+  const call = withRepairedArguments(rawCall, ctx)
   const malformed = isMalformedToolCall(call)
   if (malformed) {
     logger.warn('Malformed tool call', {
@@ -70,7 +122,8 @@ async function runSingleTool(
       role: 'tool',
       toolCallId: call.id,
       toolName: call.name || 'unknown',
-      content: malformed
+      content: malformed,
+      ok: false
     }
     events.push(
       {
@@ -90,8 +143,7 @@ async function runSingleTool(
         content: malformed
       }
     )
-    ctx.appendEvent(events[0]!)
-    ctx.appendEvent(toolResultEventForPersistence(events[1]!))
+    emitToolStart(ctx, events[0]!)
     return { ok: false, events, message: toolMsg }
   }
 
@@ -103,27 +155,65 @@ async function runSingleTool(
     name: call.name,
     summary
   })
-  ctx.appendEvent(events[0])
+  emitToolStart(ctx, events[0]!)
 
   try {
-    const result = await executeTool(call.name, call.arguments, ctx.workspace, ctx.signal)
-    const content = repeatFailureHint(ctx, call, result.summary || summary, result.content, result.ok)
+    // Ask before doing anything: the tool_start event is already out, so the
+    // renderer can show the approval card in the row the user is looking at.
+    if (ctx.approval) {
+      const verdict = await ctx.approval.authorize(call)
+      if (!verdict.allowed) {
+        const toolMsg: ChatMessage = {
+          role: 'tool',
+          toolCallId: call.id,
+          toolName: call.name,
+          content: verdict.reason,
+          ok: false
+        }
+        events.push({
+          type: 'tool_result',
+          runId: ctx.runId,
+          toolCallId: call.id,
+          name: call.name,
+          summary: 'denied',
+          ok: false,
+          content: verdict.reason
+        })
+        return { ok: false, events, message: toolMsg }
+      }
+    }
+
+    const result = await executeTool(call.name, call.arguments, ctx.workspace, ctx.signal, {
+      runDir: ctx.runDir,
+      onProgress: ctx.emitLiveEvent
+        ? (update) =>
+            ctx.emitLiveEvent?.({
+              type: 'subagent_update',
+              runId: ctx.runId,
+              parentToolCallId: call.id,
+              kind: update.kind,
+              text: update.text
+            })
+        : undefined
+    })
+    const content = result.content
+    const resultSummary = result.summary || summary
     const toolMsg: ChatMessage = {
       role: 'tool',
       toolCallId: call.id,
       toolName: call.name,
-      content
+      content,
+      ok: result.ok
     }
     events.push({
       type: 'tool_result',
       runId: ctx.runId,
       toolCallId: call.id,
       name: call.name,
-      summary: result.summary || summary,
+      summary: resultSummary,
       ok: result.ok,
       content
     })
-    ctx.appendEvent(toolResultEventForPersistence(events[1]!))
     if (!result.ok && !result.failureLogged) {
       logger.warn('Tool returned failure', {
         scope: 'agent',
@@ -132,14 +222,21 @@ async function runSingleTool(
         tool: call.name
       })
     }
-    return { ok: result.ok, events, message: toolMsg }
+    return {
+      ok: result.ok,
+      events,
+      message: toolMsg,
+      failureKey:
+        !result.ok && isExpectedToolError(content) ? `${call.name}:${resultSummary}` : undefined
+    }
   } catch (err) {
     if (isAbortError(err)) {
       const toolMsg: ChatMessage = {
         role: 'tool',
         toolCallId: call.id,
         toolName: call.name,
-        content: 'Cancelled'
+        content: 'Cancelled',
+        ok: false
       }
       events.push({
         type: 'tool_result',
@@ -150,23 +247,26 @@ async function runSingleTool(
         ok: false,
         content: 'Cancelled'
       })
-      ctx.appendEvent(toolResultEventForPersistence(events[events.length - 1]!))
       return { ok: false, events, message: toolMsg }
     }
     throw err
   }
 }
 
-function cancelledToolResult(call: ToolCall, ctx: ToolStepContext): {
-  ok: boolean
-  events: AgentEvent[]
-  message: ChatMessage
-} {
+/** Write the settled result to disk once the repeat-failure hint has been applied. */
+function persistToolResult(ctx: ToolStepContext, outcome: ToolOutcome): void {
+  for (const ev of outcome.events) {
+    if (ev.type === 'tool_result') ctx.appendEvent(toolResultEventForPersistence(ev))
+  }
+}
+
+function cancelledToolResult(call: ToolCall, ctx: ToolStepContext): ToolOutcome {
   const toolMsg: ChatMessage = {
     role: 'tool',
     toolCallId: call.id,
     toolName: call.name,
-    content: 'Cancelled'
+    content: 'Cancelled',
+    ok: false
   }
   const startEv: AgentEvent = {
     type: 'tool_start',
@@ -184,8 +284,7 @@ function cancelledToolResult(call: ToolCall, ctx: ToolStepContext): {
     ok: false,
     content: 'Cancelled'
   }
-  ctx.appendEvent(startEv)
-  ctx.appendEvent(toolResultEventForPersistence(ev))
+  emitToolStart(ctx, startEv)
   return { ok: false, events: [startEv, ev], message: toolMsg }
 }
 
@@ -193,8 +292,8 @@ async function runParallelBatch(
   calls: ToolCall[],
   ctx: ToolStepContext,
   parallelLimit: number
-): Promise<Map<string, { ok: boolean; events: AgentEvent[]; message: ChatMessage }>> {
-  const results = new Map<string, { ok: boolean; events: AgentEvent[]; message: ChatMessage }>()
+): Promise<Map<string, ToolOutcome>> {
+  const results = new Map<string, ToolOutcome>()
   let index = 0
   const workers = Array.from({ length: Math.min(parallelLimit, calls.length) }, async () => {
     while (index < calls.length) {
@@ -245,14 +344,17 @@ export async function executeStepToolCalls(
   }
   flushReadBatch()
 
+  const collect = (outcome: ToolOutcome): void => {
+    const final = applyRepeatFailureHint(ctx, outcome)
+    persistToolResult(ctx, final)
+    messages.push(final.message)
+    events.push(...final.events)
+    if (!final.ok) stepToolsOk = false
+  }
+
   for (const group of groups) {
     if (ctx.signal.aborted) {
-      for (const call of group) {
-        const cancelled = cancelledToolResult(call, ctx)
-        messages.push(cancelled.message)
-        events.push(...cancelled.events)
-        stepToolsOk = false
-      }
+      for (const call of group) collect(cancelledToolResult(call, ctx))
       continue
     }
 
@@ -260,24 +362,15 @@ export async function executeStepToolCalls(
     if (parallel) {
       const batch = await runParallelBatch(group, ctx, parallelLimit)
       for (const call of group) {
-        const result = batch.get(call.id) ?? cancelledToolResult(call, ctx)
-        messages.push(result.message)
-        events.push(...result.events)
-        if (!result.ok) stepToolsOk = false
+        collect(batch.get(call.id) ?? cancelledToolResult(call, ctx))
       }
     } else {
       for (const call of group) {
         if (ctx.signal.aborted) {
-          const cancelled = cancelledToolResult(call, ctx)
-          messages.push(cancelled.message)
-          events.push(...cancelled.events)
-          stepToolsOk = false
+          collect(cancelledToolResult(call, ctx))
           continue
         }
-        const result = await runSingleTool(call, ctx)
-        messages.push(result.message)
-        events.push(...result.events)
-        if (!result.ok) stepToolsOk = false
+        collect(await runSingleTool(call, ctx))
       }
     }
   }

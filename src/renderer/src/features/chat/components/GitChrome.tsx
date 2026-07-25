@@ -1,0 +1,180 @@
+import { useCallback, useState } from 'react'
+import { Icon } from '@renderer/lib/icons'
+import { cn } from '@renderer/lib/ui'
+import { FLOATING_CHROME } from '@renderer/lib/utils/layout'
+import type { GitStatus } from '@shared/ipc'
+import { useGitStatus } from './useGitStatus'
+
+const PILL =
+  'inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-2.5 py-1 text-[11px] vy-transition'
+
+export type GitChrome = {
+  status: GitStatus | null
+  ready: boolean
+  busy: boolean
+  notice: string | null
+  refresh: () => void
+  commit: (message: string, push: boolean) => Promise<void>
+}
+
+/** Commit messages are the user's to write; this is only a starting point. */
+function defaultMessage(status: GitStatus): string {
+  const first = status.files[0]
+  if (status.fileCount === 1 && first) return `Update ${first.path}`
+  return `Update ${status.fileCount} files`
+}
+
+/**
+ * The workspace's git state plus the one action we offer on it.
+ *
+ * Held by the chat view rather than by each piece of chrome, because the branch
+ * strip and the change pills are far apart on screen but describe the same
+ * repository, and asking git twice for that would be wasteful.
+ */
+export function useGitChrome(
+  workspacePath: string | null,
+  revision: number,
+  enabled = true
+): GitChrome {
+  const { status, loading, refresh } = useGitStatus(workspacePath, revision, enabled)
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  const commit = useCallback(
+    async (message: string, push: boolean) => {
+      if (!workspacePath || !message.trim() || busy) return
+      setBusy(true)
+      setNotice(null)
+      try {
+        const result = await window.vyotiq.gitCommit(workspacePath, message.trim(), push)
+        setNotice(result.ok ? result.data.detail : result.error)
+      } finally {
+        setBusy(false)
+        refresh()
+      }
+    },
+    [workspacePath, busy, refresh]
+  )
+
+  return { status, ready: !loading && Boolean(status), busy, notice, refresh, commit }
+}
+
+/**
+ * How much the working tree has moved, and the way to commit it.
+ *
+ * Floats over the end of the transcript so the size of a change is visible
+ * without scrolling, in the same place the terminal count and the
+ * scroll-to-bottom control sit.
+ */
+export function GitChangePills({ chrome }: { chrome: GitChrome }) {
+  const { status, ready, busy, notice, commit } = chrome
+  const [composing, setComposing] = useState(false)
+  const [message, setMessage] = useState('')
+
+  const open = useCallback(() => {
+    if (!status) return
+    setMessage((current) => current || defaultMessage(status))
+    setComposing(true)
+  }, [status])
+
+  const send = useCallback(
+    (push: boolean) => {
+      void commit(message, push).then(() => {
+        setMessage('')
+        setComposing(false)
+      })
+    },
+    [commit, message]
+  )
+
+  if (!ready || !status || status.fileCount === 0) return null
+
+  return (
+    <div className="flex flex-col items-start gap-1.5">
+      {composing ? (
+        <div className={cn(FLOATING_CHROME, 'flex w-full items-center gap-1.5 p-1.5')}>
+          <input
+            type="text"
+            value={message}
+            autoFocus
+            className="min-w-0 flex-1 rounded-md bg-transparent px-1.5 py-1 text-xs text-fg outline-none focus-visible:vy-focus-ring"
+            placeholder="Commit message"
+            aria-label="Commit message"
+            onChange={(event) => setMessage(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') send(false)
+              if (event.key === 'Escape') setComposing(false)
+            }}
+          />
+          <button
+            type="button"
+            className={cn(PILL, 'text-fg hover:bg-surface-2')}
+            disabled={busy || !message.trim()}
+            onClick={() => send(false)}
+          >
+            Commit
+          </button>
+          {status.hasRemote ? (
+            <button
+              type="button"
+              className={cn(PILL, 'text-fg hover:bg-surface-2')}
+              disabled={busy || !message.trim()}
+              onClick={() => send(true)}
+            >
+              Commit &amp; Push
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="flex items-center gap-1.5 text-tertiary">
+        <span className={cn(PILL, 'tabular-nums')}>
+          <span>Changes</span>
+          {status.added > 0 ? <span className="text-success">+{status.added}</span> : null}
+          {status.removed > 0 ? <span className="text-danger">-{status.removed}</span> : null}
+        </span>
+
+        <button
+          type="button"
+          className={cn(PILL, 'text-fg hover:bg-surface-2')}
+          onClick={() => (composing ? setComposing(false) : open())}
+          aria-expanded={composing}
+          aria-label="Write a commit message"
+        >
+          {status.hasRemote ? 'Commit & Push' : 'Commit'}
+          <Icon
+            name="chevronRight"
+            size={11}
+            className={cn('vy-transition', composing ? 'rotate-90' : '-rotate-90')}
+          />
+        </button>
+
+        {notice ? <span className="px-1 text-[11px]">{notice}</span> : null}
+      </div>
+    </div>
+  )
+}
+
+/** The repository line under the composer: which branch, and a way to re-read it. */
+export function GitBranchStrip({ chrome }: { chrome: GitChrome }) {
+  const { status, ready, refresh } = chrome
+  if (!ready || !status) return null
+
+  return (
+    <div className="flex items-center gap-2 px-1 text-[11px] text-tertiary">
+      <span className="inline-flex items-center gap-1.5">
+        <Icon name="branch" size={12} />
+        <span className="max-w-[24ch] truncate text-fg">{status.branch ?? 'detached'}</span>
+      </span>
+
+      <button
+        type="button"
+        className="ml-auto inline-grid size-6 place-items-center rounded-sm vy-transition hover:bg-surface hover:text-fg"
+        onClick={refresh}
+        aria-label="Refresh git status"
+      >
+        <Icon name="refresh" size={12} />
+      </button>
+    </div>
+  )
+}

@@ -7,7 +7,9 @@ import {
   type SecretProvider,
   type Settings,
   type ThemeId,
-  type WorkspaceSettingsOverride
+  type ToolApprovalMode,
+  type WorkspaceSettingsOverride,
+  DEFAULT_TOOL_APPROVAL
 } from '@shared/ipc'
 import type { EffectiveChatSettings } from '@shared/effectiveSettings'
 import {
@@ -75,6 +77,12 @@ const THEME_OPTIONS = [
   { value: 'system', label: 'System' },
   { value: 'dark', label: 'Dark' },
   { value: 'light', label: 'Light' }
+]
+
+const TOOL_APPROVAL_OPTIONS = [
+  { value: 'off', label: 'Off' },
+  { value: 'mutating', label: 'Ask for edits and commands' },
+  { value: 'all', label: 'Ask for every tool' }
 ]
 
 const ACTIVE_PROVIDER_OPTIONS = PROVIDER_DEFAULTS.map((p) => ({
@@ -670,6 +678,8 @@ export function SettingsView({
     () => SECRET_PROVIDERS.filter((p) => secrets[p]).length,
     [secrets]
   )
+
+  const toolApproval = settings.toolApproval ?? DEFAULT_TOOL_APPROVAL
 
   const runUpdate = async (partial: Partial<Settings>): Promise<boolean> => {
     clearErrors()
@@ -1298,6 +1308,38 @@ export function SettingsView({
                     }}
                   />
                   {fieldError('keepTurns', 'keep-turns-error')}
+                </SettingsRow>
+
+                <SettingsRow
+                  title="Tool approval"
+                  description="Ask before the agent runs tools. Off by default; allowlisted tools never ask."
+                >
+                  <div className="flex items-center gap-2">
+                    <Menu
+                      aria-label="Tool approval"
+                      value={toolApproval.mode}
+                      options={TOOL_APPROVAL_OPTIONS}
+                      searchable={false}
+                      placement="down"
+                      disabled={formLocked}
+                      onChange={(v) => {
+                        void runUpdate({
+                          toolApproval: { ...toolApproval, mode: v as ToolApprovalMode }
+                        })
+                      }}
+                    />
+                    {toolApproval.allowlist.length > 0 ? (
+                      <Button
+                        variant="subtle"
+                        disabled={formLocked}
+                        onClick={() => {
+                          void runUpdate({ toolApproval: { ...toolApproval, allowlist: [] } })
+                        }}
+                      >
+                        Clear {toolApproval.allowlist.length} allowed
+                      </Button>
+                    ) : null}
+                  </div>
                 </SettingsRow>
 
                 <SettingsRow

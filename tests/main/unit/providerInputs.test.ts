@@ -58,18 +58,62 @@ describe('OpenAI Responses input', () => {
 })
 
 describe('Gemini Interactions input', () => {
-  it('sends only trailing tool text on continuation', () => {
+  it('sends only trailing tool results on continuation, as native function responses', () => {
     const messages = [
       { role: 'user' as const, content: 'hi' },
       { role: 'tool' as const, toolCallId: 'c1', toolName: 'read', content: 'ok' }
     ]
     const input = toInteractionsInput(messages, 'system', true)
-    expect(input).toBe('[tool:read] ok')
+    expect(input).toEqual([
+      {
+        type: 'function_response',
+        function_response: { id: 'c1', name: 'read', response: { output: 'ok' } }
+      }
+    ])
+  })
+
+  it('keeps user images as inline data instead of flattening them away', () => {
+    const messages = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'text' as const, text: 'what is this' },
+          { type: 'image_url' as const, url: 'data:image/png;base64,AAAA' }
+        ]
+      }
+    ]
+    const input = toInteractionsInput(messages, undefined, false)
+    expect(input).toEqual([
+      { type: 'text', text: 'what is this' },
+      { type: 'inline_data', inline_data: { mime_type: 'image/png', data: 'AAAA' } }
+    ])
   })
 
   it('serializes object tool args as JSON', () => {
     expect(serializeToolArgs({ path: '/tmp' })).toBe('{"path":"/tmp"}')
     expect(serializeToolArgs('[object Object]')).toBe('[object Object]')
+  })
+})
+
+describe('OpenAI Responses multimodal input', () => {
+  it('sends images as input_image parts instead of dropping them', () => {
+    const messages = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'text' as const, text: 'describe' },
+          { type: 'image_url' as const, url: 'data:image/png;base64,AAAA' }
+        ]
+      }
+    ]
+    const input = toResponsesInput(messages, undefined)
+    expect(input[0]).toEqual({
+      role: 'user',
+      content: [
+        { type: 'input_text', text: 'describe' },
+        { type: 'input_image', image_url: 'data:image/png;base64,AAAA' }
+      ]
+    })
   })
 })
 

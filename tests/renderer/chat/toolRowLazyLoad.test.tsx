@@ -1,17 +1,20 @@
 /** @vitest-environment jsdom */
-import { describe, expect, it, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { ToolRow } from '@renderer/features/chat/components/ToolRow'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, render, waitFor } from '@testing-library/react'
+import { ToolRowOutput } from '@renderer/features/chat/components/ToolRow'
 import { TOOL_RESULT_IPC_PREVIEW_CHARS } from '@shared/utils/toolResultIpc'
 
-describe('ToolRow lazy load', () => {
-  it('fetches full content when expanding a truncated tool result', async () => {
+afterEach(() => {
+  cleanup()
+})
+
+describe('ToolRowOutput lazy load', () => {
+  it('fetches full content when a truncated tool result is shown', async () => {
     const preview = `${'x'.repeat(TOOL_RESULT_IPC_PREVIEW_CHARS)}\n…`
-    const full = 'x'.repeat(TOOL_RESULT_IPC_PREVIEW_CHARS + 800)
-    const load = vi.fn().mockResolvedValue(full)
+    const load = vi.fn().mockResolvedValue('x'.repeat(TOOL_RESULT_IPC_PREVIEW_CHARS + 800))
 
     render(
-      <ToolRow
+      <ToolRowOutput
         tool={{
           id: 'call-1',
           name: 'read',
@@ -24,8 +27,6 @@ describe('ToolRow lazy load', () => {
       />
     )
 
-    fireEvent.click(screen.getByLabelText('Show tool details'))
-
     await waitFor(() => {
       expect(load).toHaveBeenCalledWith('call-1')
     })
@@ -35,7 +36,7 @@ describe('ToolRow lazy load', () => {
     const load = vi.fn()
 
     render(
-      <ToolRow
+      <ToolRowOutput
         tool={{
           id: 'call-2',
           name: 'read',
@@ -47,7 +48,6 @@ describe('ToolRow lazy load', () => {
       />
     )
 
-    fireEvent.click(screen.getByLabelText('Show tool details'))
     expect(load).not.toHaveBeenCalled()
   })
 })

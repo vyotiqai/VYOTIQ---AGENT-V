@@ -1,6 +1,6 @@
 import { app } from 'electron'
 import { existsSync, mkdirSync, readFileSync } from 'fs'
-import { basename, join } from 'path'
+import { basename, isAbsolute, join, relative, resolve } from 'path'
 import { logger } from '../../shared/logger'
 import { canonicalizeWorkspacePath } from '../../shared/workspacePath'
 import { workspaceIdFromCanonical, workspaceIdFromPath } from '../../shared/workspaceId'
@@ -38,8 +38,18 @@ export function workspaceSessionsRoot(workspacePath: string): string {
   return join(workspaceMetaDir(workspaceId(canonical)), 'sessions')
 }
 
+/**
+ * A run id is attacker-controllable over IPC and ends up in `rmSync`/`writeFileSync`,
+ * so the resolved directory must stay a direct child of the sessions root.
+ */
 export function resolveRunDir(workspacePath: string, runId: string): string {
-  return join(workspaceSessionsRoot(workspacePath), runId)
+  const root = workspaceSessionsRoot(workspacePath)
+  const dir = resolve(root, runId)
+  const rel = relative(root, dir)
+  if (!rel || rel.startsWith('..') || isAbsolute(rel) || rel !== basename(rel)) {
+    throw new Error(`Invalid run id: ${runId}`)
+  }
+  return dir
 }
 
 export function readWorkspaceMeta(workspacePath: string): WorkspaceMeta | null {

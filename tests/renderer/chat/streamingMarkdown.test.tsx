@@ -6,7 +6,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import {
   MarkdownContent,
   balanceIncompleteMarkdown,
-  prepareStreamingMarkdown
+  prepareStreamingMarkdown,
+  trailingOpenFenceBody
 } from '@renderer/lib/ui/MarkdownContent'
 
 beforeEach(() => {
@@ -33,9 +34,61 @@ describe('prepareStreamingMarkdown', () => {
   })
 })
 
+describe('prepareStreamingMarkdown fence nesting', () => {
+  it('does not open a stray tilde fence for a tilde line inside a backtick fence', () => {
+    expect(prepareStreamingMarkdown('```\n~~~\nstill inside')).toBe('```\n~~~\nstill inside\n```')
+  })
+
+  it('closes a four-backtick fence with a matching four-backtick marker', () => {
+    expect(prepareStreamingMarkdown('````md\n```js\nconst x = 1\n```')).toBe(
+      '````md\n```js\nconst x = 1\n```\n````'
+    )
+  })
+
+  it('leaves a closed indented fence alone', () => {
+    expect(prepareStreamingMarkdown('  ```js\n  const x = 1\n  ```')).toBe(
+      '  ```js\n  const x = 1\n  ```'
+    )
+  })
+
+  it('ignores a fence marker that carries an info string as a closer', () => {
+    expect(prepareStreamingMarkdown('```js\nconst x = 1\n```ts\nlet y = 2\n```')).toBe(
+      '```js\nconst x = 1\n```ts\nlet y = 2\n```'
+    )
+  })
+})
+
+describe('trailingOpenFenceBody', () => {
+  it('returns nothing when every fence is closed', () => {
+    expect(trailingOpenFenceBody('```js\nconst x = 1\n```\ndone')).toBeNull()
+  })
+
+  it('returns only the body of the fence still streaming', () => {
+    expect(trailingOpenFenceBody('```js\nconst x = 1\n```\n\n```ts\nlet y')).toBe('let y')
+  })
+
+  it('ignores a tilde fence inside an open backtick fence', () => {
+    expect(trailingOpenFenceBody('```\n~~~\nstill inside')).toBe('~~~\nstill inside')
+  })
+})
+
 describe('balanceIncompleteMarkdown', () => {
   it('balances bold outside fences when a stream completes', () => {
     expect(balanceIncompleteMarkdown('Partial **bold')).toBe('Partial **bold**')
+  })
+
+  it('ignores backticks that live inside a closed fence', () => {
+    expect(balanceIncompleteMarkdown('```\nfoo ` bar\n```')).toBe('```\nfoo ` bar\n```')
+  })
+
+  it('ignores asterisks that live inside a closed fence', () => {
+    expect(balanceIncompleteMarkdown('```\na ** b\n```')).toBe('```\na ** b\n```')
+  })
+
+  it('still balances bold that follows a closed fence', () => {
+    expect(balanceIncompleteMarkdown('```\ncode\n```\n\nthen **bold')).toBe(
+      '```\ncode\n```\n\nthen **bold**'
+    )
   })
 })
 
@@ -119,6 +172,58 @@ describe('MarkdownContent streaming', () => {
 
     expect(screen.getByText('const y = 2')).toBeTruthy()
     expect(screen.queryByText('~~~')).toBeNull()
+  })
+
+  it('highlights a fence that already closed while a later one still streams', async () => {
+    const { container } = render(
+      <MarkdownContent
+        content={'```js\nconst done = 1\n```\n\n```js\nconst still'}
+        streaming
+      />
+    )
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('pre.shiki').length).toBe(1)
+    })
+    expect(container.querySelectorAll('pre').length).toBe(2)
+    expect(screen.getByText('const still')).toBeTruthy()
+  })
+
+  it('keeps a finished code block highlighted as later tokens arrive', async () => {
+    const { container, rerender } = render(
+      <MarkdownContent content={'```js\nconst done = 1\n```\n\n```js\nconst still'} streaming />
+    )
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('pre.shiki').length).toBe(1)
+    })
+
+    rerender(
+      <MarkdownContent content={'```js\nconst done = 1\n```\n\n```js\nconst still = 2'} streaming />
+    )
+
+    expect(container.querySelectorAll('pre.shiki').length).toBe(1)
+  })
+
+  it('never shows a stale highlight from previous content', async () => {
+    const { container, rerender } = render(
+      <MarkdownContent content={'```js\nconst first = 1\n```'} streaming={false} />
+    )
+
+    await waitFor(() => {
+      expect(container.querySelector('pre.shiki')).toBeTruthy()
+    })
+
+    rerender(<MarkdownContent content={'```js\nconst second = 2\n```'} streaming={false} />)
+
+    expect(container.textContent).not.toContain('const first = 1')
+    expect(container.textContent).toContain('const second = 2')
+  })
+
+  it('renders one code block for a tilde line inside a streaming backtick fence', () => {
+    const { container } = render(<MarkdownContent content={'```\n~~~\nstill inside'} streaming />)
+
+    expect(container.querySelectorAll('pre').length).toBe(1)
   })
 
   it('does not leak react-markdown node props onto code elements', () => {

@@ -4,6 +4,9 @@ import type {
   ChatMessage,
   ChatStartRequest,
   ChatStartResult,
+  CompactRunResult,
+  GitCommitResult,
+  GitStatus,
   IpcResult,
   ListModelsResult,
   ListRunsResult,
@@ -14,6 +17,10 @@ import type {
   SecretsStatus,
   Settings,
   TelemetryStatus,
+  ToolApprovalDecision,
+  ToolApprovalRequest,
+  ExtractAttachmentRequest,
+  ExtractAttachmentResult,
   McpStatusResult,
   WorkspaceSettingsOverride,
   WorkspacesState,
@@ -53,7 +60,16 @@ export interface VyotiqApi {
   }) => Promise<IpcResult<ListModelsResult>>
   chatStart: (payload: ChatStartRequest) => Promise<IpcResult<ChatStartResult>>
   chatCancel: (runId: string) => Promise<IpcResult<true>>
+  chatCompact: (workspacePath: string, runId: string) => Promise<IpcResult<CompactRunResult>>
   onChatEvent: (handler: (event: AgentEvent) => void) => () => void
+  onToolApprovalRequest: (handler: (request: ToolApprovalRequest) => void) => () => void
+  respondToolApproval: (
+    requestId: string,
+    decision: ToolApprovalDecision
+  ) => Promise<IpcResult<boolean>>
+  extractAttachment: (
+    payload: ExtractAttachmentRequest
+  ) => Promise<IpcResult<ExtractAttachmentResult>>
   listRuns: (workspacePath: string) => Promise<IpcResult<ListRunsResult>>
   loadRun: (
     workspacePath: string,
@@ -75,6 +91,13 @@ export interface VyotiqApi {
     goal: string
   ) => Promise<IpcResult<RunSummary>>
   listActiveRuns: () => Promise<IpcResult<ActiveRunsResult>>
+  /** Resolves to null when the workspace is not a git repository. */
+  gitStatus: (workspacePath: string) => Promise<IpcResult<GitStatus | null>>
+  gitCommit: (
+    workspacePath: string,
+    message: string,
+    push: boolean
+  ) => Promise<IpcResult<GitCommitResult>>
   openHarness: () => Promise<IpcResult<true>>
   windowMinimize: () => Promise<IpcResult<true>>
   windowMaximize: () => Promise<IpcResult<boolean>>

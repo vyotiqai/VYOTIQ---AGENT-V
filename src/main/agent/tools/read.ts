@@ -8,12 +8,16 @@ import {
 import { basename, dirname, join } from 'path'
 
 const MAX_BYTES = 512 * 1024
+/** Line slicing needs the whole file in memory, so it gets a wider but finite cap. */
+const LINE_RANGE_MAX_BYTES = 8 * 1024 * 1024
 const DIR_LIST_CAP = 80
 const SUGGEST_CAP = 8
 
 export type ReadOptions = {
   offset?: number
   limit?: number
+  startLine?: number
+  endLine?: number
 }
 
 function listDirectoryEntries(resolved: string, relPath: string): string {
@@ -92,6 +96,10 @@ export function toolRead(
     throw new Error(`Not a file: ${pathArg}`)
   }
 
+  if (options.startLine !== undefined || options.endLine !== undefined) {
+    return readLineRange(resolved, pathArg, st.size, options)
+  }
+
   const offset = Math.max(0, options.offset ?? 0)
   const limit = options.limit
 
@@ -104,7 +112,7 @@ export function toolRead(
 
   if (st.size > MAX_BYTES) {
     throw new Error(
-      `File too large (${st.size} bytes, cap ${MAX_BYTES}). Use offset/limit to read a portion.`
+      `File too large (${st.size} bytes, cap ${MAX_BYTES}). Use startLine/endLine to read a portion.`
     )
   }
   const buf = readFileSync(resolved)
@@ -112,4 +120,45 @@ export function toolRead(
     throw new Error(`Binary file detected: ${pathArg}. Read is text-only.`)
   }
   return buf.toString('utf8')
+}
+
+/**
+ * Read an inclusive, 1-based line range. The header states the range actually
+ * returned, which is both what the model needs to cite and what the transcript
+ * shows next to the file name.
+ */
+function readLineRange(
+  resolved: string,
+  pathArg: string,
+  size: number,
+  options: ReadOptions
+): string {
+  if (size > LINE_RANGE_MAX_BYTES) {
+    throw new Error(
+      `File too large to slice by line (${size} bytes, cap ${LINE_RANGE_MAX_BYTES}). Use offset/limit instead.`
+    )
+  }
+
+  const buf = readFileSync(resolved)
+  if (buf.includes(0)) {
+    throw new Error(`Binary file detected: ${pathArg}. Read is text-only.`)
+  }
+
+  const lines = buf.toString('utf8').split('\n')
+  // A trailing newline terminates the last line rather than starting a new one.
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
+
+  const total = lines.length
+  const start = Math.max(1, Math.trunc(options.startLine ?? 1))
+  const end = Math.min(total, Math.trunc(options.endLine ?? total))
+
+  if (start > total) {
+    throw new Error(`startLine ${start} is past the end of ${pathArg} (${total} lines).`)
+  }
+  if (end < start) {
+    throw new Error(`endLine ${end} is before startLine ${start}.`)
+  }
+
+  const header = `--- lines ${start}-${end} of ${total} ---\n`
+  return header + lines.slice(start - 1, end).join('\n')
 }

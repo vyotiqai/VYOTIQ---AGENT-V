@@ -39,6 +39,13 @@ export function useChatStream(workspacePath: string | null) {
   }, [controller])
 
   useEffect(() => {
+    if (!window.vyotiq?.onToolApprovalRequest) return
+    return window.vyotiq.onToolApprovalRequest((request) => {
+      controllerRef.current?.handleApprovalRequest(request)
+    })
+  }, [controller])
+
+  useEffect(() => {
     return () => controllerRef.current?.dispose()
   }, [])
 
@@ -49,7 +56,7 @@ export function useChatStream(workspacePath: string | null) {
     runId: controller.runId,
     error: controller.error,
     runNotice: controller.runNotice,
-    runCacheHint: controller.runCacheHint,
+    incomplete: controller.incomplete,
     contextUsage: controller.contextUsage,
     runStartedAt: controller.runStartedAt,
     runTerminalTick: controller.runTerminalTick,
@@ -60,6 +67,7 @@ export function useChatStream(workspacePath: string | null) {
     stop: controller.stop.bind(controller),
     reset: controller.reset.bind(controller),
     loadTranscript: controller.loadTranscript.bind(controller),
-    hydrateTranscript: controller.hydrateTranscript.bind(controller)
+    hydrateTranscript: controller.hydrateTranscript.bind(controller),
+    respondToApproval: controller.respondToApproval.bind(controller)
   }
 }

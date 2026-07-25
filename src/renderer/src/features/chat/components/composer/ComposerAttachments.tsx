@@ -1,21 +1,31 @@
-import { ImageChip } from '@renderer/lib/ui'
+import type { AttachedFile } from '@shared/ipc'
+import { FileChip, ImageChip } from '@renderer/lib/ui'
 
 export function ComposerAttachments({
   images,
   imageError,
+  files = [],
+  fileError = null,
+  extracting = false,
   running,
-  onRemove
+  onRemove,
+  onRemoveFile
 }: {
   images: string[]
   imageError: string | null
+  files?: AttachedFile[]
+  fileError?: string | null
+  extracting?: boolean
   running: boolean
   onRemove: (index: number) => void
+  onRemoveFile?: (index: number) => void
 }) {
-  if (!images.length && !imageError) return null
+  const notice = [imageError, fileError].filter(Boolean).join(' · ')
+  if (!images.length && !files.length && !notice && !extracting) return null
 
   return (
     <div className="col-span-full flex flex-col gap-1.5">
-      {images.length > 0 ? (
+      {images.length || files.length ? (
         <div className="flex flex-wrap items-center gap-1.5">
           {images.map((url, i) => (
             <ImageChip
@@ -27,11 +37,25 @@ export function ComposerAttachments({
               onRemove={() => onRemove(i)}
             />
           ))}
+          {files.map((file, i) => (
+            <FileChip
+              key={`${i}-${file.name}`}
+              name={file.name}
+              chars={file.text.length}
+              disabled={running}
+              onRemove={onRemoveFile ? () => onRemoveFile(i) : undefined}
+            />
+          ))}
         </div>
       ) : null}
-      {imageError ? (
+      {extracting ? (
         <p className="m-0 text-xs text-secondary" role="status">
-          {imageError}
+          Reading attachment…
+        </p>
+      ) : null}
+      {notice ? (
+        <p className="m-0 text-xs text-secondary" role="status">
+          {notice}
         </p>
       ) : null}
     </div>

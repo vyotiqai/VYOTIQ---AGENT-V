@@ -10,6 +10,13 @@ export function relativeTime(iso: string): string {
   return `${Math.floor(hrs / 24)}d`
 }
 
+/** Conversational relative time for message footers: "just now" | "51m ago" */
+export function relativeTimeAgo(iso: string): string {
+  const compact = relativeTime(iso)
+  if (!compact) return ''
+  return compact === 'now' ? 'just now' : `${compact} ago`
+}
+
 /** Compact display time for messages, tools, and activity rows. */
 export function formatDisplayTime(iso: string, opts?: { seconds?: boolean }): string {
   const d = new Date(iso)
@@ -23,6 +30,7 @@ export function formatDisplayTime(iso: string, opts?: { seconds?: boolean }): st
 }
 
 export function formatElapsed(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return ''
   if (ms < 1000) return `${Math.max(1, ms)}ms`
   const sec = Math.round(ms / 1000)
   if (sec < 60) return `${sec}s`

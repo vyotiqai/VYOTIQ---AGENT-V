@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { MarkdownContent, cn } from '@renderer/lib/ui'
-import { prefersReducedMotion } from '@renderer/lib/utils/motion'
+import { DISCLOSURE_ROW } from '@renderer/lib/utils/layout'
+import { isMeaningfulThinking } from '@shared/transcript'
+import { TextShimmer } from './TextShimmer'
 
 export function ThinkingBlock({
   content,
@@ -14,51 +16,41 @@ export function ThinkingBlock({
   expanded?: boolean
   onToggle?: (next: boolean) => void
 }) {
-  const [localExpanded, setLocalExpanded] = useState(false)
-  const isControlled = expanded != null
-  const isExpanded = expanded ?? localExpanded
+  // Reasoning reads itself out while it streams — that live text is the only
+  // sign of life a long turn gives — then folds away once the answer takes over.
+  const [override, setOverride] = useState<boolean | null>(null)
+  const isExpanded = expanded ?? override ?? streaming === true
+
+  if (!isMeaningfulThinking(content)) return null
+
   const toggle = (): void => {
     const next = !isExpanded
-    if (onToggle) onToggle(next)
-    else setLocalExpanded(next)
+    setOverride(next)
+    onToggle?.(next)
   }
-  const reduceMotion = prefersReducedMotion()
-
-  useEffect(() => {
-    if (!streaming || isControlled) return
-    setLocalExpanded(true)
-  }, [streaming, isControlled])
-
-  if (!content && !streaming) return null
 
   return (
-    <div className="mb-2 w-full max-w-[720px]">
+    <div className="w-full">
       <button
         type="button"
-        className={cn(
-          'inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs tracking-[var(--vy-tracking)] text-secondary vy-transition',
-          'hover:bg-surface-2 hover:text-fg'
-        )}
+        className={cn(DISCLOSURE_ROW, 'text-fg')}
         aria-expanded={isExpanded}
         onClick={toggle}
       >
+        {streaming ? (
+          <TextShimmer className="font-medium text-fg">Thinking</TextShimmer>
+        ) : (
+          <span className="font-medium text-fg">Thought</span>
+        )}
         <Icon
           name="chevronRight"
           size={12}
-          className={cn(
-            'text-tertiary vy-transition',
-            isExpanded && 'rotate-90',
-            !reduceMotion && 'duration-150'
-          )}
+          className={cn('self-center text-tertiary vy-transition', isExpanded && 'rotate-90')}
         />
-        <span className="font-medium text-fg-muted">Thinking</span>
-        {streaming ? (
-          <span className="inline-block size-1.5 animate-pulse rounded-full bg-secondary" />
-        ) : null}
       </button>
       {isExpanded ? (
-        <div className="mt-1 rounded-md border border-border bg-surface-1 px-3 py-2 text-xs leading-relaxed text-secondary">
-          <MarkdownContent content={content || '…'} streaming={streaming} />
+        <div className="mt-0.5 border-l border-border pl-3 text-xs leading-relaxed text-secondary">
+          <MarkdownContent content={content} streaming={streaming} />
         </div>
       ) : null}
     </div>

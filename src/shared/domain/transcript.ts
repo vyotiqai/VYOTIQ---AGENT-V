@@ -1,5 +1,5 @@
 import type { AgentEvent, ChatMessage, MessageContent, PersistedEvent } from '../ipc'
-import { contentDisplayText, contentImages, contentToText } from '../ipc'
+import { contentDisplayText, contentFiles, contentImages, contentToText } from '../ipc'
 import { isAgentEvent } from '../utils/eventUtils'
 import { summarizeToolArgs } from '../utils/toolSummary'
 
@@ -19,6 +19,28 @@ export type UiGroupTiming = {
   endedAt?: number
 }
 
+/** One line of live progress from a nested sub-agent run. */
+export type UiSubagentEntry = {
+  kind: 'text' | 'thinking' | 'tool' | 'done'
+  text: string
+}
+
+/** A document the user attached, shown as a chip instead of its extracted text. */
+export type UiAttachment = {
+  name: string
+  mime: string
+  chars: number
+}
+
+/** A gated call the agent is parked on, waiting for the reader to answer. */
+export type UiToolApproval = {
+  requestId: string
+  toolName: string
+  summary: string
+  argsPreview: string
+  mutating: boolean
+}
+
 export type UiItem =
   | {
       kind: 'message'
@@ -26,6 +48,7 @@ export type UiItem =
       role: 'user' | 'assistant'
       content: string
       images?: string[]
+      attachments?: UiAttachment[]
       streaming?: boolean
       thinking?: string
       thinkingStreaming?: boolean
@@ -40,7 +63,25 @@ export type UiItem =
       groupTiming?: UiGroupTiming
       at?: string
       toolExpanded?: boolean
+      /**
+       * Reader's disclosure choice for the activity group this row opens. Kept on
+       * the row rather than in the component so it survives virtual remounts.
+       */
+      groupExpanded?: boolean
+      /** Set while this call is waiting on tool approval. */
+      approval?: UiToolApproval
+      /** Progress a nested sub-agent reported while this call ran. */
+      subagent?: UiSubagentEntry[]
     }
+
+/** Attachment chips for a message: names and sizes only, never the quoted text. */
+export function uiAttachments(content: MessageContent): UiAttachment[] {
+  return contentFiles(content).map((file) => ({
+    name: file.name,
+    mime: file.mime,
+    chars: file.text.length
+  }))
+}
 
 /** Stable ids so reload/sync does not remount every transcript row. */
 export function messageUiId(role: 'user' | 'assistant', index: number): string {
@@ -63,6 +104,42 @@ export function inferToolStatus(content: MessageContent, ok?: boolean): 'done' |
   return 'done'
 }
 
+type AssistantMessageItem = Extract<UiItem, { kind: 'message' }> & { role: 'assistant' }
+
+/** True when reasoning text is worth showing (not empty or placeholder punctuation). */
+export function isMeaningfulThinking(text: string | undefined): boolean {
+  if (!text) return false
+  const trimmed = text.trim()
+  if (!trimmed) return false
+  if (/^[.…,;:!?\-–—\s]+$/.test(trimmed)) return false
+  return trimmed.length >= 2
+}
+
+/**
+ * Long enough that matching the reasoning means the model really did emit the
+ * same passage twice, rather than two rows happening to share a short phrase.
+ */
+const DUPLICATE_TEXT_MIN_CHARS = 40
+
+function collapseWhitespace(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+/**
+ * Hide assistant text that only repeats the reasoning already shown beside it.
+ *
+ * Nothing else is hidden. The narration a tool loop produces between batches is
+ * the model's running commentary on its own work, and it streams in live, so
+ * suppressing it is what leaves a multi-minute turn looking like a frozen page.
+ */
+export function duplicatesReasoning(item: UiItem): boolean {
+  if (item.kind !== 'message' || item.role !== 'assistant') return false
+  const content = item.content?.trim()
+  if (!content || content.length < DUPLICATE_TEXT_MIN_CHARS) return false
+  if (!isMeaningfulThinking(item.thinking)) return false
+  return collapseWhitespace(item.thinking ?? '').includes(collapseWhitespace(content))
+}
+
 /** Join a turn's reasoning steps into the single Thought row the turn renders. */
 export function mergeThinking(previous: string | undefined, next: string): string {
   const before = previous?.trim() ?? ''
@@ -76,34 +153,28 @@ export function mergeThinking(previous: string | undefined, next: string): strin
 export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
   const items: UiItem[] = []
   const pendingCalls = new Map<string, { name: string; arguments: string }>()
-  // A tool-loop turn reasons once per step. All of it belongs to the turn's first
-  // assistant row so the transcript shows one Thought row and one tool stretch.
-  let turnReasoningIdx = -1
 
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i]
     if (m.role === 'user') {
       const images = contentImages(m.content)
+      const attachments = uiAttachments(m.content)
       items.push({
         kind: 'message',
         id: messageUiId('user', i),
         role: 'user',
         content: contentDisplayText(m.content),
-        images: images.length ? images : undefined
+        images: images.length ? images : undefined,
+        attachments: attachments.length ? attachments : undefined
       })
-      turnReasoningIdx = -1
       continue
     }
 
     if (m.role === 'assistant') {
       const text = contentDisplayText(m.content)
-      const reasoningTarget = turnReasoningIdx >= 0 ? items[turnReasoningIdx] : undefined
-      if (!text && m.thinking && reasoningTarget?.kind === 'message') {
-        items[turnReasoningIdx] = {
-          ...reasoningTarget,
-          thinking: mergeThinking(reasoningTarget.thinking, m.thinking)
-        }
-      } else if (text || m.thinking) {
+      // Each step keeps its own reasoning, right above the calls it explains.
+      // Pooling a turn's steps into one row buries the work under a wall of text.
+      if (text || m.thinking) {
         items.push({
           kind: 'message',
           id: messageUiId('assistant', i),
@@ -111,7 +182,6 @@ export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
           content: text,
           thinking: m.thinking
         })
-        if (turnReasoningIdx < 0) turnReasoningIdx = items.length - 1
       }
       if (m.toolCalls?.length) {
         for (const tc of m.toolCalls) {
@@ -146,7 +216,7 @@ export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
           id,
           name,
           summary,
-          status: inferToolStatus(m.content),
+          status: inferToolStatus(m.content, m.ok),
           content,
           argsPreview: pending?.arguments || undefined
         }
@@ -212,14 +282,34 @@ function reconstructGroupTiming(items: UiItem[], events: PersistedEvent[]): UiIt
     if (startedAt) {
       const startedMs = new Date(startedAt).getTime()
       const endedMs = endedAt ? new Date(endedAt).getTime() : undefined
-      out[groupStart] = {
-        ...first,
-        groupTiming: {
-          startedAt: startedMs,
-          ...(endedMs !== undefined && !Number.isNaN(endedMs) ? { endedAt: endedMs } : {})
+      if (!Number.isNaN(startedMs)) {
+        out[groupStart] = {
+          ...first,
+          groupTiming: {
+            startedAt: startedMs,
+            ...(endedMs !== undefined && !Number.isNaN(endedMs) ? { endedAt: endedMs } : {})
+          }
         }
       }
     }
+  }
+  return out
+}
+
+const MAX_SUBAGENT_REPLAY_ENTRIES = 40
+
+function applySubagentUpdates(items: UiItem[], events: PersistedEvent[]): UiItem[] {
+  const out = [...items]
+  for (const row of events) {
+    if (!isAgentEvent(row.event)) continue
+    if (row.event.type !== 'subagent_update') continue
+    const parentToolCallId = row.event.parentToolCallId
+    const idx = out.findIndex((item) => item.kind === 'tool' && item.id === parentToolCallId)
+    if (idx < 0) continue
+    const item = out[idx]
+    if (item.kind !== 'tool') continue
+    const entries = [...(item.subagent ?? []), { kind: row.event.kind, text: row.event.text }]
+    out[idx] = { ...item, subagent: entries.slice(-MAX_SUBAGENT_REPLAY_ENTRIES) }
   }
   return out
 }
@@ -284,14 +374,15 @@ export function applyEventTimestamps(items: UiItem[], events: PersistedEvent[]):
     visibleAssistantMessageAts
   })
 
-  return withTools.map((item) => {
-    if (item.kind !== 'message') return item
-    const at = messageAtById.get(item.id)
-    return at ? { ...item, at } : item
-  })
+  return applySubagentUpdates(
+    withTools.map((item) => {
+      if (item.kind !== 'message') return item
+      const at = messageAtById.get(item.id)
+      return at ? { ...item, at } : item
+    }),
+    events
+  )
 }
-
-type AssistantMessageItem = Extract<UiItem, { kind: 'message' }> & { role: 'assistant' }
 
 function messageTimestampsFromEvents(
   items: UiItem[],

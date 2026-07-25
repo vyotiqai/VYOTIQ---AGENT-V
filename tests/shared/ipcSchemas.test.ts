@@ -3,6 +3,12 @@ import {
   ChatMessageSchema,
   ChatStartRequestSchema,
   CancelRunRequestSchema,
+  CompactRunRequestSchema,
+  DeleteRunRequestSchema,
+  RenameRunRequestSchema,
+  LoadRunEventsRequestSchema,
+  ExtractAttachmentRequestSchema,
+  MAX_ATTACHMENT_DATA_CHARS,
   SetSettingsRequestSchema,
   SetSecretRequestSchema,
   OpenHarnessRequestSchema,
@@ -245,6 +251,45 @@ describe('ipc schemas', () => {
       runId: 'r1',
       toolCallId: 'call-1'
     })
+  })
+
+  it('rejects run ids that can escape the sessions directory', () => {
+    const traversals = ['..', '../../..', '../sibling', '..\\..\\secrets', '/etc/passwd', 'C:\\Windows', 'a/b', '']
+    const runScoped = [
+      { schema: LoadRunRequestSchema, base: { workspacePath: '/ws' } },
+      { schema: LoadRunEventsRequestSchema, base: { workspacePath: '/ws' } },
+      { schema: LoadToolResultRequestSchema, base: { workspacePath: '/ws', toolCallId: 'c1' } },
+      { schema: DeleteRunRequestSchema, base: { workspacePath: '/ws' } },
+      { schema: RenameRunRequestSchema, base: { workspacePath: '/ws', goal: 'g' } },
+      { schema: CompactRunRequestSchema, base: { workspacePath: '/ws' } },
+      { schema: CancelRunRequestSchema, base: {} }
+    ]
+    for (const { schema, base } of runScoped) {
+      for (const runId of traversals) {
+        expect(schema.safeParse({ ...base, runId }).success).toBe(false)
+      }
+      expect(schema.safeParse({ ...base, runId: '3f2a8c1e-0b7d-4a11-9d0e-2c1f5b6a7c88' }).success).toBe(
+        true
+      )
+    }
+    expect(
+      ChatStartRequestSchema.safeParse({
+        messages: [{ role: 'user', content: 'hi' }],
+        workspacePath: '/ws',
+        runId: '../../..'
+      }).success
+    ).toBe(false)
+  })
+
+  it('caps attachment payload size before main decodes it', () => {
+    const oversized = 'a'.repeat(MAX_ATTACHMENT_DATA_CHARS + 1)
+    expect(
+      ExtractAttachmentRequestSchema.safeParse({ name: 'big.txt', mime: 'text/plain', data: oversized })
+        .success
+    ).toBe(false)
+    expect(
+      ExtractAttachmentRequestSchema.parse({ name: 'a.txt', mime: 'text/plain', data: 'aGk=' }).data
+    ).toBe('aGk=')
   })
 
   it('maps secret key names to provider booleans', () => {

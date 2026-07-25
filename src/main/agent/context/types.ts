@@ -30,7 +30,14 @@ import { z } from 'zod'
 export const CompactionRecordSchema = z.object({
   summary: z.string().min(1),
   createdAt: z.string(),
-  tokenEstimate: z.number().int().min(0)
+  tokenEstimate: z.number().int().min(0),
+  /**
+   * Count of leading messages in `messages.jsonl` that this summary already
+   * represents. The loop skips them when rebuilding its working set, so a long
+   * run stops re-summarizing the same prefix on every step. Older records
+   * predate the field, so it stays optional.
+   */
+  foldedMessages: z.number().int().min(0).optional()
 })
 export type CompactionRecord = z.infer<typeof CompactionRecordSchema>
 

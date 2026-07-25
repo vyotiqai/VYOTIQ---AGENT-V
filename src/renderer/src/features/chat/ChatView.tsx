@@ -1,15 +1,32 @@
 import type { Ref } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { GitBranchStrip, GitChangePills, useGitChrome } from './components/GitChrome'
 import { MessageList } from './components/MessageList'
-import { ActivityPanel } from './components/ActivityPanel'
 import { Composer } from './components/composer'
 import { RecentsPicker } from './RecentsPicker'
 import type { UiItem } from '@shared/transcript'
-import type { ActivityRow } from '@shared/eventUtils'
-import type { ProviderId } from '@shared/ipc'
+import type { ProviderId, ToolApprovalDecision } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { Alert } from '@renderer/lib/ui'
 import { CHAT_COLUMN, CHAT_COLUMN_MAX, CHAT_GUTTER } from '@renderer/lib/utils/layout'
 import { cn } from '@renderer/lib/ui/cn'
+
+/** Bumps once per workspace change and once each time a run stops. */
+function useGitRevision(workspacePath: string | null, running: boolean): number {
+  const [revision, setRevision] = useState(0)
+  const wasRunning = useRef(running)
+
+  useEffect(() => {
+    if (wasRunning.current && !running) setRevision((value) => value + 1)
+    wasRunning.current = running
+  }, [running])
+
+  useEffect(() => {
+    setRevision((value) => value + 1)
+  }, [workspacePath])
+
+  return revision
+}
 
 export function ChatView({
   hasOpenWorkspaces,
@@ -17,14 +34,14 @@ export function ChatView({
   needsWorkspaceForMigration,
   pendingMigrationCount,
   items,
-  activityRows = [],
   running,
   error,
   runNotice,
-  runCacheHint,
+  incomplete,
+  onContinue,
   contextUsage,
+  onCompactContext,
   operationalError,
-  runsError: _runsError,
   hasWorkspace,
   workspacePath,
   provider,
@@ -55,6 +72,8 @@ export function ChatView({
   onLoadToolContent,
   onThinkingToggle,
   onToolToggle,
+  onGroupToggle,
+  onApprovalDecision,
   showThinking = true
 }: {
   hasOpenWorkspaces: boolean
@@ -62,14 +81,14 @@ export function ChatView({
   needsWorkspaceForMigration?: boolean
   pendingMigrationCount?: number
   items: UiItem[]
-  activityRows?: ActivityRow[]
   running: boolean
   error: string | null
   runNotice?: string | null
-  runCacheHint?: string | null
+  incomplete?: import('@renderer/lib/hooks/createChatStreamController').IncompleteTurnState | null
+  onContinue?: () => void
   contextUsage?: import('./components/composer/ContextMeter').ContextUsageState | null
+  onCompactContext?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
   operationalError?: string | null
-  runsError?: string | null
   hasWorkspace: boolean
   workspacePath: string | null
   provider: ProviderId
@@ -89,7 +108,11 @@ export function ChatView({
   onServiceTierChange?: (tier: import('@shared/ipc').ServiceTier) => void
   chatSettings: EffectiveChatSettings
   onChatSettingsChange: (patch: ChatSettingsPatch) => void
-  onSend: (text: string, images?: string[]) => boolean | void | Promise<boolean | void>
+  onSend: (
+    text: string,
+    images?: string[],
+    files?: import('@shared/ipc').AttachedFile[]
+  ) => boolean | void | Promise<boolean | void>
   onStop: () => void
   onDismissError?: () => void
   composerDraft?: string
@@ -100,11 +123,38 @@ export function ChatView({
   onLoadToolContent?: (toolCallId: string) => Promise<string | null>
   onThinkingToggle?: (messageId: string, expanded: boolean) => void
   onToolToggle?: (toolCallId: string, expanded: boolean) => void
+  onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
+  onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void
   showThinking?: boolean
 }) {
   const bannerError = operationalError ?? error
   const showHero = items.length === 0 && !activeRunId && !transcriptLoading
+  // A finished turn is the moment the working tree is most likely to have moved.
+  const gitRevision = useGitRevision(workspacePath, running)
+  // The hero has no dock, so there is nowhere to show a repository state yet.
+  const gitChrome = useGitChrome(workspacePath, gitRevision, !showHero)
   const composerKey = `${workspacePath ?? 'none'}:${activeRunId ?? 'draft'}`
+  const stageRef = useRef<HTMLDivElement>(null)
+
+  // Transcript scrolls behind the floating composer, so it has to reserve exactly
+  // the dock's height. The dock already carries its own bottom padding.
+  useLayoutEffect(() => {
+    const stage = stageRef.current
+    if (!stage || typeof ResizeObserver === 'undefined') return undefined
+    const dock = stage.querySelector<HTMLElement>('[data-composer-dock]')
+    if (!dock) return undefined
+
+    const sync = (): void => {
+      stage.style.setProperty('--vy-dock-h', `${Math.max(dock.offsetHeight, 48)}px`)
+    }
+
+    sync()
+    const ro = new ResizeObserver(sync)
+    ro.observe(dock)
+    const shell = dock.querySelector('[data-composer-shell]')
+    if (shell) ro.observe(shell)
+    return () => ro.disconnect()
+  }, [showHero])
 
   const composerProps = {
     provider,
@@ -128,8 +178,10 @@ export function ChatView({
     onSend,
     onStop,
     runNotice,
-    runCacheHint,
+    incomplete,
+    onContinue,
     contextUsage,
+    onCompactContext,
     composerPlaceholder: transcriptLoading ? 'Loading chat…' : undefined
   }
 
@@ -194,10 +246,7 @@ export function ChatView({
             </div>
           </div>
         ) : (
-          <div className="relative flex min-h-0 flex-1 flex-col" data-chat-stage>
-            <div className={cn('shrink-0 pt-2.5 sm:pt-3', CHAT_GUTTER)}>
-              <ActivityPanel rows={activityRows} running={running} />
-            </div>
+          <div ref={stageRef} className="relative flex min-h-0 flex-1 flex-col" data-chat-stage>
             <MessageList
               items={items}
               reserveComposerSpace
@@ -207,6 +256,8 @@ export function ChatView({
               onLoadToolContent={onLoadToolContent}
               onThinkingToggle={onThinkingToggle}
               onToolToggle={onToolToggle}
+              onGroupToggle={onGroupToggle}
+              onApprovalDecision={onApprovalDecision}
               showThinking={showThinking}
             />
 
@@ -216,6 +267,8 @@ export function ChatView({
               variant="dock"
               bannerError={bannerError}
               onDismissError={onDismissError}
+              leading={<GitChangePills chrome={gitChrome} />}
+              trailing={<GitBranchStrip chrome={gitChrome} />}
             />
           </div>
         )}

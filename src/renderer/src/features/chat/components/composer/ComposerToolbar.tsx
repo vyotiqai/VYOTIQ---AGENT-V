@@ -47,7 +47,8 @@ export function ComposerToolbar({
   running,
   canSend,
   onStop,
-  contextUsage
+  contextUsage,
+  onCompactContext
 }: {
   variant: ComposerVariant
   disabled?: boolean
@@ -76,6 +77,7 @@ export function ComposerToolbar({
   canSend: boolean
   onStop: () => void
   contextUsage?: ContextUsageState | null
+  onCompactContext?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
 }) {
   const modelMenuClass =
     variant === 'hero'
@@ -131,7 +133,10 @@ export function ComposerToolbar({
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
-        <ContextMeter usage={contextUsage ?? null} />
+        <ContextMeter
+          usage={contextUsage ?? null}
+          onCompact={running ? undefined : onCompactContext}
+        />
         {running ? (
           <IconButton
             icon="stop"

@@ -73,6 +73,7 @@
   /* 600/700 (not 500/600): small muted/secondary text clears WCAG AA on white. */
   --vy-muted: var(--vy-gray-600);
   --vy-secondary: var(--vy-gray-700);
+  --vy-tertiary: var(--vy-gray-500);
   --vy-fg: var(--vy-gray-900);
   --vy-fg-strong: var(--vy-gray-950);
   --vy-accent: var(--vy-gray-900);
@@ -81,8 +82,6 @@
   --vy-success: #16a34a;
   --vy-danger: #b91c1c;
   --vy-warning: #a16207;
-  --vy-user-bubble: var(--vy-gray-200);
-  --vy-tool-row: var(--vy-gray-100);
   --vy-composer: var(--vy-gray-100);
   --vy-overlay: rgb(10 10 10 / 0.28);
   --vy-window-close: #e81123;
@@ -127,6 +126,7 @@
   /* 600/700 (not 500/600): small muted/secondary text clears WCAG AA on black. */
   --vy-muted: var(--vy-gray-600);
   --vy-secondary: var(--vy-gray-700);
+  --vy-tertiary: var(--vy-gray-500);
   --vy-fg: var(--vy-gray-900);
   --vy-fg-strong: var(--vy-gray-950);
   --vy-accent: var(--vy-gray-900);
@@ -135,8 +135,6 @@
   --vy-success: #22c55e;
   --vy-danger: #f87171;
   --vy-warning: #fbbf24;
-  --vy-user-bubble: var(--vy-gray-200);
-  --vy-tool-row: var(--vy-gray-100);
   --vy-composer: var(--vy-gray-100);
   --vy-overlay: rgb(0 0 0 / 0.55);
   --vy-window-close: #e81123;
@@ -200,12 +198,6 @@
   }
 }
 
-@keyframes blink {
-  50% {
-    opacity: 0;
-  }
-}
-
 @theme {
   --font-sans: "Plus Jakarta Sans", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
@@ -220,7 +212,6 @@
   --radius-md: 6px;
   --radius-lg: 8px;
   --radius-xl: 10px;
-  --radius-bubble: 10px;
   --radius-pill: 999px;
 
   --color-bg: var(--vy-bg);
@@ -231,6 +222,7 @@
   --color-border-strong: var(--vy-border-strong);
   --color-muted: var(--vy-muted);
   --color-secondary: var(--vy-secondary);
+  --color-tertiary: var(--vy-tertiary);
   --color-fg: var(--vy-fg);
   --color-fg-strong: var(--vy-fg-strong);
   --color-accent: var(--vy-accent);
@@ -239,8 +231,6 @@
   --color-success: var(--vy-success);
   --color-danger: var(--vy-danger);
   --color-warning: var(--vy-warning);
-  --color-user-bubble: var(--vy-user-bubble);
-  --color-tool-row: var(--vy-tool-row);
   --color-composer: var(--vy-composer);
   --color-overlay: var(--vy-overlay);
   --color-window-close: var(--vy-window-close);
@@ -256,7 +246,6 @@
   --animate-chrome-drop-in: chrome-drop-in var(--vy-duration) var(--vy-ease);
   --animate-chrome-rise-in: chrome-rise-in var(--vy-duration) var(--vy-ease);
   --animate-slide-in-left: slide-in-left var(--vy-duration) var(--vy-ease);
-  --animate-caret-blink: blink 1s steps(1) infinite;
 
   --z-index-sticky: var(--z-sticky);
   --z-index-dropdown: var(--z-dropdown);
@@ -272,17 +261,6 @@
   -webkit-app-region: no-drag;
 }
 
-@utility streaming-caret-inline {
-  display: inline-block;
-  width: 7px;
-  height: 1em;
-  margin-left: 1px;
-  vertical-align: text-bottom;
-  background-color: var(--color-fg);
-  animation: var(--animate-caret-blink);
-  pointer-events: none;
-}
-
 @utility overflow-anchor-auto {
   overflow-anchor: auto;
 }
@@ -295,6 +273,23 @@
   transition-property: background-color, border-color, color, opacity, box-shadow, transform;
   transition-duration: var(--vy-duration);
   transition-timing-function: var(--vy-ease);
+}
+
+/** Softens the cut where clamped content is truncated. */
+@utility mask-fade-bottom {
+  mask-image: linear-gradient(to bottom, black 65%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 65%, transparent 100%);
+}
+
+/** Diff rows: a tint plus an edge marker, so colour is not the only signal. */
+@utility diff-row-add {
+  background: color-mix(in srgb, var(--color-success) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--color-success);
+}
+
+@utility diff-row-del {
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--color-danger);
 }
 
 @utility vy-focus-ring {
@@ -492,14 +487,45 @@
     margin: 0.5em 0;
   }
 
+  /* Tailwind preflight strips list markers globally; restore them for prose. */
   ul,
   ol {
     margin: 0.5em 0;
     padding-left: 1.25rem;
   }
 
+  ul {
+    list-style: disc outside;
+  }
+
+  ol {
+    list-style: decimal outside;
+  }
+
+  ul ul {
+    list-style: circle outside;
+  }
+
+  ul ul ul {
+    list-style: square outside;
+  }
+
   li {
     margin: 0.2em 0;
+  }
+
+  li::marker {
+    color: var(--color-tertiary);
+  }
+
+  li > ul,
+  li > ol {
+    margin: 0.2em 0;
+  }
+
+  li.task-list-item {
+    list-style: none;
+    margin-left: -1.25rem;
   }
 
   blockquote {

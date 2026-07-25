@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { ProviderIdSchema } from './providers'
-import { ThinkingEffortSchema } from './settings'
+import { ThinkingEffortSchema, ToolApprovalSettingsSchema } from './settings'
 
 export const WorkspaceUiStateSchema = z.object({
   activeRunId: z.string().nullable(),
@@ -21,6 +21,7 @@ export const WorkspaceSettingsOverrideSchema = z.object({
   thinkingEnabled: z.boolean().optional(),
   thinkingEffort: ThinkingEffortSchema.optional(),
   showThinking: z.boolean().optional(),
+  toolApproval: ToolApprovalSettingsSchema.optional(),
   useOverride: z.boolean()
 })
 export type WorkspaceSettingsOverride = z.infer<typeof WorkspaceSettingsOverrideSchema>

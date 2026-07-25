@@ -142,7 +142,7 @@ export function createRun(workspacePath: string, runId: string, goal: string): s
   return dir
 }
 
-/** Persist status / tool_start / tool_result events only (not full AgentEvent stream). */
+/** Persist trimmed agent events to events.jsonl (full tool output stays in messages.jsonl). */
 export function appendEvent(dir: string, event: unknown): void {
   enqueueEventAppend(dir, event)
 }

@@ -599,6 +599,17 @@ export function useWorkspaceManager() {
   }, [ensureController])
 
   useEffect(() => {
+    if (!window.vyotiq?.onToolApprovalRequest) return
+    return window.vyotiq.onToolApprovalRequest((request) => {
+      const workspacePath = runIdToWorkspaceRef.current.get(request.runId)
+      const ctrl =
+        controllersRef.current.get(request.runId) ??
+        (workspacePath ? ensureController(workspacePath, request.runId) : undefined)
+      ctrl?.handleApprovalRequest(request)
+    })
+  }, [ensureController])
+
+  useEffect(() => {
     void pollActiveRuns()
     const id = window.setInterval(() => void pollActiveRuns(), ACTIVE_RUNS_POLL_MS)
     const onFocus = (): void => {
@@ -880,13 +891,12 @@ export function useWorkspaceManager() {
   const chatSnapshot = activeController
     ? {
         items: activeController.items,
-        activityRows: activeController.activityRows,
         messages: activeController.messages,
         running: activeController.running,
         runId: activeController.runId,
         error: activeController.error,
         runNotice: activeController.runNotice,
-        runCacheHint: activeController.runCacheHint,
+        incomplete: activeController.incomplete,
         contextUsage: activeController.contextUsage,
         runStartedAt: activeController.runStartedAt,
         runTerminalTick: activeController.runTerminalTick,
@@ -895,13 +905,12 @@ export function useWorkspaceManager() {
       }
     : {
         items: [] as ChatStreamController['items'],
-        activityRows: [] as ChatStreamController['activityRows'],
         messages: [] as ChatStreamController['messages'],
         running: false,
         runId: null as string | null,
         error: null as string | null,
         runNotice: null as string | null,
-        runCacheHint: null as string | null,
+        incomplete: null as ChatStreamController['incomplete'],
         contextUsage: null,
         runStartedAt: null as number | null,
         runTerminalTick: 0,

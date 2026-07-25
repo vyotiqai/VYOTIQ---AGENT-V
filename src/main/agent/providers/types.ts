@@ -24,6 +24,12 @@ export interface TokenUsage {
   reasoningTokens?: number
 }
 
+/**
+ * Why the provider stopped generating. `length` means the output token limit cut
+ * the turn short, which is otherwise indistinguishable from a clean finish.
+ */
+export type StopReason = 'stop' | 'length' | 'tool_calls' | 'content_filter' | 'error' | 'unknown'
+
 export interface StreamChunk {
   type:
     | 'text'
@@ -42,6 +48,10 @@ export interface StreamChunk {
   compaction?: string
   /** Provider reasoning replay state captured during the stream. */
   reasoningState?: ProviderReasoningState
+  /** Set on `done` chunks so the loop can tell a truncated turn from a finished one. */
+  stopReason?: StopReason
+  /** Count of SSE frames dropped because they were not parseable JSON. */
+  malformedChunks?: number
 }
 
 export interface ListModelsRequest {

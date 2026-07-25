@@ -7,6 +7,12 @@ import { ChatView } from '@renderer/features/chat/ChatView'
 
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
+  // The docked composer asks the main process about git as soon as it mounts.
+  Object.defineProperty(window, 'vyotiq', {
+    configurable: true,
+    writable: true,
+    value: { gitStatus: vi.fn().mockResolvedValue({ ok: true, data: null }) }
+  })
 })
 
 afterEach(() => {

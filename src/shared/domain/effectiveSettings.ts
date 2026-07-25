@@ -11,6 +11,7 @@ export type EffectiveChatSettings = Pick<
   | 'thinkingEnabled'
   | 'thinkingEffort'
   | 'showThinking'
+  | 'toolApproval'
 >
 
 export type ChatSettingsPatch = Partial<
@@ -32,7 +33,8 @@ export function resolveEffectiveSettings(
       memoryAutoPromote: global.memoryAutoPromote,
       thinkingEnabled: global.thinkingEnabled,
       thinkingEffort: global.thinkingEffort,
-      showThinking: global.showThinking
+      showThinking: global.showThinking,
+      toolApproval: global.toolApproval
     }
   }
   return {
@@ -44,6 +46,7 @@ export function resolveEffectiveSettings(
     memoryAutoPromote: override.memoryAutoPromote ?? global.memoryAutoPromote,
     thinkingEnabled: override.thinkingEnabled ?? global.thinkingEnabled,
     thinkingEffort: override.thinkingEffort ?? global.thinkingEffort,
-    showThinking: override.showThinking ?? global.showThinking
+    showThinking: override.showThinking ?? global.showThinking,
+    toolApproval: override.toolApproval ?? global.toolApproval
   }
 }

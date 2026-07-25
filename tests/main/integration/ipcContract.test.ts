@@ -8,7 +8,11 @@ import type { VyotiqApi } from '@shared/vyotiqApi'
 const VYOTIQ_INVOKE_MAP: Record<
   Exclude<
     keyof VyotiqApi,
-    'platform' | 'onChatEvent' | 'onWindowMaximizedChanged' | 'onSystemThemeChanged'
+    | 'platform'
+    | 'onChatEvent'
+    | 'onToolApprovalRequest'
+    | 'onWindowMaximizedChanged'
+    | 'onSystemThemeChanged'
   >,
   string
 > = {
@@ -27,6 +31,9 @@ const VYOTIQ_INVOKE_MAP: Record<
   listModels: IPC.listModels,
   chatStart: IPC.chatStart,
   chatCancel: IPC.chatCancel,
+  chatCompact: IPC.chatCompact,
+  respondToolApproval: IPC.toolApprovalResponse,
+  extractAttachment: IPC.attachmentExtract,
   listRuns: IPC.listRuns,
   loadRun: IPC.loadRun,
   loadRunEvents: IPC.loadRunEvents,
@@ -34,6 +41,8 @@ const VYOTIQ_INVOKE_MAP: Record<
   deleteRun: IPC.runsDelete,
   renameRun: IPC.runsRename,
   listActiveRuns: IPC.runsActive,
+  gitStatus: IPC.gitStatus,
+  gitCommit: IPC.gitCommit,
   openHarness: IPC.openHarness,
   windowMinimize: IPC.windowMinimize,
   windowMaximize: IPC.windowMaximize,
@@ -49,6 +58,7 @@ const VYOTIQ_INVOKE_MAP: Record<
 
 const PUSH_CHANNELS = new Set<string>([
   IPC.chatEvent,
+  IPC.toolApprovalRequest,
   IPC.windowMaximizedChanged,
   IPC.themeChanged
 ])
@@ -58,10 +68,11 @@ const VYOTIQ_SYNC_SEND_MAP: Record<'updateWorkspaceUiStateSync', string> = {
 }
 
 const VYOTIQ_PUSH_MAP: Record<
-  'onChatEvent' | 'onWindowMaximizedChanged' | 'onSystemThemeChanged',
+  'onChatEvent' | 'onToolApprovalRequest' | 'onWindowMaximizedChanged' | 'onSystemThemeChanged',
   string
 > = {
   onChatEvent: IPC.chatEvent,
+  onToolApprovalRequest: IPC.toolApprovalRequest,
   onWindowMaximizedChanged: IPC.windowMaximizedChanged,
   onSystemThemeChanged: IPC.themeChanged
 }
@@ -73,7 +84,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(false)
     }
-    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(33)
+    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(38)
   })
 
   it('maps every VyotiqApi push listener to a push channel', () => {
@@ -82,7 +93,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(true)
     }
-    expect(Object.keys(VYOTIQ_PUSH_MAP)).toHaveLength(3)
+    expect(Object.keys(VYOTIQ_PUSH_MAP)).toHaveLength(4)
   })
 
   it('accounts for every IPC channel as invoke or push', () => {

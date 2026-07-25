@@ -1,5 +1,3 @@
-import type { AgentEvent } from '../ipc'
-
 export const MCP_TOOL_PREFIX = 'mcp__'
 
 export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
@@ -7,6 +5,14 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   edit: { running: 'Editing', done: 'Edited' },
   write: { running: 'Writing', done: 'Wrote' },
   search: { running: 'Searching', done: 'Searched' },
+  glob: { running: 'Globbing', done: 'Globbed' },
+  grep: { running: 'Grepping', done: 'Grepped' },
+  list_dir: { running: 'Listing', done: 'Listed' },
+  multi_edit: { running: 'Editing', done: 'Edited' },
+  delete: { running: 'Deleting', done: 'Deleted' },
+  todo_write: { running: 'Updating tasks', done: 'Updated tasks' },
+  web_fetch: { running: 'Fetching', done: 'Fetched' },
+  subagent: { running: 'Investigating', done: 'Investigated' },
   terminal: { running: 'Running', done: 'Ran' },
   memory_list: { running: 'Listing memory', done: 'Listed memory' },
   memory_read: { running: 'Reading memory', done: 'Read memory' },
@@ -29,7 +35,7 @@ function truncate(text: string, max = 120): string {
   return `${trimmed.slice(0, max - 1)}…`
 }
 
-function parseArgsRecord(args: string | undefined): Record<string, unknown> | null {
+export function parseArgsRecord(args: string | undefined): Record<string, unknown> | null {
   if (!args?.trim()) return null
   try {
     const parsed = JSON.parse(args) as unknown
@@ -43,13 +49,40 @@ function parseArgsRecord(args: string | undefined): Record<string, unknown> | nu
 
 export function normalizeToolTarget(name: string, args: Record<string, unknown> | null): string {
   if (!args) return ''
-  if (name === 'read' || name === 'edit' || name === 'write') {
+  if (name === 'read' || name === 'edit' || name === 'write' || name === 'delete') {
     const path = args.path ?? args.file
     if (typeof path === 'string') return path
   }
-  if (name === 'search') {
+  if (name === 'list_dir') {
+    const path = args.path
+    return typeof path === 'string' && path.trim() ? path : '.'
+  }
+  if (name === 'search' || name === 'glob' || name === 'grep') {
     const query = args.query ?? args.pattern
     if (typeof query === 'string') return query
+  }
+  if (name === 'multi_edit') {
+    const edits = args.edits
+    if (Array.isArray(edits)) {
+      const paths = edits
+        .map((edit) =>
+          edit && typeof edit === 'object' ? (edit as { path?: unknown }).path : undefined
+        )
+        .filter((path): path is string => typeof path === 'string')
+      if (paths.length) return paths.join(', ')
+    }
+  }
+  if (name === 'todo_write') {
+    const todos = args.todos
+    if (Array.isArray(todos)) return `${todos.length} tasks`
+  }
+  if (name === 'web_fetch') {
+    const url = args.url
+    if (typeof url === 'string') return url
+  }
+  if (name === 'subagent') {
+    const task = args.task
+    if (typeof task === 'string') return task
   }
   if (name === 'terminal') {
     const command = args.command ?? args.cmd
@@ -95,63 +128,3 @@ export function mcpToolSummary(toolName: string, args: Record<string, unknown>):
   return toolName
 }
 
-export function formatToolRowLabel(
-  name: string,
-  status: 'running' | 'done' | 'fail',
-  summary?: string,
-  argsPreview?: string
-): string {
-  const mcp = parseMcpToolDisplay(name)
-  const detail = summary?.trim() || summarizeToolArgs(name, argsPreview)
-  if (mcp) {
-    if (status === 'running') return detail ? `Calling ${detail}` : `Calling ${mcp.toolName}`
-    return detail || mcp.toolName
-  }
-  const labels = TOOL_LABELS[name]
-  const verb = labels
-    ? status === 'running'
-      ? labels.running
-      : labels.done
-    : status === 'running'
-      ? 'Running tool'
-      : 'Tool'
-  if (!detail) return verb
-  if (name === 'terminal') return `${verb} ${detail}`.trim()
-  return `${verb} ${detail}`.trim()
-}
-
-export function formatActivityEventLabel(event: AgentEvent): string {
-  switch (event.type) {
-    case 'status':
-      if (event.status === 'running') return 'Run started'
-      if (event.status === 'done') return 'Run finished'
-      if (event.status === 'cancelled') return 'Run cancelled'
-      return 'Run error'
-    case 'tool_start':
-      return `Tool ${event.name}`
-    case 'tool_result':
-      return event.ok ? `Tool ${event.name} done` : `Tool ${event.name} failed`
-    case 'thinking_delta':
-      return 'Thinking'
-    case 'thinking_done':
-      return 'Thinking done'
-    case 'text_delta':
-      return 'Streaming text'
-    case 'assistant_message':
-      return 'Assistant message'
-    case 'error':
-      return event.message || 'Error'
-    case 'compaction':
-      return 'Context compacted'
-    case 'step_budget':
-      return 'Step budget warning'
-    case 'step_usage':
-      return 'Usage update'
-    case 'context_usage':
-      return 'Context usage'
-    case 'tool_call_delta':
-      return 'Tool call delta'
-    default:
-      return 'event'
-  }
-}
