@@ -1,0 +1,65 @@
+import { Icon } from '../icons'
+import { cn } from './cn'
+
+export function ImageChip({
+  url,
+  label,
+  onRemove,
+  disabled,
+  variant = 'thumbnail'
+}: {
+  url: string
+  label: string
+  onRemove?: () => void
+  disabled?: boolean
+  variant?: 'thumbnail' | 'compact'
+}) {
+  if (variant === 'compact') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-1.5 py-0.5 text-xs text-muted">
+        <Icon name="image" size={11} />
+        {label}
+        {onRemove ? (
+          <button
+            type="button"
+            className="text-muted vy-transition hover:text-fg disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]"
+            aria-label={`Remove ${label}`}
+            disabled={disabled}
+            onClick={onRemove}
+          >
+            <Icon name="close" size={10} />
+          </button>
+        ) : null}
+      </span>
+    )
+  }
+
+  return (
+    <span
+      className={cn(
+        'inline-flex overflow-hidden rounded-md border border-border bg-surface',
+        onRemove && 'pr-0.5'
+      )}
+      title={label}
+    >
+      <img
+        src={url}
+        alt={label}
+        className="size-10 object-cover"
+        loading="lazy"
+        decoding="async"
+      />
+      {onRemove ? (
+        <button
+          type="button"
+          className="grid place-items-center px-1 text-muted vy-transition hover:text-fg disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]"
+          aria-label={`Remove ${label}`}
+          disabled={disabled}
+          onClick={onRemove}
+        >
+          <Icon name="close" size={10} />
+        </button>
+      ) : null}
+    </span>
+  )
+}

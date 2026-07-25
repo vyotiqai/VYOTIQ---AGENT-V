@@ -1,0 +1,94 @@
+import { describe, expect, it } from 'vitest'
+import { toResponsesInput } from '@main/agent/providers/openaiResponses'
+import {
+  serializeToolArgs,
+  toInteractionsInput
+} from '@main/agent/providers/geminiInteractions'
+import { estimateMessagesTokens } from '@main/agent/context/estimate'
+
+describe('OpenAI Responses input', () => {
+  it('sends only trailing tool outputs on continuation', () => {
+    const messages = [
+      { role: 'user' as const, content: 'read file' },
+      {
+        role: 'assistant' as const,
+        content: '',
+        reasoningState: {
+          kind: 'openai_responses' as const,
+          responseId: 'resp_1',
+          outputItems: [{ type: 'function_call', call_id: 'c1', name: 'read', arguments: '{}' }]
+        },
+        toolCalls: [{ id: 'c1', name: 'read', arguments: '{}' }]
+      },
+      { role: 'tool' as const, toolCallId: 'c1', toolName: 'read', content: 'file contents' }
+    ]
+    const input = toResponsesInput(messages, undefined, {
+      kind: 'openai_responses',
+      responseId: 'resp_1',
+      outputItems: []
+    })
+    expect(input).toEqual([
+      { type: 'function_call_output', call_id: 'c1', output: 'file contents' }
+    ])
+  })
+
+  it('replays output items for assistant tool turns on first request', () => {
+    const messages = [
+      { role: 'user' as const, content: 'go' },
+      {
+        role: 'assistant' as const,
+        content: '',
+        reasoningState: {
+          kind: 'openai_responses' as const,
+          outputItems: [{ type: 'function_call', call_id: 'c1', name: 'read', arguments: '{}' }]
+        },
+        toolCalls: [{ id: 'c1', name: 'read', arguments: '{}' }]
+      }
+    ]
+    const input = toResponsesInput(messages, 'system prompt')
+    expect(input[0]).toEqual({ role: 'developer', content: 'system prompt' })
+    expect(input[1]).toEqual({ role: 'user', content: 'go' })
+    expect(input[2]).toEqual({
+      type: 'function_call',
+      call_id: 'c1',
+      name: 'read',
+      arguments: '{}'
+    })
+  })
+})
+
+describe('Gemini Interactions input', () => {
+  it('sends only trailing tool text on continuation', () => {
+    const messages = [
+      { role: 'user' as const, content: 'hi' },
+      { role: 'tool' as const, toolCallId: 'c1', toolName: 'read', content: 'ok' }
+    ]
+    const input = toInteractionsInput(messages, 'system', true)
+    expect(input).toBe('[tool:read] ok')
+  })
+
+  it('serializes object tool args as JSON', () => {
+    expect(serializeToolArgs({ path: '/tmp' })).toBe('{"path":"/tmp"}')
+    expect(serializeToolArgs('[object Object]')).toBe('[object Object]')
+  })
+})
+
+describe('token estimation', () => {
+  it('includes thinking and reasoning state in message estimates', () => {
+    const messages = [
+      {
+        role: 'user' as const,
+        content: 'hello'
+      },
+      {
+        role: 'assistant' as const,
+        content: 'answer',
+        thinking: 'long '.repeat(20),
+        reasoningState: { kind: 'openai_compat' as const, reasoningContent: 'blob' }
+      }
+    ]
+    const base = estimateMessagesTokens([{ role: 'user', content: 'hello' }])
+    const full = estimateMessagesTokens(messages)
+    expect(full).toBeGreaterThan(base)
+  })
+})

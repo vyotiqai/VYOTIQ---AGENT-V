@@ -1,0 +1,248 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { existsSync, readFileSync, rmSync, mkdirSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
+import type { ProviderChatRequest, StreamChunk } from '@main/agent/providers/types'
+import { resolveRunDir } from '@main/storage/paths'
+
+const userData = join(tmpdir(), `vyotiq-steps-${process.pid}-${Date.now()}`)
+
+vi.mock('electron', () => ({
+  app: {
+    getPath: (name: string) => {
+      if (name === 'userData') return userData
+      throw new Error(`unexpected getPath(${name})`)
+    },
+    getAppPath: () => '/tmp/vyotiq-app',
+    isPackaged: false
+  }
+}))
+
+vi.mock('@main/agent/mcp', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@main/agent/mcp')>()
+  return {
+    ...actual,
+    syncMcpServers: vi.fn(async () => {}),
+    listMcpToolDefinitions: () => []
+  }
+})
+
+vi.mock('@main/settings/settings', () => ({
+  getSettings: () => ({
+    provider: 'ollama',
+    model: 'qwen2.5',
+    ollamaBaseUrl: 'http://127.0.0.1:11434',
+    maxSteps: 2,
+    theme: 'system',
+    telemetryEnabled: false
+  }),
+  readLegacyWorkspacePath: () => null
+}))
+
+vi.mock('@main/settings/secrets', () => ({
+  getSecret: () => null
+}))
+
+vi.mock('@main/agent/harness', () => ({
+  loadHarness: () => 'harness'
+}))
+
+vi.mock('@main/agent/context', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@main/agent/context')>()
+  return {
+    ...actual,
+    assembleContext: async (input: { messages: unknown[] }) => ({
+      messages: input.messages,
+      system: 'system',
+      estimatedTokens: 100,
+      layers: { system: 10, history: 50, tools: 20, buffer: 20 },
+      contextShrunk: false,
+      anthropicNative: undefined,
+      compaction: null
+    }),
+    ensureMemoryLayout: () => undefined
+  }
+})
+
+const { streamChat, executeTool } = vi.hoisted(() => ({
+  streamChat: vi.fn(),
+  executeTool: vi.fn()
+}))
+
+vi.mock('@main/agent/providers', () => ({
+  getProvider: () => ({
+    id: 'ollama',
+    listModels: async () => [],
+    streamChat
+  }),
+  listProviderModels: async () => ({
+    models: [
+      {
+        id: 'qwen2.5',
+        inputModalities: ['text'],
+        outputModalities: ['text'],
+        supportsTools: true,
+        supportsVision: false
+      }
+    ]
+  })
+}))
+
+vi.mock('@main/agent/tools', () => ({
+  executeTool: (...args: unknown[]) => executeTool(...args)
+}))
+
+import { runAgent } from '@main/agent/loop'
+import { resetActiveRunsForTests } from '@main/agent/runRegistry'
+
+describe('runAgent max steps', () => {
+  let workspace: string
+
+  beforeEach(() => {
+    workspace = join(tmpdir(), `vyotiq-steps-ws-${process.pid}-${Date.now()}`)
+    mkdirSync(workspace, { recursive: true })
+    resetActiveRunsForTests()
+    streamChat.mockReset()
+    executeTool.mockReset()
+  })
+
+  afterEach(() => {
+    if (existsSync(userData)) rmSync(userData, { recursive: true, force: true })
+    if (existsSync(workspace)) rmSync(workspace, { recursive: true, force: true })
+  })
+
+  it('exits with done when the last step completes tools successfully', async () => {
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      if (call === 1) {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }
+        }
+      } else {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'c2', name: 'read', arguments: '{"path":"b.ts"}' }
+        }
+      }
+      yield { type: 'done' }
+    })
+    executeTool.mockResolvedValue({ ok: true, summary: 'file', content: 'body' })
+
+    const runId = 'max-steps-done'
+    const events: Array<{ type: string; status?: string; code?: string }> = []
+
+    for await (const ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'read files' }],
+      workspacePath: workspace
+    })) {
+      events.push(ev)
+    }
+
+    expect(events.some((e) => e.type === 'error' && e.code === 'AGENT_MAX_STEPS')).toBe(false)
+    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
+
+    const eventsPath = join(resolveRunDir(workspace, runId), 'events.jsonl')
+    const persisted = readFileSync(eventsPath, 'utf8')
+    expect(persisted).toContain('"status":"done"')
+    expect(persisted).toContain('"runId":"max-steps-done"')
+    expect(persisted).not.toContain('AGENT_MAX_STEPS')
+  })
+
+  it('emits step_usage when the provider reports token usage', async () => {
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'done' }
+      yield {
+        type: 'done',
+        usage: { inputTokens: 1200, outputTokens: 40, cachedInputTokens: 900 }
+      }
+    })
+
+    const runId = 'step-usage'
+    const events: Array<{ type: string; cachedInputTokens?: number }> = []
+    for await (const ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'hello' }],
+      workspacePath: workspace
+    })) {
+      events.push(ev)
+    }
+
+    const usage = events.find((e) => e.type === 'step_usage')
+    expect(usage?.cachedInputTokens).toBe(900)
+
+    const eventsPath = join(resolveRunDir(workspace, runId), 'events.jsonl')
+    expect(readFileSync(eventsPath, 'utf8')).toContain('"type":"step_usage"')
+    expect(readFileSync(eventsPath, 'utf8')).toContain('"cachedInputTokens":900')
+  })
+
+  it('emits AGENT_MAX_STEPS when the final step has no successful tools', async () => {
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      if (call === 1) {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }
+        }
+      } else {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'c2', name: 'read', arguments: 'not-json' }
+        }
+      }
+      yield { type: 'done' }
+    })
+    executeTool.mockResolvedValue({ ok: true, summary: 'file', content: 'body' })
+
+    const runId = 'max-steps-malformed'
+    const events: Array<{ type: string; status?: string; code?: string }> = []
+
+    for await (const ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'read files' }],
+      workspacePath: workspace
+    })) {
+      events.push(ev)
+    }
+
+    expect(events.some((e) => e.type === 'error' && e.code === 'AGENT_MAX_STEPS')).toBe(true)
+    expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
+  })
+
+  it('emits AGENT_MAX_STEPS when the final step tools fail', async () => {
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      if (call === 1) {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }
+        }
+      } else {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'c2', name: 'read', arguments: '{"path":"bad.ts"}' }
+        }
+      }
+      yield { type: 'done' }
+    })
+    executeTool.mockResolvedValue({ ok: false, summary: 'missing', content: 'not found' })
+
+    const runId = 'max-steps-tool-fail'
+    const events: Array<{ type: string; status?: string; code?: string }> = []
+
+    for await (const ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'read files' }],
+      workspacePath: workspace
+    })) {
+      events.push(ev)
+    }
+
+    expect(events.some((e) => e.type === 'error' && e.code === 'AGENT_MAX_STEPS')).toBe(true)
+    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(false)
+  })
+})

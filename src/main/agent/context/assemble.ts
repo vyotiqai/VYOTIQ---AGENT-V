@@ -1,0 +1,350 @@
+import type { ChatMessage, ModelInfo } from '../../../shared/ipc'
+import type { LlmProvider } from '../providers/types'
+import { anthropicNativeOptions } from './anthropicContext'
+import { allocateBudget, compactionTriggerTokens, contentWindow } from './budget'
+import { compactMessages, preserveRecentMessages } from './compact'
+import {
+  blendInputTokens,
+  effectiveInputTokens,
+  estimateMessagesTokens,
+  estimateTextTokens
+} from './estimate'
+import { readMemoryIndexAsync, readMemoryStateAsync } from './memory'
+import { trimHistoryToBudget } from './historyTrim'
+import { trimToolResults } from './toolTrim'
+import {
+  KEEP_RECENT_TURNS,
+  type AssembleInput,
+  type AssembleResult,
+  type CompactionRecord,
+  type ContextLayerBreakdown
+} from './types'
+import { stripImagesFromMessages } from './stripImages'
+import { buildWorkspaceSnapshotAsync } from './workspaceSnapshot'
+import { logger } from '../../../shared/logger'
+
+const COMPACTION_MIN_MESSAGES = 4
+const COMPACTION_MIN_TOKENS = 2000
+
+function modelAcceptsVision(model: AssembleInput['model']): boolean {
+  return model.supportsVision || model.inputModalities.includes('image')
+}
+
+function capText(text: string, maxTokens: number): string {
+  const maxChars = Math.max(200, maxTokens * 4)
+  if (text.length <= maxChars) return text
+  return text.slice(0, maxChars) + '\n…'
+}
+
+/** Lower priority = drop first when capping. Execution contract is kept longest. */
+function harnessSectionPriority(heading: string): number {
+  const h = heading.toLowerCase()
+  if (h.includes('execution contract')) return 100
+  if (h === 'role' || h.endsWith(' role')) return 80
+  if (h.includes('safety')) return 70
+  if (h.includes('loop')) return 50
+  if (h.includes('memory')) return 40
+  if (h.includes('tool')) return 30
+  return 20
+}
+
+/**
+ * Cap harness text while preferring to keep Execution contract (+ Role/Safety) intact.
+ * Drops lowest-priority ## sections first; only then truncates remaining text.
+ */
+function capHarness(text: string, maxTokens: number): string {
+  const maxChars = Math.max(200, maxTokens * 4)
+  if (text.length <= maxChars) return text
+
+  const chunks = text.split(/(?=^##\s+)/m).map((c) => c.trimEnd()).filter(Boolean)
+  if (chunks.length <= 1) return capText(text, maxTokens)
+
+  type Sec = { text: string; priority: number; keep: boolean }
+  const sections: Sec[] = chunks.map((chunk) => {
+    const m = /^##\s+(.+)$/m.exec(chunk)
+    const priority = m ? harnessSectionPriority(m[1].trim()) : 95
+    return { text: chunk, priority, keep: true }
+  })
+
+  const joined = (): string =>
+    sections
+      .filter((s) => s.keep)
+      .map((s) => s.text)
+      .join('\n\n')
+      .trimEnd()
+
+  let out = joined()
+  if (out.length <= maxChars) return out
+
+  const dropOrder = [...sections.keys()].sort(
+    (a, b) => sections[a].priority - sections[b].priority
+  )
+  for (const idx of dropOrder) {
+    if (sections[idx].priority >= 100) continue
+    sections[idx].keep = false
+    out = joined()
+    if (out.length <= maxChars) return out
+  }
+
+  return capText(out || text, maxTokens)
+}
+
+function buildSystem(parts: {
+  harness: string
+  workspace: string
+  memoryIndex: string
+  memoryState: string
+  contract?: string
+  compaction?: CompactionRecord | null
+  budgets: ReturnType<typeof allocateBudget>
+  loopHint?: string
+}): string {
+  const sections: string[] = []
+  sections.push(capHarness(parts.harness, parts.budgets.system))
+  if (parts.contract?.trim()) {
+    sections.push(`## Run contract\n${capText(parts.contract.trim(), Math.floor(parts.budgets.system * 0.4))}`)
+  }
+  const mw = Math.floor(parts.budgets.memoryWorkspace / 3)
+  sections.push(capText(parts.workspace, mw))
+  if (parts.loopHint?.trim()) {
+    sections.push(`## Run notice\n${capText(parts.loopHint.trim(), Math.floor(mw * 0.5))}`)
+  }
+  if (parts.memoryIndex.trim()) {
+    sections.push(`## Memory index\n${capText(parts.memoryIndex, mw)}`)
+  }
+  if (parts.memoryState.trim()) {
+    sections.push(`## Memory state\n${capText(parts.memoryState, mw)}`)
+  }
+  if (parts.compaction?.summary) {
+    sections.push(
+      [
+        '## Prior session summary',
+        parts.compaction.summary,
+        '',
+        '_Context was compacted. Promote durable facts into `.vyotiq/memory/` (`index.md` / `state.md` / `notes/`) via memory_write — chat history may be truncated._'
+      ].join('\n')
+    )
+  }
+  return sections.join('\n\n')
+}
+
+function computeLayers(
+  system: string,
+  messages: ChatMessage[],
+  toolsJsonEstimate: number,
+  model: ModelInfo,
+  budgets: ReturnType<typeof allocateBudget>
+): ContextLayerBreakdown {
+  return {
+    system: estimateTextTokens(system),
+    history: estimateMessagesTokens(messages, model),
+    tools: toolsJsonEstimate,
+    buffer: budgets.buffer
+  }
+}
+
+function totalFromLayers(layers: ContextLayerBreakdown): number {
+  return layers.system + layers.history + layers.tools
+}
+
+function stripThinkingForCompaction(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((m) => {
+    if (!m.thinking) return m
+    const { thinking: _thinking, ...rest } = m
+    return rest
+  })
+}
+
+function shouldCompactHistory(
+  toSummarize: ChatMessage[],
+  model: ModelInfo
+): boolean {
+  if (toSummarize.length > COMPACTION_MIN_MESSAGES) return true
+  return estimateMessagesTokens(toSummarize, model) >= COMPACTION_MIN_TOKENS
+}
+
+function resolveUsedTokens(
+  estimated: number,
+  lastUsage: AssembleInput['lastUsage'],
+  trigger: number
+): number {
+  const providerHint = lastUsage?.inputTokens
+  if (
+    providerHint !== undefined &&
+    providerHint > estimated &&
+    estimated < trigger * 0.5
+  ) {
+    return estimated
+  }
+  return blendInputTokens(estimated, lastUsage)
+}
+
+export async function assembleContext(
+  input: AssembleInput & {
+    providerId: import('../../../shared/ipc').ProviderId
+    provider: LlmProvider
+    apiKey?: string | null
+    baseUrl?: string
+    signal: AbortSignal
+  }
+): Promise<AssembleResult> {
+  const budgets = allocateBudget(input.model)
+  const keepRecent = input.keepRecentTurns ?? KEEP_RECENT_TURNS
+  const triggerRatio = input.compactionTriggerRatio ?? 0.7
+  const window = contentWindow(input.model)
+
+  const workspace = await buildWorkspaceSnapshotAsync(input.workspacePath, input.goal)
+  const [memoryIndex, memoryState] = input.workspacePath
+    ? await Promise.all([
+        readMemoryIndexAsync(input.workspacePath),
+        readMemoryStateAsync(input.workspacePath)
+      ])
+    : ['', '']
+
+  let messages = trimToolResults([...input.messages])
+  if (!modelAcceptsVision(input.model)) {
+    messages = stripImagesFromMessages(messages)
+  }
+  let compaction = input.priorCompaction ?? null
+  let contextShrunk = false
+
+  const systemDraft = buildSystem({
+    harness: input.harness,
+    workspace,
+    memoryIndex,
+    memoryState,
+    contract: input.contract,
+    compaction,
+    budgets,
+    loopHint: input.loopHint
+  })
+
+  let layers = computeLayers(systemDraft, messages, input.toolsJsonEstimate, input.model, budgets)
+  let estimated = totalFromLayers(layers)
+
+  const trigger = compactionTriggerTokens(input.model, triggerRatio)
+  let used = resolveUsedTokens(estimated, input.lastUsage, trigger)
+
+  if (used >= trigger || estimated >= trigger) {
+    const toSummarize = messages.slice(0, Math.max(0, messages.length - keepRecent * 2))
+    if (shouldCompactHistory(toSummarize, input.model)) {
+      const record = await compactMessages({
+        provider: input.provider,
+        model: input.model.id,
+        apiKey: input.apiKey,
+        baseUrl: input.baseUrl,
+        signal: input.signal,
+        messages: stripThinkingForCompaction(toSummarize),
+        supportsStructuredOutput: input.model.supportsStructuredOutput,
+        contextWindow: window
+      })
+      if (record) {
+        compaction = record
+        messages = preserveRecentMessages(messages, keepRecent, budgets.history, input.model)
+        contextShrunk = true
+      }
+    }
+  }
+
+  messages = trimHistoryToBudget(messages, budgets.history)
+
+  let system = buildSystem({
+    harness: input.harness,
+    workspace,
+    memoryIndex,
+    memoryState,
+    contract: input.contract,
+    compaction,
+    budgets,
+    loopHint: input.loopHint
+  })
+
+  layers = computeLayers(system, messages, input.toolsJsonEstimate, input.model, budgets)
+  estimated = totalFromLayers(layers)
+  used = contextShrunk ? estimated : resolveUsedTokens(estimated, input.lastUsage, trigger)
+
+  if (estimated > window) {
+    const priorLen = messages.length
+    messages = trimHistoryToBudget(messages, Math.floor(budgets.history * 0.5))
+    if (messages.length < priorLen) contextShrunk = true
+    system = buildSystem({
+      harness: input.harness,
+      workspace,
+      memoryIndex,
+      memoryState,
+      contract: input.contract,
+      compaction,
+      budgets,
+      loopHint: input.loopHint
+    })
+    layers = computeLayers(system, messages, input.toolsJsonEstimate, input.model, budgets)
+    estimated = totalFromLayers(layers)
+
+    if (estimated > window) {
+      const toSummarize = messages.slice(0, Math.max(0, messages.length - Math.max(2, keepRecent)))
+      if (shouldCompactHistory(toSummarize, input.model)) {
+        const record = await compactMessages({
+          provider: input.provider,
+          model: input.model.id,
+          apiKey: input.apiKey,
+          baseUrl: input.baseUrl,
+          signal: input.signal,
+          messages: stripThinkingForCompaction(toSummarize),
+          supportsStructuredOutput: input.model.supportsStructuredOutput,
+          contextWindow: window
+        })
+        if (record) {
+          compaction = record
+          messages = preserveRecentMessages(messages, Math.max(2, Math.floor(keepRecent / 2)), budgets.history, input.model)
+          contextShrunk = true
+          system = buildSystem({
+            harness: input.harness,
+            workspace,
+            memoryIndex,
+            memoryState,
+            contract: input.contract,
+            compaction,
+            budgets,
+            loopHint: input.loopHint
+          })
+          layers = computeLayers(system, messages, input.toolsJsonEstimate, input.model, budgets)
+          estimated = totalFromLayers(layers)
+        }
+      }
+    }
+
+    if (estimated > window) {
+      logger.warn('Context still exceeds model window after compaction', {
+        scope: 'agent',
+        code: 'CONTEXT_OVERFLOW',
+        estimated,
+        window
+      })
+    }
+  }
+
+  return {
+    system,
+    messages,
+    compaction,
+    estimatedTokens: estimated,
+    layers,
+    contextShrunk,
+    anthropicNative: anthropicNativeOptions(
+      input.providerId,
+      input.model,
+      triggerRatio
+    )
+  }
+}
+
+/** Estimate tool definitions JSON size in tokens. */
+export function estimateToolsJson(tools: unknown[]): number {
+  try {
+    return estimateTextTokens(JSON.stringify(tools))
+  } catch {
+    return 500
+  }
+}
+
+export type { AssembleResult, CompactionRecord, ChatMessage }
