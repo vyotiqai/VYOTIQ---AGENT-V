@@ -1,0 +1,237 @@
+/**
+ * @vitest-environment jsdom
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import {
+  MarkdownContent,
+  balanceIncompleteMarkdown,
+  prepareStreamingMarkdown,
+  trailingOpenFenceBody
+} from '@renderer/lib/ui/MarkdownContent'
+
+beforeEach(() => {
+  vi.stubGlobal(
+    'navigator',
+    Object.assign({}, navigator, {
+      clipboard: { writeText: vi.fn().mockResolvedValue(undefined) }
+    })
+  )
+})
+
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
+
+describe('prepareStreamingMarkdown', () => {
+  it('closes an unclosed fence without balancing inline markdown', () => {
+    expect(prepareStreamingMarkdown('```\nx = a**b')).toBe('```\nx = a**b\n```')
+  })
+
+  it('does not balance bold while streaming', () => {
+    expect(prepareStreamingMarkdown('Partial **bold')).toBe('Partial **bold')
+  })
+})
+
+describe('prepareStreamingMarkdown fence nesting', () => {
+  it('does not open a stray tilde fence for a tilde line inside a backtick fence', () => {
+    expect(prepareStreamingMarkdown('```\n~~~\nstill inside')).toBe('```\n~~~\nstill inside\n```')
+  })
+
+  it('closes a four-backtick fence with a matching four-backtick marker', () => {
+    expect(prepareStreamingMarkdown('````md\n```js\nconst x = 1\n```')).toBe(
+      '````md\n```js\nconst x = 1\n```\n````'
+    )
+  })
+
+  it('leaves a closed indented fence alone', () => {
+    expect(prepareStreamingMarkdown('  ```js\n  const x = 1\n  ```')).toBe(
+      '  ```js\n  const x = 1\n  ```'
+    )
+  })
+
+  it('ignores a fence marker that carries an info string as a closer', () => {
+    expect(prepareStreamingMarkdown('```js\nconst x = 1\n```ts\nlet y = 2\n```')).toBe(
+      '```js\nconst x = 1\n```ts\nlet y = 2\n```'
+    )
+  })
+})
+
+describe('trailingOpenFenceBody', () => {
+  it('returns nothing when every fence is closed', () => {
+    expect(trailingOpenFenceBody('```js\nconst x = 1\n```\ndone')).toBeNull()
+  })
+
+  it('returns only the body of the fence still streaming', () => {
+    expect(trailingOpenFenceBody('```js\nconst x = 1\n```\n\n```ts\nlet y')).toBe('let y')
+  })
+
+  it('ignores a tilde fence inside an open backtick fence', () => {
+    expect(trailingOpenFenceBody('```\n~~~\nstill inside')).toBe('~~~\nstill inside')
+  })
+})
+
+describe('balanceIncompleteMarkdown', () => {
+  it('balances bold outside fences when a stream completes', () => {
+    expect(balanceIncompleteMarkdown('Partial **bold')).toBe('Partial **bold**')
+  })
+
+  it('ignores backticks that live inside a closed fence', () => {
+    expect(balanceIncompleteMarkdown('```\nfoo ` bar\n```')).toBe('```\nfoo ` bar\n```')
+  })
+
+  it('ignores asterisks that live inside a closed fence', () => {
+    expect(balanceIncompleteMarkdown('```\na ** b\n```')).toBe('```\na ** b\n```')
+  })
+
+  it('still balances bold that follows a closed fence', () => {
+    expect(balanceIncompleteMarkdown('```\ncode\n```\n\nthen **bold')).toBe(
+      '```\ncode\n```\n\nthen **bold**'
+    )
+  })
+})
+
+describe('MarkdownContent streaming', () => {
+  it('renders first streaming frame immediately', () => {
+    render(<MarkdownContent content="Hello" streaming />)
+
+    expect(screen.getByText('Hello')).toBeTruthy()
+  })
+
+  it('keeps partial bold as plain text while streaming', () => {
+    render(<MarkdownContent content="Partial **bold" streaming />)
+
+    expect(screen.getByText('Partial **bold')).toBeTruthy()
+    expect(screen.queryByText('bold')?.tagName).not.toBe('STRONG')
+  })
+
+  it('renders bold after streaming completes', () => {
+    const { rerender } = render(<MarkdownContent content="Partial **bold" streaming />)
+
+    expect(screen.getByText('Partial **bold')).toBeTruthy()
+
+    rerender(<MarkdownContent content="Partial **bold" streaming={false} />)
+
+    expect(screen.getByText('bold').tagName).toBe('STRONG')
+    expect(screen.queryByText('Partial **bold')).toBeNull()
+  })
+
+  it('closes an unclosed fence as a partial code block', () => {
+    render(<MarkdownContent content={'```js\nconst x = 1'} streaming />)
+
+    expect(screen.getByText('const x = 1')).toBeTruthy()
+    expect(screen.queryByText('```js')).toBeNull()
+  })
+
+  it('renders GFM tables', () => {
+    render(
+      <MarkdownContent
+        content={'| A | B |\n| --- | --- |\n| 1 | 2 |'}
+        streaming={false}
+      />
+    )
+
+    expect(screen.getByRole('table')).toBeTruthy()
+    expect(screen.getByText('A')).toBeTruthy()
+    expect(screen.getByText('2')).toBeTruthy()
+  })
+
+  it('copies fenced code from the code block button', async () => {
+    render(
+      <MarkdownContent
+        content={'```js\nconst copied = true\n```'}
+        streaming={false}
+      />
+    )
+
+    const copyButton = await screen.findByRole('button', { name: 'Copy code' })
+    fireEvent.click(copyButton)
+
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('const copied = true')
+    })
+    expect(await screen.findByRole('button', { name: 'Copied' })).toBeTruthy()
+  })
+
+  it('copies bare fenced code without a language tag', async () => {
+    render(
+      <MarkdownContent content={'```\nplain fence\n```'} streaming={false} />
+    )
+
+    const copyButton = await screen.findByRole('button', { name: 'Copy code' })
+    fireEvent.click(copyButton)
+
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('plain fence')
+    })
+  })
+
+  it('closes an unclosed tilde fence while streaming', () => {
+    render(<MarkdownContent content={'~~~\nconst y = 2'} streaming />)
+
+    expect(screen.getByText('const y = 2')).toBeTruthy()
+    expect(screen.queryByText('~~~')).toBeNull()
+  })
+
+  it('highlights a fence that already closed while a later one still streams', async () => {
+    const { container } = render(
+      <MarkdownContent
+        content={'```js\nconst done = 1\n```\n\n```js\nconst still'}
+        streaming
+      />
+    )
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('pre.shiki').length).toBe(1)
+    })
+    expect(container.querySelectorAll('pre').length).toBe(2)
+    expect(screen.getByText('const still')).toBeTruthy()
+  })
+
+  it('keeps a finished code block highlighted as later tokens arrive', async () => {
+    const { container, rerender } = render(
+      <MarkdownContent content={'```js\nconst done = 1\n```\n\n```js\nconst still'} streaming />
+    )
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('pre.shiki').length).toBe(1)
+    })
+
+    rerender(
+      <MarkdownContent content={'```js\nconst done = 1\n```\n\n```js\nconst still = 2'} streaming />
+    )
+
+    expect(container.querySelectorAll('pre.shiki').length).toBe(1)
+  })
+
+  it('never shows a stale highlight from previous content', async () => {
+    const { container, rerender } = render(
+      <MarkdownContent content={'```js\nconst first = 1\n```'} streaming={false} />
+    )
+
+    await waitFor(() => {
+      expect(container.querySelector('pre.shiki')).toBeTruthy()
+    })
+
+    rerender(<MarkdownContent content={'```js\nconst second = 2\n```'} streaming={false} />)
+
+    expect(container.textContent).not.toContain('const first = 1')
+    expect(container.textContent).toContain('const second = 2')
+  })
+
+  it('renders one code block for a tilde line inside a streaming backtick fence', () => {
+    const { container } = render(<MarkdownContent content={'```\n~~~\nstill inside'} streaming />)
+
+    expect(container.querySelectorAll('pre').length).toBe(1)
+  })
+
+  it('does not leak react-markdown node props onto code elements', () => {
+    const { container } = render(
+      <MarkdownContent content="inline `code` here" streaming={false} />
+    )
+    const code = container.querySelector('code')
+    expect(code).toBeTruthy()
+    expect(code?.getAttribute('node')).toBeNull()
+  })
+})

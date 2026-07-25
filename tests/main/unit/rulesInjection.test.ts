@@ -1,0 +1,107 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { mkdirSync, rmSync, writeFileSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
+import {
+  buildWorkspaceRulesSection,
+  clearRulesCache,
+  formatWorkspaceRules,
+  readWorkspaceRules
+} from '@main/agent/context/rules'
+
+describe('workspace rules', () => {
+  let workspace: string
+
+  beforeEach(() => {
+    workspace = join(tmpdir(), `vyotiq-rules-${process.pid}-${Date.now()}-${Math.random()}`)
+    mkdirSync(workspace, { recursive: true })
+    clearRulesCache()
+  })
+
+  afterEach(() => {
+    rmSync(workspace, { recursive: true, force: true })
+    clearRulesCache()
+  })
+
+  it('returns nothing when the workspace has no rules', async () => {
+    expect(await readWorkspaceRules(workspace)).toEqual([])
+    expect(await buildWorkspaceRulesSection(workspace)).toBe('')
+  })
+
+  it('returns nothing without a workspace', async () => {
+    expect(await readWorkspaceRules(null)).toEqual([])
+  })
+
+  it('reads AGENTS.md and CLAUDE.md in precedence order', async () => {
+    writeFileSync(join(workspace, 'CLAUDE.md'), 'claude rules')
+    writeFileSync(join(workspace, 'AGENTS.md'), 'agent rules')
+
+    const files = await readWorkspaceRules(workspace)
+
+    expect(files.map((f) => f.path)).toEqual(['AGENTS.md', 'CLAUDE.md'])
+    expect(files[0].content).toBe('agent rules')
+  })
+
+  it('reads .cursor/rules and .vyotiq/rules including nested directories', async () => {
+    mkdirSync(join(workspace, '.cursor', 'rules', 'frontend'), { recursive: true })
+    mkdirSync(join(workspace, '.vyotiq', 'rules'), { recursive: true })
+    writeFileSync(join(workspace, '.cursor', 'rules', 'style.mdc'), 'no semicolons')
+    writeFileSync(join(workspace, '.cursor', 'rules', 'frontend', 'react.md'), 'hooks only')
+    writeFileSync(join(workspace, '.vyotiq', 'rules', 'ops.md'), 'never force push')
+
+    const files = await readWorkspaceRules(workspace)
+    const paths = files.map((f) => f.path)
+
+    expect(paths).toContain('.cursor/rules/style.mdc')
+    expect(paths).toContain('.cursor/rules/frontend/react.md')
+    expect(paths).toContain('.vyotiq/rules/ops.md')
+  })
+
+  it('ignores files with unrelated extensions', async () => {
+    mkdirSync(join(workspace, '.cursor', 'rules'), { recursive: true })
+    writeFileSync(join(workspace, '.cursor', 'rules', 'notes.txt'), 'not a rule')
+    writeFileSync(join(workspace, '.cursor', 'rules', 'real.md'), 'a rule')
+
+    const paths = (await readWorkspaceRules(workspace)).map((f) => f.path)
+
+    expect(paths).toEqual(['.cursor/rules/real.md'])
+  })
+
+  it('skips empty files', async () => {
+    writeFileSync(join(workspace, 'AGENTS.md'), '')
+    expect(await readWorkspaceRules(workspace)).toEqual([])
+  })
+
+  it('truncates a file that exceeds the per-file cap', async () => {
+    writeFileSync(join(workspace, 'AGENTS.md'), 'x'.repeat(100_000))
+
+    const [file] = await readWorkspaceRules(workspace)
+
+    expect(file.content.length).toBeLessThan(100_000)
+    expect(file.content.endsWith('… (truncated)')).toBe(true)
+  })
+
+  it('renders a labelled system-prompt section', async () => {
+    writeFileSync(join(workspace, 'AGENTS.md'), 'prefer named exports')
+
+    const section = await buildWorkspaceRulesSection(workspace)
+
+    expect(section).toContain('## Workspace rules')
+    expect(section).toContain('### AGENTS.md')
+    expect(section).toContain('prefer named exports')
+  })
+
+  it('renders an empty string for no files', () => {
+    expect(formatWorkspaceRules([])).toBe('')
+  })
+
+  it('serves a cached read until the fingerprint changes', async () => {
+    writeFileSync(join(workspace, 'AGENTS.md'), 'first')
+    expect((await readWorkspaceRules(workspace))[0].content).toBe('first')
+
+    // Same mtime bucket, so the cache should still answer.
+    writeFileSync(join(workspace, 'AGENTS.md'), 'second')
+    clearRulesCache(workspace)
+    expect((await readWorkspaceRules(workspace))[0].content).toBe('second')
+  })
+})

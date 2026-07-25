@@ -1,0 +1,194 @@
+import {
+  Children,
+  isValidElement,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactElement,
+  type ReactNode
+} from 'react'
+import Markdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import rehypeSanitize from 'rehype-sanitize'
+import { CodeBlockCopyButton } from './CodeBlockCopyButton'
+import { highlightCode } from '@renderer/lib/markdown/markdownHighlight'
+import {
+  balanceOutsideFences,
+  closeOpenFence,
+  trailingOpenFenceBody
+} from '@renderer/lib/markdown/fenceUtils'
+import { markdownSanitizeSchema, sanitizeHighlightedHtml } from '@renderer/lib/markdown/markdownSanitize'
+import { cn } from './cn'
+import { useDocumentTheme } from './useDocumentTheme'
+
+export { trailingOpenFenceBody } from '@renderer/lib/markdown/fenceUtils'
+
+/** Close an unclosed fence so streaming partials still parse as code. */
+export function prepareStreamingMarkdown(content: string): string {
+  return closeOpenFence(content)
+}
+
+/** Balance unclosed inline markdown when a stream completes. */
+export function balanceIncompleteMarkdown(content: string): string {
+  return balanceOutsideFences(content)
+}
+
+const highlightCache = new Map<string, string>()
+
+function highlightCacheKey(text: string, lang: string, theme: string): string {
+  return `${theme}\0${lang}\0${text}`
+}
+
+function FencedCodeBlock({
+  text,
+  className,
+  unstable = false
+}: {
+  text: string
+  className?: string
+  /** Still being streamed, so highlighting it would be re-thrown away next delta. */
+  unstable?: boolean
+}) {
+  const lang = className?.replace(/^language-/, '') ?? ''
+  const theme = useDocumentTheme()
+  const cacheKey = highlightCacheKey(text, lang, theme)
+  const [html, setHtml] = useState<string | null>(() =>
+    unstable ? null : (highlightCache.get(cacheKey) ?? null)
+  )
+
+  useEffect(() => {
+    if (unstable) {
+      setHtml(null)
+      return
+    }
+    const cached = highlightCache.get(cacheKey)
+    if (cached) {
+      setHtml(cached)
+      return
+    }
+    let cancelled = false
+    setHtml(null)
+    void highlightCode(text, lang).then((result) => {
+      if (cancelled) return
+      const next = result ? sanitizeHighlightedHtml(result) : null
+      if (next) highlightCache.set(cacheKey, next)
+      setHtml(next)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [text, lang, unstable, theme, cacheKey])
+
+  if (html) {
+    return (
+      <div className="group/code relative my-2">
+        <CodeBlockCopyButton text={text} />
+        <div
+          className="overflow-x-auto rounded-md border border-border bg-surface font-mono text-[0.85em] [&>pre]:m-0 [&>pre]:overflow-x-auto [&>pre]:bg-transparent [&>pre]:p-3"
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      </div>
+    )
+  }
+
+  return (
+    <div className="group/code relative my-2">
+      <CodeBlockCopyButton text={text} />
+      <pre className="overflow-x-auto rounded-md border border-border bg-surface p-3 font-mono text-[0.85em]">
+        <code className={cn('block', className)}>{text}</code>
+      </pre>
+    </div>
+  )
+}
+
+function FencedCodePre({
+  children,
+  openFenceBody
+}: {
+  children?: ReactNode
+  openFenceBody: string | null
+}) {
+  const child = Children.toArray(children).find(isValidElement) as
+    | ReactElement<{ className?: string; children?: ReactNode }>
+    | undefined
+  if (!child) {
+    return (
+      <pre className="my-2 overflow-x-auto rounded-md border border-border bg-surface p-3 font-mono text-[0.85em]">
+        {children}
+      </pre>
+    )
+  }
+
+  const className = child.props.className ?? ''
+  const text = String(child.props.children ?? '').replace(/\n$/, '')
+  const unstable = openFenceBody !== null && text.replace(/\n+$/, '') === openFenceBody.replace(/\n+$/, '')
+  return <FencedCodeBlock text={text} className={className} unstable={unstable} />
+}
+
+function buildMarkdownComponents(openFenceBody: string | null) {
+  return {
+    a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
+      <a href={href} target="_blank" rel="noreferrer noopener" className="text-fg-strong underline">
+        {children}
+      </a>
+    ),
+    code: ({
+      className: codeClass,
+      children
+    }: {
+      className?: string
+      children?: React.ReactNode
+    }) => {
+      if (codeClass?.includes('language-')) {
+        return <code className={cn('block font-mono text-[0.85em]', codeClass)}>{children}</code>
+      }
+      return (
+        <code className="rounded-sm bg-surface px-1 py-0.5 font-mono text-[0.85em]">{children}</code>
+      )
+    },
+    pre: ({ children }: { children?: React.ReactNode }) => (
+      <FencedCodePre openFenceBody={openFenceBody}>{children}</FencedCodePre>
+    )
+  }
+}
+
+export function MarkdownContent({
+  content,
+  streaming = false,
+  className
+}: {
+  content: string
+  streaming?: boolean
+  className?: string
+}) {
+  const markdown = useMemo(
+    () => (streaming ? prepareStreamingMarkdown(content) : balanceIncompleteMarkdown(content)),
+    [streaming, content]
+  )
+  const openFenceBody = useMemo(
+    () => (streaming ? trailingOpenFenceBody(content) : null),
+    [streaming, content]
+  )
+  const components = useMemo(() => buildMarkdownComponents(openFenceBody), [openFenceBody])
+
+  if (!content && !streaming) return null
+
+  return (
+    <div
+      className={cn(
+        'markdown-body text-sm leading-relaxed text-fg [overflow-wrap:anywhere]',
+        className
+      )}
+    >
+      {markdown ? (
+        <Markdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[[rehypeSanitize, markdownSanitizeSchema]]}
+          components={components}
+        >
+          {markdown}
+        </Markdown>
+      ) : null}
+    </div>
+  )
+}

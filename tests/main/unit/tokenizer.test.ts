@@ -1,0 +1,211 @@
+import { beforeEach, describe, expect, it } from 'vitest'
+import { deflateSync } from 'zlib'
+import {
+  countTextTokens,
+  encodingForModel,
+  resetTokenizerCache
+} from '@main/agent/context/tokenizer'
+import {
+  DEFAULT_IMAGE_TOKENS,
+  estimateImageTokens,
+  imageDimensionsFromDataUrl,
+  imageTokensForDimensions
+} from '@main/agent/context/imageTokens'
+import { estimateMessagesTokens, estimateTextTokens } from '@main/agent/context/estimate'
+import type { ModelInfo } from '@shared/ipc'
+
+function model(id: string): ModelInfo {
+  return {
+    id,
+    displayName: id,
+    inputModalities: ['text'],
+    outputModalities: ['text'],
+    supportsTools: true,
+    supportsVision: true
+  }
+}
+
+/** Minimal valid PNG: signature + IHDR chunk + a stub IDAT/IEND. */
+function pngDataUrl(width: number, height: number): string {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  const ihdrBody = Buffer.alloc(13)
+  ihdrBody.writeUInt32BE(width, 0)
+  ihdrBody.writeUInt32BE(height, 4)
+  ihdrBody[8] = 8
+  ihdrBody[9] = 6
+  const ihdr = Buffer.concat([
+    Buffer.from([0, 0, 0, 13]),
+    Buffer.from('IHDR', 'ascii'),
+    ihdrBody,
+    Buffer.alloc(4)
+  ])
+  const idatBody = deflateSync(Buffer.alloc(4))
+  const idat = Buffer.concat([
+    (() => {
+      const len = Buffer.alloc(4)
+      len.writeUInt32BE(idatBody.length)
+      return len
+    })(),
+    Buffer.from('IDAT', 'ascii'),
+    idatBody,
+    Buffer.alloc(4)
+  ])
+  const png = Buffer.concat([signature, ihdr, idat])
+  return `data:image/png;base64,${png.toString('base64')}`
+}
+
+function gifDataUrl(width: number, height: number): string {
+  const buf = Buffer.alloc(14)
+  buf.write('GIF89a', 0, 'ascii')
+  buf.writeUInt16LE(width, 6)
+  buf.writeUInt16LE(height, 8)
+  return `data:image/gif;base64,${buf.toString('base64')}`
+}
+
+function jpegDataUrl(width: number, height: number): string {
+  // SOI, an APP0 segment to skip over, then SOF0 carrying the real dimensions.
+  const app0 = Buffer.concat([
+    Buffer.from([0xff, 0xe0, 0x00, 0x10]),
+    Buffer.from('JFIF\0', 'ascii'),
+    Buffer.alloc(9)
+  ])
+  const sof = Buffer.alloc(11)
+  sof[0] = 0xff
+  sof[1] = 0xc0
+  sof.writeUInt16BE(9, 2)
+  sof[4] = 8
+  sof.writeUInt16BE(height, 5)
+  sof.writeUInt16BE(width, 7)
+  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8]), app0, sof])
+  return `data:image/jpeg;base64,${jpeg.toString('base64')}`
+}
+
+describe('countTextTokens', () => {
+  beforeEach(() => resetTokenizerCache())
+
+  it('counts real BPE tokens rather than dividing by four', () => {
+    // 11 characters that the heuristic would call 3 tokens.
+    expect(countTextTokens('hello world')).toBe(2)
+  })
+
+  it('returns zero for empty text', () => {
+    expect(countTextTokens('')).toBe(0)
+  })
+
+  it('is stable across repeated calls through the cache', () => {
+    const first = countTextTokens('the quick brown fox jumps over the lazy dog')
+    const second = countTextTokens('the quick brown fox jumps over the lazy dog')
+    expect(second).toBe(first)
+    expect(first).toBeGreaterThan(5)
+  })
+
+  it('falls back to the heuristic beyond the large-text threshold', () => {
+    const huge = 'a'.repeat(120_000)
+    expect(countTextTokens(huge)).toBe(30_000)
+  })
+
+  it('handles unicode without throwing', () => {
+    expect(countTextTokens('日本語のテキスト 🎉')).toBeGreaterThan(0)
+  })
+})
+
+describe('encodingForModel', () => {
+  it('uses cl100k for pre-4o OpenAI models', () => {
+    expect(encodingForModel(model('gpt-4'))).toBe('cl100k_base')
+    expect(encodingForModel(model('gpt-4-turbo'))).toBe('cl100k_base')
+    expect(encodingForModel(model('gpt-3.5-turbo'))).toBe('cl100k_base')
+  })
+
+  it('uses o200k for modern and non-OpenAI models', () => {
+    expect(encodingForModel(model('gpt-4o'))).toBe('o200k_base')
+    expect(encodingForModel(model('gpt-4.1'))).toBe('o200k_base')
+    expect(encodingForModel(model('gpt-5'))).toBe('o200k_base')
+    expect(encodingForModel(model('claude-sonnet-4'))).toBe('o200k_base')
+    expect(encodingForModel(undefined)).toBe('o200k_base')
+  })
+})
+
+describe('image dimensions', () => {
+  it('reads PNG dimensions from the IHDR chunk', () => {
+    expect(imageDimensionsFromDataUrl(pngDataUrl(1920, 1080))).toEqual({
+      width: 1920,
+      height: 1080
+    })
+  })
+
+  it('reads GIF dimensions', () => {
+    expect(imageDimensionsFromDataUrl(gifDataUrl(320, 240))).toEqual({ width: 320, height: 240 })
+  })
+
+  it('reads JPEG dimensions past an APP0 segment', () => {
+    expect(imageDimensionsFromDataUrl(jpegDataUrl(800, 600))).toEqual({ width: 800, height: 600 })
+  })
+
+  it('returns null for a non-data URL', () => {
+    expect(imageDimensionsFromDataUrl('https://example.com/a.png')).toBeNull()
+  })
+
+  it('returns null for undecodable content', () => {
+    expect(imageDimensionsFromDataUrl('data:image/png;base64,zzzz')).toBeNull()
+  })
+})
+
+describe('imageTokensForDimensions', () => {
+  it('charges a single tile for a small icon', () => {
+    expect(imageTokensForDimensions(64, 64)).toBe(85 + 170)
+  })
+
+  it('charges four tiles for a 1024x768 screenshot', () => {
+    expect(imageTokensForDimensions(1024, 768)).toBe(85 + 170 * 4)
+  })
+
+  it('scales oversized images down before tiling', () => {
+    // 4096x4096 fits to 2048, then the shortest side drops to 768 -> 4 tiles.
+    expect(imageTokensForDimensions(4096, 4096)).toBe(85 + 170 * 4)
+  })
+
+  it('distinguishes an icon from a screenshot', () => {
+    expect(imageTokensForDimensions(64, 64)).toBeLessThan(imageTokensForDimensions(1920, 1080))
+  })
+})
+
+describe('estimateImageTokens', () => {
+  it('uses parsed dimensions when available', () => {
+    expect(estimateImageTokens(pngDataUrl(64, 64))).toBe(255)
+  })
+
+  it('falls back to the screenshot default when dimensions are unreadable', () => {
+    expect(estimateImageTokens('https://example.com/photo.jpg')).toBe(DEFAULT_IMAGE_TOKENS)
+  })
+})
+
+describe('estimateMessagesTokens', () => {
+  it('counts image parts by dimension rather than a flat constant', () => {
+    const icon = estimateMessagesTokens([
+      { role: 'user', content: [{ type: 'image_url', url: pngDataUrl(64, 64) }] }
+    ])
+    const large = estimateMessagesTokens([
+      { role: 'user', content: [{ type: 'image_url', url: pngDataUrl(1920, 1080) }] }
+    ])
+    expect(icon).toBeLessThan(large)
+  })
+
+  it('includes tool call arguments and thinking text', () => {
+    const bare = estimateMessagesTokens([{ role: 'assistant', content: 'ok' }])
+    const rich = estimateMessagesTokens([
+      {
+        role: 'assistant',
+        content: 'ok',
+        thinking: 'a long chain of reasoning about the problem',
+        toolCalls: [{ id: 't1', name: 'read', arguments: '{"path":"src/index.ts"}' }]
+      }
+    ])
+    expect(rich).toBeGreaterThan(bare)
+  })
+
+  it('selects the encoding from the model', () => {
+    const text = 'tokenization differs subtly between encodings'
+    expect(estimateTextTokens(text, model('gpt-4'))).toBeGreaterThan(0)
+    expect(estimateTextTokens(text, model('gpt-4o'))).toBeGreaterThan(0)
+  })
+})
