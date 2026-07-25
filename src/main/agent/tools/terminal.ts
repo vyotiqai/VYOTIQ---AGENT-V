@@ -238,6 +238,59 @@ function formatTerminalOutput(
   return out
 }
 
+/**
+ * Minimal env for child shells — omit parent secrets (API keys, tokens) that
+ * live on process.env in the Electron main process.
+ */
+export function sanitizedTerminalEnv(
+  source: NodeJS.ProcessEnv = process.env
+): Record<string, string> {
+  const keys = [
+    'PATH',
+    'Path',
+    'PATHEXT',
+    'HOME',
+    'USERPROFILE',
+    'USERNAME',
+    'USER',
+    'LOGNAME',
+    'TMP',
+    'TEMP',
+    'TMPDIR',
+    'LANG',
+    'LC_ALL',
+    'LC_CTYPE',
+    'TERM',
+    'ComSpec',
+    'COMSPEC',
+    'SystemRoot',
+    'SYSTEMROOT',
+    'SystemDrive',
+    'SYSTEMDRIVE',
+    'windir',
+    'WINDIR',
+    'NUMBER_OF_PROCESSORS',
+    'PROCESSOR_ARCHITECTURE',
+    'OS',
+    'SHELL',
+    'PWD',
+    'OLDPWD',
+    'HOMEBREW_PREFIX',
+    'HOMEBREW_CELLAR'
+  ]
+
+  const env: Record<string, string> = {}
+  for (const key of keys) {
+    const value = source[key]
+    if (typeof value === 'string' && value.length > 0) env[key] = value
+  }
+  // Ensure PATH exists even if the parent somehow lacks it.
+  if (!env.PATH && !env.Path) {
+    env.PATH = source.PATH ?? source.Path ?? ''
+  }
+  return env
+}
+
 export async function toolTerminal(
   workspaceRoot: string,
   command: string,
@@ -268,7 +321,7 @@ export async function toolTerminal(
       isWin ? ['/c', command] : unix!.args,
       {
         cwd: workspaceRoot,
-        env: process.env,
+        env: sanitizedTerminalEnv(),
         windowsHide: true
       }
     )

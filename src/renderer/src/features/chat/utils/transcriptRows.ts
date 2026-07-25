@@ -1,7 +1,7 @@
 import type { UiItem, UiToolApproval } from '@shared/transcript'
 import { duplicatesReasoning, isMeaningfulThinking } from '@shared/transcript'
 import { parseArgsRecord } from '@shared/toolSummary'
-import { parseEditCardData } from './toolCardData'
+import { countDiffLines, countLines, parseEditCardData } from './toolCardData'
 
 export type MessageItem = Extract<UiItem, { kind: 'message' }>
 export type UserItem = MessageItem & { role: 'user' }
@@ -37,7 +37,14 @@ export type TurnSpan = {
  * Mid-turn narration is part of the work; only the closing answer survives.
  */
 export function isTurnWorkRow(row: TranscriptRow): boolean {
-  if (row.kind === 'thinking' || row.kind === 'activity' || row.kind === 'card') return true
+  if (
+    row.kind === 'thinking' ||
+    row.kind === 'activity' ||
+    row.kind === 'card' ||
+    row.kind === 'approval'
+  ) {
+    return true
+  }
   return row.kind === 'text' && !row.final
 }
 
@@ -45,10 +52,10 @@ export function isTurnWorkRow(row: TranscriptRow): boolean {
 const CARD_TOOLS = new Set([
   'terminal',
   'edit',
-  'write',
   'multi_edit',
   'todo_write',
-  'subagent'
+  'subagent',
+  'delete'
 ])
 
 /** Vertical padding every row carries so virtual and flow layout stay identical. */
@@ -110,13 +117,29 @@ export function buildTranscriptRows(items: UiItem[]): TranscriptRow[] {
       group = []
     }
 
-    for (const item of run) {
+    const emitTool = (item: ToolItem): void => {
+      // A gated call waits on the reader — show only the approval card, not a
+      // parallel "Working…" tool chrome for the same call.
+      if (item.approval) {
+        closeGroup()
+        rows.push({
+          kind: 'approval',
+          id: `approval:${item.approval.requestId}`,
+          approval: item.approval,
+          turnIndex: Math.max(turnIndex, 0)
+        })
+        return
+      }
       if (isCardTool(item)) {
         closeGroup()
         rows.push({ kind: 'card', id: item.id, item, turnIndex })
-        continue
+        return
       }
       group.push(item)
+    }
+
+    for (const item of run) {
+      emitTool(item)
     }
     closeGroup()
   }
@@ -151,42 +174,13 @@ export function buildTranscriptRows(items: UiItem[]): TranscriptRow[] {
   }
 
   flush()
-  // The run is parked on any pending approval, so nothing follows it in the
-  // transcript — appending keeps the prompt under the work that triggered it.
-  for (const item of items) {
-    if (item.kind !== 'tool' || !item.approval) continue
-    rows.push({
-      kind: 'approval',
-      id: `approval:${item.approval.requestId}`,
-      approval: item.approval,
-      turnIndex: Math.max(turnIndex, 0)
-    })
-  }
   // Turn summaries stand for the work rows, and which text row is the closing
   // answer decides what counts as work, so that has to be settled first.
   return withChangeSummaries(withTurnSummaries(markFinalText(rows)))
 }
 
 /** Tools that write files, and so contribute to a turn's change summary. */
-const WRITING_TOOLS = new Set(['edit', 'write', 'multi_edit'])
-
-function countDiffLines(diff: string): { added: number; removed: number } {
-  let added = 0
-  let removed = 0
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@')) continue
-    if (line.startsWith('+')) added += 1
-    else if (line.startsWith('-')) removed += 1
-  }
-  return { added, removed }
-}
-
-function countLines(text: string): number {
-  if (!text) return 0
-  const lines = text.split('\n')
-  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
-  return lines.length
-}
+const WRITING_TOOLS = new Set(['edit', 'multi_edit'])
 
 function writingToolChanges(item: ToolItem): ChangedFile[] {
   if (!WRITING_TOOLS.has(item.tool.name) || item.tool.status !== 'done') return []

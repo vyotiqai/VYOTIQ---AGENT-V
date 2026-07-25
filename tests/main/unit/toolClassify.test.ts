@@ -1,21 +1,53 @@
-import { describe, expect, it } from 'vitest'
-import { isReadOnlyTool } from '@main/agent/tools/classify'
+import { afterEach, describe, expect, it } from 'vitest'
+import { resetMcpSessionsForTests, setMcpReadOnlyHintsForTests } from '@main/agent/mcp'
+import {
+  isApprovalExemptTool,
+  isParallelSafeTool,
+  isReadOnlyTool
+} from '@main/agent/tools/classify'
+import { isToolGated } from '@main/agent/toolApproval'
+
+afterEach(() => {
+  resetMcpSessionsForTests()
+})
 
 describe('tool classify', () => {
-  it('marks built-in read tools as parallel-safe', () => {
+  it('marks built-in parallel-safe tools', () => {
+    expect(isParallelSafeTool('read')).toBe(true)
+    expect(isParallelSafeTool('search')).toBe(true)
+    expect(isParallelSafeTool('glob')).toBe(true)
+    expect(isParallelSafeTool('grep')).toBe(true)
+    expect(isParallelSafeTool('list_dir')).toBe(true)
+    expect(isParallelSafeTool('web_fetch')).toBe(true)
+    expect(isParallelSafeTool('memory_read')).toBe(true)
     expect(isReadOnlyTool('read')).toBe(true)
-    expect(isReadOnlyTool('search')).toBe(true)
-    expect(isReadOnlyTool('memory_read')).toBe(true)
   })
 
   it('marks mutating built-in tools as serial-only', () => {
-    expect(isReadOnlyTool('edit')).toBe(false)
-    expect(isReadOnlyTool('terminal')).toBe(false)
-    expect(isReadOnlyTool('memory_write')).toBe(false)
+    expect(isParallelSafeTool('edit')).toBe(false)
+    expect(isParallelSafeTool('terminal')).toBe(false)
+    expect(isParallelSafeTool('memory_write')).toBe(false)
+    expect(isParallelSafeTool('subagent')).toBe(false)
   })
 
-  it('heuristically classifies MCP tools by name', () => {
-    expect(isReadOnlyTool('mcp__fs__read_file')).toBe(true)
-    expect(isReadOnlyTool('mcp__gh__create_issue')).toBe(false)
+  it('gates web_fetch for approval while keeping it parallel-safe', () => {
+    expect(isParallelSafeTool('web_fetch')).toBe(true)
+    expect(isApprovalExemptTool('web_fetch')).toBe(false)
+    expect(isApprovalExemptTool('read')).toBe(true)
+    expect(isToolGated('web_fetch', 'mutating', new Set(), [])).toBe(true)
+    expect(isToolGated('read', 'mutating', new Set(), [])).toBe(false)
+  })
+
+  it('treats MCP tools as mutating unless readOnlyHint is declared', () => {
+    expect(isParallelSafeTool('mcp__fs__read_file')).toBe(false)
+    expect(isApprovalExemptTool('mcp__fs__read_file')).toBe(false)
+    expect(isParallelSafeTool('mcp__gh__create_issue')).toBe(false)
+  })
+
+  it('honours MCP readOnlyHint annotations for both axes', () => {
+    setMcpReadOnlyHintsForTests({ 'mcp__fs__read_file': true })
+    expect(isParallelSafeTool('mcp__fs__read_file')).toBe(true)
+    expect(isApprovalExemptTool('mcp__fs__read_file')).toBe(true)
+    expect(isParallelSafeTool('mcp__fs__write_file')).toBe(false)
   })
 })

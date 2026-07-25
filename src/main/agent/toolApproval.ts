@@ -7,7 +7,7 @@ import type {
 } from '../../shared/ipc'
 import { logger } from '../../shared/logger'
 import { summarizeToolArgs } from '../../shared/toolSummary'
-import { isReadOnlyTool } from './tools/classify'
+import { isApprovalExemptTool } from './tools/classify'
 
 export type ApprovalSender = (request: ToolApprovalRequest) => void
 
@@ -53,7 +53,7 @@ export function isToolGated(
   if (sessionAllowlist.has(name)) return false
   if (workspaceAllowlist.includes(name)) return false
   if (mode === 'all') return true
-  return !isReadOnlyTool(name)
+  return !isApprovalExemptTool(name)
 }
 
 export type AuthorizeResult = { allowed: true } | { allowed: false; reason: string }
@@ -131,7 +131,7 @@ export function createApprovalGate(options: ApprovalGateOptions): ToolApprovalGa
         name: call.name,
         summary: summarizeToolArgs(call.name, call.arguments),
         argsPreview: call.arguments.slice(0, 4000),
-        mutating: !isReadOnlyTool(call.name)
+        mutating: !isApprovalExemptTool(call.name)
       }
 
       const decision = await ask(request)

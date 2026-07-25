@@ -10,17 +10,17 @@ import {
 import type { ToolApprovalRequest } from '@shared/ipc'
 
 const READ = { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }
-const WRITE = { id: 'c2', name: 'write', arguments: '{"path":"a.ts","contents":"x"}' }
+const WRITE = { id: 'c2', name: 'edit', arguments: '{"path":"a.ts","contents":"x"}' }
 
 describe('isToolGated', () => {
   const none = new Set<string>()
 
   it('never gates when approval is off', () => {
-    expect(isToolGated('write', 'off', none, [])).toBe(false)
+    expect(isToolGated('edit', 'off', none, [])).toBe(false)
   })
 
   it('gates only mutating tools in mutating mode', () => {
-    expect(isToolGated('write', 'mutating', none, [])).toBe(true)
+    expect(isToolGated('edit', 'mutating', none, [])).toBe(true)
     expect(isToolGated('read', 'mutating', none, [])).toBe(false)
   })
 
@@ -29,8 +29,8 @@ describe('isToolGated', () => {
   })
 
   it('skips tools on either allowlist', () => {
-    expect(isToolGated('write', 'all', new Set(['write']), [])).toBe(false)
-    expect(isToolGated('write', 'all', none, ['write'])).toBe(false)
+    expect(isToolGated('edit', 'all', new Set(['edit']), [])).toBe(false)
+    expect(isToolGated('edit', 'all', none, ['edit'])).toBe(false)
   })
 })
 
@@ -67,7 +67,7 @@ describe('createApprovalGate', () => {
 
     const verdict = await gate.authorize(WRITE)
     expect(verdict.allowed).toBe(false)
-    if (!verdict.allowed) expect(verdict.reason).toMatch(/denied permission to run write/)
+    if (!verdict.allowed) expect(verdict.reason).toMatch(/denied permission to run edit/)
   })
 
   it('asks once per tool after "allow for session"', async () => {
@@ -100,7 +100,7 @@ describe('createApprovalGate', () => {
     })
 
     await gate.authorize(WRITE)
-    expect(persisted).toEqual(['write'])
+    expect(persisted).toEqual(['edit'])
   })
 
   it('rides the renderer round trip', async () => {
@@ -118,7 +118,7 @@ describe('createApprovalGate', () => {
     const verdict = gate.authorize(WRITE)
     await Promise.resolve()
     expect(seen).toHaveLength(1)
-    expect(seen[0]!.name).toBe('write')
+    expect(seen[0]!.name).toBe('edit')
     expect(seen[0]!.mutating).toBe(true)
 
     expect(resolveToolApproval({ requestId: seen[0]!.requestId, decision: 'once' })).toBe(true)

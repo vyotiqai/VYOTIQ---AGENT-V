@@ -13,12 +13,30 @@ import { resolveModelInfo } from './modelResolve'
 import { AGENT_TOOLS } from './types'
 import type { ToolCall } from './providers/types'
 import { executeTool } from './tools'
+import { repairToolArgs } from './toolArgsRepair'
 
 /**
  * Investigation is what a sub-agent is for; anything that changes the workspace
  * stays with the parent, where the user can see and approve it.
  */
 export const SUBAGENT_TOOLS = ['read', 'search', 'glob', 'grep', 'list_dir'] as const
+
+const SUBAGENT_TOOL_SET = new Set<string>(SUBAGENT_TOOLS)
+
+function withRepairedArguments(call: ToolCall): ToolCall {
+  const raw = call.arguments || '{}'
+  try {
+    JSON.parse(raw)
+    return call
+  } catch {
+    const repaired = repairToolArgs(raw)
+    return repaired ? { ...call, arguments: repaired } : call
+  }
+}
+
+function isAllowedSubagentTool(name: string): boolean {
+  return SUBAGENT_TOOL_SET.has(name)
+}
 
 /** A sub-agent may not spawn another one — one level of nesting, no recursion. */
 export const MAX_SUBAGENT_DEPTH = 1
@@ -163,24 +181,44 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 
     messages.push({ role: 'assistant', content: text, toolCalls })
 
-    for (const call of toolCalls) {
+    for (const rawCall of toolCalls) {
       if (options.signal.aborted) break
-      options.emit?.({ kind: 'tool', text: `${call.name} ${summarizeToolArgs(call.name, call.arguments)}`.trim() })
+      const call = withRepairedArguments(rawCall)
+      options.emit?.({
+        kind: 'tool',
+        text: `${call.name} ${summarizeToolArgs(call.name, call.arguments)}`.trim()
+      })
+
+      if (!isAllowedSubagentTool(call.name)) {
+        messages.push({
+          role: 'tool',
+          toolCallId: call.id,
+          toolName: call.name,
+          content: `Tool "${call.name}" is not available to sub-agents. Use only: ${SUBAGENT_TOOLS.join(', ')}.`,
+          ok: false
+        })
+        continue
+      }
+
       let content: string
+      let ok = false
       try {
         const result = await executeTool(call.name, call.arguments, options.workspace, options.signal, {
           depth: options.depth + 1
         })
         content = result.content
+        ok = result.ok
       } catch (err) {
         if (isAbortError(err)) throw err
         content = `Tool failed: ${formatError(err)}`
+        ok = false
       }
       messages.push({
         role: 'tool',
         toolCallId: call.id,
         toolName: call.name,
-        content
+        content,
+        ok
       })
     }
   }

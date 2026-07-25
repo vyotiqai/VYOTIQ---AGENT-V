@@ -10,6 +10,7 @@ import { toolDelete } from '@main/agent/tools/deletePath'
 import { readTodos, toolTodoWrite } from '@main/agent/tools/todo'
 import { htmlToMarkdown } from '@main/agent/tools/webFetch'
 import { globToRegExp } from '@main/agent/tools/walk'
+import { validateToolArgs } from '@main/agent/schemas/tools'
 
 let root: string
 
@@ -126,6 +127,17 @@ describe('toolMultiEdit', () => {
         { path: 'src/a.ts', contents: 'second\n' }
       ])
     ).toThrow(/twice/)
+  })
+})
+
+describe('multi_edit schema', () => {
+  it('rejects edits that omit both contents and diff', () => {
+    const result = validateToolArgs(
+      'multi_edit',
+      JSON.stringify({ edits: [{ path: 'a.ts' }] })
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toMatch(/contents or diff/)
   })
 })
 

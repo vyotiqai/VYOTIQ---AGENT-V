@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { mcpToolName, parseMcpToolName } from '@main/agent/mcp'
+import { mcpToolName, parseMcpToolName, validateMcpServers } from '@main/agent/mcp'
+import { McpServerSchema } from '@shared/ipc'
 
 describe('MCP tool naming', () => {
   it('namespaces tools by server id', () => {
@@ -15,5 +16,33 @@ describe('MCP tool naming', () => {
 
   it('returns null for built-in tools', () => {
     expect(parseMcpToolName('read')).toBeNull()
+  })
+})
+
+describe('validateMcpServers', () => {
+  it('rejects server ids that contain __', () => {
+    expect(
+      validateMcpServers([{ id: 'my__server', name: 'Bad', command: 'echo', enabled: true }])
+    ).toMatch(/must not contain "__"/)
+  })
+
+  it('rejects duplicate ids', () => {
+    expect(
+      validateMcpServers([
+        { id: 'fs', name: 'A', command: 'a', enabled: true },
+        { id: 'fs', name: 'B', command: 'b', enabled: true }
+      ])
+    ).toMatch(/Duplicate/)
+  })
+})
+
+describe('McpServerSchema', () => {
+  it('rejects ids with __', () => {
+    const result = McpServerSchema.safeParse({
+      id: 'bad__id',
+      name: 'Bad',
+      command: 'echo'
+    })
+    expect(result.success).toBe(false)
   })
 })

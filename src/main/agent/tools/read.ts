@@ -8,6 +8,8 @@ import {
 import { basename, dirname, join } from 'path'
 
 const MAX_BYTES = 512 * 1024
+/** Shared with the tools dispatcher — model-facing content cap matches disk read cap. */
+export const READ_CONTENT_CAP = MAX_BYTES
 /** Line slicing needs the whole file in memory, so it gets a wider but finite cap. */
 const LINE_RANGE_MAX_BYTES = 8 * 1024 * 1024
 const DIR_LIST_CAP = 80

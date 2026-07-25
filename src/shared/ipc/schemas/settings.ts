@@ -15,7 +15,12 @@ export const ThemeIdSchema = z.enum(['system', 'light', 'dark'])
 export type ThemeId = z.infer<typeof ThemeIdSchema>
 
 export const McpServerSchema = z.object({
-  id: z.string().min(1),
+  id: z
+    .string()
+    .min(1)
+    .refine((id) => !id.includes('__'), {
+      message: 'MCP server id must not contain "__"'
+    }),
   name: z.string().min(1),
   command: z.string().min(1),
   args: z.array(z.string()).optional(),

@@ -6,6 +6,7 @@ import {
   isDirMissingPathContent,
   lastPipelineCommandToken,
   primaryCommandToken,
+  sanitizedTerminalEnv,
   unixShellInvocation,
   unsupportedUnixOnWindowsMessage
 } from '@main/agent/tools/terminal'
@@ -37,6 +38,23 @@ describe('unixShellInvocation', () => {
       bin: '/bin/sh',
       args: ['-c', 'ls']
     })
+  })
+})
+
+describe('sanitizedTerminalEnv', () => {
+  it('keeps PATH and drops planted secrets', () => {
+    const env = sanitizedTerminalEnv({
+      PATH: '/usr/bin',
+      HOME: '/home/dev',
+      OPENAI_API_KEY: 'sk-secret',
+      ANTHROPIC_API_KEY: 'sk-ant',
+      VYOTIQ_SECRET: 'nope'
+    })
+    expect(env.PATH).toBe('/usr/bin')
+    expect(env.HOME).toBe('/home/dev')
+    expect(env.OPENAI_API_KEY).toBeUndefined()
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined()
+    expect(env.VYOTIQ_SECRET).toBeUndefined()
   })
 })
 

@@ -135,11 +135,11 @@ flowchart TB
 
 Compaction triggers at `compactionTriggerRatio` of the model content window (15% buffer reserved). Token usage is estimated heuristically (`chars / 4`) and blended with provider-reported `inputTokens` when within 20% of the estimate. The composer shows a live context-window meter via `context_usage` events. Structured summaries may auto-promote into `.vyotiq/memory/` when `memoryAutoPromote` is enabled.
 
-Read-only tools (`read`, `search`, `memory_*` reads, read-only MCP) may execute in parallel (up to 4 concurrent). Mutating tools run serially.
+Read-only / parallel-safe tools (`read`, `search`, `glob`, `grep`, `list_dir`, `web_fetch`, `memory_list`, `memory_read`, and MCP tools with `readOnlyHint`) may execute in parallel (up to 4 concurrent) when tool approval is off. Mutating tools run serially. When a tool-approval gate is active, all tools run serially so prompts do not stack. `web_fetch` is parallel-safe but still gated in `mutating` approval mode (network egress).
 
 ### MCP tools (`src/main/agent/mcp/`)
 
-User-configured stdio MCP servers (Settings → Advanced) expose namespaced tools: `mcp__{serverId}__{toolName}`. Main process spawns servers; tools merge with the seven built-ins at runtime.
+User-configured stdio MCP servers (Settings → Advanced) expose namespaced tools: `mcp__{serverId}__{toolName}`. Main process spawns servers; tools merge with the **15** built-ins at runtime. Server ids must not contain `__`.
 
 ### Run persistence
 

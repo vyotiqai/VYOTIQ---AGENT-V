@@ -3,7 +3,7 @@ import { formatError, isAbortError, isExpectedToolError } from '../../../shared/
 import { summarizeToolArgsFromRecord } from '../../../shared/toolSummary'
 import { validateToolArgs } from '../schemas/tools'
 import { invokeMcpTool, parseMcpToolName } from '../mcp'
-import { toolRead } from './read'
+import { toolRead, READ_CONTENT_CAP } from './read'
 import { toolEdit } from './edit'
 import { toolSearch } from './search'
 import { toolGlob } from './glob'
@@ -101,7 +101,7 @@ const BUILTIN_HANDLERS: Record<string, ToolHandler> = {
     const endLine = typeof args.endLine === 'number' ? args.endLine : undefined
     const content = toolRead(workspace, path, { offset, limit, startLine, endLine })
     throwIfAborted(signal)
-    return toolOk('read', path, content.slice(0, 100_000))
+    return toolOk('read', path, content.slice(0, READ_CONTENT_CAP))
   },
   edit: (workspace, args, signal) => {
     throwIfAborted(signal)
@@ -222,7 +222,7 @@ const BUILTIN_HANDLERS: Record<string, ToolHandler> = {
     throwIfAborted(signal)
     const path = String(args.path ?? '')
     const content = toolMemoryRead(workspace, path)
-    return toolOk('memory_read', path, content.slice(0, 100_000))
+    return toolOk('memory_read', path, content.slice(0, READ_CONTENT_CAP))
   },
   memory_write: (workspace, args, signal) => {
     throwIfAborted(signal)

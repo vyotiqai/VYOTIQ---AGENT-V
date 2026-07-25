@@ -30,10 +30,10 @@ export type ToolGroupProps = {
 }
 
 const FILE_TOOLS = new Set(['read', 'memory_list', 'memory_read'])
-const EDIT_TOOLS = new Set(['edit', 'write', 'memory_write'])
+const EDIT_TOOLS = new Set(['edit', 'multi_edit', 'memory_write', 'delete', 'todo_write'])
 const SEARCH_TOOLS = new Set(['search', 'grep', 'glob', 'web_fetch'])
 const BROWSE_TOOLS = new Set(['list_dir'])
-const COMMAND_TOOLS = new Set(['terminal'])
+const COMMAND_TOOLS = new Set(['terminal', 'subagent'])
 
 const INTERRUPTED_CONTENT = new Set(['Cancelled', 'Interrupted', 'Stopped'])
 
@@ -87,7 +87,7 @@ function toolSubtitle(tool: UiToolRow): string {
   const summary = tool.summary?.trim() || summarizeToolArgs(tool.name, tool.argsPreview)
   if (!summary) return ''
   if (tool.name === 'terminal') return summary.slice(0, 80)
-  if (tool.name === 'read' || tool.name === 'edit' || tool.name === 'write') {
+  if (tool.name === 'read' || tool.name === 'edit' || tool.name === 'delete') {
     const parts = summary.split(/[/\\]/)
     const file = parts[parts.length - 1] || summary
     const range = tool.name === 'read' ? readLineRange(tool) : ''

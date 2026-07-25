@@ -5,7 +5,7 @@ import { summarizeToolArgs } from '../../shared/toolSummary'
 import { toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
 import type { ToolCall } from './providers/types'
 import { executeTool } from '@main/agent/tools'
-import { isReadOnlyTool, MAX_PARALLEL_READ_TOOLS } from './tools/classify'
+import { isParallelSafeTool, MAX_PARALLEL_READ_TOOLS } from './tools/classify'
 import { repairToolArgs } from './toolArgsRepair'
 import type { ToolApprovalGate } from './toolApproval'
 
@@ -185,6 +185,7 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
 
     const result = await executeTool(call.name, call.arguments, ctx.workspace, ctx.signal, {
       runDir: ctx.runDir,
+      depth: 0,
       onProgress: ctx.emitLiveEvent
         ? (update) =>
             ctx.emitLiveEvent?.({
@@ -322,7 +323,9 @@ export async function executeStepToolCalls(
   const messages: ChatMessage[] = []
   const events: AgentEvent[] = []
   let stepToolsOk = true
-  const parallelLimit = ctx.maxParallelReadTools ?? MAX_PARALLEL_READ_TOOLS
+  const parallelLimit = ctx.approval
+    ? 1
+    : (ctx.maxParallelReadTools ?? MAX_PARALLEL_READ_TOOLS)
 
   const groups: ToolCall[][] = []
   let readBatch: ToolCall[] = []
@@ -334,7 +337,7 @@ export async function executeStepToolCalls(
   }
 
   for (const call of calls) {
-    if (isReadOnlyTool(call.name)) {
+    if (isParallelSafeTool(call.name)) {
       readBatch.push(call)
       if (readBatch.length >= parallelLimit) flushReadBatch()
     } else {
@@ -358,7 +361,10 @@ export async function executeStepToolCalls(
       continue
     }
 
-    const parallel = group.length > 1 && group.every((c) => isReadOnlyTool(c.name))
+    const parallel =
+      !ctx.approval &&
+      group.length > 1 &&
+      group.every((c) => isParallelSafeTool(c.name))
     if (parallel) {
       const batch = await runParallelBatch(group, ctx, parallelLimit)
       for (const call of group) {

@@ -1,10 +1,28 @@
+import { lookup as dnsLookup } from 'dns/promises'
+import { isIP } from 'net'
+
 const MAX_BYTES = 2 * 1024 * 1024
 const DEFAULT_TIMEOUT_MS = 20_000
 const MAX_TIMEOUT_MS = 60_000
 const DEFAULT_MAX_CHARS = 40_000
+const MAX_REDIRECTS = 5
+
+type LookupFn = typeof dnsLookup
+
+let resolveHost: LookupFn = dnsLookup
+
+/** Test helper — override DNS resolution for SSRF checks. */
+export function setDnsLookupForTests(next: LookupFn): void {
+  resolveHost = next
+}
+
+/** Test helper — restore default DNS resolution. */
+export function resetDnsLookupForTests(): void {
+  resolveHost = dnsLookup
+}
 
 /** Hosts that resolve inside the machine or the local network are never fetched. */
-function assertPublicUrl(raw: string): URL {
+export async function assertPublicUrl(raw: string): Promise<URL> {
   let url: URL
   try {
     url = new URL(raw)
@@ -15,25 +33,131 @@ function assertPublicUrl(raw: string): URL {
     throw new Error(`Unsupported protocol ${url.protocol}; use http(s)`)
   }
 
-  const host = url.hostname.toLowerCase()
-  const isLoopback =
-    host === 'localhost' ||
-    host === '::1' ||
-    host.endsWith('.localhost') ||
-    /^127\./.test(host) ||
-    /^0\./.test(host)
-  const isPrivate =
-    /^10\./.test(host) ||
-    /^192\.168\./.test(host) ||
-    /^169\.254\./.test(host) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
-    host.endsWith('.internal') ||
-    host.endsWith('.local')
-
-  if (isLoopback || isPrivate) {
+  const host = stripIpv6Brackets(url.hostname).toLowerCase()
+  if (isBlockedHostname(host)) {
     throw new Error(`Refusing to fetch a private or loopback address: ${url.hostname}`)
   }
+
+  const literalVersion = isIP(host)
+  if (literalVersion === 4) {
+    if (isPrivateIpv4(host)) {
+      throw new Error(`Refusing to fetch a private or loopback address: ${url.hostname}`)
+    }
+    return url
+  }
+  if (literalVersion === 6) {
+    if (isPrivateIpv6(host)) {
+      throw new Error(`Refusing to fetch a private or loopback address: ${url.hostname}`)
+    }
+    return url
+  }
+
+  const resolved = await resolveHost(host, { all: true, verbatim: true })
+  if (resolved.length === 0) {
+    throw new Error(`Could not resolve host: ${host}`)
+  }
+  for (const entry of resolved) {
+    if (isPrivateResolvedAddress(entry.address)) {
+      throw new Error(`Refusing to fetch a private or loopback address: ${host}`)
+    }
+  }
+
   return url
+}
+
+function stripIpv6Brackets(host: string): string {
+  return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
+}
+
+function isBlockedHostname(host: string): boolean {
+  return (
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host.endsWith('.internal') ||
+    host.endsWith('.local')
+  )
+}
+
+function parseIpv4Parts(host: string): [number, number, number, number] | null {
+  if (/^\d+$/.test(host)) {
+    const value = Number(host)
+    if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) return null
+    return [
+      (value >>> 24) & 0xff,
+      (value >>> 16) & 0xff,
+      (value >>> 8) & 0xff,
+      value & 0xff
+    ]
+  }
+
+  const parts = host.split('.')
+  if (parts.length < 1 || parts.length > 4) return null
+
+  const nums: number[] = []
+  for (const part of parts) {
+    if (!/^(0x[0-9a-f]+|\d+)$/i.test(part)) return null
+    const value = Number.parseInt(part, part.startsWith('0x') ? 16 : 10)
+    if (!Number.isFinite(value) || value < 0) return null
+    nums.push(value)
+  }
+
+  if (nums.length === 4) {
+    if (nums.some((n) => n > 255)) return null
+    return nums as [number, number, number, number]
+  }
+
+  if (nums.length === 3) {
+    if (nums[0] > 255 || nums[1] > 255) return null
+    return [nums[0], nums[1], nums[2], 0]
+  }
+  if (nums.length === 2) {
+    if (nums[0] > 255) return null
+    return [nums[0], nums[1], 0, 0]
+  }
+  if (nums.length === 1) {
+    const value = nums[0]
+    if (value > 0xffffffff) return null
+    return [(value >>> 24) & 0xff, (value >>> 16) & 0xff, (value >>> 8) & 0xff, value & 0xff]
+  }
+
+  return null
+}
+
+function isPrivateIpv4Bytes(a: number, b: number, c: number, d: number): boolean {
+  if (a === 0) return true
+  if (a === 10) return true
+  if (a === 127) return true
+  if (a === 100 && b >= 64 && b <= 127) return true
+  if (a === 169 && b === 254) return true
+  if (a === 172 && b >= 16 && b <= 31) return true
+  if (a === 192 && b === 168) return true
+  if (a >= 224) return true
+  return a === 0 && b === 0 && c === 0 && d === 0
+}
+
+function isPrivateIpv4(host: string): boolean {
+  const parts = parseIpv4Parts(host)
+  if (!parts) return false
+  return isPrivateIpv4Bytes(...parts)
+}
+
+function isPrivateIpv6(host: string): boolean {
+  const normalized = host.toLowerCase()
+  if (normalized === '::1') return true
+  if (normalized.startsWith('fe80:')) return true
+  if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true
+
+  const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)
+  if (mapped) return isPrivateIpv4(mapped[1])
+
+  return false
+}
+
+function isPrivateResolvedAddress(address: string): boolean {
+  const version = isIP(address)
+  if (version === 4) return isPrivateIpv4(address)
+  if (version === 6) return isPrivateIpv6(address)
+  return true
 }
 
 function decodeEntities(text: string): string {
@@ -93,7 +217,6 @@ export async function toolWebFetch(
   options: WebFetchOptions = {},
   signal?: AbortSignal
 ): Promise<string> {
-  const url = assertPublicUrl(String(rawUrl ?? '').trim())
   const timeoutMs = Math.min(MAX_TIMEOUT_MS, Math.max(1000, options.timeoutMs ?? DEFAULT_TIMEOUT_MS))
   const maxChars = Math.max(1000, options.maxChars ?? DEFAULT_MAX_CHARS)
 
@@ -102,19 +225,18 @@ export async function toolWebFetch(
   const onParentAbort = (): void => controller.abort()
   signal?.addEventListener('abort', onParentAbort, { once: true })
 
+  let currentUrl: URL | undefined
   try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      redirect: 'follow',
-      headers: { accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5' }
-    })
+    currentUrl = await assertPublicUrl(String(rawUrl ?? '').trim())
+    const { response: res, finalUrl } = await fetchWithValidatedRedirects(currentUrl, controller.signal)
+    currentUrl = finalUrl
     if (!res.ok) {
-      throw new Error(`HTTP ${res.status} ${res.statusText} for ${url.href}`)
+      throw new Error(`HTTP ${res.status} ${res.statusText} for ${currentUrl.href}`)
     }
 
     const contentType = res.headers.get('content-type') ?? ''
     if (/^(image|audio|video|application\/(octet-stream|pdf|zip))/i.test(contentType)) {
-      throw new Error(`Unsupported content type ${contentType || 'unknown'} for ${url.href}`)
+      throw new Error(`Unsupported content type ${contentType || 'unknown'} for ${currentUrl.href}`)
     }
 
     const buffer = await readCapped(res, MAX_BYTES)
@@ -122,16 +244,48 @@ export async function toolWebFetch(
     const text = /html/i.test(contentType) ? htmlToMarkdown(body) : body.trim()
     const clipped = text.length > maxChars ? `${text.slice(0, maxChars)}\n… (truncated)` : text
 
-    return [`# ${url.href}`, '', clipped].join('\n')
+    return [`# ${currentUrl.href}`, '', clipped].join('\n')
   } catch (err) {
     if (controller.signal.aborted && !signal?.aborted) {
-      throw new Error(`Timed out after ${timeoutMs}ms fetching ${url.href}`)
+      throw new Error(`Timed out after ${timeoutMs}ms fetching ${currentUrl?.href ?? rawUrl}`)
     }
     throw err
   } finally {
     clearTimeout(timer)
     signal?.removeEventListener('abort', onParentAbort)
   }
+}
+
+async function fetchWithValidatedRedirects(
+  startUrl: URL,
+  signal: AbortSignal
+): Promise<{ response: Response; finalUrl: URL }> {
+  let currentUrl = startUrl
+
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    const validated = await assertPublicUrl(currentUrl.href)
+    const res = await fetch(validated, {
+      signal,
+      redirect: 'manual',
+      headers: { accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5' }
+    })
+
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get('location')
+      if (!location) {
+        throw new Error(`Redirect response missing Location header for ${validated.href}`)
+      }
+      if (hop === MAX_REDIRECTS) {
+        throw new Error(`Too many redirects while fetching ${startUrl.href}`)
+      }
+      currentUrl = new URL(location, validated)
+      continue
+    }
+
+    return { response: res, finalUrl: validated }
+  }
+
+  throw new Error(`Too many redirects while fetching ${startUrl.href}`)
 }
 
 /** Stop reading once the cap is hit rather than buffering an unbounded body. */

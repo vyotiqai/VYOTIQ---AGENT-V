@@ -3,7 +3,6 @@ export const MCP_TOOL_PREFIX = 'mcp__'
 export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   read: { running: 'Reading', done: 'Read' },
   edit: { running: 'Editing', done: 'Edited' },
-  write: { running: 'Writing', done: 'Wrote' },
   search: { running: 'Searching', done: 'Searched' },
   glob: { running: 'Globbing', done: 'Globbed' },
   grep: { running: 'Grepping', done: 'Grepped' },
@@ -49,7 +48,7 @@ export function parseArgsRecord(args: string | undefined): Record<string, unknow
 
 export function normalizeToolTarget(name: string, args: Record<string, unknown> | null): string {
   if (!args) return ''
-  if (name === 'read' || name === 'edit' || name === 'write' || name === 'delete') {
+  if (name === 'read' || name === 'edit' || name === 'delete') {
     const path = args.path ?? args.file
     if (typeof path === 'string') return path
   }

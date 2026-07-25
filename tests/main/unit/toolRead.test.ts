@@ -23,6 +23,11 @@ describe('toolRead', () => {
     expect(toolRead(root, 'hello.txt')).toBe('hello world')
   })
 
+  it('exports a content cap aligned with the 512 KiB harness limit', async () => {
+    const { READ_CONTENT_CAP } = await import('@main/agent/tools/read')
+    expect(READ_CONTENT_CAP).toBe(512 * 1024)
+  })
+
   it('lists directory contents instead of throwing not-a-file', () => {
     const out = toolRead(root, 'subdir')
     expect(out).toContain('Path is a directory')

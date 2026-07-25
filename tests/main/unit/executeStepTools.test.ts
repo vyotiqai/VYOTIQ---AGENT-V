@@ -122,14 +122,14 @@ describe('executeStepToolCalls', () => {
   })
 
   it('feeds a denied approval back as a tool failure without running the tool', async () => {
-    executeTool.mockResolvedValue({ ok: true, summary: 'write', content: 'wrote' })
+    executeTool.mockResolvedValue({ ok: true, summary: 'edit', content: 'wrote' })
 
     const { ctx } = makeCtx(new AbortController().signal)
     ctx.approval = {
-      authorize: async () => ({ allowed: false, reason: 'The user denied permission to run write.' })
+      authorize: async () => ({ allowed: false, reason: 'The user denied permission to run edit.' })
     }
     const outcome = await executeStepToolCalls(
-      [{ id: 'c1', name: 'write', arguments: '{"path":"a.ts","contents":"x"}' }],
+      [{ id: 'c1', name: 'edit', arguments: '{"path":"a.ts","contents":"x"}' }],
       ctx
     )
 
@@ -174,5 +174,39 @@ describe('executeStepToolCalls', () => {
     )
 
     expect(order).toEqual(['read', 'read'])
+  })
+
+  it('serializes reads when an approval gate is present so prompts cannot stack', async () => {
+    let concurrent = 0
+    let maxConcurrent = 0
+    let authorizeCalls = 0
+
+    executeTool.mockImplementation(async () => {
+      concurrent += 1
+      maxConcurrent = Math.max(maxConcurrent, concurrent)
+      await new Promise((r) => setTimeout(r, 15))
+      concurrent -= 1
+      return { ok: true, summary: 'file', content: 'ok' }
+    })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    ctx.approval = {
+      authorize: async () => {
+        authorizeCalls += 1
+        return { allowed: true }
+      }
+    }
+
+    await executeStepToolCalls(
+      [
+        { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' },
+        { id: 'c2', name: 'read', arguments: '{"path":"b.ts"}' },
+        { id: 'c3', name: 'read', arguments: '{"path":"c.ts"}' }
+      ],
+      ctx
+    )
+
+    expect(authorizeCalls).toBe(3)
+    expect(maxConcurrent).toBe(1)
   })
 })

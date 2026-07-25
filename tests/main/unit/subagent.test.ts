@@ -159,6 +159,62 @@ describe('runSubagent', () => {
     expect(streamChat).not.toHaveBeenCalled()
   })
 
+  it('rejects mutating tools even if the model emits them', async () => {
+    let call = 0
+    streamChat.mockImplementation(() => {
+      call += 1
+      if (call === 1) {
+        return stream([
+          {
+            type: 'tool_call',
+            toolCall: { id: 't1', name: 'edit', arguments: '{"path":"a.ts","contents":"x"}' }
+          },
+          { type: 'done' }
+        ])()
+      }
+      return stream([{ type: 'text', text: 'Could not edit; used read-only tools only.' }, { type: 'done' }])()
+    })
+
+    const outcome = await runSubagent({
+      task: 'try to edit',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0
+    })
+
+    expect(executeTool).not.toHaveBeenCalled()
+    expect(outcome.ok).toBe(true)
+    expect(outcome.report).toContain('read-only')
+  })
+
+  it('propagates ok: false from child tool results', async () => {
+    let call = 0
+    streamChat.mockImplementation(() => {
+      call += 1
+      if (call === 1) {
+        return stream([
+          { type: 'tool_call', toolCall: { id: 't1', name: 'read', arguments: '{"path":"missing.ts"}' } },
+          { type: 'done' }
+        ])()
+      }
+      return stream([{ type: 'text', text: 'File was missing.' }, { type: 'done' }])()
+    })
+    executeTool.mockResolvedValue({ ok: false, summary: 'missing.ts', content: 'File not found' })
+
+    await runSubagent({
+      task: 'read missing',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0
+    })
+
+    const secondReq = streamChat.mock.calls[1]![0] as {
+      messages: { role: string; ok?: boolean }[]
+    }
+    const toolMsg = secondReq.messages.find((m) => m.role === 'tool')
+    expect(toolMsg?.ok).toBe(false)
+  })
+
   it('stops at its own step budget', async () => {
     streamChat.mockImplementation(
       stream([

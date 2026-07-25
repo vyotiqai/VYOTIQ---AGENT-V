@@ -33,6 +33,12 @@ type McpSession = {
 const sessions = new Map<string, McpSession>()
 const connectErrors = new Map<string, string>()
 const sessionConfigKeys = new Map<string, string>()
+const mcpReadOnlyHints = new Map<string, boolean>()
+
+/** True only when the MCP server declared readOnlyHint for this tool. */
+export function getMcpReadOnlyHint(name: string): boolean | undefined {
+  return mcpReadOnlyHints.get(name)
+}
 
 /** Stable fingerprint of connection-relevant MCP server fields. */
 export function mcpServerConfigKey(server: Pick<McpServer, 'command' | 'args' | 'env'>): string {
@@ -50,6 +56,9 @@ export function mcpServerConfigKey(server: Pick<McpServer, 'command' | 'args' | 
 export function validateMcpServers(servers: McpServer[]): string | null {
   const seen = new Set<string>()
   for (const server of servers) {
+    if (server.id.includes('__')) {
+      return `MCP server id must not contain "__": ${server.id}`
+    }
     if (seen.has(server.id)) return `Duplicate MCP server id: ${server.id}`
     seen.add(server.id)
   }
@@ -89,11 +98,15 @@ export async function connectMcpServer(server: McpServer): Promise<void> {
   const client = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
   await client.connect(transport)
   const listed = await client.listTools()
-  const tools: ToolDefinition[] = (listed.tools ?? []).map((t) => ({
-    name: mcpToolName(server.id, t.name),
-    description: t.description ?? `MCP tool ${t.name} (${server.name})`,
-    parameters: (t.inputSchema as Record<string, unknown>) ?? { type: 'object', properties: {} }
-  }))
+  const tools: ToolDefinition[] = (listed.tools ?? []).map((t) => {
+    const fullName = mcpToolName(server.id, t.name)
+    mcpReadOnlyHints.set(fullName, t.annotations?.readOnlyHint === true)
+    return {
+      name: fullName,
+      description: t.description ?? `MCP tool ${t.name} (${server.name})`,
+      parameters: (t.inputSchema as Record<string, unknown>) ?? { type: 'object', properties: {} }
+    }
+  })
   sessions.set(server.id, { client, transport, tools })
   sessionConfigKeys.set(server.id, mcpServerConfigKey(server))
   connectErrors.delete(server.id)
@@ -111,6 +124,9 @@ export async function disconnectMcpServer(serverId: string): Promise<void> {
     await session.client.close()
   } catch {
     // ignore
+  }
+  for (const tool of session.tools) {
+    mcpReadOnlyHints.delete(tool.name)
   }
   sessions.delete(serverId)
   sessionConfigKeys.delete(serverId)
@@ -202,6 +218,14 @@ export function resetMcpSessionsForTests(): void {
   sessions.clear()
   connectErrors.clear()
   sessionConfigKeys.clear()
+  mcpReadOnlyHints.clear()
+}
+
+/** Test helper — register MCP readOnlyHint values without a live server. */
+export function setMcpReadOnlyHintsForTests(hints: Record<string, boolean>): void {
+  for (const [name, readOnly] of Object.entries(hints)) {
+    mcpReadOnlyHints.set(name, readOnly)
+  }
 }
 
 /** Test helper — connected MCP server ids. */

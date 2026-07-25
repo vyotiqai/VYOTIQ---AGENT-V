@@ -29,10 +29,10 @@ function gatedItems(): UiItem[] {
     {
       kind: 'tool',
       id: 'call-1',
-      tool: { id: 'call-1', name: 'write', summary: 'a.ts', status: 'running' },
+      tool: { id: 'call-1', name: 'edit', summary: 'a.ts', status: 'running' },
       approval: {
         requestId: 'req-1',
-        toolName: 'write',
+        toolName: 'edit',
         summary: 'a.ts',
         argsPreview: '{"path":"a.ts"}',
         mutating: true
@@ -45,11 +45,13 @@ describe('tool approval card', () => {
   it('shows the gated call and what it would run', () => {
     render(<MessageList items={gatedItems()} />)
 
-    expect(screen.getByText('write')).toBeTruthy()
+    expect(screen.getByText('edit')).toBeTruthy()
     expect(screen.getByText('modifies workspace')).toBeTruthy()
     expect(screen.getByText('{"path":"a.ts"}')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Allow once' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Always allow' })).toBeTruthy()
+    // Gate UI replaces the tool card — no parallel "Working…" chrome.
+    expect(screen.queryByText('Working…')).toBeNull()
   })
 
   it('reports the reader decision once and locks the card', () => {

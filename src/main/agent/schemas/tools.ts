@@ -75,11 +75,18 @@ const listDirArgs = z.object({
 const multiEditArgs = z.object({
   edits: z
     .array(
-      z.object({
-        path: z.string().describe('File path inside the workspace'),
-        contents: z.string().optional().describe('Full file contents to write'),
-        diff: z.string().optional().describe('Unified diff to apply instead of full contents')
-      })
+      z
+        .object({
+          path: z.string().describe('File path inside the workspace'),
+          contents: z.string().optional().describe('Full file contents to write'),
+          diff: z.string().optional().describe('Unified diff to apply instead of full contents')
+        })
+        .refine(
+          (args) =>
+            typeof args.contents === 'string' ||
+            (typeof args.diff === 'string' && args.diff.trim().length > 0),
+          { message: 'each edit requires contents or diff' }
+        )
     )
     .min(1)
     .describe('Edits applied together; if any fails, none are written')
