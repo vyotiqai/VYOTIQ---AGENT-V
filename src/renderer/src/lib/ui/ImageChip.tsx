@@ -5,12 +5,14 @@ export function ImageChip({
   url,
   label,
   onRemove,
+  onClick,
   disabled,
   variant = 'thumbnail'
 }: {
   url: string
   label: string
   onRemove?: () => void
+  onClick?: () => void
   disabled?: boolean
   variant?: 'thumbnail' | 'compact'
 }) {
@@ -38,9 +40,23 @@ export function ImageChip({
     <span
       className={cn(
         'inline-flex overflow-hidden rounded-md border border-border bg-surface',
-        onRemove && 'pr-0.5'
+        onRemove && 'pr-0.5',
+        onClick && 'cursor-pointer'
       )}
       title={label}
+      onClick={onClick}
+      onKeyDown={
+        onClick
+          ? (event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault()
+                onClick()
+              }
+            }
+          : undefined
+      }
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
     >
       <img
         src={url}

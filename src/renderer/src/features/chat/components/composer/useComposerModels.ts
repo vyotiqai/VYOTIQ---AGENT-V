@@ -41,10 +41,10 @@ export function useComposerModels({
     modelsRefreshKey
   )
 
-  const filterOpts: ModelFilterOpts = {
-    hasWorkspace: Boolean(hasWorkspace),
-    hasImages
-  }
+  const filterOpts: ModelFilterOpts = useMemo(
+    () => ({ hasWorkspace: Boolean(hasWorkspace), hasImages }),
+    [hasWorkspace, hasImages]
+  )
 
   useEffect(() => {
     void loadProvider(provider)

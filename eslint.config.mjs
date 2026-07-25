@@ -38,6 +38,14 @@ export default [
   },
   js.configs.recommended,
   {
+    files: ['**/*.mjs'],
+    languageOptions: {
+      globals: { ...globals.node },
+      sourceType: 'module',
+      ecmaVersion: 'latest'
+    }
+  },
+  {
     files: ['**/*.{ts,tsx}'],
     languageOptions: sharedLanguageOptions,
     rules: sharedRules

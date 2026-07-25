@@ -3,7 +3,7 @@
  */
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import { cleanup, render, screen, fireEvent } from '@testing-library/react'
-import { ErrorBoundary } from '@renderer/shared/ErrorBoundary'
+import { ErrorBoundary } from '@renderer/lib/ErrorBoundary'
 
 afterEach(() => {
   cleanup()

@@ -78,3 +78,21 @@ function installProcessHandlers(): void {
 export function logWithFields(level: LogLevel, message: string, fields?: LogFields): void {
   logger[level](message, fields)
 }
+
+export function attachWebContentsCrashLogging(
+  webContents: Electron.WebContents
+): void {
+  webContents.on('render-process-gone', (_event, details) => {
+    logger.error('Renderer process gone', {
+      scope: 'main',
+      reason: details.reason,
+      exitCode: details.exitCode
+    })
+  })
+  webContents.on('unresponsive', () => {
+    logger.warn('Renderer unresponsive', { scope: 'main' })
+  })
+  webContents.on('responsive', () => {
+    logger.info('Renderer responsive again', { scope: 'main' })
+  })
+}

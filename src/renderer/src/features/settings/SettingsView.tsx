@@ -17,13 +17,19 @@ import {
   normalizeOllamaHost
 } from '@shared/providers'
 import { Icon } from '@renderer/lib/icons'
-import { Input, Textarea, Button, Menu, Alert, NavItem, cn } from '@renderer/lib/ui'
+import { Input, Textarea, Button, Menu, Alert, AlertBlock, NavItem, cn } from '@renderer/lib/ui'
 import { formatWorkspaceName } from '@renderer/lib/utils/formatWorkspaceName'
 import { useEscapeToClose } from '@renderer/lib/hooks/useEscapeToClose'
 import { useModelCatalog } from '@renderer/lib/hooks/useModelCatalog'
 
 type SettingsSection = 'general' | 'providers' | 'agent' | 'advanced'
-type SettingsErrorField = 'ollama' | 'apikey' | null
+type SettingsErrorField =
+  | 'ollama'
+  | 'apikey'
+  | 'maxSteps'
+  | 'compaction'
+  | 'keepTurns'
+  | null
 
 function SettingsRow({
   title,
@@ -563,6 +569,39 @@ export function SettingsView({
 
   const displayError = error ?? appError
 
+  const fieldError = (field: SettingsErrorField, id: string): ReactNode =>
+    errorField === field && displayError ? (
+      <p id={id} className="m-0 w-full text-xs text-danger" role="alert">
+        {displayError}
+      </p>
+    ) : null
+
+  /** Commit a bounded numeric setting, reverting and explaining when the value is out of range. */
+  const commitNumberField = (
+    field: SettingsErrorField,
+    input: HTMLInputElement,
+    opts: {
+      label: string
+      min: number
+      max: number
+      integer?: boolean
+      current: number
+      apply: (value: number) => Parameters<typeof runUpdate>[0]
+    }
+  ): void => {
+    const raw = input.value.trim()
+    const parsed = Number(raw)
+    if (!raw || !Number.isFinite(parsed) || parsed < opts.min || parsed > opts.max) {
+      input.value = String(opts.current)
+      setFieldError(field, `${opts.label} must be from ${opts.min} to ${opts.max}.`)
+      return
+    }
+    clearErrors()
+    const value = opts.integer ? Math.round(parsed) : parsed
+    if (value === opts.current) return
+    void runUpdate(opts.apply(value))
+  }
+
   const providerMeta = PROVIDER_DEFAULTS.find((p) => p.id === settings.provider)
   const displayProvider = effectiveChatSettings?.provider ?? settings.provider
   const displayModel = effectiveChatSettings?.model ?? settings.model
@@ -1018,11 +1057,7 @@ export function SettingsView({
                       }
                     }}
                   />
-                  {errorField === 'ollama' && displayError ? (
-                    <p id="ollama-error" className="m-0 w-full text-xs text-danger" role="alert">
-                      {displayError}
-                    </p>
-                  ) : null}
+                  {fieldError('ollama', 'ollama-error')}
                 </SettingsRow>
 
                 <SettingsRow
@@ -1191,13 +1226,20 @@ export function SettingsView({
                     disabled={formLocked}
                     defaultValue={settings.maxSteps}
                     key={`max-steps-${settings.maxSteps}`}
+                    aria-invalid={errorField === 'maxSteps' ? true : undefined}
+                    aria-describedby={errorField === 'maxSteps' ? 'max-steps-error' : undefined}
                     onBlur={(e) => {
-                      const n = Number(e.target.value)
-                      if (Number.isFinite(n) && n >= 1 && n <= 100 && n !== settings.maxSteps) {
-                        void runUpdate({ maxSteps: Math.round(n) })
-                      }
+                      commitNumberField('maxSteps', e.target, {
+                        label: 'Max steps',
+                        min: 1,
+                        max: 100,
+                        integer: true,
+                        current: settings.maxSteps,
+                        apply: (maxSteps) => ({ maxSteps })
+                      })
                     }}
                   />
+                  {fieldError('maxSteps', 'max-steps-error')}
                 </SettingsRow>
 
                 <SettingsRow
@@ -1214,13 +1256,19 @@ export function SettingsView({
                     disabled={formLocked}
                     defaultValue={settings.compactionTriggerRatio}
                     key={`compaction-${settings.compactionTriggerRatio}`}
+                    aria-invalid={errorField === 'compaction' ? true : undefined}
+                    aria-describedby={errorField === 'compaction' ? 'compaction-error' : undefined}
                     onBlur={(e) => {
-                      const n = Number(e.target.value)
-                      if (Number.isFinite(n) && n >= 0.5 && n <= 0.95) {
-                        void runUpdate({ compactionTriggerRatio: n })
-                      }
+                      commitNumberField('compaction', e.target, {
+                        label: 'Compaction trigger ratio',
+                        min: 0.5,
+                        max: 0.95,
+                        current: settings.compactionTriggerRatio,
+                        apply: (compactionTriggerRatio) => ({ compactionTriggerRatio })
+                      })
                     }}
                   />
+                  {fieldError('compaction', 'compaction-error')}
                 </SettingsRow>
 
                 <SettingsRow
@@ -1236,13 +1284,20 @@ export function SettingsView({
                     disabled={formLocked}
                     defaultValue={settings.keepRecentTurns}
                     key={`keep-turns-${settings.keepRecentTurns}`}
+                    aria-invalid={errorField === 'keepTurns' ? true : undefined}
+                    aria-describedby={errorField === 'keepTurns' ? 'keep-turns-error' : undefined}
                     onBlur={(e) => {
-                      const n = Number(e.target.value)
-                      if (Number.isFinite(n) && n >= 4 && n <= 50) {
-                        void runUpdate({ keepRecentTurns: Math.round(n) })
-                      }
+                      commitNumberField('keepTurns', e.target, {
+                        label: 'Keep recent turns',
+                        min: 4,
+                        max: 50,
+                        integer: true,
+                        current: settings.keepRecentTurns,
+                        apply: (keepRecentTurns) => ({ keepRecentTurns })
+                      })
                     }}
                   />
+                  {fieldError('keepTurns', 'keep-turns-error')}
                 </SettingsRow>
 
                 <SettingsRow
@@ -1327,9 +1382,9 @@ export function SettingsView({
             ) : null}
 
             {displayError && !errorField ? (
-              <Alert variant="inline" className="mt-3">
+              <AlertBlock className="mt-3">
                 {displayError}
-              </Alert>
+              </AlertBlock>
             ) : null}
             </div>
           </div>

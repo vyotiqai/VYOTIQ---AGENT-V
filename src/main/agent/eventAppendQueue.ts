@@ -21,7 +21,7 @@ export function enqueueEventAppend(dir: string, event: unknown): void {
   appendChains.set(dir, next)
 }
 
-export async function flushEventAppends(dir?: string): Promise<voidp> {
+export async function flushEventAppends(dir?: string): Promise<void> {
   if (dir) {
     await appendChains.get(dir)
     return
