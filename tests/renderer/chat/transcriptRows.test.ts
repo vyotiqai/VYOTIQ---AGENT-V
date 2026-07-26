@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildTranscriptRows,
-  estimateTranscriptRowSize
+  rowLeadingGap,
+  TURN_GAP_PX
 } from '@renderer/features/chat/utils/transcriptRows'
 import type { UiItem } from '@shared/transcript'
 
@@ -244,24 +245,8 @@ describe('buildTranscriptRows', () => {
       { kind: 'message', id: 'u2', role: 'user', content: 'second' }
     ]
     const [first, second] = buildTranscriptRows(items)
-    expect(estimateTranscriptRowSize(second!)).toBeGreaterThan(
-      estimateTranscriptRowSize(first!)
-    )
-  })
-
-  it('accounts for expanded tools inside activity rows', () => {
-    const rows = buildTranscriptRows([tool('t1'), tool('t2', 'read', true)])
-    const activity = rows.find((row) => row.kind === 'activity')
-    expect(activity?.kind).toBe('activity')
-    if (activity?.kind === 'activity') {
-      const collapsed = estimateTranscriptRowSize({
-        kind: 'activity',
-        id: 'g',
-        tools: [tool('t1'), tool('t2')] as Extract<UiItem, { kind: 'tool' }>[],
-        turnIndex: 0
-      })
-      expect(estimateTranscriptRowSize(activity)).toBeGreaterThan(collapsed)
-    }
+    expect(rowLeadingGap(first!)).toBe(0)
+    expect(rowLeadingGap(second!)).toBe(TURN_GAP_PX)
   })
 
   it('emits an approval row instead of a card while an edit is gated', () => {

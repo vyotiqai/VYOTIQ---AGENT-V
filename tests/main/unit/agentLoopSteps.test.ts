@@ -131,7 +131,7 @@ describe('runAgent max steps', () => {
     executeTool.mockResolvedValue({ ok: true, summary: 'file', content: 'body' })
 
     const runId = 'max-steps-done'
-    const events: Array<{ type: string; status?: string; code?: string }> = []
+    const events: Array<{ type: string; status?: string; code?: string; reason?: string }> = []
 
     for await (const ev of runAgent({
       runId,
@@ -178,7 +178,7 @@ describe('runAgent max steps', () => {
     expect(readFileSync(eventsPath, 'utf8')).toContain('"cachedInputTokens":900')
   })
 
-  it('emits AGENT_MAX_STEPS when the final step has no successful tools', async () => {
+  it('emits incomplete max_steps when the final step has no successful tools', async () => {
     let call = 0
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
       call += 1
@@ -198,7 +198,7 @@ describe('runAgent max steps', () => {
     executeTool.mockResolvedValue({ ok: true, summary: 'file', content: 'body' })
 
     const runId = 'max-steps-malformed'
-    const events: Array<{ type: string; status?: string; code?: string }> = []
+    const events: Array<{ type: string; status?: string; code?: string; reason?: string }> = []
 
     for await (const ev of runAgent({
       runId,
@@ -208,11 +208,11 @@ describe('runAgent max steps', () => {
       events.push(ev)
     }
 
-    expect(events.some((e) => e.type === 'error' && e.code === 'AGENT_MAX_STEPS')).toBe(true)
-    expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
+    expect(events.find((e) => e.type === 'incomplete')?.reason).toBe('max_steps')
+    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
   })
 
-  it('emits AGENT_MAX_STEPS when the final step tools fail', async () => {
+  it('emits incomplete max_steps when the final step tools fail', async () => {
     let call = 0
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
       call += 1
@@ -232,7 +232,7 @@ describe('runAgent max steps', () => {
     executeTool.mockResolvedValue({ ok: false, summary: 'missing', content: 'not found' })
 
     const runId = 'max-steps-tool-fail'
-    const events: Array<{ type: string; status?: string; code?: string }> = []
+    const events: Array<{ type: string; status?: string; code?: string; reason?: string }> = []
 
     for await (const ev of runAgent({
       runId,
@@ -242,7 +242,7 @@ describe('runAgent max steps', () => {
       events.push(ev)
     }
 
-    expect(events.some((e) => e.type === 'error' && e.code === 'AGENT_MAX_STEPS')).toBe(true)
-    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(false)
+    expect(events.find((e) => e.type === 'incomplete')?.reason).toBe('max_steps')
+    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
   })
 })

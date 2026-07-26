@@ -8,22 +8,58 @@ import type { UiItem } from '@shared/transcript'
 import type { ProviderId, ToolApprovalDecision } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { Alert } from '@renderer/lib/ui'
-import { CHAT_COLUMN, CHAT_COLUMN_MAX, CHAT_GUTTER } from '@renderer/lib/utils/layout'
+import {
+  CHAT_COLUMN,
+  CHAT_COLUMN_MAX,
+  CHAT_GUTTER,
+  COMPOSER_DOCK_FADE_PX,
+  COMPOSER_DOCK_FALLBACK_PX
+} from '@renderer/lib/utils/layout'
 import { cn } from '@renderer/lib/ui/cn'
 
-/** Bumps once per workspace change and once each time a run stops. */
-function useGitRevision(workspacePath: string | null, running: boolean): number {
+/** Bumps on workspace change, run end, and (debounced) mid-run mutating tool results. */
+const MUTATING_GIT_TOOLS = new Set([
+  'edit',
+  'multi_edit',
+  'delete',
+  'terminal',
+  'memory_write'
+])
+
+function useGitRevision(
+  workspacePath: string | null,
+  running: boolean,
+  items: UiItem[]
+): number {
   const [revision, setRevision] = useState(0)
   const wasRunning = useRef(running)
+  const mutatingDoneCount = useRef(0)
 
   useEffect(() => {
     if (wasRunning.current && !running) setRevision((value) => value + 1)
+    if (!wasRunning.current && running) mutatingDoneCount.current = 0
     wasRunning.current = running
   }, [running])
 
   useEffect(() => {
     setRevision((value) => value + 1)
   }, [workspacePath])
+
+  useEffect(() => {
+    if (!running) return
+    let count = 0
+    for (const item of items) {
+      if (item.kind !== 'tool') continue
+      if (item.tool.status !== 'done' && item.tool.status !== 'fail') continue
+      if (MUTATING_GIT_TOOLS.has(item.tool.name)) count++
+    }
+    if (count <= mutatingDoneCount.current) return
+    mutatingDoneCount.current = count
+    const timer = window.setTimeout(() => {
+      setRevision((value) => value + 1)
+    }, 400)
+    return () => window.clearTimeout(timer)
+  }, [items, running])
 
   return revision
 }
@@ -74,7 +110,8 @@ export function ChatView({
   onToolToggle,
   onGroupToggle,
   onApprovalDecision,
-  showThinking = true
+  showThinking = true,
+  chatSurfaceEpoch = 0
 }: {
   hasOpenWorkspaces: boolean
   recentPaths: string[]
@@ -124,37 +161,46 @@ export function ChatView({
   onThinkingToggle?: (messageId: string, expanded: boolean) => void
   onToolToggle?: (toolCallId: string, expanded: boolean) => void
   onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
-  onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void
+  onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
   showThinking?: boolean
+  /**
+   * Bumps on workspace / run-tab switches (not draft→run id assignment) so the
+   * transcript and composer remount without clearing mid-send attachments.
+   */
+  chatSurfaceEpoch?: number
 }) {
   const bannerError = operationalError ?? error
   const showHero = items.length === 0 && !activeRunId && !transcriptLoading
   // A finished turn is the moment the working tree is most likely to have moved.
-  const gitRevision = useGitRevision(workspacePath, running)
+  const gitRevision = useGitRevision(workspacePath, running, items)
   // The hero has no dock, so there is nowhere to show a repository state yet.
   const gitChrome = useGitChrome(workspacePath, gitRevision, !showHero)
-  const composerKey = `${workspacePath ?? 'none'}:${activeRunId ?? 'draft'}`
+  const surfaceKey = `${workspacePath ?? 'none'}:${chatSurfaceEpoch}`
   const stageRef = useRef<HTMLDivElement>(null)
+  const [dockReservePx, setDockReservePx] = useState(COMPOSER_DOCK_FALLBACK_PX)
 
-  // Transcript scrolls behind the floating composer, so it has to reserve exactly
-  // the dock's height. The dock already carries its own bottom padding.
+  // Transcript scrolls behind the floating composer, so it has to reserve the
+  // dock height plus the fade painted above it (not included in offsetHeight).
   useLayoutEffect(() => {
     const stage = stageRef.current
-    if (!stage || typeof ResizeObserver === 'undefined') return undefined
+    if (!stage) return undefined
     const dock = stage.querySelector<HTMLElement>('[data-composer-dock]')
     if (!dock) return undefined
 
     const sync = (): void => {
-      stage.style.setProperty('--vy-dock-h', `${Math.max(dock.offsetHeight, 48)}px`)
+      const dockH = Math.max(dock.offsetHeight, 48) + COMPOSER_DOCK_FADE_PX
+      stage.style.setProperty('--vy-dock-h', `${dockH}px`)
+      setDockReservePx(dockH)
     }
 
     sync()
+    if (typeof ResizeObserver === 'undefined') return undefined
     const ro = new ResizeObserver(sync)
     ro.observe(dock)
     const shell = dock.querySelector('[data-composer-shell]')
     if (shell) ro.observe(shell)
     return () => ro.disconnect()
-  }, [showHero])
+  }, [showHero, surfaceKey])
 
   const composerProps = {
     provider,
@@ -238,7 +284,7 @@ export function ChatView({
               data-composer-hero
             >
               <Composer
-                key={composerKey}
+                key={`composer:${surfaceKey}`}
                 {...composerProps}
                 variant="hero"
                 className="w-full"
@@ -248,8 +294,10 @@ export function ChatView({
         ) : (
           <div ref={stageRef} className="relative flex min-h-0 flex-1 flex-col" data-chat-stage>
             <MessageList
+              key={`transcript:${surfaceKey}`}
               items={items}
               reserveComposerSpace
+              dockReservePx={dockReservePx}
               restoreScrollTop={restoreScrollTop}
               scrollRestoreToken={scrollRestoreToken}
               onScrollTopChange={onScrollTopChange}
@@ -262,7 +310,7 @@ export function ChatView({
             />
 
             <Composer
-              key={composerKey}
+              key={`composer:${surfaceKey}`}
               {...composerProps}
               variant="dock"
               bannerError={bannerError}

@@ -8,9 +8,26 @@ export const CHAT_COLUMN_MAX = 'max-w-[720px]'
 export const CHAT_COLUMN = `mx-auto w-full ${CHAT_COLUMN_MAX}`
 
 /**
- * Vertical rhythm. Applied as padding on each row rather than flex gap so the
- * virtualizer (which measures offsetHeight and positions rows absolutely) and
- * the plain flow layout produce identical spacing.
+ * Fade painted above the floating composer dock (`before:h-8`). Not part of
+ * `offsetHeight`, so transcript bottom reserve must add it explicitly.
+ */
+export const COMPOSER_DOCK_FADE_PX = 32
+
+/** Fallback dock reserve when measured height is not yet available (`8rem`). */
+export const COMPOSER_DOCK_FALLBACK_PX = 128
+
+/** Composer textarea auto-grow cap — keep in sync with `max-h-40` on the field. */
+export const COMPOSER_TEXTAREA_MAX_PX = 160
+
+/** Shared max width for settings content column. */
+export const SETTINGS_COLUMN_MAX = 'max-w-[520px]'
+
+/** Centered settings column. */
+export const SETTINGS_COLUMN = `mx-auto w-full ${SETTINGS_COLUMN_MAX}`
+
+/**
+ * Vertical rhythm. Applied as padding on each row rather than flex gap so
+ * spacing stays consistent across the transcript.
  */
 export const TRANSCRIPT_ROW_GAP = 'pb-2'
 
@@ -59,11 +76,3 @@ export const SIDEBAR_SECTION_LABEL =
 
 /** localStorage key for desktop sidebar collapse preference. */
 export const SIDEBAR_COLLAPSED_KEY = 'vyotiq.sidebarCollapsed'
-
-/** Gutter contract per composer placement variant. */
-export const COMPOSER_VARIANT_GUTTER = {
-  /** Empty state: parent provides CHAT_GUTTER; no extra gutter on composer root. */
-  hero: '',
-  /** Active chat: standard chat column gutter. */
-  dock: CHAT_GUTTER
-} as const

@@ -58,39 +58,11 @@ const CARD_TOOLS = new Set([
   'delete'
 ])
 
-/** Vertical padding every row carries so virtual and flow layout stay identical. */
-export const ROW_GAP_PX = 8
-/** Extra lead-in above a user prompt that opens a new turn. */
+/** Extra lead-in above a user prompt that opens a new turn (matches TRANSCRIPT_TURN_GAP). */
 export const TURN_GAP_PX = 24
-
-const ACTIVITY_HEADER = 30
-const ACTIVITY_NESTED_ROW = 22
-const ACTIVITY_EXPANDED_DETAIL = 160
-const CARD_HEADER = 34
-const CARD_BODY_COLLAPSED = 168
-const CARD_BODY_EXPANDED = 320
-const TURN_SUMMARY_ROW = 26
-const APPROVAL_ROW = 118
-const CHANGES_HEADER = 34
-const CHANGES_FILE_ROW = 26
-const THINKING_HEADER = 26
-const THINKING_BODY_MAX = 240
-const USER_ROW_BASE = 52
-const TEXT_ROW_BASE = 44
-const CHARS_PER_LINE = 90
-const LINE_HEIGHT = 20
 
 function isCardTool(item: ToolItem): boolean {
   return CARD_TOOLS.has(item.tool.name)
-}
-
-/** Rough wrapped-text height so the virtualizer starts near the measured size. */
-function estimateProseHeight(text: string | undefined, max = 480): number {
-  if (!text) return 0
-  const lines = text.split('\n').reduce((total, line) => {
-    return total + Math.max(1, Math.ceil(line.length / CHARS_PER_LINE))
-  }, 0)
-  return Math.min(max, lines * LINE_HEIGHT)
 }
 
 /**
@@ -369,53 +341,4 @@ function withTurnSummaries(rows: TranscriptRow[]): TranscriptRow[] {
 /** Leading space a row reserves for turn separation. */
 export function rowLeadingGap(row: TranscriptRow): number {
   return row.kind === 'user' && row.turnIndex > 0 ? TURN_GAP_PX : 0
-}
-
-export function estimateTranscriptRowSize(row: TranscriptRow): number {
-  return rowLeadingGap(row) + ROW_GAP_PX + estimateRowContentSize(row)
-}
-
-function estimateRowContentSize(row: TranscriptRow): number {
-  switch (row.kind) {
-    case 'user': {
-      const images = row.item.images?.length ?? 0
-      return USER_ROW_BASE + estimateProseHeight(row.item.content) + images * 48
-    }
-    case 'thinking': {
-      const open = row.item.thinkingExpanded ?? row.item.thinkingStreaming === true
-      const body = open
-        ? Math.min(THINKING_BODY_MAX, estimateProseHeight(row.item.thinking, THINKING_BODY_MAX))
-        : 0
-      return THINKING_HEADER + body
-    }
-    case 'text':
-      return TEXT_ROW_BASE + estimateProseHeight(row.item.content)
-    case 'activity':
-      return estimateActivitySize(row.tools)
-    case 'card':
-      return CARD_HEADER + estimateCardBodySize(row.item)
-    case 'turn':
-      return TURN_SUMMARY_ROW
-    case 'changes':
-      return CHANGES_HEADER + row.files.length * CHANGES_FILE_ROW
-    case 'approval':
-      return APPROVAL_ROW
-  }
-}
-
-/** Cards show their output without being opened, so the body is rarely absent. */
-function estimateCardBodySize(item: ToolItem): number {
-  if (!item.tool.content && !item.tool.argsPreview) return 0
-  return item.toolExpanded ? CARD_BODY_EXPANDED : CARD_BODY_COLLAPSED
-}
-
-/** A group that is still running opens itself, so count its rows either way. */
-function estimateActivitySize(tools: ToolItem[]): number {
-  const open = tools.some((item) => item.toolExpanded || item.tool.status === 'running')
-  if (!open) return ACTIVITY_HEADER
-  const nested = tools.reduce(
-    (total, item) => total + ACTIVITY_NESTED_ROW + (item.toolExpanded ? ACTIVITY_EXPANDED_DETAIL : 0),
-    0
-  )
-  return ACTIVITY_HEADER + nested + 8
 }

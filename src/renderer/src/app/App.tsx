@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { AppShell } from './AppShell'
 import { ChatView } from '../features/chat/ChatView'
-import { SettingsView } from '../features/settings/SettingsView'
+import { SettingsView, type SettingsSection } from '../features/settings'
 import { useTheme } from '@renderer/lib/hooks/useTheme'
 import { useSettings } from '@renderer/lib/hooks/useSettings'
 import { useWorkspaceManager } from '@renderer/lib/hooks/useWorkspaceManager'
@@ -17,8 +17,6 @@ import {
   pushRecentModel
 } from '@shared/domain/modelSelection'
 import { logger } from '@shared/logger'
-
-type SettingsSection = 'general' | 'providers' | 'agent' | 'advanced'
 
 /** Sent as a visible user turn when resuming a run that was cut short. */
 const CONTINUE_PROMPT = 'Continue from where you stopped.'
@@ -64,7 +62,8 @@ export function App() {
     workspaceError,
     clearWorkspaceError,
     clearRunsError,
-    activeScrollTop
+    activeScrollTop,
+    chatSurfaceEpoch
   } = workspace
 
   const [view, setView] = useState<'chat' | 'settings'>('chat')
@@ -412,6 +411,7 @@ export function App() {
           restoreScrollTop={activeScrollTop}
           scrollRestoreToken={scrollRestoreToken}
           onScrollTopChange={onMessageListScroll}
+          chatSurfaceEpoch={chatSurfaceEpoch}
           showThinking={effectiveChatSettings.showThinking}
           onLoadToolContent={
             activeController
@@ -435,7 +435,7 @@ export function App() {
           }
           onApprovalDecision={
             activeController
-              ? (requestId, decision) => void activeController.respondToApproval(requestId, decision)
+              ? (requestId, decision) => activeController.respondToApproval(requestId, decision)
               : undefined
           }
         />

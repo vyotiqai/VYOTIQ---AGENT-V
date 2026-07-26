@@ -105,9 +105,9 @@ export const ToolGroup = memo(function ToolGroup({
 
   // A running group shows its calls as they land, then folds back into a single
   // summary line once the work is done — unless the reader has said otherwise.
-  // That choice belongs in transcript state so scrolling a virtualized list past
-  // the group and back does not silently reset it; the local fallback only
-  // covers a host that does not persist disclosure.
+  // That choice belongs in transcript state so a remount (tab/workspace switch)
+  // does not silently reset it; the local fallback only covers a host that does
+  // not persist disclosure.
   const [localOverride, setLocalOverride] = useState<boolean | null>(null)
   const expanded = groupExpanded ?? localOverride ?? isPending
   const toggle = (): void => {

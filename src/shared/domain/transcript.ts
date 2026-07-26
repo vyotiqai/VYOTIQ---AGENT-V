@@ -65,7 +65,7 @@ export type UiItem =
       toolExpanded?: boolean
       /**
        * Reader's disclosure choice for the activity group this row opens. Kept on
-       * the row rather than in the component so it survives virtual remounts.
+       * the row rather than in the component so it survives list remounts.
        */
       groupExpanded?: boolean
       /** Set while this call is waiting on tool approval. */

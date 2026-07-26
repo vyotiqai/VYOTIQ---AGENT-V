@@ -1,5 +1,4 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useVirtualizer } from '@tanstack/react-virtual'
 import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
 import type { UiItem } from '@shared/transcript'
@@ -12,7 +11,6 @@ import {
 } from '@renderer/lib/utils/layout'
 import {
   buildTranscriptRows,
-  estimateTranscriptRowSize,
   isTurnWorkRow,
   rowLeadingGap,
   type TranscriptRow
@@ -27,14 +25,16 @@ import { TurnSummary } from './TurnSummary'
 import { UserPrompt } from './UserPrompt'
 import { MarkdownContent } from '@renderer/lib/ui'
 
-const NEAR_BOTTOM_PX = 80
-/** Virtualize long transcripts to avoid O(n) renders per stream delta. */
-export const VIRTUALIZE_THRESHOLD = 40
-/** Stay virtualized until count drops below this (hysteresis avoids mode flips). */
-export const VIRTUALIZE_RELEASE_THRESHOLD = 30
+/** Minimum pin slack when no dock reserve is known yet. */
+const NEAR_BOTTOM_MIN_PX = 80
 
 function distanceFromBottom(el: HTMLElement): number {
   return el.scrollHeight - el.scrollTop - el.clientHeight
+}
+
+function nearBottomThreshold(dockReservePx?: number): number {
+  if (dockReservePx == null || dockReservePx <= 0) return NEAR_BOTTOM_MIN_PX
+  return Math.max(NEAR_BOTTOM_MIN_PX, dockReservePx)
 }
 
 function structuralKey(items: UiItem[]): string {
@@ -78,19 +78,9 @@ function ImageLightbox({ url, label, onClose }: { url: string; label: string; on
   )
 }
 
-/**
- * Spacing lives on the row itself (padding, not margin) so virtualized rows —
- * which are absolutely positioned and measured by offsetHeight — get the exact
- * same rhythm as the plain flow layout.
- */
+/** Spacing as padding (not margin) so row rhythm stays consistent. */
 function rowSpacingClass(row: TranscriptRow): string {
   return cn(TRANSCRIPT_ROW_GAP, rowLeadingGap(row) > 0 && TRANSCRIPT_TURN_GAP)
-}
-
-function isRowStreaming(row: TranscriptRow): boolean {
-  if (row.kind === 'text') return row.item.streaming === true
-  if (row.kind === 'thinking') return row.item.thinkingStreaming === true
-  return false
 }
 
 const TranscriptRowBlock = memo(function TranscriptRowBlock({
@@ -112,7 +102,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   onToolToggle?: (toolCallId: string, expanded: boolean) => void
   onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
   onTurnToggle?: (turnIndex: number) => void
-  onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void
+  onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
   turnCollapsed?: boolean
   showThinking?: boolean
 }) {
@@ -195,6 +185,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
 export function MessageList({
   items,
   reserveComposerSpace,
+  dockReservePx,
   restoreScrollTop,
   scrollRestoreToken,
   onScrollTopChange,
@@ -207,6 +198,8 @@ export function MessageList({
 }: {
   items: UiItem[]
   reserveComposerSpace?: boolean
+  /** Measured composer dock reserve (padding + fade); drives pin threshold. */
+  dockReservePx?: number
   restoreScrollTop?: number
   scrollRestoreToken?: number
   onScrollTopChange?: (scrollTop: number) => void
@@ -214,10 +207,9 @@ export function MessageList({
   onThinkingToggle?: (messageId: string, expanded: boolean) => void
   onToolToggle?: (toolCallId: string, expanded: boolean) => void
   onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
-  onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void
+  onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
   showThinking?: boolean
 }) {
-  const endRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const appliedRestoreRef = useRef<number | null>(null)
   const restoreScrollTopRef = useRef(restoreScrollTop ?? 0)
@@ -230,24 +222,8 @@ export function MessageList({
   )
   const [lightbox, setLightbox] = useState<{ url: string; label: string } | null>(null)
   const [collapsedTurns, setCollapsedTurns] = useState<ReadonlySet<number>>(() => new Set())
-  const [virtualized, setVirtualized] = useState(() => items.length >= VIRTUALIZE_THRESHOLD)
-  const modeFlipScrollRef = useRef<number | null>(null)
-  const prevUseVirtualRef = useRef(items.length >= VIRTUALIZE_THRESHOLD)
   const prevStructuralKeyRef = useRef<string | null>(null)
 
-  useEffect(() => {
-    const el = containerRef.current
-    let next: boolean | null = null
-    if (items.length >= VIRTUALIZE_THRESHOLD) next = true
-    else if (items.length < VIRTUALIZE_RELEASE_THRESHOLD) next = false
-    if (next === null || next === virtualized) return
-    if (el) modeFlipScrollRef.current = el.scrollTop
-    setVirtualized(next)
-  }, [items.length, virtualized])
-
-  // Dropping out of virtual mode while streaming re-rendered every row of the
-  // transcript on every delta, which is the exact case virtualization exists for.
-  const useVirtual = virtualized
   const itemsStructuralKey = useMemo(() => structuralKey(items), [items])
   const allRows = useMemo(() => buildTranscriptRows(items), [items])
   const displayRows = useMemo(() => {
@@ -256,22 +232,10 @@ export function MessageList({
     if (collapsedTurns.size === 0) return rows
     return rows.filter((row) => !(collapsedTurns.has(row.turnIndex) && isTurnWorkRow(row)))
   }, [allRows, collapsedTurns, showThinking])
-  const virtualRows = useMemo(() => (useVirtual ? displayRows : []), [displayRows, useVirtual])
-  const streamingRowId = useMemo(() => {
-    for (let i = displayRows.length - 1; i >= 0; i--) {
-      const row = displayRows[i]!
-      if ((row.kind === 'text' || row.kind === 'thinking') && isRowStreaming(row)) return row.id
-    }
-    return null
-  }, [displayRows])
-  const virtualLiveAnnouncement = useMemo(() => {
-    if (!useVirtual || !streamingRowId) return ''
-    const row = displayRows.find((r) => r.id === streamingRowId)
-    if (!row) return ''
-    if (row.kind === 'text') return row.item.content.trim()
-    if (row.kind === 'thinking') return row.item.thinking?.trim() ?? ''
-    return ''
-  }, [useVirtual, streamingRowId, displayRows])
+
+  const nearBottomPx = nearBottomThreshold(dockReservePx)
+  const nearBottomPxRef = useRef(nearBottomPx)
+  nearBottomPxRef.current = nearBottomPx
 
   restoreScrollTopRef.current = restoreScrollTop ?? 0
 
@@ -286,67 +250,6 @@ export function MessageList({
       return next
     })
   }, [])
-
-  const streamingRowElRef = useRef<HTMLDivElement | null>(null)
-
-  const virtualizer = useVirtualizer({
-    count: virtualRows.length,
-    enabled: useVirtual,
-    getScrollElement: () => containerRef.current,
-    estimateSize: (index) => estimateTranscriptRowSize(virtualRows[index]!),
-    overscan: 8,
-    getItemKey: (index) => virtualRows[index]?.id ?? index
-  })
-
-  const measureStreamingRow = useCallback(
-    (el: HTMLDivElement | null) => {
-      streamingRowElRef.current = el
-      virtualizer.measureElement(el)
-    },
-    [virtualizer]
-  )
-
-  // The streaming row grows on every delta. ResizeObserver-driven measurement
-  // lands a frame late, so remeasure it directly and leave every other row on
-  // the cached size.
-  useLayoutEffect(() => {
-    const el = streamingRowElRef.current
-    if (!useVirtual || !el) return
-    virtualizer.measureElement(el)
-  })
-
-  useLayoutEffect(() => {
-    const el = containerRef.current
-    if (!el) {
-      prevUseVirtualRef.current = useVirtual
-      return
-    }
-    const savedTop = modeFlipScrollRef.current
-    if (savedTop != null) {
-      modeFlipScrollRef.current = null
-      programmaticScrollRef.current = true
-      if (useVirtual) {
-        virtualizer.scrollToOffset(savedTop, { align: 'start' })
-      } else {
-        el.scrollTop = savedTop
-      }
-      window.requestAnimationFrame(() => {
-        programmaticScrollRef.current = false
-      })
-    } else if (prevUseVirtualRef.current !== useVirtual) {
-      const top = el.scrollTop
-      programmaticScrollRef.current = true
-      if (useVirtual) {
-        virtualizer.scrollToOffset(top, { align: 'start' })
-      } else {
-        el.scrollTop = top
-      }
-      window.requestAnimationFrame(() => {
-        programmaticScrollRef.current = false
-      })
-    }
-    prevUseVirtualRef.current = useVirtual
-  }, [useVirtual, virtualizer])
 
   useLayoutEffect(() => {
     appliedRestoreRef.current = null
@@ -371,16 +274,12 @@ export function MessageList({
         return
       }
       programmaticScrollRef.current = true
-      if (useVirtual) {
-        virtualizer.scrollToOffset(top, { align: 'start' })
-      } else {
-        el.scrollTop = top
-      }
-      const contentTall = el.scrollHeight > el.clientHeight + NEAR_BOTTOM_PX
-      pinnedToBottomRef.current = contentTall && distanceFromBottom(el) < NEAR_BOTTOM_PX
+      el.scrollTop = top
+      const contentTall = el.scrollHeight > el.clientHeight + nearBottomPxRef.current
+      pinnedToBottomRef.current = !contentTall || distanceFromBottom(el) < nearBottomPxRef.current
       appliedRestoreRef.current = scrollRestoreToken ?? 0
       setScrollRestored(true)
-      if (contentTall) restorePendingRef.current = false
+      restorePendingRef.current = false
       window.requestAnimationFrame(() => {
         programmaticScrollRef.current = false
       })
@@ -388,7 +287,7 @@ export function MessageList({
 
     const id = window.requestAnimationFrame(applyRestore)
     return () => window.cancelAnimationFrame(id)
-  }, [scrollRestoreToken, useVirtual, virtualizer])
+  }, [scrollRestoreToken])
 
   useEffect(() => {
     const el = containerRef.current
@@ -401,11 +300,10 @@ export function MessageList({
         return
       }
       programmaticScrollRef.current = true
-      if (useVirtual) virtualizer.scrollToOffset(top, { align: 'start' })
-      else el.scrollTop = top
-      const contentTall = el.scrollHeight > el.clientHeight + NEAR_BOTTOM_PX
-      pinnedToBottomRef.current = contentTall && distanceFromBottom(el) < NEAR_BOTTOM_PX
-      if (contentTall) restorePendingRef.current = false
+      el.scrollTop = top
+      const contentTall = el.scrollHeight > el.clientHeight + nearBottomPxRef.current
+      pinnedToBottomRef.current = !contentTall || distanceFromBottom(el) < nearBottomPxRef.current
+      restorePendingRef.current = false
       window.requestAnimationFrame(() => {
         programmaticScrollRef.current = false
       })
@@ -414,7 +312,7 @@ export function MessageList({
     const inner = el.firstElementChild
     if (inner) ro.observe(inner)
     return () => ro.disconnect()
-  }, [scrollRestoreToken, useVirtual, virtualizer])
+  }, [scrollRestoreToken])
 
   useEffect(() => {
     return () => {
@@ -422,25 +320,23 @@ export function MessageList({
     }
   }, [])
 
-  const followTail = useCallback(
-    (behavior: ScrollBehavior) => {
-      const el = containerRef.current
-      if (!el) return
-      programmaticScrollRef.current = true
-      if (useVirtual && virtualRows.length > 0) {
-        virtualizer.scrollToIndex(virtualRows.length - 1, { align: 'end', behavior })
-      } else if (behavior === 'auto') {
-        el.scrollTop = el.scrollHeight
-      } else {
-        endRef.current?.scrollIntoView?.({ behavior, block: 'end' })
-      }
-      pinnedToBottomRef.current = true
-      window.requestAnimationFrame(() => {
-        programmaticScrollRef.current = false
-      })
-    },
-    [virtualRows.length, useVirtual, virtualizer]
-  )
+  const followTail = useCallback((behavior: ScrollBehavior) => {
+    const el = containerRef.current
+    if (!el) return
+    programmaticScrollRef.current = true
+    // Scroll to the true end so CSS paddingBottom (--vy-dock-h) keeps the last
+    // row above the floating composer.
+    const top = el.scrollHeight
+    if (behavior === 'smooth' && typeof el.scrollTo === 'function') {
+      el.scrollTo({ top, behavior: 'smooth' })
+    } else {
+      el.scrollTop = top
+    }
+    pinnedToBottomRef.current = true
+    window.requestAnimationFrame(() => {
+      programmaticScrollRef.current = false
+    })
+  }, [])
 
   const scheduleTailFollow = useCallback(() => {
     if (autoScrollRafRef.current) window.cancelAnimationFrame(autoScrollRafRef.current)
@@ -452,6 +348,15 @@ export function MessageList({
       followTail('auto')
     })
   }, [followTail, scrollRestored])
+
+  // Dock reserve (padding) can grow without resizing the scrollport; re-pin when pinned.
+  useLayoutEffect(() => {
+    if (!reserveComposerSpace || dockReservePx == null) return
+    if (!scrollRestored || restorePendingRef.current || !pinnedToBottomRef.current) return
+    const el = containerRef.current
+    if (el && distanceFromBottom(el) <= 1) return
+    followTail('auto')
+  }, [dockReservePx, reserveComposerSpace, followTail, scrollRestored])
 
   useEffect(() => {
     if (!scrollRestored || restorePendingRef.current || !pinnedToBottomRef.current) return
@@ -479,7 +384,7 @@ export function MessageList({
     (scrollTop: number) => {
       const el = containerRef.current
       if (el && !programmaticScrollRef.current) {
-        pinnedToBottomRef.current = distanceFromBottom(el) < NEAR_BOTTOM_PX
+        pinnedToBottomRef.current = distanceFromBottom(el) < nearBottomPxRef.current
         restorePendingRef.current = false
       }
       onScrollTopChange?.(scrollTop)
@@ -493,104 +398,53 @@ export function MessageList({
     ? ({ paddingBottom: 'var(--vy-dock-h, 8rem)' } as const)
     : undefined
 
-  const simpleBlocks = useMemo(() => {
-    if (useVirtual) return []
-    return displayRows.map((row) => (
-      <div key={row.id} className={rowSpacingClass(row)}>
-        <TranscriptRowBlock
-          row={row}
-          onImageClick={onImageClick}
-          onLoadToolContent={onLoadToolContent}
-          onThinkingToggle={onThinkingToggle}
-          onToolToggle={onToolToggle}
-          onGroupToggle={onGroupToggle}
-          onTurnToggle={onTurnToggle}
-          onApprovalDecision={onApprovalDecision}
-          turnCollapsed={collapsedTurns.has(row.turnIndex)}
-          showThinking={showThinking}
-        />
-      </div>
-    ))
-  }, [
-    useVirtual,
-    displayRows,
-    collapsedTurns,
-    onImageClick,
-    onLoadToolContent,
-    onThinkingToggle,
-    onToolToggle,
-    onGroupToggle,
-    onTurnToggle,
-    onApprovalDecision,
-    showThinking
-  ])
+  const blocks = useMemo(
+    () =>
+      displayRows.map((row) => (
+        <div key={row.id} className={rowSpacingClass(row)}>
+          <TranscriptRowBlock
+            row={row}
+            onImageClick={onImageClick}
+            onLoadToolContent={onLoadToolContent}
+            onThinkingToggle={onThinkingToggle}
+            onToolToggle={onToolToggle}
+            onGroupToggle={onGroupToggle}
+            onTurnToggle={onTurnToggle}
+            onApprovalDecision={onApprovalDecision}
+            turnCollapsed={collapsedTurns.has(row.turnIndex)}
+            showThinking={showThinking}
+          />
+        </div>
+      )),
+    [
+      displayRows,
+      collapsedTurns,
+      onImageClick,
+      onLoadToolContent,
+      onThinkingToggle,
+      onToolToggle,
+      onGroupToggle,
+      onTurnToggle,
+      onApprovalDecision,
+      showThinking
+    ]
+  )
 
   return (
     <>
-      {useVirtual ? (
-        <div className="sr-only" aria-live="polite" aria-atomic="true">
-          {virtualLiveAnnouncement}
-        </div>
-      ) : null}
       <div
         ref={containerRef}
         data-transcript-scroll
         className={cn('flex min-h-0 flex-1 flex-col overflow-auto pt-4', CHAT_GUTTER)}
         style={dockReserveStyle}
-        // Virtual rows mount on scroll, so announcing additions there would read
-        // the transcript back as the user scrolls. Only announce real appends.
-        aria-live={useVirtual ? undefined : 'polite'}
-        aria-relevant={useVirtual ? undefined : 'additions'}
-        aria-atomic={useVirtual ? undefined : 'false'}
+        aria-live="polite"
+        aria-relevant="additions"
+        aria-atomic="false"
         onScroll={(e) => handleScroll(e.currentTarget.scrollTop)}
       >
-        {useVirtual ? (
-          <div
-            className={cn(columnClass, 'relative')}
-            data-chat-column
-            style={{ height: virtualizer.getTotalSize() }}
-          >
-            {virtualizer.getVirtualItems().map((virtualRow) => {
-              const row = virtualRows[virtualRow.index]
-              if (!row) return null
-              const streaming = row.id === streamingRowId
-              return (
-                <div
-                  key={virtualRow.key}
-                  data-index={virtualRow.index}
-                  ref={streaming ? measureStreamingRow : virtualizer.measureElement}
-                  className={rowSpacingClass(row)}
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    width: '100%',
-                    transform: `translateY(${virtualRow.start}px)`
-                  }}
-                >
-                  <TranscriptRowBlock
-                    row={row}
-                    onImageClick={onImageClick}
-                    onLoadToolContent={onLoadToolContent}
-                    onThinkingToggle={onThinkingToggle}
-                    onToolToggle={onToolToggle}
-                    onGroupToggle={onGroupToggle}
-                    onTurnToggle={onTurnToggle}
-                    onApprovalDecision={onApprovalDecision}
-                    turnCollapsed={collapsedTurns.has(row.turnIndex)}
-                    showThinking={showThinking}
-                  />
-                </div>
-              )
-            })}
-            <div ref={endRef} />
-          </div>
-        ) : (
-          <div className={columnClass} data-chat-column>
-            {simpleBlocks}
-            <div ref={endRef} />
-          </div>
-        )}
+        <div className={columnClass} data-chat-column>
+          {blocks}
+        </div>
       </div>
       {lightbox ? (
         <ImageLightbox

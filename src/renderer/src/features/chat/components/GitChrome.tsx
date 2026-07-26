@@ -13,8 +13,9 @@ export type GitChrome = {
   ready: boolean
   busy: boolean
   notice: string | null
+  noticeFailed: boolean
   refresh: () => void
-  commit: (message: string, push: boolean) => Promise<void>
+  commit: (message: string, push: boolean) => Promise<boolean>
 }
 
 /** Commit messages are the user's to write; this is only a starting point. */
@@ -39,15 +40,19 @@ export function useGitChrome(
   const { status, loading, refresh } = useGitStatus(workspacePath, revision, enabled)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [noticeFailed, setNoticeFailed] = useState(false)
 
   const commit = useCallback(
-    async (message: string, push: boolean) => {
-      if (!workspacePath || !message.trim() || busy) return
+    async (message: string, push: boolean): Promise<boolean> => {
+      if (!workspacePath || !message.trim() || busy) return false
       setBusy(true)
       setNotice(null)
+      setNoticeFailed(false)
       try {
         const result = await window.vyotiq.gitCommit(workspacePath, message.trim(), push)
         setNotice(result.ok ? result.data.detail : result.error)
+        setNoticeFailed(!result.ok)
+        return result.ok
       } finally {
         setBusy(false)
         refresh()
@@ -56,18 +61,25 @@ export function useGitChrome(
     [workspacePath, busy, refresh]
   )
 
-  return { status, ready: !loading && Boolean(status), busy, notice, refresh, commit }
+  return {
+    status,
+    ready: !loading && Boolean(status),
+    busy,
+    notice,
+    noticeFailed,
+    refresh,
+    commit
+  }
 }
 
 /**
  * How much the working tree has moved, and the way to commit it.
  *
- * Floats over the end of the transcript so the size of a change is visible
- * without scrolling, in the same place the terminal count and the
- * scroll-to-bottom control sit.
+ * Sits above the docked composer so the size of a change is visible without
+ * scrolling the transcript.
  */
 export function GitChangePills({ chrome }: { chrome: GitChrome }) {
-  const { status, ready, busy, notice, commit } = chrome
+  const { status, ready, busy, notice, noticeFailed, commit } = chrome
   const [composing, setComposing] = useState(false)
   const [message, setMessage] = useState('')
 
@@ -79,7 +91,8 @@ export function GitChangePills({ chrome }: { chrome: GitChrome }) {
 
   const send = useCallback(
     (push: boolean) => {
-      void commit(message, push).then(() => {
+      void commit(message, push).then((ok) => {
+        if (!ok) return
         setMessage('')
         setComposing(false)
       })
@@ -90,7 +103,7 @@ export function GitChangePills({ chrome }: { chrome: GitChrome }) {
   if (!ready || !status || status.fileCount === 0) return null
 
   return (
-    <div className="flex flex-col items-start gap-1.5">
+    <div className="pointer-events-auto flex flex-col items-start gap-1.5">
       {composing ? (
         <div className={cn(FLOATING_CHROME, 'flex w-full items-center gap-1.5 p-1.5')}>
           <input
@@ -141,7 +154,7 @@ export function GitChangePills({ chrome }: { chrome: GitChrome }) {
           aria-expanded={composing}
           aria-label="Write a commit message"
         >
-          {status.hasRemote ? 'Commit & Push' : 'Commit'}
+          {status.hasRemote ? 'Commit…' : 'Commit'}
           <Icon
             name="chevronRight"
             size={11}
@@ -149,7 +162,14 @@ export function GitChangePills({ chrome }: { chrome: GitChrome }) {
           />
         </button>
 
-        {notice ? <span className="px-1 text-[11px]">{notice}</span> : null}
+        {notice ? (
+          <span
+            className={cn('px-1 text-[11px]', noticeFailed ? 'text-danger' : 'text-secondary')}
+            role={noticeFailed ? 'alert' : 'status'}
+          >
+            {notice}
+          </span>
+        ) : null}
       </div>
     </div>
   )
@@ -161,7 +181,7 @@ export function GitBranchStrip({ chrome }: { chrome: GitChrome }) {
   if (!ready || !status) return null
 
   return (
-    <div className="flex items-center gap-2 px-1 text-[11px] text-tertiary">
+    <div className="pointer-events-auto flex items-center gap-2 px-1 text-[11px] text-tertiary">
       <span className="inline-flex items-center gap-1.5">
         <Icon name="branch" size={12} />
         <span className="max-w-[24ch] truncate text-fg">{status.branch ?? 'detached'}</span>

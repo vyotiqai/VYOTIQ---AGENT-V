@@ -184,9 +184,7 @@ export function Composer({
           </Alert>
         ) : null}
 
-        {isDock && leading ? (
-          <div className="pointer-events-auto shrink-0">{leading}</div>
-        ) : null}
+        {isDock ? leading : null}
 
         <form
           onSubmit={submit}
@@ -286,9 +284,7 @@ export function Composer({
           onContinue={onContinue}
         />
 
-        {isDock && trailing ? (
-          <div className="pointer-events-auto shrink-0">{trailing}</div>
-        ) : null}
+        {isDock ? trailing : null}
 
         {!isDock ? (
         <p className="m-0 mt-4 text-center text-xs leading-relaxed tracking-[var(--vy-tracking)] text-muted">

@@ -3,7 +3,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/react'
-import { MessageList, VIRTUALIZE_THRESHOLD } from '@renderer/features/chat/components/MessageList'
+import { MessageList } from '@renderer/features/chat/components/MessageList'
 import type { UiItem } from '@shared/transcript'
 
 beforeEach(() => {
@@ -119,48 +119,23 @@ describe('MessageList', () => {
     expect(container.scrollTop).toBe(initialScrollTop)
   })
 
-  it('virtualizes long transcripts without mounting every row', () => {
-    const items: UiItem[] = Array.from({ length: VIRTUALIZE_THRESHOLD + 5 }, (_, i) => ({
+  it('renders every row in a long transcript', () => {
+    const items: UiItem[] = Array.from({ length: 45 }, (_, i) => ({
       kind: 'message' as const,
       id: `m-${i}`,
       role: 'assistant' as const,
       content: `Line ${i}`
     }))
 
-    const { container } = render(<MessageList items={items} />)
-    const scroll = container.querySelector('[data-transcript-scroll]') as HTMLDivElement | null
-    expect(scroll).toBeTruthy()
-    if (scroll) {
-      Object.defineProperty(scroll, 'clientHeight', { value: 480, configurable: true })
-    }
-    expect(document.querySelectorAll('[data-index]').length).toBeLessThan(items.length)
+    render(<MessageList items={items} />)
+
+    expect(screen.getByText('Line 0')).toBeTruthy()
+    expect(screen.getByText('Line 44')).toBeTruthy()
+    expect(document.querySelectorAll('[data-index]')).toHaveLength(0)
   })
 
-  it('stays virtualized while the last row streams', () => {
-    const items: UiItem[] = Array.from({ length: VIRTUALIZE_THRESHOLD + 5 }, (_, i) => ({
-      kind: 'message' as const,
-      id: `m-${i}`,
-      role: 'assistant' as const,
-      content: `Line ${i}`
-    }))
-    items[items.length - 1] = {
-      kind: 'message',
-      id: 'streaming',
-      role: 'assistant',
-      content: 'still writing',
-      streaming: true
-    }
-
-    const { container } = render(<MessageList items={items} />)
-
-    // Only the virtual branch sizes the column to the total scroll height.
-    const column = container.querySelector('[data-chat-column]') as HTMLElement | null
-    expect(column?.style.height).toBeTruthy()
-    expect(document.querySelectorAll('[data-index]').length).toBeLessThan(items.length)
-  })
-
-  it('groups consecutive tool rows into one virtual row for long threads', () => {
-    const pad = Array.from({ length: VIRTUALIZE_THRESHOLD }, (_, i) => ({
+  it('groups consecutive tool rows in long threads', () => {
+    const pad = Array.from({ length: 40 }, (_, i) => ({
       kind: 'message' as const,
       id: `pad-${i}`,
       role: 'assistant' as const,
@@ -169,16 +144,10 @@ describe('MessageList', () => {
     const tools = toolGroup('tail', ['one.ts', 'two.ts', 'three.ts'])
     const items: UiItem[] = [...pad, ...tools]
 
-    const { container } = render(<MessageList items={items} />)
-    const scroll = container.querySelector('[data-transcript-scroll]') as HTMLDivElement | null
-    expect(scroll).toBeTruthy()
-    if (scroll) {
-      Object.defineProperty(scroll, 'clientHeight', { value: 480, configurable: true })
-    }
-    const mountedRows = document.querySelectorAll('[data-index]').length
-    // 40 messages + 1 grouped tool stretch = 41 virtual rows vs 43 items
-    expect(mountedRows).toBeLessThan(items.length)
-    expect(mountedRows).toBeLessThanOrEqual(12)
+    render(<MessageList items={items} />)
+
+    expect(screen.getByText('3 files')).toBeTruthy()
+    expect(screen.getByText('pad 0')).toBeTruthy()
   })
 
   it('uses instant tail follow while streaming', () => {
@@ -192,5 +161,95 @@ describe('MessageList', () => {
     render(<MessageList items={items} />)
 
     expect(scrollIntoView).not.toHaveBeenCalled()
+  })
+
+  it('follows the tail via scrollHeight so dock padding stays clear', async () => {
+    class ResizeObserverStub {
+      private readonly cb: ResizeObserverCallback
+      constructor(cb: ResizeObserverCallback) {
+        this.cb = cb
+      }
+      observe(): void {
+        this.cb([], this as unknown as ResizeObserver)
+      }
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub)
+
+    const items: UiItem[] = Array.from({ length: 12 }, (_, i) => ({
+      kind: 'message' as const,
+      id: `m-${i}`,
+      role: 'assistant' as const,
+      content: `Line ${i}`
+    }))
+
+    const { rerender } = render(
+      <MessageList items={items} reserveComposerSpace dockReservePx={180} />
+    )
+    const scroll = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
+    expect(scroll).toBeTruthy()
+
+    let scrollTop = 0
+    const scrollTopSet = vi.fn((value: number) => {
+      scrollTop = value
+    })
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 400 })
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 4000 })
+    Object.defineProperty(scroll, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: scrollTopSet
+    })
+
+    // Leave headroom so the follow-tail effect does not early-return.
+    scrollTop = 3500
+
+    const next = [
+      ...items,
+      {
+        kind: 'message' as const,
+        id: 'm-tail',
+        role: 'assistant' as const,
+        content: 'new line'
+      }
+    ]
+    rerender(<MessageList items={next} reserveComposerSpace dockReservePx={180} />)
+
+    await vi.waitFor(() => {
+      expect(scrollTopSet).toHaveBeenCalled()
+    })
+    expect(scrollTopSet).toHaveBeenCalledWith(4000)
+    expect(scroll.style.paddingBottom).toBe('var(--vy-dock-h, 8rem)')
+
+    vi.unstubAllGlobals()
+  })
+
+  it('re-follows the tail when dock reserve grows while pinned', async () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'msg-1', role: 'assistant', content: 'Hello' }
+    ]
+    const { rerender } = render(
+      <MessageList items={items} reserveComposerSpace dockReservePx={120} />
+    )
+    const scroll = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
+    let scrollTop = 0
+    const scrollTopSet = vi.fn((value: number) => {
+      scrollTop = value
+    })
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 400 })
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 900 })
+    Object.defineProperty(scroll, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: scrollTopSet
+    })
+    scrollTop = 400
+
+    rerender(<MessageList items={items} reserveComposerSpace dockReservePx={200} />)
+
+    await vi.waitFor(() => {
+      expect(scrollTopSet).toHaveBeenCalledWith(900)
+    })
   })
 })

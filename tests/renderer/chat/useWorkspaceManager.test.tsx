@@ -63,7 +63,7 @@ describe('useWorkspaceManager', () => {
     loadRun.mockReset()
     loadRunEvents.mockReset()
 
-    chatStart.mockResolvedValue({ ok: true, data: { runId: 'run-1' } })
+    chatStart.mockResolvedValue({ ok: true, data: { runId: 'run-1', invokeId: 1 } })
     chatCancel.mockResolvedValue({ ok: true, data: true })
     getWorkspaces.mockResolvedValue({ ok: true, data: defaultRegistry() })
     listRuns.mockResolvedValue({ ok: true, data: { runs: [], capped: false } })
@@ -181,7 +181,7 @@ describe('useWorkspaceManager', () => {
   it('keeps background run demux alive when workspace tab is removed', async () => {
     listActiveRuns.mockResolvedValue({
       ok: true,
-      data: [{ runId: 'run-bg', workspacePath: '/ws-a' }]
+      data: [{ runId: 'run-bg', workspacePath: '/ws-a', invokeId: 3 }]
     })
 
     const { result } = renderHook(() => useWorkspaceManager())
@@ -340,7 +340,7 @@ describe('useWorkspaceManager', () => {
   it('reattaches active runs from listActiveRuns on mount', async () => {
     listActiveRuns.mockResolvedValue({
       ok: true,
-      data: [{ runId: 'run-live', workspacePath: '/ws-a' }]
+      data: [{ runId: 'run-live', workspacePath: '/ws-a', invokeId: 7 }]
     })
     loadRun.mockResolvedValue({
       ok: true,
@@ -356,7 +356,9 @@ describe('useWorkspaceManager', () => {
     const { result } = renderHook(() => useWorkspaceManager())
 
     await waitFor(() => {
-      expect(result.current.activeRuns).toEqual([{ runId: 'run-live', workspacePath: '/ws-a' }])
+      expect(result.current.activeRuns).toEqual([
+        { runId: 'run-live', workspacePath: '/ws-a', invokeId: 7 }
+      ])
     })
 
     expect(loadRun).toHaveBeenCalledWith('/ws-a', 'run-live')
@@ -481,6 +483,32 @@ describe('useWorkspaceManager', () => {
     expect(result.current.activeScrollTop).toBe(120)
 
     vi.useRealTimers()
+  })
+
+  it('bumps chat surface epoch on workspace and run tab switches', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    const initialEpoch = result.current.chatSurfaceEpoch
+    const initialToken = result.current.scrollRestoreToken
+
+    await act(async () => {
+      await result.current.switchWorkspace('/ws-b')
+    })
+
+    expect(result.current.chatSurfaceEpoch).toBeGreaterThan(initialEpoch)
+    expect(result.current.scrollRestoreToken).toBeGreaterThan(initialToken)
+
+    const afterSwitch = result.current.chatSurfaceEpoch
+
+    act(() => {
+      result.current.openRunTab('run-tab-a')
+    })
+
+    expect(result.current.chatSurfaceEpoch).toBeGreaterThan(afterSwitch)
   })
 
   it('does not duplicate open run tab on follow-up', async () => {

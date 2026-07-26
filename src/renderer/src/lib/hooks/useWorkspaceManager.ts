@@ -117,6 +117,7 @@ export function useWorkspaceManager() {
   const [activeRuns, setActiveRuns] = useState<{ runId: string; workspacePath: string }[]>([])
   const [revision, setRevision] = useState(0)
   const [scrollRestoreToken, setScrollRestoreToken] = useState(0)
+  const [chatSurfaceEpoch, setChatSurfaceEpoch] = useState(0)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
 
   const controllersRef = useRef(new Map<string, ChatStreamController>())
@@ -496,6 +497,7 @@ export function useWorkspaceManager() {
         const existing = prev[path]
         if (existing) {
           const ui = state.uiStateByPath[path] ?? defaultUiState()
+          const refUi = contextsRef.current[path]?.ui
           const scrollTopByRunId = { ...(ui.scrollTopByRunId ?? {}) }
           if (ui.scrollTop > 0 && ui.activeRunId && scrollTopByRunId[ui.activeRunId] === undefined) {
             scrollTopByRunId[ui.activeRunId] = ui.scrollTop
@@ -506,11 +508,12 @@ export function useWorkspaceManager() {
             openRunIds:
               existing.openRunIds.length > 0 ? existing.openRunIds : [...ui.openRunIds],
             ui: {
-              scrollTop: ui.scrollTop,
-              scrollTopByRunId:
-                Object.keys(existing.ui.scrollTopByRunId).length > 0
-                  ? existing.ui.scrollTopByRunId
-                  : scrollTopByRunId,
+              scrollTop: refUi?.scrollTop ?? existing.ui.scrollTop ?? ui.scrollTop,
+              scrollTopByRunId: {
+                ...scrollTopByRunId,
+                ...existing.ui.scrollTopByRunId,
+                ...(refUi?.scrollTopByRunId ?? {})
+              },
               composerDraft:
                 existing.ui.composerDraft !== ''
                   ? existing.ui.composerDraft
@@ -638,12 +641,8 @@ export function useWorkspaceManager() {
       if (res.ok) {
         setWorkspaceError(null)
         applyRegistry(res.data)
-        const ui = res.data.uiStateByPath[path] ?? defaultUiState()
-        const key = scrollKeyForRun(ui.activeRunId)
-        const restoreTop = ui.scrollTopByRunId?.[key] ?? ui.scrollTop
-        if (restoreTop > 0) {
-          setScrollRestoreToken((t) => t + 1)
-        }
+        setChatSurfaceEpoch((t) => t + 1)
+        setScrollRestoreToken((t) => t + 1)
       } else {
         setWorkspaceError(res.error)
       }
@@ -744,6 +743,7 @@ export function useWorkspaceManager() {
       schedulePersistUiState(activeWorkspace, nextCtx)
       if (!sameTab) {
         flushPersistUiState(activeWorkspace)
+        setChatSurfaceEpoch((t) => t + 1)
         setScrollRestoreToken((t) => t + 1)
       }
       bump()
@@ -783,6 +783,7 @@ export function useWorkspaceManager() {
       }))
       schedulePersistUiState(activeWorkspace, nextCtx)
       if (ctx.activeRunId === runId) {
+        setChatSurfaceEpoch((t) => t + 1)
         setScrollRestoreToken((t) => t + 1)
       }
       bump()
@@ -988,6 +989,7 @@ export function useWorkspaceManager() {
     isRunActiveInBackground,
     workspaceHasBackgroundRun,
     scrollRestoreToken,
+    chatSurfaceEpoch,
     activeScrollTop,
     workspaceError,
     clearWorkspaceError,
