@@ -2,7 +2,9 @@ import { spawn } from 'child_process'
 import kill from 'tree-kill'
 import { assertInsideWorkspace } from '../../../shared/workspacePath'
 
-const MAX_OUTPUT = 64 * 1024
+/** stdout/stderr cap returned to the model (each stream). */
+export const TERMINAL_MAX_OUTPUT = 64 * 1024
+const MAX_OUTPUT = TERMINAL_MAX_OUTPUT
 
 /** Unix tools that typically fail or mislead under Windows cmd.exe. */
 const UNIX_PRIMARY_ON_WINDOWS = new Set([
@@ -54,7 +56,7 @@ const UNIX_CMD_HINTS: Record<string, string> = {
   find: 'dir /s /b',
   cat: 'type',
   which: 'where',
-  pwd: 'cd',
+  pwd: 'echo %CD%',
   rm: 'del',
   cp: 'copy',
   mv: 'move',
@@ -93,17 +95,26 @@ export function lastPipelineCommandToken(command: string): string | null {
 }
 
 /**
- * On Windows, if the primary command is a common Unix builtin, return a helpful
- * failure message (no spawn). Otherwise null.
+ * On Windows, if any pipeline stage's primary command is a common Unix builtin,
+ * return a helpful failure message (no spawn). Otherwise null.
  */
 export function unsupportedUnixOnWindowsMessage(command: string): string | null {
-  const token = primaryCommandToken(command)
-  if (!token || !UNIX_PRIMARY_ON_WINDOWS.has(token)) return null
+  const stages = command
+    .split('|')
+    .map((s) => primaryCommandToken(s.trim()))
+    .filter((t): t is string => Boolean(t))
+  const unixStages = stages.filter((t) => UNIX_PRIMARY_ON_WINDOWS.has(t))
+  if (!unixStages.length) return null
+  const token = unixStages[0]
   const equiv = UNIX_CMD_HINTS[token] ?? 'a cmd.exe-compatible command'
+  const stageNote =
+    unixStages.length > 1
+      ? ` Also blocked in pipeline: ${unixStages.slice(1).join(', ')}.`
+      : ''
   return [
     `Unsupported Unix command on Windows: "${token}".`,
-    'The terminal tool runs via cmd.exe, not bash.',
-    `Prefer cmd-safe commands (dir, findstr, where, type) — e.g. use "${equiv}" instead of "${token}".`,
+    'The terminal tool runs via cmd.exe, not bash or PowerShell.',
+    `Prefer cmd-safe commands (dir, findstr, where, type, echo %CD%) — e.g. use "${equiv}" instead of "${token}".${stageNote}`,
     'Do not use ls/grep/head/find/cat/which unless bash is available.',
     'exit_code: 1'
   ].join('\n')

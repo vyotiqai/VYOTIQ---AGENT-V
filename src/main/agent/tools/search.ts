@@ -9,12 +9,17 @@ import {
 } from './walk'
 
 const YIELD_EVERY_FILES = 32
+/** Max workspace files walked for a search (smaller than glob/grep). */
+export const SEARCH_SCAN_CAP = 5000
+/** Content hits only in text files at or under this size. */
+export const SEARCH_MAX_FILE_BYTES = 256 * 1024
+export const SEARCH_DEFAULT_MAX_RESULTS = 40
 
 /** Case-insensitive substring or optional regex search over filenames and text contents. */
 export async function toolSearch(
   workspaceRoot: string,
   query: string,
-  maxResults = 40,
+  maxResults = SEARCH_DEFAULT_MAX_RESULTS,
   signal?: AbortSignal,
   regex = false
 ): Promise<string> {
@@ -37,7 +42,7 @@ export async function toolSearch(
   }
 
   assertInsideWorkspace(workspaceRoot, '.')
-  const files = await collectWorkspaceFiles(workspaceRoot, 5000, signal)
+  const files = await collectWorkspaceFiles(workspaceRoot, SEARCH_SCAN_CAP, signal)
   throwIfAborted(signal)
 
   const hits: string[] = []
@@ -59,7 +64,7 @@ export async function toolSearch(
     if (!TEXT_EXTS.has(ext)) continue
     try {
       const st = statSync(file)
-      if (st.size > 256 * 1024) continue
+      if (st.size > SEARCH_MAX_FILE_BYTES) continue
       const text = readFileSync(file, 'utf8')
       if (regex) {
         const match = pattern.exec(text)

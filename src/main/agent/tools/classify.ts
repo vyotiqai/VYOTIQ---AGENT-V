@@ -1,5 +1,3 @@
-import { getMcpReadOnlyHint, MCP_TOOL_PREFIX } from '../mcp'
-
 /** Workspace-local reads safe to run concurrently (no file mutation). */
 const PARALLEL_SAFE_BUILTIN = new Set([
   'read',
@@ -20,24 +18,21 @@ const APPROVAL_EXEMPT_BUILTIN = new Set(
   [...PARALLEL_SAFE_BUILTIN].filter((name) => name !== 'web_fetch')
 )
 
-function isMcpReadOnly(name: string): boolean {
-  if (!name.startsWith(MCP_TOOL_PREFIX)) return false
-  return getMcpReadOnlyHint(name) === true
-}
-
-/** Built-in / MCP tools safe to run in parallel (no workspace mutation). */
+/**
+ * Built-in tools safe to run in parallel (no workspace mutation).
+ * MCP tools are never parallel-safe — server `readOnlyHint` is untrusted.
+ */
 export function isParallelSafeTool(name: string): boolean {
-  if (PARALLEL_SAFE_BUILTIN.has(name)) return true
-  return isMcpReadOnly(name)
+  return PARALLEL_SAFE_BUILTIN.has(name)
 }
 
 /**
  * Tools that do not require approval when mode is `mutating`.
  * `web_fetch` is parallel-safe but not approval-exempt (outbound network).
+ * MCP tools always require approval in `mutating`/`all` — hint is untrusted.
  */
 export function isApprovalExemptTool(name: string): boolean {
-  if (APPROVAL_EXEMPT_BUILTIN.has(name)) return true
-  return isMcpReadOnly(name)
+  return APPROVAL_EXEMPT_BUILTIN.has(name)
 }
 
 /** @deprecated Prefer `isParallelSafeTool` — kept for call-site clarity in older tests. */

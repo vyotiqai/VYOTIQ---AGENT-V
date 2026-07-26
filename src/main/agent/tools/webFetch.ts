@@ -1,10 +1,14 @@
 import { lookup as dnsLookup } from 'dns/promises'
 import { isIP } from 'net'
 
-const MAX_BYTES = 2 * 1024 * 1024
-const DEFAULT_TIMEOUT_MS = 20_000
-const MAX_TIMEOUT_MS = 60_000
-const DEFAULT_MAX_CHARS = 40_000
+export const WEB_FETCH_MAX_BYTES = 2 * 1024 * 1024
+export const WEB_FETCH_DEFAULT_TIMEOUT_MS = 20_000
+export const WEB_FETCH_DEFAULT_MAX_CHARS = 40_000
+export const WEB_FETCH_MAX_TIMEOUT_MS = 60_000
+const MAX_BYTES = WEB_FETCH_MAX_BYTES
+const DEFAULT_TIMEOUT_MS = WEB_FETCH_DEFAULT_TIMEOUT_MS
+const MAX_TIMEOUT_MS = WEB_FETCH_MAX_TIMEOUT_MS
+const DEFAULT_MAX_CHARS = WEB_FETCH_DEFAULT_MAX_CHARS
 const MAX_REDIRECTS = 5
 
 type LookupFn = typeof dnsLookup

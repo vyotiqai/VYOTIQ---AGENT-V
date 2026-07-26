@@ -4,7 +4,9 @@ import { assertInsideWorkspace } from '../../../shared/workspacePath'
 import { gitignoreMatcherForDir } from './gitignore'
 import { IGNORED_DIRS } from './walk'
 
-const DEFAULT_CAP = 200
+/** Max entries returned in one listing. */
+export const LIST_DIR_CAP = 200
+const DEFAULT_CAP = LIST_DIR_CAP
 
 function normalizeRelDir(pathArg: string): string {
   const rel = pathArg.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')

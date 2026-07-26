@@ -109,7 +109,10 @@ export async function* streamGeminiInteractions(
     }
   }
 
-  if (req.tools.length) body.tools = toInteractionsTools(req.tools)
+  if (req.tools.length) {
+    body.tools = toInteractionsTools(req.tools)
+    body.tool_choice = req.toolChoice ?? 'auto'
+  }
   if (priorState?.interactionId) body.previous_interaction_id = priorState.interactionId
 
   const url = 'https://generativelanguage.googleapis.com/v1beta/interactions'

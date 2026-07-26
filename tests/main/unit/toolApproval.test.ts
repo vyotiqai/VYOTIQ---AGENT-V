@@ -166,4 +166,37 @@ describe('createApprovalGate', () => {
     cancelPendingApprovals('run-1')
     expect((await verdict).allowed).toBe(false)
   })
+
+  it('does not deny a later invoke when cancelling an earlier invoke', async () => {
+    const requests: ToolApprovalRequest[] = []
+    registerApprovalSender('run-1', (request) => {
+      requests.push(request)
+    })
+
+    const gateOld = createApprovalGate({
+      runId: 'run-1',
+      invokeId: 1,
+      mode: 'mutating',
+      workspaceAllowlist: [],
+      signal: new AbortController().signal
+    })
+    const gateNew = createApprovalGate({
+      runId: 'run-1',
+      invokeId: 2,
+      mode: 'mutating',
+      workspaceAllowlist: [],
+      signal: new AbortController().signal
+    })
+
+    const oldVerdict = gateOld.authorize(WRITE)
+    const newVerdict = gateNew.authorize({ id: 'c3', name: 'edit', arguments: '{"path":"b.ts","contents":"y"}' })
+    await Promise.resolve()
+    expect(requests).toHaveLength(2)
+
+    cancelPendingApprovals('run-1', 1)
+    expect((await oldVerdict).allowed).toBe(false)
+
+    resolveToolApproval({ requestId: requests[1]!.requestId, decision: 'once' })
+    expect((await newVerdict).allowed).toBe(true)
+  })
 })

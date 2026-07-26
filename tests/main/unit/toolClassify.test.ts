@@ -38,16 +38,13 @@ describe('tool classify', () => {
     expect(isToolGated('read', 'mutating', new Set(), [])).toBe(false)
   })
 
-  it('treats MCP tools as mutating unless readOnlyHint is declared', () => {
+  it('treats MCP tools as untrusted regardless of readOnlyHint', () => {
     expect(isParallelSafeTool('mcp__fs__read_file')).toBe(false)
     expect(isApprovalExemptTool('mcp__fs__read_file')).toBe(false)
     expect(isParallelSafeTool('mcp__gh__create_issue')).toBe(false)
-  })
-
-  it('honours MCP readOnlyHint annotations for both axes', () => {
     setMcpReadOnlyHintsForTests({ 'mcp__fs__read_file': true })
-    expect(isParallelSafeTool('mcp__fs__read_file')).toBe(true)
-    expect(isApprovalExemptTool('mcp__fs__read_file')).toBe(true)
-    expect(isParallelSafeTool('mcp__fs__write_file')).toBe(false)
+    expect(isParallelSafeTool('mcp__fs__read_file')).toBe(false)
+    expect(isApprovalExemptTool('mcp__fs__read_file')).toBe(false)
+    expect(isToolGated('mcp__fs__read_file', 'mutating', new Set(), [])).toBe(true)
   })
 })

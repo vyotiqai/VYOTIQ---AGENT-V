@@ -114,12 +114,14 @@ function ContextMeterPanel({
   usage,
   onCompact,
   compacting,
-  compactMessage
+  compactMessage,
+  compactFailed
 }: {
   usage: ContextUsageState
   onCompact?: () => void
   compacting?: boolean
   compactMessage?: string | null
+  compactFailed?: boolean
 }) {
   // The bar and the compaction marker must share a denominator, and the trigger
   // is defined as a fraction of the content window, not the raw context window.
@@ -190,14 +192,17 @@ function ContextMeterPanel({
             type="button"
             onClick={onCompact}
             disabled={compacting}
-            className="shrink-0 rounded-md border border-subtle px-1.5 py-0.5 text-[10px] font-medium text-fg vy-transition hover:bg-hover disabled:opacity-50"
+            className="shrink-0 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-medium text-fg vy-transition hover:bg-surface disabled:opacity-[var(--vy-disabled-opacity)]"
           >
             {compacting ? 'Compacting…' : 'Compact now'}
           </button>
         ) : null}
       </div>
       {compactMessage ? (
-        <p className="text-[10px] text-secondary" role="status">
+        <p
+          className={cn('text-[10px]', compactFailed ? 'text-danger' : 'text-secondary')}
+          role={compactFailed ? 'alert' : 'status'}
+        >
           {compactMessage}
         </p>
       ) : null}
@@ -267,6 +272,7 @@ export function ContextMeter({
   const [open, setOpen] = useState(false)
   const [compacting, setCompacting] = useState(false)
   const [compactMessage, setCompactMessage] = useState<string | null>(null)
+  const [compactFailed, setCompactFailed] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const panelId = useId()
@@ -284,9 +290,11 @@ export function ContextMeter({
     if (!onCompact || compacting) return
     setCompacting(true)
     setCompactMessage(null)
+    setCompactFailed(false)
     try {
       const result = await onCompact()
       setCompactMessage(result.message)
+      setCompactFailed(!result.ok)
     } finally {
       setCompacting(false)
     }
@@ -354,6 +362,7 @@ export function ContextMeter({
                 onCompact={onCompact ? () => void runCompaction() : undefined}
                 compacting={compacting}
                 compactMessage={compactMessage}
+                compactFailed={compactFailed}
               />
             </div>,
             document.body

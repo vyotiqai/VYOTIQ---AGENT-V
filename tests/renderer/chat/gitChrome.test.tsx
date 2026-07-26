@@ -109,7 +109,7 @@ describe('git chrome', () => {
     render(<Harness />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Write a commit message' }))
-    fireEvent.click(screen.getByRole('button', { name: /Commit & Push/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Commit & Push' }))
 
     await waitFor(() => expect(api.gitCommit).toHaveBeenCalledWith('/ws', 'Update 2 files', true))
   })
@@ -121,7 +121,7 @@ describe('git chrome', () => {
     render(<Harness />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Write a commit message' }))
-    expect(screen.queryByRole('button', { name: /Commit & Push/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Commit & Push' })).toBeNull()
   })
 
   it('surfaces a refusal from git instead of pretending it worked', async () => {
@@ -131,9 +131,15 @@ describe('git chrome', () => {
     render(<Harness />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Write a commit message' }))
+    const input = screen.getByRole('textbox', { name: 'Commit message' }) as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'Keep this draft' } })
     fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
 
-    expect(await screen.findByText('Author identity unknown')).toBeTruthy()
+    expect(await screen.findByRole('alert')).toBeTruthy()
+    expect(screen.getByText('Author identity unknown')).toBeTruthy()
+    expect((screen.getByRole('textbox', { name: 'Commit message' }) as HTMLInputElement).value).toBe(
+      'Keep this draft'
+    )
   })
 
   it('re-reads git when asked', async () => {

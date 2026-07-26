@@ -12,6 +12,7 @@ import {
 } from '../utils/toolCardData'
 import { DiffPreview } from './DiffPreview'
 import { FileBadge } from './FileBadge'
+import { TextShimmer } from './TextShimmer'
 import { useFullToolContent } from './useFullToolContent'
 
 /** Height a collapsed body settles at before it starts crowding the transcript. */
@@ -109,16 +110,20 @@ export const ToolCard = memo(function ToolCard({
       >
         {plain || !editData ? (
           <Icon
-            name={isTerminal ? 'terminal' : isSubagent ? 'search' : 'edit'}
+            name={isTerminal ? 'terminal' : isSubagent ? 'search' : isChecklist ? 'check' : 'edit'}
             size={12}
             className={cn('shrink-0', failed ? 'text-danger' : 'text-tertiary')}
           />
         ) : (
           <FileBadge path={editData.path} />
         )}
-        <span className={cn('shrink-0 font-medium', failed ? 'text-danger' : 'text-fg')}>
-          {verb}
-        </span>
+        {running ? (
+          <TextShimmer className="shrink-0 font-medium text-fg">{verb}</TextShimmer>
+        ) : (
+          <span className={cn('shrink-0 font-medium', failed ? 'text-danger' : 'text-fg')}>
+            {verb}
+          </span>
+        )}
         <span
           className={cn('min-w-0 truncate text-tertiary', isTerminal && 'font-mono')}
           title={target}
@@ -194,7 +199,7 @@ export const ToolCard = memo(function ToolCard({
       ) : null}
 
       {hasBody && !plain ? (
-        <CardBody clamped={false}>
+        <CardBody clamped={!isOpen}>
           <div aria-busy={loading || undefined}>
             {tool.contentTruncated && loadFailed ? (
               <p className="m-0 px-3 py-2 text-[10px] text-tertiary">Could not load full output.</p>
@@ -210,7 +215,7 @@ export const ToolCard = memo(function ToolCard({
 
       {!hasBody && running ? (
         <div className="border-t border-border bg-surface px-3 py-2 text-[11px] text-tertiary">
-          Working…
+          <TextShimmer>Working…</TextShimmer>
         </div>
       ) : null}
     </div>

@@ -1,8 +1,10 @@
 import { assertInsideWorkspace } from '../../../shared/workspacePath'
 import { collectWorkspaceFiles, globToRegExp, throwIfAborted } from './walk'
 
-const SCAN_CAP = 20_000
-const DEFAULT_MAX_RESULTS = 100
+export const GLOB_SCAN_CAP = 20_000
+export const GLOB_DEFAULT_MAX_RESULTS = 100
+const SCAN_CAP = GLOB_SCAN_CAP
+const DEFAULT_MAX_RESULTS = GLOB_DEFAULT_MAX_RESULTS
 
 /** List workspace files matching a glob, honouring .gitignore. */
 export async function toolGlob(

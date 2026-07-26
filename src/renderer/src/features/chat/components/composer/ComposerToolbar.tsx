@@ -94,9 +94,13 @@ export function ComposerToolbar({
           type="button"
           className={iconCtl}
           aria-label={
-            imagesCount >= MAX_IMAGES ? `Attach image (limit ${MAX_IMAGES})` : 'Attach image'
+            imagesCount >= MAX_IMAGES ? `Attach files (image limit ${MAX_IMAGES})` : 'Attach files'
           }
-          title={imagesCount >= MAX_IMAGES ? `Up to ${MAX_IMAGES} images` : 'Attach image'}
+          title={
+            imagesCount >= MAX_IMAGES
+              ? `Up to ${MAX_IMAGES} images (documents also supported)`
+              : 'Attach files'
+          }
           disabled={locked || imagesCount >= MAX_IMAGES}
           onClick={onAttachClick}
         >

@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MessageList } from '@renderer/features/chat/components/MessageList'
 import type { UiItem } from '@shared/transcript'
 
@@ -46,7 +46,7 @@ describe('tool approval card', () => {
     render(<MessageList items={gatedItems()} />)
 
     expect(screen.getByText('edit')).toBeTruthy()
-    expect(screen.getByText('modifies workspace')).toBeTruthy()
+    expect(screen.getByText('mutating / network')).toBeTruthy()
     expect(screen.getByText('{"path":"a.ts"}')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Allow once' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Always allow' })).toBeTruthy()
@@ -54,15 +54,20 @@ describe('tool approval card', () => {
     expect(screen.queryByText('Working…')).toBeNull()
   })
 
-  it('reports the reader decision once and locks the card', () => {
+  it('reports the reader decision once and locks the card', async () => {
     const onApprovalDecision = vi.fn()
     render(<MessageList items={gatedItems()} onApprovalDecision={onApprovalDecision} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Allow for session' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Deny' }))
-
-    expect(onApprovalDecision).toHaveBeenCalledTimes(1)
+    await waitFor(() => {
+      expect(onApprovalDecision).toHaveBeenCalledTimes(1)
+    })
     expect(onApprovalDecision).toHaveBeenCalledWith('req-1', 'session')
+
+    const deny = screen.getByRole('button', { name: 'Deny' })
+    expect(deny.hasAttribute('disabled')).toBe(true)
+    fireEvent.click(deny)
+    expect(onApprovalDecision).toHaveBeenCalledTimes(1)
   })
 
   it('leaves the transcript alone when nothing is gated', () => {

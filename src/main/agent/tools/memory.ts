@@ -31,7 +31,8 @@ export function toolMemoryRead(workspace: string, pathArg: string): string {
   return readMemoryFile(workspace, cleaned)
 }
 
-const MEMORY_WRITE_CAP = 64 * 1024
+/** Max characters accepted by memory_write. */
+export const MEMORY_WRITE_CAP = 64 * 1024
 
 export function toolMemoryWrite(
   workspace: string,

@@ -100,6 +100,13 @@ describe('unsupportedUnixOnWindowsMessage', () => {
     expect(unsupportedUnixOnWindowsMessage('type readme.md')).toBeNull()
     expect(unsupportedUnixOnWindowsMessage('echo hi')).toBeNull()
   })
+
+  it('blocks Unix tools in later pipeline stages before spawn', () => {
+    const msg = unsupportedUnixOnWindowsMessage('dir /s /b | grep foo')
+    expect(msg).toBeTruthy()
+    expect(msg).toMatch(/grep/)
+    expect(msg).toMatch(/cmd\.exe/)
+  })
 })
 
 describe('isFindstrNoMatch', () => {

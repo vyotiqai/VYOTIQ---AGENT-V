@@ -141,6 +141,32 @@ describe('multi_edit schema', () => {
   })
 })
 
+describe('tool arg bounds', () => {
+  it('rejects search maxResults of 0', () => {
+    const result = validateToolArgs('search', JSON.stringify({ query: 'x', maxResults: 0 }))
+    expect(result.ok).toBe(false)
+  })
+
+  it('rejects empty todo ids and wipe-all empty replace lists', () => {
+    expect(
+      validateToolArgs(
+        'todo_write',
+        JSON.stringify({ todos: [{ id: '', content: 'x', status: 'pending' }] })
+      ).ok
+    ).toBe(false)
+    expect(validateToolArgs('todo_write', JSON.stringify({ todos: [] })).ok).toBe(false)
+    expect(
+      validateToolArgs('todo_write', JSON.stringify({ todos: [], merge: true })).ok
+    ).toBe(true)
+  })
+
+  it('rejects negative terminal timeoutMs', () => {
+    expect(
+      validateToolArgs('terminal', JSON.stringify({ command: 'echo hi', timeoutMs: -1 })).ok
+    ).toBe(false)
+  })
+})
+
 describe('toolDelete', () => {
   it('deletes a file', () => {
     expect(toolDelete(root, 'README.md')).toContain('Deleted README.md')

@@ -282,7 +282,9 @@ export function buildAnthropicBody(req: ProviderChatRequest): Record<string, unk
     stream: true
   }
   if (req.toolChoice && tools.length) {
-    body.tool_choice = { type: req.toolChoice }
+    body.tool_choice = {
+      type: req.toolChoice === 'required' ? 'any' : req.toolChoice
+    }
   }
   if (req.responseFormat) {
     body.output_config = {
@@ -394,7 +396,9 @@ export const anthropicProvider: LlmProvider = {
     }
 
     if (req.toolChoice && tools.length) {
-      body.tool_choice = { type: req.toolChoice }
+      body.tool_choice = {
+        type: req.toolChoice === 'required' ? 'any' : req.toolChoice
+      }
     }
 
     if (req.responseFormat) {

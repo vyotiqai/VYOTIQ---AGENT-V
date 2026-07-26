@@ -68,6 +68,9 @@ export function useChatStream(workspacePath: string | null) {
     reset: controller.reset.bind(controller),
     loadTranscript: controller.loadTranscript.bind(controller),
     hydrateTranscript: controller.hydrateTranscript.bind(controller),
+    syncFromDisk: controller.syncFromDisk.bind(controller),
+    loadToolContent: controller.loadToolContent.bind(controller),
+    handleApprovalRequest: controller.handleApprovalRequest.bind(controller),
     respondToApproval: controller.respondToApproval.bind(controller)
   }
 }

@@ -15,7 +15,7 @@ export type ApprovalSender = (request: ToolApprovalRequest) => void
 const senders = new Map<string, ApprovalSender>()
 const pending = new Map<
   string,
-  { resolve: (decision: ToolApprovalDecision) => void; runId: string }
+  { resolve: (decision: ToolApprovalDecision) => void; runId: string; invokeId?: number }
 >()
 
 export function registerApprovalSender(runId: string, sender: ApprovalSender): () => void {
@@ -34,10 +34,15 @@ export function resolveToolApproval(response: ToolApprovalResponse): boolean {
   return true
 }
 
-/** Cancelling a run must not leave its approval prompts waiting forever. */
-export function cancelPendingApprovals(runId: string): void {
+/**
+ * Cancelling a run must not leave its approval prompts waiting forever.
+ * When `invokeId` is set, only that turn's prompts are denied — so a prior
+ * turn's IPC `finally` cannot auto-deny the active follow-up turn.
+ */
+export function cancelPendingApprovals(runId: string, invokeId?: number): void {
   for (const [requestId, entry] of pending) {
     if (entry.runId !== runId) continue
+    if (invokeId !== undefined && entry.invokeId !== invokeId) continue
     pending.delete(requestId)
     entry.resolve('deny')
   }
@@ -64,6 +69,8 @@ export type ToolApprovalGate = {
 
 export type ApprovalGateOptions = {
   runId: string
+  /** ChatStart invoke that owns this gate; scopes cancelPendingApprovals. */
+  invokeId?: number
   mode: ToolApprovalMode
   workspaceAllowlist: readonly string[]
   signal: AbortSignal
@@ -75,7 +82,8 @@ export type ApprovalGateOptions = {
 
 function askThroughRenderer(
   request: ToolApprovalRequest,
-  signal: AbortSignal
+  signal: AbortSignal,
+  invokeId?: number
 ): Promise<ToolApprovalDecision> {
   const sender = senders.get(request.runId)
   if (!sender) {
@@ -101,7 +109,7 @@ function askThroughRenderer(
       resolve('deny')
       return
     }
-    pending.set(request.requestId, { resolve: settle, runId: request.runId })
+    pending.set(request.requestId, { resolve: settle, runId: request.runId, invokeId })
     signal.addEventListener('abort', onAbort, { once: true })
     sender(request)
   })
@@ -116,7 +124,9 @@ function askThroughRenderer(
 export function createApprovalGate(options: ApprovalGateOptions): ToolApprovalGate {
   const sessionAllowlist = new Set<string>()
   const workspaceAllowlist = [...options.workspaceAllowlist]
-  const ask = options.ask ?? ((request) => askThroughRenderer(request, options.signal))
+  const ask =
+    options.ask ??
+    ((request) => askThroughRenderer(request, options.signal, options.invokeId))
 
   return {
     async authorize(call): Promise<AuthorizeResult> {
@@ -131,6 +141,7 @@ export function createApprovalGate(options: ApprovalGateOptions): ToolApprovalGa
         name: call.name,
         summary: summarizeToolArgs(call.name, call.arguments),
         argsPreview: call.arguments.slice(0, 4000),
+        // True when the tool is not approval-exempt (mutating tools, web_fetch, MCP).
         mutating: !isApprovalExemptTool(call.name)
       }
 
@@ -158,7 +169,7 @@ export function createApprovalGate(options: ApprovalGateOptions): ToolApprovalGa
   }
 }
 
-/** Test seam: drop any state left over from a previous run. */
+/** Test helper — wipe senders and pending prompts between cases. */
 export function resetToolApprovalForTests(): void {
   senders.clear()
   pending.clear()

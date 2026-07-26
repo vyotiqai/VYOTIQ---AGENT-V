@@ -435,9 +435,9 @@ export type ChatStreamController = ChatStreamState & {
   clearError: () => void
   /** Lazy-load full tool output from disk when IPC preview was truncated. */
   loadToolContent: (toolCallId: string) => Promise<string | null>
-  /** Persist thinking block expand/collapse across virtual list remounts. */
+  /** Persist thinking block expand/collapse across transcript remounts. */
   setThinkingExpanded: (messageId: string, expanded: boolean) => void
-  /** Persist tool detail expand/collapse across virtual list remounts. */
+  /** Persist tool detail expand/collapse across transcript remounts. */
   setToolExpanded: (toolCallId: string, expanded: boolean) => void
   /** Persist an activity group's disclosure state, keyed by its first tool row. */
   setGroupExpanded: (anchorToolCallId: string, expanded: boolean) => void
@@ -472,6 +472,8 @@ export function createChatStreamController(
   /** Next reasoning delta opens a new step, so it needs a break from the previous one. */
   let reasoningSegmentBreak = false
   let runId: string | null = options.runId ?? null
+  /** Run id used for lazy tool-result loads after the active session id is cleared. */
+  let contentRunId: string | null = options.runId ?? null
   let awaitingRun = false
   let pendingCancel = false
   let ignoreStreamEvents = false
@@ -705,6 +707,7 @@ export function createChatStreamController(
     assistantId = null
     reasoningId = null
     runId = null
+    contentRunId = null
     ignoreStreamEvents = false
     if (activeInvokeId != null) supersededInvokeIds.add(activeInvokeId)
     activeInvokeId = null
@@ -729,6 +732,7 @@ export function createChatStreamController(
     if (closedRuns.has(id)) return
     const changed = runId !== id
     runId = id
+    contentRunId = id
     patch({ runId: id, pendingRun: false })
     if (changed) onRunIdAssigned?.(id)
   }
@@ -982,19 +986,30 @@ export function createChatStreamController(
         error: event.message
       })
     } else if (event.type === 'stream_reset') {
-      // Drop the aborted attempt's output so the retry does not append to it.
+      // Drop the aborted attempt's output so the retry does not append to it —
+      // text, thinking, and any tool rows that only exist from streamed deltas.
       pendingTextDelta = ''
       pendingThinkingDelta = ''
+      pendingToolDeltas.clear()
+      flushStreamingPatches()
       const discardIds = new Set([assistantId, reasoningId].filter((id): id is string => !!id))
-      if (discardIds.size) {
-        patch({
-          items: state.items.map((item) =>
-            item.kind === 'message' && discardIds.has(item.id)
-              ? { ...item, content: '', thinking: item.thinking ? '' : item.thinking }
-              : item
-          )
-        })
-      }
+      const nextItems = state.items
+        .filter(
+          (item) =>
+            !(item.kind === 'tool' && item.tool.status === 'running' && !item.approval)
+        )
+        .map((item) =>
+          item.kind === 'message' && discardIds.has(item.id)
+            ? {
+                ...item,
+                content: '',
+                thinking: item.thinking ? '' : item.thinking,
+                streaming: false,
+                thinkingStreaming: false
+              }
+            : item
+        )
+      patch({ items: nextItems })
     } else if (event.type === 'incomplete') {
       patch({
         incomplete: { reason: event.reason, message: event.message }
@@ -1229,6 +1244,7 @@ export function createChatStreamController(
     assistantId = null
     reasoningId = null
     runId = null
+    contentRunId = id
     awaitingRun = false
     pendingCancel = false
     patch({
@@ -1327,6 +1343,7 @@ export function createChatStreamController(
       pendingCancel = false
     }
     runId = null
+    contentRunId = null
     patch({
       pendingRun: false,
       running: false,
@@ -1346,15 +1363,19 @@ export function createChatStreamController(
   const reattachActiveRun = async (id: string): Promise<void> => {
     if (closedRuns.has(id) || disposed) return
     // Poll/mount can race a terminal status — verify the run is still live.
+    let liveInvokeId: number | null = null
     if (window.vyotiq?.listActiveRuns) {
       const active = await window.vyotiq.listActiveRuns()
       if (!active.ok || !active.data.some((entry) => entry.runId === id)) {
         await syncFromDisk(id)
         return
       }
+      liveInvokeId = active.data.find((entry) => entry.runId === id)?.invokeId ?? null
     }
     if (closedRuns.has(id) || disposed) return
     runId = id
+    contentRunId = id
+    if (liveInvokeId != null) activeInvokeId = liveInvokeId
     patch({
       runId: id,
       running: true,
@@ -1454,14 +1475,24 @@ export function createChatStreamController(
     requestId: string,
     decision: ToolApprovalDecision
   ): Promise<void> => {
-    patch({ items: clearApprovals(state.items, requestId) })
     const res = await window.vyotiq?.respondToolApproval?.(requestId, decision)
-    if (res && !res.ok) {
+    if (!res) {
+      const message = 'Tool approval is unavailable.'
+      logger.warn('Tool approval response unavailable', { scope: 'chat' })
+      patch({ error: message })
+      throw new Error(message)
+    }
+    if (!res.ok) {
       logger.warn('Tool approval response rejected', {
         scope: 'chat',
         err: toLogErr(res.error)
       })
+      patch({ error: res.error })
+      throw new Error(res.error)
     }
+    // Only clear the card after main accepted the decision — otherwise the run
+    // stays parked with no way to answer again.
+    patch({ items: clearApprovals(state.items, requestId), error: null })
   }
 
   const clearError = (): void => {
@@ -1503,7 +1534,7 @@ export function createChatStreamController(
     const cached = toolContentCache.get(toolCallId)
     if (cached) return cached
 
-    const id = runId
+    const id = runId ?? contentRunId
     if (!id || !window.vyotiq?.loadToolResult) return null
 
     const res = await window.vyotiq.loadToolResult(workspacePath, id, toolCallId)

@@ -143,6 +143,15 @@ function toGeminiContents(messages: ChatMessage[]): Array<Record<string, unknown
   return merged
 }
 
+/** Map loop toolChoice to Gemini functionCallingConfig.mode. */
+export function geminiFunctionCallingMode(
+  choice: ProviderChatRequest['toolChoice']
+): 'AUTO' | 'ANY' | 'NONE' {
+  if (choice === 'none') return 'NONE'
+  if (choice === 'required') return 'ANY'
+  return 'AUTO'
+}
+
 /** Exported for tests — build Gemini generateContent request body. */
 export function buildGeminiBody(req: ProviderChatRequest): Record<string, unknown> {
   const systemParts = [
@@ -177,6 +186,13 @@ export function buildGeminiBody(req: ProviderChatRequest): Record<string, unknow
       ? { parts: systemParts.map((t) => ({ text: t })) }
       : undefined,
     tools,
+    ...(tools
+      ? {
+          toolConfig: {
+            functionCallingConfig: { mode: geminiFunctionCallingMode(req.toolChoice) }
+          }
+        }
+      : {}),
     ...(Object.keys(generationConfig).length ? { generationConfig } : {})
   }
 }
@@ -285,6 +301,13 @@ export const geminiProvider: LlmProvider = {
             ? { parts: systemParts.map((t) => ({ text: t })) }
             : undefined,
           tools,
+          ...(tools
+            ? {
+                toolConfig: {
+                  functionCallingConfig: { mode: geminiFunctionCallingMode(req.toolChoice) }
+                }
+              }
+            : {}),
           ...(Object.keys(generationConfig).length ? { generationConfig } : {})
         })
       })

@@ -97,7 +97,7 @@ Tests mirror source layout under `tests/`:
 - `tests/main/unit/`, `integration/`, `e2e/` — main process
 - `tests/renderer/{composer,chat,settings,app}/` — renderer features
 
-Run: `npm run typecheck && npm test`
+Run: `pnpm typecheck && pnpm test`
 
 Coverage for agent context/tools: `pnpm test:coverage`
 
@@ -127,7 +127,8 @@ flowchart TB
 
 | Layer | Source |
 |-------|--------|
-| Harness | `resources/harness/default.md` |
+| Harness | `resources/harness/default.md` (role, contract, tool policy, loop, memory, safety) |
+| Tool definitions | `AGENT_TOOLS` from `schemas/tools.ts` (per-tool usage guidance) + MCP |
 | Contract | `sessions/{runId}/contract.md` (auto-injected) |
 | Workspace snapshot | Manifest detection + capped `git status` |
 | Memory index | `.vyotiq/memory/index.md` + `state.md` |
@@ -135,7 +136,9 @@ flowchart TB
 
 Compaction triggers at `compactionTriggerRatio` of the model content window (15% buffer reserved). Token usage is estimated heuristically (`chars / 4`) and blended with provider-reported `inputTokens` when within 20% of the estimate. The composer shows a live context-window meter via `context_usage` events. Structured summaries may auto-promote into `.vyotiq/memory/` when `memoryAutoPromote` is enabled.
 
-Read-only / parallel-safe tools (`read`, `search`, `glob`, `grep`, `list_dir`, `web_fetch`, `memory_list`, `memory_read`, and MCP tools with `readOnlyHint`) may execute in parallel (up to 4 concurrent) when tool approval is off. Mutating tools run serially. When a tool-approval gate is active, all tools run serially so prompts do not stack. `web_fetch` is parallel-safe but still gated in `mutating` approval mode (network egress).
+Read-only / parallel-safe **built-in** tools (`read`, `search`, `glob`, `grep`, `list_dir`, `web_fetch`, `memory_list`, `memory_read`) may execute in parallel (up to 4 concurrent) when tool approval is off. Mutating tools run serially. When a tool-approval gate is active, all tools run serially so prompts do not stack. `web_fetch` is parallel-safe but still gated in `mutating` approval mode (network egress). **MCP tools are never parallel-safe and are never approval-exempt via `readOnlyHint`** — the hint is not trusted. In `mutating`/`all` modes MCP tools still require approval unless the user allowlists that tool for the session or workspace.
+
+Per-tool usage guidance lives in `TOOL_REGISTRY` descriptions (`src/main/agent/schemas/tools.ts` / `toolGuidance.ts`), not in the harness catalog. The harness keeps cross-cutting tool policy (MCP naming/approval, attachments, don’t narrate).
 
 ### MCP tools (`src/main/agent/mcp/`)
 
@@ -159,7 +162,7 @@ Follow-up turns use incremental IPC (`newMessages` + `runId`); main loads prior 
 
 ### Local logs
 
-- **Path:** `%APPDATA%/Vyotiq/logs/vyotiq.log` (Windows) — `userData/logs/vyotiq.log` via `electron-log`
+- **Path:** `%APPDATA%/vyotiq/logs/vyotiq.log` (Windows) — `userData/logs/vyotiq.log` via `electron-log`
 - **Rotation:** 5 MB per file, up to 5 archived copies (`vyotiq.log.old.<timestamp>`)
 - **Levels:** `debug` in dev, `info`+ in packaged builds; renderer logs forward to main over IPC
 - **API:** `logger.debug|info|warn|error|fatal|exception` in [`src/shared/logger.ts`](../src/shared/logger.ts) with `scope`, `correlationId`, `code`, `err` fields (scrubbed before disk)
@@ -178,7 +181,7 @@ Initialized only when **DSN is set at build time** and `settings.telemetryEnable
 
 ### Debugging checklist
 
-1. Reproduce the issue, then open **Settings → Logs** (or `%APPDATA%/Vyotiq/logs`)
+1. Reproduce the issue, then open **Settings → General → Open logs folder** (or `%APPDATA%/vyotiq/logs`)
 2. Search for `[error]` / `[fatal]` and the relevant `scope` (`ipc`, `agent`, `tools`, `chat`, `renderer`)
 3. Match `correlationId` to `runId` when debugging agent runs
 4. Enable **telemetry** in Settings only if you want events sent to Sentry (requires build-time DSN)

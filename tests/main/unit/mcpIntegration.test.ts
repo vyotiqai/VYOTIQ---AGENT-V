@@ -11,7 +11,8 @@ import {
   getMcpServerStatus,
   resetMcpSessionsForTests,
   shutdownMcpServers,
-  syncMcpServers
+  syncMcpServers,
+  buildMcpChildEnv
 } from '@main/agent/mcp'
 import { executeTool } from '@main/agent/tools'
 
@@ -34,6 +35,22 @@ describe('MCP stdio integration', () => {
   afterEach(async () => {
     await shutdownMcpServers()
     resetMcpSessionsForTests()
+  })
+
+  it('scrubs parent API keys from MCP child env unless opted in via server.env', () => {
+    const env = buildMcpChildEnv(
+      { CUSTOM_OK: '1' },
+      {
+        PATH: '/usr/bin',
+        OPENAI_API_KEY: 'sk-secret',
+        ANTHROPIC_API_KEY: 'sk-anth',
+        CUSTOM_OK: 'from-parent'
+      }
+    )
+    expect(env.OPENAI_API_KEY).toBeUndefined()
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined()
+    expect(env.CUSTOM_OK).toBe('1')
+    expect(env.PATH).toBe('/usr/bin')
   })
 
   it('connects, lists tools, invokes echo, and disconnects', async () => {
@@ -69,6 +86,19 @@ describe('MCP stdio integration', () => {
     )
     expect(result.ok).toBe(true)
     expect(result.content).toContain('via-executeTool')
+  })
+
+  it('rejects MCP tool args that fail the server inputSchema locally', async () => {
+    await connectMcpServer(echoServer)
+    const name = mcpToolName('echo', 'echo')
+    const result = await executeTool(
+      name,
+      JSON.stringify({ message: 123 }),
+      '/tmp',
+      new AbortController().signal
+    )
+    expect(result.ok).toBe(false)
+    expect(result.content).toMatch(/string|message/i)
   })
 
   it('aborts in-flight MCP tool calls when the run signal is cancelled', async () => {

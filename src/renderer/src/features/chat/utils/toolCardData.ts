@@ -24,7 +24,7 @@ export type DiffLine = {
   lineNumber: number | null
 }
 
-function countDiffLines(diff: string): { added: number; removed: number } {
+export function countDiffLines(diff: string): { added: number; removed: number } {
   let added = 0
   let removed = 0
   for (const line of diff.split('\n')) {
@@ -66,7 +66,7 @@ export function parseTerminalCardData(tool: UiToolRow): TerminalCardData {
   return { command, exitCode, output, stderr }
 }
 
-function countLines(text: string): number {
+export function countLines(text: string): number {
   if (!text) return 0
   return splitLines(text).length
 }

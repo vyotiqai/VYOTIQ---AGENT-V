@@ -54,7 +54,7 @@ export function ComposerAttachments({
         </p>
       ) : null}
       {notice ? (
-        <p className="m-0 text-xs text-secondary" role="status">
+        <p className="m-0 text-xs text-danger" role="alert">
           {notice}
         </p>
       ) : null}

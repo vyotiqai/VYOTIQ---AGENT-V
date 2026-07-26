@@ -91,7 +91,8 @@ vi.mock('@main/agent/providers', () => ({
 
 import { runAgent } from '@main/agent/loop'
 import { isActive, registerRunAbort, resetActiveRunsForTests } from '@main/agent/runRegistry'
-import { createRun, loadCompaction, loadMessages, saveCompaction } from '@main/agent/state'
+import { appendMessage, createRun, loadCompaction, loadMessages, saveCompaction } from '@main/agent/state'
+import { resolveRunDir } from '@main/storage/paths'
 
 describe('runAgent session continuation', () => {
   let workspace: string
@@ -153,11 +154,8 @@ describe('runAgent session continuation', () => {
     const events: Array<{ type: string; status?: string; code?: string; message?: string }> = []
     for await (const ev of runAgent({
       runId,
-      messages: [
-        { role: 'user', content: 'hi' },
-        { role: 'assistant', content: 'hello' },
-        { role: 'user', content: 'list all the files' }
-      ],
+      incremental: true,
+      newMessages: [{ role: 'user', content: 'list all the files' }],
       workspacePath: workspace,
       resume: true
     })) {
@@ -201,4 +199,157 @@ describe('runAgent session continuation', () => {
     const input = assembleContextMock.mock.calls[0]?.[0] as { priorCompaction?: unknown }
     expect(input.priorCompaction).toEqual(record)
   })
+
+  it('ignores stale client messages and merges only newMessages from disk', async () => {
+    const runId = 'disk-first'
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'first' }
+    })
+
+    for await (const _ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'real first' }],
+      workspacePath: workspace
+    })) {
+      // drain
+    }
+
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'second' }
+    })
+    registerRunAbort(runId, workspace)
+
+    for await (const _ev of runAgent({
+      runId,
+      // Stale/wrong full history must not rewrite disk.
+      messages: [{ role: 'user', content: 'stale rewrite' }],
+      incremental: true,
+      newMessages: [{ role: 'user', content: 'follow up' }],
+      workspacePath: workspace,
+      resume: true
+    })) {
+      // drain
+    }
+
+    const messages = loadMessages(workspace, runId)
+    expect(messages.map((m) => m.content)).toEqual([
+      'real first',
+      'first',
+      'follow up',
+      'second'
+    ])
+    expect(messages.some((m) => m.content === 'stale rewrite')).toBe(false)
+  })
+
+  it('dedupes newMessages already persisted on disk', async () => {
+    const runId = 'dedupe-resume'
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'hello' }
+    })
+
+    for await (const _ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'hi' }],
+      workspacePath: workspace
+    })) {
+      // drain
+    }
+
+    // Simulate chatStart having already appended the follow-up user turn.
+    const runDir = resolveRunDir(workspace, runId)
+    appendMessage(runDir, { role: 'user', content: 'list files' })
+
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'listed' }
+    })
+    registerRunAbort(runId, workspace)
+
+    for await (const _ev of runAgent({
+      runId,
+      incremental: true,
+      newMessages: [{ role: 'user', content: 'list files' }],
+      workspacePath: workspace,
+      resume: true
+    })) {
+      // drain
+    }
+
+    const messages = loadMessages(workspace, runId)
+    const userTurns = messages.filter((m) => m.role === 'user' && m.content === 'list files')
+    expect(userTurns).toHaveLength(1)
+    expect(messages.at(-1)).toMatchObject({ role: 'assistant', content: 'listed' })
+  })
+
+  it('clamps a corrupt foldedMessages watermark so the latest turn stays visible', async () => {
+    const runId = 'watermark-clamp'
+    const runDir = createRun(workspace, runId, 'goal')
+    appendMessage(runDir, { role: 'user', content: 'old' })
+    appendMessage(runDir, { role: 'assistant', content: 'prior' })
+    saveCompaction(runDir, {
+      summary: 'prior summary',
+      createdAt: new Date().toISOString(),
+      tokenEstimate: 50,
+      foldedMessages: 99
+    })
+
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'continued' }
+    })
+    registerRunAbort(runId, workspace)
+
+    for await (const _ev of runAgent({
+      runId,
+      incremental: true,
+      newMessages: [{ role: 'user', content: 'keep me' }],
+      workspacePath: workspace,
+      resume: true
+    })) {
+      // drain
+    }
+
+    expect(assembleContextMock).toHaveBeenCalled()
+    const input = assembleContextMock.mock.calls[0]?.[0] as {
+      messages: Array<{ role: string; content: string }>
+    }
+    expect(input.messages.some((m) => m.content === 'keep me')).toBe(true)
+    expect(input.messages).not.toHaveLength(0)
+  })
+
+  it('persists foldedMessages on compaction emit when context shrinks', async () => {
+    const runId = 'fold-persist'
+    assembleContextMock.mockImplementationOnce(async (input: { messages: unknown[] }) => ({
+      messages: input.messages.slice(-1),
+      system: 'system',
+      estimatedTokens: 80,
+      layers: { system: 10, history: 30, tools: 20, buffer: 20 },
+      contextShrunk: true,
+      anthropicNative: undefined,
+      compaction: {
+        summary: '## Session Intent\nFolded prior turns',
+        createdAt: new Date().toISOString(),
+        tokenEstimate: 40
+      }
+    }))
+
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'after fold' }
+    })
+
+    for await (const _ev of runAgent({
+      runId,
+      messages: [
+        { role: 'user', content: 'one' },
+        { role: 'assistant', content: 'two' },
+        { role: 'user', content: 'three' }
+      ],
+      workspacePath: workspace
+    })) {
+      // drain
+    }
+
+    const record = loadCompaction(resolveRunDir(workspace, runId))
+    expect(record?.foldedMessages).toBe(2)
+    expect(record?.summary).toContain('Folded prior turns')
+  })
 })
+

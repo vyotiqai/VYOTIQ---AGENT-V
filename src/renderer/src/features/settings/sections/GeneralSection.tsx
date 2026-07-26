@@ -1,0 +1,179 @@
+import type { Settings, ThemeId } from '@shared/ipc'
+import { PROVIDER_DEFAULTS } from '@shared/providers'
+import { Button, Menu } from '@renderer/lib/ui'
+import type { SettingsFormState } from '../hooks/useSettingsForm'
+import type { SettingsViewProps } from '../types'
+import { THEME_OPTIONS } from '../constants'
+import { SettingsRow } from '../components/SettingsRow'
+import { WorkspaceOverrideCard } from '../components/WorkspaceOverrideCard'
+
+export function GeneralSection({
+  settings,
+  form,
+  onSetTheme,
+  onPickWorkspace,
+  activeWorkspacePath,
+  openWorkspaces,
+  settingsOverridesByPath,
+  onSetSettingsOverride
+}: {
+  settings: Settings
+  form: SettingsFormState
+  onSetTheme?: (theme: ThemeId) => void
+  onPickWorkspace?: SettingsViewProps['onPickWorkspace']
+  activeWorkspacePath: string | null
+  openWorkspaces: string[]
+  settingsOverridesByPath: SettingsViewProps['settingsOverridesByPath']
+  onSetSettingsOverride?: SettingsViewProps['onSetSettingsOverride']
+}) {
+  const providerMeta = PROVIDER_DEFAULTS.find((p) => p.id === settings.provider)
+
+  return (
+    <>
+      <SettingsRow
+        title="Active model"
+        description={
+          form.workspaceOverrideActive
+            ? `${form.displayProviderMeta?.label ?? form.displayProvider} · ${form.displayModel} for the active workspace (override). Global default: ${providerMeta?.label ?? settings.provider} · ${settings.model}.`
+            : `${form.displayProviderMeta?.label ?? form.displayProvider} · ${form.displayModel}. Change provider in Providers; pick the model in the composer.`
+        }
+      >
+        <span className="max-w-[200px] truncate rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs text-secondary">
+          {form.displayModel}
+        </span>
+      </SettingsRow>
+
+      <SettingsRow
+        stacked
+        title="Workspaces"
+        description="Open workspace tabs. Enable Override for per-workspace provider and model only."
+      >
+        {openWorkspaces.length === 0 ? (
+          <p className="m-0 text-xs text-secondary">No workspaces open.</p>
+        ) : (
+          <div className="flex w-full flex-col gap-2">
+            {openWorkspaces.map((path) => (
+              <WorkspaceOverrideCard
+                key={path}
+                path={path}
+                isActive={path === activeWorkspacePath}
+                globalSettings={settings}
+                override={settingsOverridesByPath?.[path]}
+                disabled={form.formLocked || !onSetSettingsOverride}
+                onSetOverride={onSetSettingsOverride ?? (async () => ({ ok: true as const }))}
+                onOverrideError={(message) => form.setErrorMessage(message)}
+              />
+            ))}
+          </div>
+        )}
+        {onPickWorkspace ? (
+          <Button
+            variant="subtle"
+            pending={form.pickingWorkspace}
+            disabled={form.formLocked}
+            onClick={() => {
+              form.clearErrors()
+              form.setModelsInfo(null)
+              form.setPickingWorkspace(true)
+              void Promise.resolve(onPickWorkspace())
+                .catch((err: unknown) => {
+                  form.setErrorMessage(err instanceof Error ? err.message : String(err))
+                })
+                .finally(() => form.setPickingWorkspace(false))
+            }}
+          >
+            {form.pickingWorkspace ? 'Opening…' : 'Add workspace'}
+          </Button>
+        ) : null}
+      </SettingsRow>
+
+      {onSetTheme ? (
+        <SettingsRow title="Appearance" description="Window chrome theme.">
+          <Menu
+            aria-label="Theme"
+            value={settings.theme}
+            options={THEME_OPTIONS}
+            searchable={false}
+            placement="down"
+            disabled={form.formLocked}
+            onChange={(v) => {
+              form.clearErrors()
+              onSetTheme(v as ThemeId)
+            }}
+          />
+        </SettingsRow>
+      ) : null}
+
+      <SettingsRow
+        title="Show thinking in chat"
+        description="Collapsed thinking blocks above assistant replies when the model returns reasoning."
+      >
+        <label className="inline-flex items-center gap-2 text-xs text-secondary">
+          <input
+            type="checkbox"
+            className="size-3.5 accent-fg"
+            aria-label="Show thinking in chat"
+            disabled={form.formLocked}
+            checked={settings.showThinking}
+            onChange={(e) => {
+              void form.runUpdate({ showThinking: e.target.checked })
+            }}
+          />
+          {settings.showThinking ? 'On' : 'Off'}
+        </label>
+      </SettingsRow>
+
+      <SettingsRow
+        title="Share crash & error reports"
+        description={
+          form.dsnConfigured
+            ? 'Optional opt-in. Never includes chat contents, API keys, or file bodies. Local rotating logs are always written.'
+            : 'Reporting unavailable in this build (no Sentry DSN). Local rotating logs are always written.'
+        }
+      >
+        <label className="inline-flex items-center gap-2 text-xs text-secondary">
+          <input
+            type="checkbox"
+            className="size-3.5 accent-fg"
+            aria-label="Share crash and error reports"
+            disabled={form.formLocked || !form.dsnConfigured}
+            checked={form.dsnConfigured && settings.telemetryEnabled}
+            onChange={(e) => {
+              void form.runUpdate({ telemetryEnabled: e.target.checked })
+            }}
+          />
+          {settings.telemetryEnabled && form.dsnConfigured ? 'On' : 'Off'}
+        </label>
+      </SettingsRow>
+
+      <SettingsRow
+        title="Logs"
+        description={
+          form.logsPath
+            ? `Local rotating logs at ${form.logsPath}`
+            : 'Open the local logs folder for troubleshooting.'
+        }
+      >
+        <Button
+          variant="subtle"
+          pending={form.openingLogs}
+          disabled={form.formLocked}
+          onClick={() => {
+            form.clearErrors()
+            form.setOpeningLogs(true)
+            void (window.vyotiq?.openLogsDir?.() ?? Promise.reject(new Error('Logs API unavailable')))
+              .then((res) => {
+                if (!res.ok) form.setErrorMessage(res.error)
+              })
+              .catch((err: unknown) => {
+                form.setErrorMessage(err instanceof Error ? err.message : String(err))
+              })
+              .finally(() => form.setOpeningLogs(false))
+          }}
+        >
+          {form.openingLogs ? 'Opening…' : 'Open logs folder'}
+        </Button>
+      </SettingsRow>
+    </>
+  )
+}

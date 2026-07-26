@@ -87,7 +87,7 @@ export function ThinkingControls({
                   type="button"
                   disabled={disabled || !chatSettings.thinkingEnabled}
                   className={cn(
-                    'rounded-md px-2 py-1 text-[10px] vy-transition disabled:opacity-40',
+                    'rounded-md px-2 py-1 text-[10px] vy-transition disabled:opacity-[var(--vy-disabled-opacity)]',
                     chatSettings.thinkingEffort === o.value
                       ? 'bg-surface-2 text-fg-strong'
                       : 'text-muted hover:bg-surface'
@@ -117,7 +117,7 @@ export function ThinkingControls({
         aria-expanded={open}
         className={cn(
           'inline-flex max-w-[10rem] min-h-8 items-center gap-1 rounded-full px-2.5 text-xs text-muted vy-transition',
-          'hover:bg-surface hover:text-fg disabled:opacity-50',
+          'hover:bg-surface hover:text-fg disabled:opacity-[var(--vy-disabled-opacity)]',
           chatSettings.thinkingEnabled && 'text-fg'
         )}
         onClick={() => setOpen((v) => !v)}

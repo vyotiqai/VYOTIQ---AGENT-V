@@ -169,6 +169,28 @@ describe('runAgent stop-reason classification', () => {
     expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
   })
 
+  it('reports truncation when stopReason is tool_calls but no tools were parsed', async () => {
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'about to call' }
+      yield { type: 'done', stopReason: 'tool_calls' }
+    })
+
+    const events = await collect('stop-tool-parse-fail', workspace)
+
+    expect(events.find((e) => e.type === 'incomplete')?.reason).toBe('truncated')
+  })
+
+  it('reports truncation when a provider error arrives after partial text', async () => {
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'partial answer' }
+      yield { type: 'done', stopReason: 'error' }
+    })
+
+    const events = await collect('stop-error-partial', workspace)
+
+    expect(events.find((e) => e.type === 'incomplete')?.reason).toBe('truncated')
+  })
+
   it('treats a missing stop reason with real text as a clean finish', async () => {
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
       yield { type: 'text', text: 'answer' }
@@ -241,6 +263,33 @@ describe('runAgent partial persistence', () => {
     })
 
     const events = await collect('partial-retry', workspace)
+
+    expect(events.some((e) => e.type === 'stream_reset')).toBe(true)
+    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
+  })
+
+  it('emits stream_reset when the failed attempt only streamed tool deltas', async () => {
+    let attempt = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      attempt += 1
+      if (attempt === 1) {
+        yield {
+          type: 'tool_call_delta',
+          toolCallDelta: {
+            index: 0,
+            id: 'call_1',
+            name: 'read',
+            arguments: '{"path":'
+          }
+        }
+        yield { type: 'error', error: 'socket hang up' }
+        return
+      }
+      yield { type: 'text', text: 'recovered' }
+      yield { type: 'done', stopReason: 'stop' }
+    })
+
+    const events = await collect('tool-delta-retry', workspace)
 
     expect(events.some((e) => e.type === 'stream_reset')).toBe(true)
     expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)

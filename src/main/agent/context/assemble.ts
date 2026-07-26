@@ -42,11 +42,13 @@ function capText(text: string, maxTokens: number): string {
 function harnessSectionPriority(heading: string): number {
   const h = heading.toLowerCase()
   if (h.includes('execution contract')) return 100
+  // Safety outranks Role — under budget pressure keep constraints over identity.
+  if (h.includes('safety')) return 85
   if (h === 'role' || h.endsWith(' role')) return 80
-  if (h.includes('safety')) return 70
+  // Cross-cutting tool policy (MCP / attachments / don't narrate) outranks loop.
+  if (h.includes('tool policy') || h.includes('tool')) return 55
   if (h.includes('loop')) return 50
   if (h.includes('memory')) return 40
-  if (h.includes('tool')) return 30
   return 20
 }
 

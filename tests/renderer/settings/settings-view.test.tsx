@@ -4,7 +4,7 @@
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, fireEvent, within, waitFor } from '@testing-library/react'
-import { SettingsView } from '@renderer/features/settings/SettingsView'
+import { SettingsView } from '@renderer/features/settings'
 import { emptySecretStatus, type Settings } from '@shared/ipc'
 import { DEFAULT_SETTINGS } from '@shared/ipc'
 

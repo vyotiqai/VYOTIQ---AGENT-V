@@ -18,7 +18,7 @@ describe('useChatStream', () => {
     handler = null
     chatStart.mockReset()
     chatCancel.mockReset()
-    chatStart.mockResolvedValue({ ok: true, data: { runId: 'run-1' } })
+    chatStart.mockResolvedValue({ ok: true, data: { runId: 'run-1', invokeId: 1 } })
     chatCancel.mockResolvedValue({ ok: true, data: true })
 
     // @ts-expect-error test bridge
@@ -82,7 +82,7 @@ describe('useChatStream', () => {
     })
 
     chatStart.mockClear()
-    chatStart.mockResolvedValue({ ok: true, data: { runId: 'run-1' } })
+    chatStart.mockResolvedValue({ ok: true, data: { runId: 'run-1', invokeId: 1 } })
 
     await act(async () => {
       await result.current.send('follow up')
@@ -1133,7 +1133,7 @@ describe('useChatStream', () => {
     expect(result.current.runId).toBeNull()
 
     await act(async () => {
-      resolveStart({ ok: true, data: { runId: 'run-1' } })
+      resolveStart({ ok: true, data: { runId: 'run-1', invokeId: 1 } })
       await sendPromise!
     })
 
@@ -1156,7 +1156,7 @@ describe('useChatStream', () => {
 
     expect(result.current.running).toBe(false)
 
-    chatStart.mockResolvedValue({ ok: true, data: { runId: 'run-1' } })
+    chatStart.mockResolvedValue({ ok: true, data: { runId: 'run-1', invokeId: 1 } })
 
     await act(async () => {
       await result.current.send('follow up')
@@ -1275,7 +1275,7 @@ describe('useChatStream', () => {
     })
 
     chatStart.mockClear()
-    chatStart.mockResolvedValue({ ok: true, data: { runId: 'run-1' } })
+    chatStart.mockResolvedValue({ ok: true, data: { runId: 'run-1', invokeId: 1 } })
 
     await act(async () => {
       await result.current.send('follow up')
@@ -1370,5 +1370,175 @@ describe('useChatStream', () => {
     expect(loadRun).toHaveBeenCalledWith('/ws', 'run-1')
     expect(result.current.error).toBeNull()
     expect(result.current.items.some((i) => i.kind === 'message' && i.content === 'done')).toBe(true)
+  })
+
+  it('drops live tool rows and streamed text on stream_reset', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('retry me')
+    })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({ type: 'text_delta', runId: 'run-1', text: 'doomed' })
+      handler?.({
+        type: 'tool_call_delta',
+        runId: 'run-1',
+        toolCallId: 'pending_0',
+        name: 'read',
+        argumentsDelta: '{"path":"a.ts"}'
+      })
+    })
+
+    await waitFor(() => {
+      expect(
+        result.current.items.some((i) => i.kind === 'tool' && i.tool.status === 'running')
+      ).toBe(true)
+    })
+
+    await act(async () => {
+      handler?.({ type: 'stream_reset', runId: 'run-1', step: 1 })
+    })
+
+    expect(
+      result.current.items.some((i) => i.kind === 'tool' && i.tool.status === 'running')
+    ).toBe(false)
+    const assistant = result.current.items.find(
+      (i) => i.kind === 'message' && i.role === 'assistant'
+    )
+    if (assistant?.kind === 'message') {
+      expect(assistant.content).toBe('')
+      expect(assistant.streaming).toBe(false)
+      expect(assistant.thinkingStreaming).toBe(false)
+    }
+  })
+
+  it('clears approval only after respondToolApproval succeeds', async () => {
+    const respondToolApproval = vi.fn().mockResolvedValue({ ok: true, data: true })
+    // @ts-expect-error test bridge
+    window.vyotiq.respondToolApproval = respondToolApproval
+
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('edit')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        toolCallId: 'c1',
+        name: 'edit',
+        summary: 'a.ts'
+      })
+      result.current.handleApprovalRequest({
+        requestId: 'req-1',
+        runId: 'run-1',
+        toolCallId: 'c1',
+        name: 'edit',
+        summary: 'a.ts',
+        mutating: true
+      })
+    })
+
+    expect(
+      result.current.items.some((i) => i.kind === 'tool' && i.approval?.requestId === 'req-1')
+    ).toBe(true)
+
+    await act(async () => {
+      await result.current.respondToApproval('req-1', 'once')
+    })
+
+    expect(respondToolApproval).toHaveBeenCalledWith('req-1', 'once')
+    expect(result.current.items.some((i) => i.kind === 'tool' && i.approval)).toBe(false)
+  })
+
+  it('keeps approval visible when respondToolApproval fails', async () => {
+    const respondToolApproval = vi
+      .fn()
+      .mockResolvedValue({ ok: false, error: 'approval expired' })
+    // @ts-expect-error test bridge
+    window.vyotiq.respondToolApproval = respondToolApproval
+
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('edit')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        toolCallId: 'c1',
+        name: 'edit',
+        summary: 'a.ts'
+      })
+      result.current.handleApprovalRequest({
+        requestId: 'req-fail',
+        runId: 'run-1',
+        toolCallId: 'c1',
+        name: 'edit',
+        summary: 'a.ts',
+        mutating: true
+      })
+    })
+
+    await act(async () => {
+      await expect(result.current.respondToApproval('req-fail', 'deny')).rejects.toThrow(
+        /approval expired/
+      )
+    })
+
+    expect(
+      result.current.items.some((i) => i.kind === 'tool' && i.approval?.requestId === 'req-fail')
+    ).toBe(true)
+    expect(result.current.error).toBe('approval expired')
+  })
+
+  it('uses contentRunId for lazy tool loads after syncFromDisk clears runId', async () => {
+    const loadToolResult = vi.fn().mockResolvedValue({
+      ok: true,
+      data: { content: 'full body' }
+    })
+    const loadRun = vi.fn().mockResolvedValue({
+      ok: true,
+      data: {
+        messages: [
+          { role: 'user', content: 'read' },
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [{ id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }]
+          },
+          { role: 'tool', toolCallId: 'c1', toolName: 'read', content: 'snip' }
+        ]
+      }
+    })
+    const loadRunEvents = vi.fn().mockResolvedValue({ ok: true, data: [] })
+    // @ts-expect-error test bridge
+    window.vyotiq.loadRun = loadRun
+    // @ts-expect-error test bridge
+    window.vyotiq.loadRunEvents = loadRunEvents
+    // @ts-expect-error test bridge
+    window.vyotiq.loadToolResult = loadToolResult
+
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.syncFromDisk('run-disk')
+    })
+
+    expect(result.current.runId).toBeNull()
+
+    let content: string | null = null
+    await act(async () => {
+      content = await result.current.loadToolContent('c1')
+    })
+
+    expect(loadToolResult).toHaveBeenCalledWith('/ws', 'run-disk', 'c1')
+    expect(content).toBe('full body')
   })
 })

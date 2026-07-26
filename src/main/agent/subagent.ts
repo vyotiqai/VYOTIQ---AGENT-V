@@ -41,7 +41,9 @@ function isAllowedSubagentTool(name: string): boolean {
 /** A sub-agent may not spawn another one — one level of nesting, no recursion. */
 export const MAX_SUBAGENT_DEPTH = 1
 export const SUBAGENT_MAX_STEPS = 8
-const MAX_REPORT_CHARS = 12_000
+/** Parent-facing report is truncated beyond this many characters. */
+export const SUBAGENT_MAX_REPORT_CHARS = 12_000
+const MAX_REPORT_CHARS = SUBAGENT_MAX_REPORT_CHARS
 
 const SUBAGENT_SYSTEM = `You are a research sub-agent working inside a larger coding agent.
 

@@ -7,6 +7,19 @@ import { logger } from '../../../shared/logger'
 import { formatError, isAbortError } from '../../../shared/errors'
 import { mcpToolSummary } from '../../../shared/toolSummary'
 import type { ToolResult } from '../tools'
+import { sanitizedTerminalEnv } from '../tools/terminal'
+
+/** Scrubbed base env + optional user-configured MCP server.env overlays. */
+export function buildMcpChildEnv(
+  serverEnv?: Record<string, string>,
+  source: NodeJS.ProcessEnv = process.env
+): Record<string, string> {
+  const env: Record<string, string> = { ...sanitizedTerminalEnv(source) }
+  for (const [key, value] of Object.entries(serverEnv ?? {})) {
+    if (typeof value === 'string') env[key] = value
+  }
+  return env
+}
 
 export const MCP_TOOL_PREFIX = 'mcp__'
 
@@ -86,14 +99,13 @@ export async function refreshMcpServers(servers: McpServer[]): Promise<McpServer
 
 export async function connectMcpServer(server: McpServer): Promise<void> {
   if (sessions.has(server.id)) return
+  // Same scrubbed base as terminal — do not inherit parent API keys. Overlay
+  // only the user-configured server.env entries so operators can opt in vars.
+  const env = buildMcpChildEnv(server.env)
   const transport = new StdioClientTransport({
     command: server.command,
     args: server.args ?? [],
-    env: Object.fromEntries(
-      Object.entries({ ...process.env, ...server.env }).filter(
-        (entry): entry is [string, string] => entry[1] !== undefined
-      )
-    )
+    env
   })
   const client = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
   await client.connect(transport)
@@ -171,6 +183,14 @@ export function listMcpToolDefinitions(): ToolDefinition[] {
     out.push(...session.tools)
   }
   return out
+}
+
+export function getMcpToolDefinition(fullName: string): ToolDefinition | undefined {
+  for (const session of sessions.values()) {
+    const found = session.tools.find((t) => t.name === fullName)
+    if (found) return found
+  }
+  return undefined
 }
 
 export async function invokeMcpTool(

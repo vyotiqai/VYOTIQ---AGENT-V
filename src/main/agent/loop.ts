@@ -39,7 +39,9 @@ import {
 import { executeStepToolCalls } from './executeStepTools'
 import { loadHarness } from './harness'
 import {
+  combineLoopHints,
   loopHintForConsecutiveFailures,
+  loopHintForOmittedMcpTools,
   maxParallelReadToolsForFailureStreak
 } from './loopPolicy'
 import { MAX_PARALLEL_READ_TOOLS } from './tools/classify'
@@ -51,6 +53,7 @@ import type { StopReason, TokenUsage, ToolCall } from './providers/types'
 import {
   cancelRun,
   clearRunAbort,
+  isCurrentInvoke,
   registerRunAbort,
   resetActiveRunsForTests
 } from './runRegistry'
@@ -91,6 +94,27 @@ const INCOMPLETE_MESSAGES: Record<IncompleteReason, string> = {
   max_steps: 'The step budget ran out before the work was finished.'
 }
 
+/** True when two messages are the same role + normalized text (resume dedupe). */
+function messagesContentEqual(a: ChatMessage, b: ChatMessage): boolean {
+  if (a.role !== b.role) return false
+  return contentToText(a.content).trim() === contentToText(b.content).trim()
+}
+
+/**
+ * Drop leading `newMessages` that were already persisted on disk (e.g. retry
+ * after chatStart wrote the user turn then failed mid-stream).
+ */
+function dedupeNewMessagesAgainstDisk(
+  diskMessages: ChatMessage[],
+  newMessages: ChatMessage[]
+): ChatMessage[] {
+  if (diskMessages.length === 0 || newMessages.length === 0) return newMessages
+  if (messagesContentEqual(diskMessages[diskMessages.length - 1], newMessages[0])) {
+    return newMessages.slice(1)
+  }
+  return newMessages
+}
+
 /**
  * Classify a turn that produced no tool calls. `undefined` means the model
  * genuinely finished; anything else means it was cut short.
@@ -102,7 +126,19 @@ function classifyIncompleteTurn(
 ): IncompleteReason | undefined {
   if (stopReason === 'length') return 'truncated'
   if (stopReason === 'content_filter') return 'filtered'
-  if (stopReason === 'error') return 'empty_response'
+  // tool_calls with zero parsed tools usually means truncated/malformed deltas,
+  // not a genuinely empty model response.
+  if (stopReason === 'tool_calls') return 'truncated'
+  if (stopReason === 'error') {
+    // Only label as empty when nothing was produced; partial text is truncated.
+    if (!assistantText.trim() && !thinkingText.trim()) return 'empty_response'
+    return 'truncated'
+  }
+  // Providers sometimes emit `unknown` for truncated/interrupted streams.
+  if (stopReason === 'unknown') {
+    if (!assistantText.trim() && !thinkingText.trim()) return 'empty_response'
+    return 'truncated'
+  }
   if (!assistantText.trim() && !thinkingText.trim()) return 'empty_response'
   return undefined
 }
@@ -206,6 +242,10 @@ export async function* runAgent(input: {
 
   // Entire body in try/finally so early returns (missing key, etc.) always clear the abort map.
   let runDir: string | null = null
+  const writeStatus = (patch: Parameters<typeof updateStatus>[1]): void => {
+    if (!runDir || !isCurrentInvoke(runId, invokeId)) return
+    updateStatus(runDir, patch)
+  }
   try {
     const lastUser = [...(input.messages ?? input.newMessages ?? [])]
       .reverse()
@@ -219,14 +259,16 @@ export async function* runAgent(input: {
 
     if (input.resume) {
       runDir = resumeRun(workspace, runId)
-      if (input.incremental && input.newMessages?.length) {
-        const diskMessages = loadMessages(workspace, runId)
-        messages = [...diskMessages, ...input.newMessages.map((m) => ({ ...m }))]
-        syncMessages(runDir, messages)
+      const diskMessages = loadMessages(workspace, runId)
+      // Always merge from durable disk history on resume so a stale client
+      // payload cannot silently rewrite messages.jsonl.
+      if (input.newMessages?.length) {
+        const toAppend = dedupeNewMessagesAgainstDisk(diskMessages, input.newMessages)
+        messages = [...diskMessages, ...toAppend.map((m) => ({ ...m }))]
       } else {
-        messages = (input.messages ?? []).map((m) => ({ ...m }))
-        syncMessages(runDir, messages)
+        messages = diskMessages.map((m) => ({ ...m }))
       }
+      syncMessages(runDir, messages)
     } else {
       messages = (input.messages ?? []).map((m) => ({ ...m }))
       runDir = createRun(workspace, runId, goal)
@@ -238,7 +280,10 @@ export async function* runAgent(input: {
     // never re-enters the working set. `messages.jsonl` still holds the full history
     // for transcript replay and lazy tool-output loads.
     let foldedMessages = compaction?.foldedMessages ?? 0
-    if (foldedMessages > 0 && foldedMessages < messages.length) {
+    if (foldedMessages > 0 && messages.length > 0) {
+      // Corrupt/stale watermarks must not drop the latest turn — keep at least
+      // the final message in the working set.
+      foldedMessages = Math.min(foldedMessages, messages.length - 1)
       messages = messages.slice(foldedMessages)
       while (messages.length > 1 && messages[0].role === 'tool') {
         messages = messages.slice(1)
@@ -294,7 +339,7 @@ export async function* runAgent(input: {
         })
         yield { type: 'error', runId, message, code }
         yield { type: 'status', runId, status: 'error' }
-        updateStatus(runDir, { status: 'error', error: message })
+        writeStatus({ status: 'error', error: message })
         appendEvent(runDir, { type: 'error', runId, message, code })
         appendEvent(runDir, { type: 'status', runId, status: 'error' })
         return
@@ -314,6 +359,7 @@ export async function* runAgent(input: {
         ? undefined
         : createApprovalGate({
             runId,
+            invokeId,
             mode: approvalSettings.mode,
             workspaceAllowlist: approvalSettings.allowlist,
             signal: controller.signal,
@@ -361,7 +407,7 @@ export async function* runAgent(input: {
 
     if (controller.signal.aborted) {
       yield { type: 'status', runId, status: 'cancelled' }
-      updateStatus(runDir, { status: 'cancelled' })
+      writeStatus({ status: 'cancelled' })
       appendEvent(runDir, { type: 'status', runId, status: 'cancelled' })
       return
     }
@@ -380,6 +426,7 @@ export async function* runAgent(input: {
       parameters: t.parameters as Record<string, unknown>
     }))
     let toolsJsonEstimate = trimmedTools.estimate
+    const omittedMcpHint = loopHintForOmittedMcpTools(trimmedTools.omittedMcpNames)
     const failedToolKeys = new Map<string, number>()
     let consecutiveToolFailureSteps = 0
 
@@ -387,7 +434,7 @@ export async function* runAgent(input: {
       if (controller.signal.aborted) break
       step++
       lastStepToolsSucceeded = false
-      updateStatus(runDir, { step, status: 'running' })
+      writeStatus({ step, status: 'running' })
 
       const budgetWarnStep = Math.max(1, Math.ceil(maxSteps * 0.8))
       if (step === budgetWarnStep && maxSteps > 1) {
@@ -426,7 +473,10 @@ export async function* runAgent(input: {
         priorCompaction: compaction,
         keepRecentTurns: settings.keepRecentTurns,
         compactionTriggerRatio: settings.compactionTriggerRatio,
-        loopHint: loopHintForConsecutiveFailures(consecutiveToolFailureSteps),
+        loopHint: combineLoopHints(
+          omittedMcpHint,
+          loopHintForConsecutiveFailures(consecutiveToolFailureSteps)
+        ),
         providerId,
         provider,
         apiKey,
@@ -436,13 +486,14 @@ export async function* runAgent(input: {
       const droppedThisStep = assembled.contextShrunk
         ? Math.max(0, messages.length - assembled.messages.length)
         : 0
-      const compactionEv = emitCompaction(
-        assembled.compaction
-          ? { ...assembled.compaction, foldedMessages: foldedMessages + droppedThisStep }
-          : null
-      )
+      const compactionWithWatermark = assembled.compaction
+        ? { ...assembled.compaction, foldedMessages: foldedMessages + droppedThisStep }
+        : null
+      const compactionEv = emitCompaction(compactionWithWatermark)
       if (compactionEv) yield compactionEv
-      compaction = assembled.compaction ?? compaction
+      // Keep the watermark on in-memory state so Anthropic server compaction
+      // and later steps do not lose foldedMessages.
+      compaction = compactionWithWatermark ?? compaction
       if (assembled.contextShrunk || compaction?.summary !== priorSummary) {
         lastUsage = { inputTokens: assembled.estimatedTokens }
       }
@@ -486,7 +537,9 @@ export async function* runAgent(input: {
 
       while (!streamFinished && streamAttempt < MAX_STREAM_ATTEMPTS) {
         streamAttempt++
-        if (streamAttempt > 1 && (assistantText || thinkingText)) {
+        // Any prior attempt may have streamed text, thinking, or tool deltas —
+        // tell the UI to drop all of it before the retry starts clean.
+        if (streamAttempt > 1) {
           yield { type: 'stream_reset', runId, step }
         }
         assistantText = ''
@@ -612,8 +665,15 @@ export async function* runAgent(input: {
               const record: CompactionRecord = {
                 summary,
                 createdAt: new Date().toISOString(),
-                tokenEstimate: estimateTextTokens(summary)
+                tokenEstimate: estimateTextTokens(summary),
+                // Preserve the local watermark so restart does not re-fold prefix.
+                ...(foldedMessages > 0
+                  ? { foldedMessages }
+                  : compaction?.foldedMessages != null
+                    ? { foldedMessages: compaction.foldedMessages }
+                    : {})
               }
+              compaction = { ...(compaction ?? {}), ...record }
               const anthropicCompactionEv = emitCompaction(record)
               if (anthropicCompactionEv) yield anthropicCompactionEv
               // Server-side compaction means prior inputTokens no longer describe the wire payload.
@@ -657,7 +717,7 @@ export async function* runAgent(input: {
             )
             yield { type: 'error', runId, message, code: 'PROVIDER_STREAM' }
             yield { type: 'status', runId, status: 'error' }
-            updateStatus(runDir, { status: 'error', error: message })
+            writeStatus({ status: 'error', error: message })
             appendEvent(runDir, { type: 'error', runId, message, code: 'PROVIDER_STREAM' })
             appendEvent(runDir, { type: 'status', runId, status: 'error' })
             return
@@ -777,7 +837,7 @@ export async function* runAgent(input: {
         }
 
         yield { type: 'status', runId, status: 'done' }
-        updateStatus(runDir, { status: 'done' })
+        writeStatus({ status: 'done' })
         appendEvent(runDir, { type: 'status', runId, status: 'done' })
         return
       }
@@ -894,11 +954,10 @@ export async function* runAgent(input: {
 
     if (controller.signal.aborted) {
       yield { type: 'status', runId, status: 'cancelled' }
-      updateStatus(runDir, { status: 'cancelled' })
+      writeStatus({ status: 'cancelled' })
       appendEvent(runDir, { type: 'status', runId, status: 'cancelled' })
-    } else if (lastStepToolsSucceeded) {
-      // Ran out of steps mid-work: the last tools succeeded but the model never
-      // got a turn to wrap up, so this is incomplete rather than done.
+    } else {
+      // Ran out of steps without a clean wrap-up (including all-failure last step).
       const incompleteEv: AgentEvent = {
         type: 'incomplete',
         runId,
@@ -906,37 +965,25 @@ export async function* runAgent(input: {
         step,
         message: INCOMPLETE_MESSAGES.max_steps
       }
-      logger.warn('Step budget exhausted after a successful tool step', {
+      logger.warn('Step budget exhausted', {
         scope: 'agent',
         code: 'AGENT_INCOMPLETE',
         correlationId: runId,
-        maxSteps
+        maxSteps,
+        lastStepToolsSucceeded
       })
       appendEvent(runDir, incompleteEv)
       yield incompleteEv
       yield { type: 'status', runId, status: 'done' }
-      updateStatus(runDir, { status: 'done' })
+      writeStatus({ status: 'done' })
       appendEvent(runDir, { type: 'status', runId, status: 'done' })
-    } else {
-      const message = `Stopped after ${maxSteps} steps. Checkpoint durable facts to memory if useful; treat remaining work as partial — summarize what is done vs done-when in contract.md.`
-      logger.warn(message, {
-        scope: 'agent',
-        code: 'AGENT_MAX_STEPS',
-        correlationId: runId,
-        maxSteps
-      })
-      yield { type: 'error', runId, message, code: 'AGENT_MAX_STEPS' }
-      yield { type: 'status', runId, status: 'error' }
-      updateStatus(runDir, { status: 'error', error: message })
-      appendEvent(runDir, { type: 'error', runId, message, code: 'AGENT_MAX_STEPS' })
-      appendEvent(runDir, { type: 'status', runId, status: 'error' })
     }
   } catch (err) {
     if (isAbortError(err)) {
       logger.warn('Agent run cancelled', { scope: 'agent', correlationId: runId })
       yield { type: 'status', runId, status: 'cancelled' }
       if (runDir) {
-        updateStatus(runDir, { status: 'cancelled' })
+        writeStatus({ status: 'cancelled' })
         appendEvent(runDir, { type: 'status', runId, status: 'cancelled' })
       }
     } else {
@@ -950,7 +997,7 @@ export async function* runAgent(input: {
       yield { type: 'error', runId, message, code: 'AGENT_LOOP' }
       yield { type: 'status', runId, status: 'error' }
       if (runDir) {
-        updateStatus(runDir, { status: 'error', error: message })
+        writeStatus({ status: 'error', error: message })
         appendEvent(runDir, { type: 'error', runId, message, code: 'AGENT_LOOP' })
         appendEvent(runDir, { type: 'status', runId, status: 'error' })
       }

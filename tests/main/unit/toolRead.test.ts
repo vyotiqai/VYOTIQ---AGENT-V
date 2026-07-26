@@ -23,7 +23,7 @@ describe('toolRead', () => {
     expect(toolRead(root, 'hello.txt')).toBe('hello world')
   })
 
-  it('exports a content cap aligned with the 512 KiB harness limit', async () => {
+  it('exports a content cap of 512 KiB (aligned with tool guidance LIMITS)', async () => {
     const { READ_CONTENT_CAP } = await import('@main/agent/tools/read')
     expect(READ_CONTENT_CAP).toBe(512 * 1024)
   })

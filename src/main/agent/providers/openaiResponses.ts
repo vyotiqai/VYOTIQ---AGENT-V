@@ -92,13 +92,16 @@ export function toResponsesUserContent(
   )
 }
 
-function toResponsesTools(tools: ProviderChatRequest['tools']): Array<Record<string, unknown>> {
+function toResponsesTools(
+  tools: ProviderChatRequest['tools'],
+  strictTools: boolean
+): Array<Record<string, unknown>> {
   return tools.map((t) => ({
     type: 'function',
     name: t.name,
     description: t.description,
     parameters: t.parameters,
-    strict: true
+    ...(strictTools ? { strict: true } : {})
   }))
 }
 
@@ -122,7 +125,7 @@ export async function* streamOpenAiResponses(
     store: true,
     ...(req.tools.length
       ? {
-          tools: toResponsesTools(req.tools),
+          tools: toResponsesTools(req.tools, req.strictTools !== false),
           tool_choice: req.toolChoice ?? 'auto',
           parallel_tool_calls: req.parallelToolCalls ?? true
         }
@@ -168,6 +171,7 @@ export async function* streamOpenAiResponses(
   }
 
   const pending = new Map<string, ToolCall>()
+  const yieldedToolCalls = new Set<string>()
   const itemIdToCallId = new Map<string, string>()
   const outputItems: unknown[] = []
   let responseId: string | undefined
@@ -232,6 +236,7 @@ export async function* streamOpenAiResponses(
             arguments: String(item.arguments ?? '')
           }
           pending.set(callId, call)
+          yieldedToolCalls.add(callId)
           yield { type: 'tool_call', toolCall: call }
         }
         if (item.type === 'reasoning') {
@@ -304,6 +309,12 @@ export async function* streamOpenAiResponses(
   }
 
   if (thinkingText) yield { type: 'thinking_done', text: thinkingText }
+
+  // Flush tool calls that only received argument deltas (no output_item.done).
+  for (const [callId, call] of pending) {
+    if (yieldedToolCalls.has(callId) || !call.name) continue
+    yield { type: 'tool_call', toolCall: call }
+  }
 
   yield {
     type: 'done',

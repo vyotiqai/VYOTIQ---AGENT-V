@@ -339,7 +339,7 @@ export const ToolApprovalRequestSchema = z.object({
   summary: z.string(),
   /** Raw arguments so the card can show exactly what would run. */
   argsPreview: z.string(),
-  /** False for read-only tools, which are only gated in `all` mode. */
+  /** False for approval-exempt tools; true for mutating tools, web_fetch, and MCP. */
   mutating: z.boolean()
 })
 export type ToolApprovalRequest = z.infer<typeof ToolApprovalRequestSchema>
@@ -389,7 +389,8 @@ export type RenameRunRequest = z.infer<typeof RenameRunRequestSchema>
 
 export const ActiveRunSchema = z.object({
   runId: z.string(),
-  workspacePath: z.string()
+  workspacePath: z.string(),
+  invokeId: z.number().int().min(1)
 })
 export type ActiveRun = z.infer<typeof ActiveRunSchema>
 

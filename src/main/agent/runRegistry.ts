@@ -56,12 +56,19 @@ export function isActive(runId: string): boolean {
   return !entry.turnComplete
 }
 
-export function listActiveRuns(): { runId: string; workspacePath: string }[] {
+/** True when this invoke still owns the run slot (no newer follow-up registered). */
+export function isCurrentInvoke(runId: string, invokeId: number): boolean {
+  const entry = active.get(runId)
+  return entry?.invokeId === invokeId
+}
+
+export function listActiveRuns(): { runId: string; workspacePath: string; invokeId: number }[] {
   return [...active.entries()]
     .filter(([, entry]) => !entry.turnComplete)
     .map(([runId, entry]) => ({
       runId,
-      workspacePath: entry.workspacePath
+      workspacePath: entry.workspacePath,
+      invokeId: entry.invokeId
     }))
 }
 

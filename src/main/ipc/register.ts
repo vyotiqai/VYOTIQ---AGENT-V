@@ -439,7 +439,7 @@ export function registerIpc(): void {
         } finally {
           batcher.flush()
           releaseApprovalSender()
-          cancelPendingApprovals(runId)
+          cancelPendingApprovals(runId, invokeId)
           clearRunAbort(runId, invokeId)
         }
       })()

@@ -2,10 +2,11 @@ import { logger, logErrorSummary } from '../../../shared/logger'
 import { formatError, isAbortError, isExpectedToolError } from '../../../shared/errors'
 import { summarizeToolArgsFromRecord } from '../../../shared/toolSummary'
 import { validateToolArgs } from '../schemas/tools'
-import { invokeMcpTool, parseMcpToolName } from '../mcp'
+import { invokeMcpTool, parseMcpToolName, getMcpToolDefinition } from '../mcp'
+import { validateAgainstJsonSchema } from '../schemas/jsonSchemaValidate'
 import { toolRead, READ_CONTENT_CAP } from './read'
 import { toolEdit } from './edit'
-import { toolSearch } from './search'
+import { toolSearch, SEARCH_DEFAULT_MAX_RESULTS } from './search'
 import { toolGlob } from './glob'
 import { toolGrep } from './grep'
 import { toolListDir } from './listDir'
@@ -115,7 +116,8 @@ const BUILTIN_HANDLERS: Record<string, ToolHandler> = {
   search: async (workspace, args, signal) => {
     throwIfAborted(signal)
     const query = String(args.query ?? '')
-    const maxResults = typeof args.maxResults === 'number' ? args.maxResults : 40
+    const maxResults =
+      typeof args.maxResults === 'number' ? args.maxResults : SEARCH_DEFAULT_MAX_RESULTS
     const regex = args.regex === true
     const content = await toolSearch(workspace, query, maxResults, signal, regex)
     throwIfAborted(signal)
@@ -249,6 +251,19 @@ export async function executeTool(
       parsed = JSON.parse(argsJson || '{}') as Record<string, unknown>
     } catch {
       return toolFail(name, name, 'Failed to parse tool arguments JSON')
+    }
+    const def = getMcpToolDefinition(name)
+    const checked = validateAgainstJsonSchema(
+      def?.parameters as Record<string, unknown> | undefined,
+      parsed
+    )
+    if (!checked.ok) {
+      logger.warn('Invalid MCP tool args', {
+        scope: 'tools',
+        code: 'TOOL_ARGS',
+        tool: name
+      })
+      return toolFail(name, 'invalid args', checked.error)
     }
     return invokeMcpTool(mcp.serverId, mcp.toolName, parsed, signal, name)
   }
