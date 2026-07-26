@@ -642,7 +642,6 @@ export function SettingsView({
     let cancelled = false
     void (async () => {
       if (!window.vyotiq?.telemetryStatus) {
-        // Fall back to build-time DSN presence for UI helper text.
         if (!cancelled) {
           setDsnConfigured(Boolean(import.meta.env.VITE_SENTRY_DSN?.trim()))
         }

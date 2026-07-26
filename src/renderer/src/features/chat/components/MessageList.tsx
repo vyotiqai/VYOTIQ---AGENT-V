@@ -28,7 +28,6 @@ import { UserPrompt } from './UserPrompt'
 import { MarkdownContent } from '@renderer/lib/ui'
 
 const NEAR_BOTTOM_PX = 80
-/** Virtualize long transcripts to avoid O(n) renders per stream delta. */
 export const VIRTUALIZE_THRESHOLD = 40
 /** Stay virtualized until count drops below this (hysteresis avoids mode flips). */
 export const VIRTUALIZE_RELEASE_THRESHOLD = 30

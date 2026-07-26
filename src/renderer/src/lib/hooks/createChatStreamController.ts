@@ -235,7 +235,6 @@ function ensureToolRowsForCalls(
   return next
 }
 
-/** Close a live trailing tool stretch once every tool in it has finished. */
 function closeTrailingGroupIfIdle(items: UiItem[], endedAt = Date.now()): UiItem[] {
   const start = trailingLiveToolGroupStart(items)
   if (start < 0) return items
@@ -321,7 +320,6 @@ function replaceAt(items: UiItem[], index: number, next: UiItem): UiItem[] {
   return copy
 }
 
-/** Drop pending approval prompts, either one answered or all of them. */
 function clearApprovals(items: UiItem[], requestId?: string): UiItem[] {
   let changed = false
   const next = items.map((item) => {
@@ -334,7 +332,6 @@ function clearApprovals(items: UiItem[], requestId?: string): UiItem[] {
   return changed ? next : items
 }
 
-/** Search from the tail: the row a delta targets is almost always the last one. */
 function findMessageIndex(items: UiItem[], id: string): number {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
@@ -794,8 +791,6 @@ export function createChatStreamController(
       assistantId = null
       reasoningSegmentBreak = true
       const messageAt = new Date().toISOString()
-      // Keep same-turn tool stretches live when this message still has toolCalls.
-      // Only close when this is a text-only follow-up (next iteration / final answer).
       const base = event.toolCalls?.length
         ? state.items
         : closeOpenGroupTimings(state.items)
@@ -913,7 +908,6 @@ export function createChatStreamController(
             ? withCanonicalToolId(
                 {
                   ...item,
-                  // The call is settled, so any prompt it was waiting on is moot.
                   approval: undefined,
                   tool: {
                     ...item.tool,
@@ -980,7 +974,6 @@ export function createChatStreamController(
         error: event.message
       })
     } else if (event.type === 'stream_reset') {
-      // Drop the aborted attempt's output so the retry does not append to it.
       pendingTextDelta = ''
       pendingThinkingDelta = ''
       const discardIds = new Set([assistantId, reasoningId].filter((id): id is string => !!id))

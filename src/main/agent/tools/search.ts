@@ -10,7 +10,6 @@ import {
 
 const YIELD_EVERY_FILES = 32
 
-/** Case-insensitive substring or optional regex search over filenames and text contents. */
 export async function toolSearch(
   workspaceRoot: string,
   query: string,
@@ -78,7 +77,6 @@ export async function toolSearch(
         }
       }
     } catch {
-      // skip unreadable
     }
   }
 
