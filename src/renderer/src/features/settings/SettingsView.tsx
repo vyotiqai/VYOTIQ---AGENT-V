@@ -663,7 +663,6 @@ export function SettingsView({
     }
   }, [])
 
-  // Keep the credential editor aligned with the active provider.
   useEffect(() => {
     if (settings.provider !== 'ollama') {
       setKeyProvider(settings.provider)
@@ -744,9 +743,6 @@ export function SettingsView({
     setModelsInfo(null)
     setRefreshingModels(true)
     try {
-      // Cloud providers need a saved key; calling without one hits opaque upstream 401s
-      // (DeepSeek: "Authentication Fails (governor)"). Skip when we just saved the key —
-      // parent secrets props may not have re-rendered yet.
       if (provider !== 'ollama' && !opts?.skipKeyCheck) {
         const hasKey = Boolean(secrets[provider as SecretProvider])
         if (!hasKey) {
@@ -805,7 +801,6 @@ export function SettingsView({
         return
       }
       setKeyDraft('')
-      // Saving a cloud key activates that provider so Refresh/chat use it immediately.
       const activated =
         keyProvider === settings.provider || (await setActiveProvider(keyProvider))
       if (!activated) return

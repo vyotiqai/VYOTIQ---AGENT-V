@@ -35,7 +35,6 @@ async function resolveModel(
     const found = listed.models.find((m) => m.id === modelId)
     if (found) return found
   } catch {
-    // Falling back to the seed catalog is better than failing the compaction.
   }
   const seed = seedModelsFor(providerId).find((m) => m.id === modelId)
   if (seed) return seed

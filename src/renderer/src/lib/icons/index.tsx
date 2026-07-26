@@ -152,7 +152,6 @@ export function IconPlus(props: IconProps) {
   )
 }
 
-/** Settings cog — toothed gear with center bore (not a sunburst). */
 export function IconGear(props: IconProps) {
   return (
     <Svg {...props}>
@@ -209,7 +208,6 @@ export function IconDoc(props: IconProps) {
   )
 }
 
-/** Left sidebar / panel toggle — thin framed panel with rail. */
 export function IconSidebar(props: IconProps) {
   return (
     <Svg {...props}>
@@ -235,7 +233,6 @@ export function IconMaximize(props: IconProps) {
   )
 }
 
-/** Restore / unmaximize — overlapping squares. */
 export function IconRestore(props: IconProps) {
   return (
     <Svg {...props}>
@@ -255,7 +252,6 @@ export function IconImage(props: IconProps) {
   )
 }
 
-/** File-backed agent memory — stacked notes. */
 export function IconMemory(props: IconProps) {
   return (
     <Svg {...props}>
@@ -265,7 +261,6 @@ export function IconMemory(props: IconProps) {
   )
 }
 
-/** Git branch — a trunk with one fork merging off it. */
 export function IconBranch(props: IconProps) {
   return (
     <Svg {...props}>

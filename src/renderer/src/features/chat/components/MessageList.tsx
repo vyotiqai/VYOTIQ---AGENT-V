@@ -184,8 +184,6 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
     <ToolCard
       item={row.item}
       expanded={row.item.toolExpanded}
-      // Without a host that persists the choice the card owns its own state,
-      // so it still opens instead of swallowing the click.
       onToggle={onToolToggle ? (next) => onToolToggle(row.item.id, next) : undefined}
       onLoadFullContent={onLoadToolContent}
     />

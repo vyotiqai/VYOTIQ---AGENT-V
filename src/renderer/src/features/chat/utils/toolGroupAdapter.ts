@@ -163,9 +163,6 @@ function isInterrupted(tools: UiToolRow[]): boolean {
 }
 
 function deriveState(tools: UiToolRow[], groupTiming: UiGroupTiming | undefined): ToolGroupState {
-  // Only this group's own tools decide whether it is still working. Keying off the
-  // run-wide running flag kept every group with unclosed timing on "Exploring" for the
-  // rest of the turn, long after its tools had finished.
   const hasRunning = tools.some((tool) => tool.status === 'running')
   if (hasRunning && groupTiming?.endedAt == null) return 'pending'
   if (isInterrupted(tools)) return 'interrupted'

@@ -475,8 +475,6 @@ export function createChatStreamController(
   let awaitingRun = false
   let pendingCancel = false
   let ignoreStreamEvents = false
-  // A run is reused across turns, so runId alone cannot separate the live turn from a
-  // prior one still draining. Events carry the invoke that produced them.
   let activeInvokeId: number | null = null
   const supersededInvokeIds = new Set<number>()
   let disposed = false
