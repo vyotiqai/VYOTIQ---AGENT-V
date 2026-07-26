@@ -47,12 +47,6 @@ function decodeEntities(text: string): string {
     .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
 }
 
-/**
- * Convert HTML to a rough markdown skeleton.
- *
- * The point is to keep the structure a reader relies on — headings, links, list
- * items, code — while dropping the markup that would otherwise burn context.
- */
 export function htmlToMarkdown(html: string): string {
   let text = html
     .replace(/<!--[\s\S]*?-->/g, '')
@@ -87,7 +81,6 @@ export type WebFetchOptions = {
   maxChars?: number
 }
 
-/** Fetch a public URL and return readable text, size- and time-capped. */
 export async function toolWebFetch(
   rawUrl: string,
   options: WebFetchOptions = {},
@@ -134,7 +127,6 @@ export async function toolWebFetch(
   }
 }
 
-/** Stop reading once the cap is hit rather than buffering an unbounded body. */
 async function readCapped(res: Response, cap: number): Promise<Buffer> {
   if (!res.body) return Buffer.alloc(0)
   const reader = res.body.getReader()

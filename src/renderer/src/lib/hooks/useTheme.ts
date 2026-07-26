@@ -2,10 +2,6 @@ import { useCallback, useEffect, useState } from 'react'
 import type { ThemeId } from '@shared/ipc'
 import { resolveTheme } from '@shared/theme'
 
-/**
- * Visual theme only — persistence lives in useSettings.update so Settings UI
- * stays in sync with the controlled theme menu.
- */
 export function useTheme(initial: ThemeId = 'system') {
   const [theme, setThemeState] = useState<ThemeId>(initial)
   const [resolved, setResolved] = useState<'light' | 'dark'>('light')

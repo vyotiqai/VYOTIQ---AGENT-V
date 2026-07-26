@@ -28,7 +28,6 @@ import { UserPrompt } from './UserPrompt'
 import { MarkdownContent } from '@renderer/lib/ui'
 
 const NEAR_BOTTOM_PX = 80
-/** Virtualize long transcripts to avoid O(n) renders per stream delta. */
 export const VIRTUALIZE_THRESHOLD = 40
 /** Stay virtualized until count drops below this (hysteresis avoids mode flips). */
 export const VIRTUALIZE_RELEASE_THRESHOLD = 30
@@ -184,8 +183,6 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
     <ToolCard
       item={row.item}
       expanded={row.item.toolExpanded}
-      // Without a host that persists the choice the card owns its own state,
-      // so it still opens instead of swallowing the click.
       onToggle={onToolToggle ? (next) => onToolToggle(row.item.id, next) : undefined}
       onLoadFullContent={onLoadToolContent}
     />

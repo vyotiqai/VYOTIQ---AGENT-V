@@ -159,7 +159,6 @@ export function updateStatus(dir: string, patch: Partial<RunStatus>): void {
     const parsed = RunStatusSchema.safeParse(raw)
     if (parsed.success) current = parsed.data
   } catch {
-    // keep default
   }
   const next: RunStatus = {
     ...current,
@@ -322,7 +321,6 @@ async function collectRunsFromRoot(root: string): Promise<RunSummary[]> {
         goal: status.goal
       })
     } catch {
-      // skip
     }
   }
   return summaries

@@ -2,7 +2,6 @@ export type FenceOpen = { char: '`' | '~'; length: number }
 
 type ParsedFenceLine = { open: FenceOpen; isCloser: boolean; indent: string }
 
-/** Parse a line that may start an indented CommonMark fence (up to 3 spaces). */
 export function parseFenceLine(line: string): ParsedFenceLine | null {
   const match = /^ {0,3}(`{3,}|~{3,})([^\S\n]*)(.*)$/.exec(line)
   if (!match) return null
@@ -22,7 +21,6 @@ function isFenceCloser(line: string, open: FenceOpen): boolean {
   return parsed.open.char === open.char && parsed.open.length >= open.length
 }
 
-/** Walk lines and return the still-open fence, if any. */
 export function scanOpenFence(content: string): FenceOpen | null {
   const lines = content.split('\n')
   let open: FenceOpen | null = null
@@ -42,7 +40,6 @@ export function scanOpenFence(content: string): FenceOpen | null {
   return open
 }
 
-/** Body of the fence still streaming, or null when every fence is closed. */
 export function trailingOpenFenceBody(content: string): string | null {
   const lines = content.split('\n')
   let open: FenceOpen | null = null

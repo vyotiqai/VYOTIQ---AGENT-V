@@ -22,7 +22,6 @@ export type ToolGroupProps = {
   state: ToolGroupState
   nestedTools: ToolGroupNestedTool[]
   summary: string
-  /** Header verb derived from what the group actually did. */
   runningLabel: string
   doneLabel: string
   elapsedMs: number | null
@@ -57,7 +56,6 @@ function toolCategory(name: string): ToolGroupCategory {
   return 'file'
 }
 
-/** A group of one kind of work names that work; a mixed group is exploration. */
 function groupLabels(
   tools: ToolGroupNestedTool[],
   names: string[]
@@ -163,9 +161,6 @@ function isInterrupted(tools: UiToolRow[]): boolean {
 }
 
 function deriveState(tools: UiToolRow[], groupTiming: UiGroupTiming | undefined): ToolGroupState {
-  // Only this group's own tools decide whether it is still working. Keying off the
-  // run-wide running flag kept every group with unclosed timing on "Exploring" for the
-  // rest of the turn, long after its tools had finished.
   const hasRunning = tools.some((tool) => tool.status === 'running')
   if (hasRunning && groupTiming?.endedAt == null) return 'pending'
   if (isInterrupted(tools)) return 'interrupted'
@@ -189,8 +184,6 @@ export function mapToolGroupProps(
   const state = deriveState(tools, options.groupTiming)
   const { groupTiming } = options
 
-  // A finished group with timing that was never closed must not keep ticking up
-  // on every re-render — report nothing rather than an invented duration.
   let elapsedMs: number | null = null
   if (groupTiming?.startedAt != null) {
     if (groupTiming.endedAt != null) elapsedMs = groupTiming.endedAt - groupTiming.startedAt

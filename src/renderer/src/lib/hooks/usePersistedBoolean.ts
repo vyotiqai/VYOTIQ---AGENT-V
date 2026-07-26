@@ -1,6 +1,5 @@
 import { useCallback, useState } from 'react'
 
-/** Persist a boolean in localStorage; falls back to `initial` when missing/invalid. */
 export function usePersistedBoolean(
   key: string,
   initial = false

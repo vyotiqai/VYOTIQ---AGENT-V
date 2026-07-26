@@ -1,6 +1,5 @@
 import { defaultSchema } from 'rehype-sanitize'
 
-/** Markdown body sanitization — highlighted code uses `sanitizeHighlightedHtml` instead. */
 export const markdownSanitizeSchema = defaultSchema
 
 const ALLOWED_TAGS = new Set([

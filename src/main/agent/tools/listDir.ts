@@ -17,7 +17,6 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}M`
 }
 
-/** List one directory level, skipping ignored and gitignored entries. */
 export function toolListDir(workspaceRoot: string, pathArg = '.', cap = DEFAULT_CAP): string {
   const relDir = normalizeRelDir(pathArg)
   const resolved = assertInsideWorkspace(workspaceRoot, relDir || '.')

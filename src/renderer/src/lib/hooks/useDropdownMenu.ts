@@ -9,7 +9,6 @@ import {
 
 const DROPDOWN_GAP_PX = 6
 const VIEWPORT_PAD_PX = 8
-/** Fallback when the panel has not measured yet. */
 const DEFAULT_MENU_HEIGHT_PX = 120
 
 export type DropdownPlacement = 'up' | 'down'

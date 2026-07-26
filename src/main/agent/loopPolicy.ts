@@ -1,7 +1,5 @@
-/** After this many consecutive all-failure tool steps, run read-only tools one at a time. */
 export const CONSECUTIVE_TOOL_FAILURE_SERIAL_THRESHOLD = 2
 
-/** After this many consecutive all-failure tool steps, inject a run notice into system context. */
 export const CONSECUTIVE_TOOL_FAILURE_HINT_THRESHOLD = 3
 
 export function loopHintForConsecutiveFailures(streak: number): string | undefined {

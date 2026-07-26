@@ -6,7 +6,6 @@ import { workspaceId, workspaceMetaDir } from '../storage/paths'
 
 const FALLBACK_ONELINER = 'You are Vyotiq, a helpful coding agent.'
 
-/** Bundled system harness — the only authoritative copy. */
 export function getHarnessPath(): string {
   if (app.isPackaged) {
     return join(process.resourcesPath, 'harness', 'default.md')

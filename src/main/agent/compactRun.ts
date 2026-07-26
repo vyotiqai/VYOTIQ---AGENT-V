@@ -15,10 +15,8 @@ import { getProvider, listProviderModels } from './providers'
 import { loadCompaction, loadMessages, runExists, saveCompaction } from './state'
 import { resolveRunDir } from '@main/storage/paths'
 
-/** A manual compaction should not hang the UI on an unresponsive provider. */
 const COMPACT_TIMEOUT_MS = 120_000
 
-/** Below this there is nothing meaningful to summarize. */
 const MIN_MESSAGES_TO_COMPACT = 4
 
 export class CompactionUnavailableError extends Error {}
@@ -35,7 +33,6 @@ async function resolveModel(
     const found = listed.models.find((m) => m.id === modelId)
     if (found) return found
   } catch {
-    // Falling back to the seed catalog is better than failing the compaction.
   }
   const seed = seedModelsFor(providerId).find((m) => m.id === modelId)
   if (seed) return seed
@@ -51,11 +48,6 @@ async function resolveModel(
   }
 }
 
-/**
- * Summarize a run's history on demand. Unlike automatic compaction this ignores
- * the trigger threshold, but it still only folds the prefix — the recent turns
- * the user is actively working with stay verbatim.
- */
 export async function compactRunNow(input: {
   workspacePath: string
   runId: string

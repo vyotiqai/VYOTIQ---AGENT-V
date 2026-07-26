@@ -307,8 +307,6 @@ export async function* runAgent(input: {
     let lastUsage: TokenUsage | undefined
 
     const approvalSettings = settings.toolApproval ?? DEFAULT_SETTINGS.toolApproval
-    // Off is the default, and building a gate then would park nothing — skip it
-    // so the common path never touches the approval machinery.
     const approvalGate =
       approvalSettings.mode === 'off'
         ? undefined

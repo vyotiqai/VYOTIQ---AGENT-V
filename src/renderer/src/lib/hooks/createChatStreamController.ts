@@ -46,7 +46,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** Prefer event.code from main; fall back for older events without a code. */
 function agentErrorCode(event: Extract<AgentEvent, { type: 'error' }>): string {
   if (event.code) return event.code
   if (/^Stopped after \d+ steps/i.test(event.message)) return 'AGENT_MAX_STEPS'
@@ -235,7 +234,6 @@ function ensureToolRowsForCalls(
   return next
 }
 
-/** Close a live trailing tool stretch once every tool in it has finished. */
 function closeTrailingGroupIfIdle(items: UiItem[], endedAt = Date.now()): UiItem[] {
   const start = trailingLiveToolGroupStart(items)
   if (start < 0) return items
@@ -321,7 +319,6 @@ function replaceAt(items: UiItem[], index: number, next: UiItem): UiItem[] {
   return copy
 }
 
-/** Drop pending approval prompts, either one answered or all of them. */
 function clearApprovals(items: UiItem[], requestId?: string): UiItem[] {
   let changed = false
   const next = items.map((item) => {
@@ -334,7 +331,6 @@ function clearApprovals(items: UiItem[], requestId?: string): UiItem[] {
   return changed ? next : items
 }
 
-/** Search from the tail: the row a delta targets is almost always the last one. */
 function findMessageIndex(items: UiItem[], id: string): number {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
@@ -366,7 +362,6 @@ function findToolResultRowIndex(items: UiItem[], toolCallId: string, name: strin
     const item = items[idx]
     if (item.kind === 'tool' && item.tool.name === name) return idx
   }
-  // Only adopt an unrelated row when there is no ambiguity about which one is live.
   if (running.length === 1) return running[0]
   return -1
 }
@@ -401,7 +396,6 @@ function hydrateFromDisk(kept: ChatMessage[], events: PersistedEvent[]) {
   }
 }
 
-/** A turn that ended before the work was finished, offering a Continue affordance. */
 export type IncompleteTurnState = {
   reason: IncompleteReason
   message: string
@@ -475,8 +469,6 @@ export function createChatStreamController(
   let awaitingRun = false
   let pendingCancel = false
   let ignoreStreamEvents = false
-  // A run is reused across turns, so runId alone cannot separate the live turn from a
-  // prior one still draining. Events carry the invoke that produced them.
   let activeInvokeId: number | null = null
   const supersededInvokeIds = new Set<number>()
   let disposed = false
@@ -796,8 +788,6 @@ export function createChatStreamController(
       assistantId = null
       reasoningSegmentBreak = true
       const messageAt = new Date().toISOString()
-      // Keep same-turn tool stretches live when this message still has toolCalls.
-      // Only close when this is a text-only follow-up (next iteration / final answer).
       const base = event.toolCalls?.length
         ? state.items
         : closeOpenGroupTimings(state.items)
@@ -844,8 +834,6 @@ export function createChatStreamController(
           at: messageAt
         })
       }
-      // The step is over. Whatever the model reasons about next belongs beside
-      // the calls that reasoning leads to, not appended to the step just closed.
       reasoningId = null
       const nextMessages = appendAssistantWithTools(
         state.messages,
@@ -915,7 +903,6 @@ export function createChatStreamController(
             ? withCanonicalToolId(
                 {
                   ...item,
-                  // The call is settled, so any prompt it was waiting on is moot.
                   approval: undefined,
                   tool: {
                     ...item.tool,
@@ -982,7 +969,6 @@ export function createChatStreamController(
         error: event.message
       })
     } else if (event.type === 'stream_reset') {
-      // Drop the aborted attempt's output so the retry does not append to it.
       pendingTextDelta = ''
       pendingThinkingDelta = ''
       const discardIds = new Set([assistantId, reasoningId].filter((id): id is string => !!id))
