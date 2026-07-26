@@ -1,0 +1,117 @@
+import { describe, expect, it } from 'vitest'
+import { deriveRunActivity, formatRunActivityLabel } from '@renderer/features/chat/utils/runActivity'
+import type { TranscriptRow } from '@renderer/features/chat/utils/transcriptRows'
+
+function thinkingRow(thinkingStreaming: boolean): TranscriptRow {
+  return {
+    kind: 'thinking',
+    id: 'think-1',
+    turnIndex: 0,
+    item: {
+      kind: 'message',
+      id: 'a1',
+      role: 'assistant',
+      content: '',
+      thinking: 'Let me think.',
+      thinkingStreaming
+    }
+  }
+}
+
+function textRow(streaming: boolean): TranscriptRow {
+  return {
+    kind: 'text',
+    id: 'text-1',
+    turnIndex: 0,
+    final: false,
+    item: {
+      kind: 'message',
+      id: 'a1',
+      role: 'assistant',
+      content: 'Hello',
+      streaming
+    }
+  }
+}
+
+function cardRow(name: string, status: 'running' | 'done', summary: string): TranscriptRow {
+  return {
+    kind: 'card',
+    id: 'card-1',
+    turnIndex: 0,
+    item: {
+      kind: 'tool',
+      id: 't1',
+      tool: { id: 't1', name, summary, status }
+    }
+  }
+}
+
+function activityRow(
+  tools: Array<{ id: string; name: string; summary: string; status: 'running' | 'done' }>
+): TranscriptRow {
+  return {
+    kind: 'activity',
+    id: 'activity-1',
+    turnIndex: 0,
+    tools: tools.map((tool) => ({
+      kind: 'tool' as const,
+      id: tool.id,
+      tool: { id: tool.id, name: tool.name, summary: tool.summary, status: tool.status }
+    }))
+  }
+}
+
+describe('deriveRunActivity', () => {
+  it('prefers thinking over tools and writing', () => {
+    const phase = deriveRunActivity([
+      activityRow([{ id: 't1', name: 'grep', summary: 'foo', status: 'running' }]),
+      thinkingRow(true),
+      textRow(true)
+    ])
+    expect(phase).toEqual({ kind: 'thinking' })
+  })
+
+  it('prefers a prominent running card over compact activity and writing', () => {
+    const phase = deriveRunActivity([
+      activityRow([{ id: 't1', name: 'read', summary: 'a.ts', status: 'running' }]),
+      cardRow('edit', 'running', 'src/foo.ts'),
+      textRow(true)
+    ])
+    expect(phase).toEqual({ kind: 'tool', label: 'Editing', detail: 'foo.ts' })
+  })
+
+  it('uses compact activity labels when no prominent card is running', () => {
+    const phase = deriveRunActivity([
+      activityRow([{ id: 't1', name: 'grep', summary: 'pattern', status: 'running' }])
+    ])
+    expect(phase).toEqual({ kind: 'tool', label: 'Grepping', detail: 'pattern' })
+  })
+
+  it('reports writing when assistant text is streaming', () => {
+    const phase = deriveRunActivity([textRow(true)])
+    expect(phase).toEqual({ kind: 'writing' })
+  })
+
+  it('reports starting when pendingRun is true with no rows yet', () => {
+    expect(deriveRunActivity([], true)).toEqual({ kind: 'starting' })
+  })
+
+  it('reports starting as the active-turn fallback', () => {
+    expect(deriveRunActivity([])).toEqual({ kind: 'starting' })
+  })
+})
+
+describe('formatRunActivityLabel', () => {
+  it('joins tool verb and detail', () => {
+    expect(
+      formatRunActivityLabel({ kind: 'tool', label: 'Reading', detail: 'package.json' })
+    ).toBe('Reading package.json')
+  })
+
+  it('formats non-tool phases', () => {
+    expect(formatRunActivityLabel({ kind: 'thinking' })).toBe('Thinking')
+    expect(formatRunActivityLabel({ kind: 'writing' })).toBe('Writing')
+    expect(formatRunActivityLabel({ kind: 'starting' })).toBe('Starting')
+  })
+})

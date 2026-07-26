@@ -306,4 +306,52 @@ describe('buildTranscriptRows', () => {
     }
     expect(rows.filter((row) => row.kind === 'thinking')).toHaveLength(1)
   })
+
+  it('attaches tool activity to an active turn with a running tool', () => {
+    const running = tool('t1', 'read')
+    running.tool.status = 'running'
+    running.tool.summary = 'package.json'
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'go' },
+      running
+    ]
+    const summary = buildTranscriptRows(items).find((row) => row.kind === 'turn')
+    expect(summary?.kind).toBe('turn')
+    if (summary?.kind === 'turn') {
+      expect(summary.span.activity).toEqual({
+        kind: 'tool',
+        label: 'Reading',
+        detail: 'package.json'
+      })
+    }
+  })
+
+  it('attaches thinking activity while reasoning streams', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'go' },
+      {
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        content: '',
+        thinking: 'Let me reason about this carefully.',
+        thinkingStreaming: true
+      }
+    ]
+    const summary = buildTranscriptRows(items).find((row) => row.kind === 'turn')
+    if (summary?.kind === 'turn') {
+      expect(summary.span.activity).toEqual({ kind: 'thinking' })
+    }
+  })
+
+  it('shows a starting turn summary while pendingRun is true', () => {
+    const items: UiItem[] = [{ kind: 'message', id: 'u1', role: 'user', content: 'go' }]
+    const rows = buildTranscriptRows(items, { pendingRun: true })
+    const summary = rows.find((row) => row.kind === 'turn')
+    expect(summary?.kind).toBe('turn')
+    if (summary?.kind === 'turn') {
+      expect(summary.span.active).toBe(true)
+      expect(summary.span.activity).toEqual({ kind: 'starting' })
+    }
+  })
 })

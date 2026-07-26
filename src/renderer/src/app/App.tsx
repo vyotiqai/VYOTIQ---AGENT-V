@@ -410,6 +410,7 @@ export function App() {
             pendingMigrationCount={registry?.pendingMigrationCount}
             items={chat.items}
             running={chat.running}
+            pendingRun={chat.pendingRun}
             error={chatError}
             runNotice={chat.runNotice}
             incomplete={chat.incomplete}

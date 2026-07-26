@@ -59,6 +59,7 @@ describe('ToolGroup', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
     expect(screen.getByText('a.ts')).toBeTruthy()
     expect(screen.getByText('b.ts')).toBeTruthy()
+    expect(document.querySelectorAll('.vy-text-shimmer--active').length).toBeGreaterThan(1)
   })
 
   it('shows completed label and summary when group is closed', () => {

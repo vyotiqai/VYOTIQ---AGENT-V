@@ -90,7 +90,7 @@ export const CompactRow = memo(function CompactRow({
       onClick={onToggle}
     >
       <span className={cn('shrink-0 font-medium', status === 'fail' ? 'text-danger' : 'text-fg')}>
-        {title}
+        {status === 'running' ? <TextShimmer>{title}</TextShimmer> : title}
       </span>
       {subtitle ? (
         <span className="min-w-0 truncate text-tertiary" title={subtitle}>

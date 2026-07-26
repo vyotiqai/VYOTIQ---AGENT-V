@@ -7,6 +7,9 @@ import {
 } from '@shared/transcript'
 import { isProminentTool } from '../toolUi'
 import { collectWritingChanges } from '../toolUi/parsers/edit'
+import { deriveRunActivity, type RunActivityPhase } from './runActivity'
+
+export type { RunActivityPhase } from './runActivity'
 
 export type MessageItem = Extract<UiItem, { kind: 'message' }>
 export type UserItem = MessageItem & { role: 'user' }
@@ -35,6 +38,8 @@ export type TurnSpan = {
   endedAt: number | null
   /** Still producing output, so any duration is provisional. */
   active: boolean
+  /** What the agent is doing while the turn is active. */
+  activity?: RunActivityPhase | null
 }
 
 /**
@@ -69,7 +74,10 @@ export const TURN_GAP_PX = 24
  * where the reader can see it without opening anything. Assistant narration
  * stays where it happened, which also separates the groups on either side of it.
  */
-export function buildTranscriptRows(items: UiItem[]): TranscriptRow[] {
+export function buildTranscriptRows(
+  items: UiItem[],
+  options?: { pendingRun?: boolean }
+): TranscriptRow[] {
   const rows: TranscriptRow[] = []
   let turnIndex = -1
   let pending: ToolItem[] = []
@@ -171,7 +179,9 @@ export function buildTranscriptRows(items: UiItem[]): TranscriptRow[] {
   flush()
   // Turn summaries stand for the work rows, and which text row is the closing
   // answer decides what counts as work, so that has to be settled first.
-  return coalesceTurnWork(withChangeSummaries(withTurnSummaries(markFinalText(rows))))
+  return coalesceTurnWork(
+    withChangeSummaries(withTurnSummaries(markFinalText(rows), options?.pendingRun))
+  )
 }
 
 /** Tools that write files, and so contribute to a turn's change summary. */
@@ -301,8 +311,12 @@ function isRowActive(row: TranscriptRow): boolean {
  * the interval a reader means by "how long did that take" — not the sum of the
  * individual tool durations, which would exclude the model's own thinking.
  */
-function withTurnSummaries(rows: TranscriptRow[]): TranscriptRow[] {
+function withTurnSummaries(rows: TranscriptRow[], pendingRun?: boolean): TranscriptRow[] {
   const out: TranscriptRow[] = []
+  let maxTurnIndex = -1
+  for (const row of rows) {
+    if (row.kind === 'user') maxTurnIndex = Math.max(maxTurnIndex, row.turnIndex)
+  }
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i]!
@@ -313,7 +327,9 @@ function withTurnSummaries(rows: TranscriptRow[]): TranscriptRow[] {
     for (let j = i + 1; j < rows.length && rows[j]!.turnIndex === row.turnIndex; j++) {
       turn.push(rows[j]!)
     }
-    if (!turn.some(isTurnWorkRow)) continue
+    const isLastTurn = row.turnIndex === maxTurnIndex
+    const hasWork = turn.some(isTurnWorkRow)
+    if (!hasWork && !(pendingRun && isLastTurn)) continue
 
     const startedAt = toMs(row.item.at)
     let endedAt: number | null = null
@@ -324,11 +340,14 @@ function withTurnSummaries(rows: TranscriptRow[]): TranscriptRow[] {
       }
     }
 
+    const active = turn.some(isRowActive) || (pendingRun === true && isLastTurn)
+    const activity = active ? deriveRunActivity(turn, pendingRun && isLastTurn) : null
+
     out.push({
       kind: 'turn',
       id: `turn:${row.id}`,
       turnIndex: row.turnIndex,
-      span: { startedAt, endedAt, active: turn.some(isRowActive) }
+      span: { startedAt, endedAt, active, activity }
     })
   }
 

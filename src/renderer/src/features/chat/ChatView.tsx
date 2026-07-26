@@ -71,6 +71,7 @@ export function ChatView({
   pendingMigrationCount,
   items,
   running,
+  pendingRun = false,
   error,
   runNotice,
   incomplete,
@@ -122,6 +123,7 @@ export function ChatView({
   pendingMigrationCount?: number
   items: UiItem[]
   running: boolean
+  pendingRun?: boolean
   error: string | null
   runNotice?: string | null
   incomplete?: import('@renderer/lib/hooks/createChatStreamController').IncompleteTurnState | null
@@ -303,6 +305,7 @@ export function ChatView({
             <MessageList
               key={`transcript:${surfaceKey}`}
               items={items}
+              pendingRun={pendingRun}
               reserveComposerSpace
               dockReservePx={dockReservePx}
               restoreScrollTop={restoreScrollTop}

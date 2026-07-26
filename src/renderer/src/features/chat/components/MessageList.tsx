@@ -207,7 +207,8 @@ export function MessageList({
   onApprovalDecision,
   collapsedTurns,
   showThinking = true,
-  mcpServerNames
+  mcpServerNames,
+  pendingRun = false
 }: {
   items: UiItem[]
   reserveComposerSpace?: boolean
@@ -226,6 +227,7 @@ export function MessageList({
   collapsedTurns?: ReadonlySet<number>
   showThinking?: boolean
   mcpServerNames?: ReadonlyMap<string, string>
+  pendingRun?: boolean
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const appliedRestoreRef = useRef<number | null>(null)
@@ -245,7 +247,10 @@ export function MessageList({
   const prevStructuralKeyRef = useRef<string | null>(null)
 
   const itemsStructuralKey = useMemo(() => structuralKey(items), [items])
-  const allRows = useMemo(() => buildTranscriptRows(items), [items])
+  const allRows = useMemo(
+    () => buildTranscriptRows(items, { pendingRun }),
+    [items, pendingRun]
+  )
   const displayRows = useMemo(() => {
     let rows = allRows
     if (!showThinking) rows = rows.filter((row) => row.kind !== 'thinking')

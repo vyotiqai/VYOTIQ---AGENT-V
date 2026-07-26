@@ -4,6 +4,7 @@ import { cn } from '@renderer/lib/ui'
 import { DISCLOSURE_ROW } from '@renderer/lib/utils/layout'
 import { formatElapsed } from '@shared/utils/timeFormat'
 import type { TurnSpan } from '../utils/transcriptRows'
+import { formatRunActivityLabel } from '../utils/runActivity'
 import { TextShimmer } from './TextShimmer'
 
 /** Below this the duration is noise; the turn was effectively instant. */
@@ -20,7 +21,7 @@ export const TurnSummary = memo(function TurnSummary({
   panelId?: string
   onToggle: () => void
 }) {
-  const { startedAt, endedAt, active } = span
+  const { startedAt, endedAt, active, activity } = span
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -34,13 +35,9 @@ export const TurnSummary = memo(function TurnSummary({
     startedAt == null ? null : active ? now - startedAt : endedAt == null ? null : endedAt - startedAt
 
   const duration = elapsedMs != null && elapsedMs >= MIN_REPORTABLE_MS ? formatElapsed(elapsedMs) : ''
-  const label = active
-    ? duration
-      ? `Working for ${duration}`
-      : 'Working'
-    : duration
-      ? `Worked for ${duration}`
-      : 'Worked'
+  const phaseLabel = activity ? formatRunActivityLabel(activity) : 'Working'
+  const activeLabel = duration ? `${phaseLabel} · ${duration}` : phaseLabel
+  const doneLabel = duration ? `Worked for ${duration}` : 'Worked'
 
   return (
     <button
@@ -51,9 +48,15 @@ export const TurnSummary = memo(function TurnSummary({
       onClick={onToggle}
     >
       {active ? (
-        <TextShimmer className="shrink-0">{label}</TextShimmer>
+        <>
+          <span
+            className="size-1.5 shrink-0 rounded-full bg-secondary motion-safe:animate-pulse"
+            aria-hidden
+          />
+          <TextShimmer className="shrink-0">{activeLabel}</TextShimmer>
+        </>
       ) : (
-        <span className="shrink-0 tabular-nums">{label}</span>
+        <span className="shrink-0 tabular-nums">{doneLabel}</span>
       )}
       <Icon
         name="chevronRight"
