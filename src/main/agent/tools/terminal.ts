@@ -156,31 +156,14 @@ export function isFindstrNoMatch(
   return stdout.trim().length === 0
 }
 
-/** Strip cwd header injected by toolTerminal before parsing exit metadata. */
-function stripTerminalCwdHeader(content: string): string {
-  return content.replace(/^cwd:.*\n\n?/m, '')
-}
+import { parseTerminalOutput } from '../../../shared/utils/terminalFormat'
 
 /** Parse terminal tool content for findstr no-match soft success. Exported for tests. */
 export function isFindstrNoMatchContent(command: string, content: string): boolean {
-  const body = stripTerminalCwdHeader(content)
-  const codeMatch = body.match(/exit_code:\s*(-?\d+)\b/)
-  if (!codeMatch) return false
-  const code = Number(codeMatch[1])
-  const stderrIdx = body.indexOf('stderr:\n')
-  let stdout = body
-  let stderr = ''
-  if (stderrIdx >= 0) {
-    stdout = body.slice(0, stderrIdx)
-    const after = body.slice(stderrIdx + 'stderr:\n'.length)
-    const exitIdx = after.search(/\nexit_code:\s*-?\d+\b/)
-    stderr = exitIdx >= 0 ? after.slice(0, exitIdx) : after.replace(/\nexit_code:\s*-?\d+\b.*$/s, '')
-  } else {
-    stdout = body.replace(/\n?exit_code:\s*-?\d+\b.*$/s, '')
-  }
-  // Strip our own soft-success annotation if present
-  stdout = stdout.replace(/^findstr: no matches\n?/m, '')
-  return isFindstrNoMatch(command, code, stdout, stderr)
+  const { stdout, stderr, exitCode } = parseTerminalOutput(content)
+  if (exitCode == null) return false
+  let cleanedStdout = stdout.replace(/^findstr: no matches\n?/m, '')
+  return isFindstrNoMatch(command, exitCode, cleanedStdout, stderr)
 }
 
 /**
@@ -205,23 +188,10 @@ export function isDirMissingPath(
 
 /** Parse terminal tool content for dir missing-path soft success. Exported for tests. */
 export function isDirMissingPathContent(command: string, content: string): boolean {
-  const body = stripTerminalCwdHeader(content)
-  const codeMatch = body.match(/exit_code:\s*(-?\d+)\b/)
-  if (!codeMatch) return false
-  const code = Number(codeMatch[1])
-  const stderrIdx = body.indexOf('stderr:\n')
-  let stdout = body
-  let stderr = ''
-  if (stderrIdx >= 0) {
-    stdout = body.slice(0, stderrIdx)
-    const after = body.slice(stderrIdx + 'stderr:\n'.length)
-    const exitIdx = after.search(/\nexit_code:\s*-?\d+\b/)
-    stderr = exitIdx >= 0 ? after.slice(0, exitIdx) : after.replace(/\nexit_code:\s*-?\d+\b.*$/s, '')
-  } else {
-    stdout = body.replace(/\n?exit_code:\s*-?\d+\b.*$/s, '')
-  }
-  stdout = stdout.replace(/^dir: path not found\n?/m, '')
-  return isDirMissingPath(command, code, stdout, stderr)
+  const { stdout, stderr, exitCode } = parseTerminalOutput(content)
+  if (exitCode == null) return false
+  const cleanedStdout = stdout.replace(/^dir: path not found\n?/m, '')
+  return isDirMissingPath(command, exitCode, cleanedStdout, stderr)
 }
 
 function formatTerminalOutput(

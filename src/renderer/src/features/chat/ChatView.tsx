@@ -109,9 +109,12 @@ export function ChatView({
   onThinkingToggle,
   onToolToggle,
   onGroupToggle,
+  onTurnToggle,
   onApprovalDecision,
+  collapsedTurns,
   showThinking = true,
-  chatSurfaceEpoch = 0
+  chatSurfaceEpoch = 0,
+  mcpServerNames
 }: {
   hasOpenWorkspaces: boolean
   recentPaths: string[]
@@ -161,8 +164,11 @@ export function ChatView({
   onThinkingToggle?: (messageId: string, expanded: boolean) => void
   onToolToggle?: (toolCallId: string, expanded: boolean) => void
   onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
+  onTurnToggle?: (turnIndex: number) => void
   onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
+  collapsedTurns?: ReadonlySet<number>
   showThinking?: boolean
+  mcpServerNames?: ReadonlyMap<string, string>
   /**
    * Bumps on workspace / run-tab switches (not draft→run id assignment) so the
    * transcript and composer remount without clearing mid-send attachments.
@@ -213,6 +219,7 @@ export function ChatView({
     modelsRefreshKey,
     draft: composerDraft,
     onDraftChange: onComposerDraftChange,
+    workspacePath,
     onProviderModel,
     favoriteModels,
     recentModels,
@@ -305,8 +312,11 @@ export function ChatView({
               onThinkingToggle={onThinkingToggle}
               onToolToggle={onToolToggle}
               onGroupToggle={onGroupToggle}
+              onTurnToggle={onTurnToggle}
               onApprovalDecision={onApprovalDecision}
+              collapsedTurns={collapsedTurns}
               showThinking={showThinking}
+              mcpServerNames={mcpServerNames}
             />
 
             <Composer

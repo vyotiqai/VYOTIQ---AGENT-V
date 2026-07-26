@@ -1,3 +1,11 @@
+import {
+  extractPathFromTerminalCommand,
+  formatListDirPathLabel,
+  formatPathLabel,
+  sanitizeCommandForDisplay,
+  sanitizeDisplayPath
+} from './displayPath'
+
 export const MCP_TOOL_PREFIX = 'mcp__'
 
 export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
@@ -46,19 +54,32 @@ export function parseArgsRecord(args: string | undefined): Record<string, unknow
   }
 }
 
+function firstStringArg(args: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = args[key]
+    if (typeof value === 'string' && value.trim()) return value
+  }
+  return ''
+}
+
+function formatPathTarget(path: string): string {
+  return truncate(formatPathLabel(sanitizeDisplayPath(path)))
+}
+
 export function normalizeToolTarget(name: string, args: Record<string, unknown> | null): string {
   if (!args) return ''
   if (name === 'read' || name === 'edit' || name === 'delete') {
     const path = args.path ?? args.file
-    if (typeof path === 'string') return path
+    if (typeof path === 'string') return formatPathTarget(path)
   }
   if (name === 'list_dir') {
     const path = args.path
-    return typeof path === 'string' && path.trim() ? path : '.'
+    const raw = typeof path === 'string' && path.trim() ? path : '.'
+    return truncate(formatListDirPathLabel(raw))
   }
   if (name === 'search' || name === 'glob' || name === 'grep') {
     const query = args.query ?? args.pattern
-    if (typeof query === 'string') return query
+    if (typeof query === 'string') return truncate(query)
   }
   if (name === 'multi_edit') {
     const edits = args.edits
@@ -68,7 +89,7 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
           edit && typeof edit === 'object' ? (edit as { path?: unknown }).path : undefined
         )
         .filter((path): path is string => typeof path === 'string')
-      if (paths.length) return paths.join(', ')
+      if (paths.length) return truncate(paths.map((p) => formatPathLabel(p)).join(', '))
     }
   }
   if (name === 'todo_write') {
@@ -77,23 +98,59 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
   }
   if (name === 'web_fetch') {
     const url = args.url
-    if (typeof url === 'string') return url
+    if (typeof url === 'string') return truncate(url)
   }
   if (name === 'subagent') {
     const task = args.task
-    if (typeof task === 'string') return task
+    if (typeof task === 'string') return truncate(task)
   }
   if (name === 'terminal') {
     const command = args.command ?? args.cmd
-    if (typeof command === 'string') return command
+    if (typeof command === 'string') {
+      const path = extractPathFromTerminalCommand(command)
+      if (path) return formatPathTarget(path)
+      return truncate(sanitizeCommandForDisplay(command))
+    }
   }
   if (name === 'memory_read' || name === 'memory_write' || name === 'memory_list') {
     const path = args.path ?? args.note
-    if (typeof path === 'string') return path
+    if (typeof path === 'string') return truncate(path)
   }
+
+  const mcp = parseMcpToolDisplay(name)
+  if (mcp) {
+    const pathLike = firstStringArg(args, [
+      'path',
+      'file_path',
+      'filePath',
+      'filepath',
+      'directory',
+      'dir',
+      'root',
+      'uri',
+      'url',
+      'target'
+    ])
+    if (pathLike) return formatPathTarget(pathLike)
+    const query = firstStringArg(args, ['query', 'pattern', 'search', 'glob'])
+    if (query) return truncate(query)
+    const command = firstStringArg(args, ['command', 'cmd'])
+    if (command) return truncate(sanitizeCommandForDisplay(command))
+  }
+
+  const path = args.path ?? args.directory ?? args.root ?? args.workspace
+  if (typeof path === 'string' && path.trim()) return formatPathTarget(path)
   const query = args.query
-  if (typeof query === 'string') return query
+  if (typeof query === 'string') return truncate(query)
   return ''
+}
+
+function genericFallbackLabel(name: string): string {
+  const labels = TOOL_LABELS[name]
+  if (labels) return labels.done.toLowerCase()
+  const mcp = parseMcpToolDisplay(name)
+  if (mcp) return mcp.toolName.replace(/_/g, ' ')
+  return 'tool call'
 }
 
 export function summarizeToolArgsFromRecord(
@@ -101,14 +158,9 @@ export function summarizeToolArgsFromRecord(
   args: Record<string, unknown>
 ): string {
   const target = normalizeToolTarget(name, args)
-  if (target) return truncate(target)
-  const keys = Object.keys(args)
-  if (keys.length === 0) return ''
-  try {
-    return truncate(JSON.stringify(args))
-  } catch {
-    return ''
-  }
+  if (target) return target
+  if (Object.keys(args).length === 0) return ''
+  return truncate(genericFallbackLabel(name))
 }
 
 export function summarizeToolArgs(name: string, args: string | undefined): string {
@@ -117,13 +169,16 @@ export function summarizeToolArgs(name: string, args: string | undefined): strin
     const fromRecord = summarizeToolArgsFromRecord(name, parsed)
     if (fromRecord) return fromRecord
   }
-  if (args?.trim()) return truncate(args.replace(/\s+/g, ' '))
+  if (args?.trim()) {
+    const trimmed = args.trim()
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) return truncate(genericFallbackLabel(name))
+    return truncate(trimmed.replace(/\s+/g, ' '))
+  }
   return ''
 }
 
 export function mcpToolSummary(toolName: string, args: Record<string, unknown>): string {
   const target = normalizeToolTarget(`mcp__x__${toolName}`, args)
-  if (target) return truncate(target)
-  return toolName
+  if (target) return target
+  return ''
 }
-

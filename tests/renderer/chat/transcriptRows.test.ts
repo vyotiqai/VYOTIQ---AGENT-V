@@ -283,4 +283,27 @@ describe('buildTranscriptRows', () => {
       expect(rows[0].item.content).toBe('Verified the routes.')
     }
   })
+
+  it('coalesces activity batches split by thinking within a turn', () => {
+    const items: UiItem[] = [
+      tool('r1', 'read'),
+      tool('r2', 'read'),
+      {
+        kind: 'message',
+        id: 'm1',
+        role: 'assistant',
+        thinking: 'mapping the tree',
+        content: ''
+      },
+      tool('r3', 'read'),
+      tool('r4', 'read')
+    ]
+    const rows = buildTranscriptRows(items)
+    const activities = rows.filter((row) => row.kind === 'activity')
+    expect(activities).toHaveLength(1)
+    if (activities[0]?.kind === 'activity') {
+      expect(activities[0].tools).toHaveLength(4)
+    }
+    expect(rows.filter((row) => row.kind === 'thinking')).toHaveLength(1)
+  })
 })

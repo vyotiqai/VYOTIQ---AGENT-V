@@ -31,6 +31,9 @@ export const SETTINGS_COLUMN = `mx-auto w-full ${SETTINGS_COLUMN_MAX}`
  */
 export const TRANSCRIPT_ROW_GAP = 'pb-2'
 
+/** Extra breathing room around tool activity and reasoning rows. */
+export const TRANSCRIPT_WORK_ROW_GAP = 'pb-3'
+
 /** Lead-in above a user prompt that opens a new turn. */
 export const TRANSCRIPT_TURN_GAP = 'pt-6'
 
@@ -43,13 +46,22 @@ export const ACTIVITY_ROW = 'text-xs tracking-[var(--vy-tracking)]'
 
 /** One line of a disclosure list: label, detail, trailing meta. */
 export const DISCLOSURE_ROW =
-  'flex min-w-0 items-baseline gap-1.5 rounded-sm py-1 text-xs vy-transition hover:opacity-80'
+  'flex min-w-0 items-baseline gap-1.5 rounded-sm py-1.5 text-xs vy-transition hover:opacity-80'
 
 /** Tool card chrome. */
 export const TOOL_CARD_SURFACE = 'overflow-hidden rounded-lg border border-border'
 export const TOOL_CARD_HEADER = 'px-3 py-2 text-xs'
 /** Body content owns its own padding so a diff can run edge to edge. */
 export const TOOL_CARD_BODY = 'overflow-hidden border-t border-border bg-surface'
+
+/** Collapsed prominent tool body height before fade mask. */
+export const TOOL_BODY_CLAMP_PX = 168
+
+/** Standard inner padding for tool body content. */
+export const TOOL_BODY_PAD = 'px-3 py-2'
+
+/** Scrollable inner region inside a tool body. */
+export const TOOL_BODY_INNER = 'px-3 py-1.5'
 
 /** Subtle floating surface shared by docked composer. */
 export const FLOATING_CHROME =

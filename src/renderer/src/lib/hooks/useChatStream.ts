@@ -62,6 +62,7 @@ export function useChatStream(workspacePath: string | null) {
     runTerminalTick: controller.runTerminalTick,
     pendingRun: controller.pendingRun,
     transcriptLoading: controller.transcriptLoading,
+    collapsedTurnIndices: controller.collapsedTurnIndices,
     clearError: controller.clearError.bind(controller),
     send: controller.send.bind(controller),
     stop: controller.stop.bind(controller),
@@ -70,6 +71,7 @@ export function useChatStream(workspacePath: string | null) {
     hydrateTranscript: controller.hydrateTranscript.bind(controller),
     syncFromDisk: controller.syncFromDisk.bind(controller),
     loadToolContent: controller.loadToolContent.bind(controller),
+    toggleTurnCollapsed: controller.toggleTurnCollapsed.bind(controller),
     handleApprovalRequest: controller.handleApprovalRequest.bind(controller),
     respondToApproval: controller.respondToApproval.bind(controller)
   }

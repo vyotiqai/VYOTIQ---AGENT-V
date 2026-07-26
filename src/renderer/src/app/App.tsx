@@ -1,11 +1,12 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AppShell } from './AppShell'
 import { ChatView } from '../features/chat/ChatView'
 import { SettingsView, type SettingsSection } from '../features/settings'
 import { useTheme } from '@renderer/lib/hooks/useTheme'
 import { useSettings } from '@renderer/lib/hooks/useSettings'
 import { useWorkspaceManager } from '@renderer/lib/hooks/useWorkspaceManager'
-import type { ProviderId, SecretProvider, ServiceTier } from '@shared/ipc'
+import { ErrorBoundary } from '@renderer/lib/ErrorBoundary'
+import type { ProviderId, SecretProvider, ServiceTier, AttachedFile } from '@shared/ipc'
 import { defaultModelFor } from '@shared/providers'
 import {
   resolveEffectiveSettings,
@@ -41,10 +42,16 @@ export function App() {
     activeWorkspace,
     openWorkspaces,
     activeContext,
-    activeController,
     activeRuns,
     chat,
     chatActions,
+    onLoadToolContent,
+    onThinkingToggle,
+    onToolToggle,
+    onGroupToggle,
+    onTurnToggle,
+    onApprovalDecision,
+    collapsedTurns,
     openRunTab,
     closeRunTab,
     setSessionQuery,
@@ -220,7 +227,45 @@ export function App() {
     })
   }
 
+  const chatActionsRef = useRef(chatActions)
+  chatActionsRef.current = chatActions
+
+  const onChatSend = useCallback(
+    async (text: string, images?: string[], files?: AttachedFile[]) =>
+      chatActionsRef.current?.send(text, images, files) ?? false,
+    []
+  )
+
+  const onChatStop = useCallback(() => {
+    void chatActionsRef.current?.stop()
+  }, [])
+
+  const onChatContinue = useCallback(() => {
+    void chatActionsRef.current?.send(CONTINUE_PROMPT)
+  }, [])
+
+  const activeRunId = chat.runId
+  const onCompactContext = useCallback(async () => {
+    if (!activeWorkspace || !activeRunId) {
+      return { ok: false as const, message: 'Compaction is unavailable.' }
+    }
+    const res = await window.vyotiq.chatCompact(activeWorkspace, activeRunId)
+    if (!res.ok) return { ok: false as const, message: res.error }
+    return {
+      ok: true as const,
+      message: `Summarized ${res.data.messagesBefore - res.data.keptMessages} messages; ${res.data.keptMessages} kept verbatim.`
+    }
+  }, [activeWorkspace, activeRunId])
+
   const operationalError = settingsError ?? workspaceError
+
+  const mcpServerNames = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const server of settings.mcpServers) {
+      map.set(server.id, server.name.trim() || server.id)
+    }
+    return map
+  }, [settings.mcpServers])
 
   const onDismissChatBanner = (): void => {
     setSettingsError(null)
@@ -311,7 +356,7 @@ export function App() {
       runsError={activeContext?.runsError}
       onDismissRunsError={clearRunsError}
       activeRunId={activeContext?.activeRunId ?? chat.runId}
-      sessionQuery={activeContext?.sessionQuery ?? ''}
+      sessionQuery=""
       harnessActive={harnessActive}
       onSessionQuery={setSessionQuery}
       onOpenSettings={() => setView('settings')}
@@ -357,88 +402,59 @@ export function App() {
           onModelsRefreshed={() => setModelsRefreshNonce((n) => n + 1)}
         />
       ) : (
-        <ChatView
-          hasOpenWorkspaces={openWorkspaces.length > 0}
-          recentPaths={registry?.recentPaths ?? []}
-          needsWorkspaceForMigration={registry?.needsWorkspaceForMigration}
-          pendingMigrationCount={registry?.pendingMigrationCount}
-          items={chat.items}
-          running={chat.running}
-          error={chatError}
-          runNotice={chat.runNotice}
-          incomplete={chat.incomplete}
-          onContinue={() => void chatActions?.send(CONTINUE_PROMPT)}
-          contextUsage={chat.contextUsage}
-          onCompactContext={
-            activeWorkspace && chat.runId
-              ? async () => {
-                  const res = await window.vyotiq.chatCompact(activeWorkspace, chat.runId!)
-                  if (!res.ok) return { ok: false as const, message: res.error }
-                  return {
-                    ok: true as const,
-                    message: `Summarized ${res.data.messagesBefore - res.data.keptMessages} messages; ${res.data.keptMessages} kept verbatim.`
-                  }
-                }
-              : undefined
-          }
-          operationalError={operationalError}
-          hasWorkspace={Boolean(activeWorkspace)}
-          workspacePath={activeWorkspace}
-          provider={effectiveChatSettings.provider}
-          model={effectiveChatSettings.model}
-          ollamaBaseUrl={settings.ollamaBaseUrl}
-          modelsRefreshKey={modelsRefreshKey}
-          activeRunId={chat.runId ?? activeContext?.activeRunId ?? null}
-          transcriptLoading={chat.transcriptLoading}
-          headingRef={chatHeadingRef}
-          onOpenRecent={onOpenRecent}
-          onAddWorkspace={onPickWorkspace}
-          onProviderModel={onProviderModel}
-          favoriteModels={settings.favoriteModels}
-          recentModels={settings.recentModels}
-          serviceTier={settings.serviceTier}
-          onToggleFavorite={onToggleFavorite}
-          onServiceTierChange={onServiceTierChange}
-          chatSettings={effectiveChatSettings}
-          onChatSettingsChange={onChatSettingsChange}
-          onSend={async (text, images, files) => {
-            return chatActions?.send(text, images, files) ?? false
-          }}
-          onStop={() => void chatActions?.stop()}
-          onDismissError={onDismissChatBanner}
-          composerDraft={activeContext?.ui.composerDraft}
-          onComposerDraftChange={setComposerDraft}
-          restoreScrollTop={activeScrollTop}
-          scrollRestoreToken={scrollRestoreToken}
-          onScrollTopChange={onMessageListScroll}
-          chatSurfaceEpoch={chatSurfaceEpoch}
-          showThinking={effectiveChatSettings.showThinking}
-          onLoadToolContent={
-            activeController
-              ? (toolCallId) => activeController.loadToolContent(toolCallId)
-              : undefined
-          }
-          onThinkingToggle={
-            activeController
-              ? (messageId, expanded) => activeController.setThinkingExpanded(messageId, expanded)
-              : undefined
-          }
-          onToolToggle={
-            activeController
-              ? (toolCallId, expanded) => activeController.setToolExpanded(toolCallId, expanded)
-              : undefined
-          }
-          onGroupToggle={
-            activeController
-              ? (anchorId, expanded) => activeController.setGroupExpanded(anchorId, expanded)
-              : undefined
-          }
-          onApprovalDecision={
-            activeController
-              ? (requestId, decision) => activeController.respondToApproval(requestId, decision)
-              : undefined
-          }
-        />
+        <ErrorBoundary title="Chat couldn't render" resetKey={chatSurfaceEpoch}>
+          <ChatView
+            hasOpenWorkspaces={openWorkspaces.length > 0}
+            recentPaths={registry?.recentPaths ?? []}
+            needsWorkspaceForMigration={registry?.needsWorkspaceForMigration}
+            pendingMigrationCount={registry?.pendingMigrationCount}
+            items={chat.items}
+            running={chat.running}
+            error={chatError}
+            runNotice={chat.runNotice}
+            incomplete={chat.incomplete}
+            onContinue={onChatContinue}
+            contextUsage={chat.contextUsage}
+            onCompactContext={activeWorkspace && activeRunId ? onCompactContext : undefined}
+            operationalError={operationalError}
+            hasWorkspace={Boolean(activeWorkspace)}
+            workspacePath={activeWorkspace}
+            provider={effectiveChatSettings.provider}
+            model={effectiveChatSettings.model}
+            ollamaBaseUrl={settings.ollamaBaseUrl}
+            modelsRefreshKey={modelsRefreshKey}
+            activeRunId={chat.runId ?? activeContext?.activeRunId ?? null}
+            transcriptLoading={chat.transcriptLoading}
+            headingRef={chatHeadingRef}
+            onOpenRecent={onOpenRecent}
+            onAddWorkspace={onPickWorkspace}
+            onProviderModel={onProviderModel}
+            favoriteModels={settings.favoriteModels}
+            recentModels={settings.recentModels}
+            serviceTier={settings.serviceTier}
+            onToggleFavorite={onToggleFavorite}
+            onServiceTierChange={onServiceTierChange}
+            chatSettings={effectiveChatSettings}
+            onChatSettingsChange={onChatSettingsChange}
+            onSend={onChatSend}
+            onStop={onChatStop}
+            onDismissError={onDismissChatBanner}
+            onComposerDraftChange={setComposerDraft}
+            restoreScrollTop={activeScrollTop}
+            scrollRestoreToken={scrollRestoreToken}
+            onScrollTopChange={onMessageListScroll}
+            chatSurfaceEpoch={chatSurfaceEpoch}
+            showThinking={effectiveChatSettings.showThinking}
+            onLoadToolContent={onLoadToolContent}
+            onThinkingToggle={onThinkingToggle}
+            onToolToggle={onToolToggle}
+            onGroupToggle={onGroupToggle}
+            onTurnToggle={onTurnToggle}
+            collapsedTurns={collapsedTurns}
+            onApprovalDecision={onApprovalDecision}
+            mcpServerNames={mcpServerNames}
+          />
+        </ErrorBoundary>
       )}
     </AppShell>
   )

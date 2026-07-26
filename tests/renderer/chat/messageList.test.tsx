@@ -53,7 +53,7 @@ describe('MessageList', () => {
     // Narration separates the two batches, so each keeps its own header.
     expect(screen.getAllByText('Read')).toHaveLength(2)
     expect(screen.getByText('2 files')).toBeTruthy()
-    expect(screen.getByText('1 file')).toBeTruthy()
+    expect(screen.getByText('beta-only.ts')).toBeTruthy()
 
     const body = document.querySelector('[data-transcript-scroll]')?.textContent ?? ''
     expect(body.indexOf('First look.')).toBeLessThan(body.indexOf('Next batch.'))

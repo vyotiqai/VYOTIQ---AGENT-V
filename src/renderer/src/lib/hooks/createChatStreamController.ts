@@ -453,6 +453,8 @@ export type ChatStreamState = {
   runTerminalTick: number
   pendingRun: boolean
   transcriptLoading: boolean
+  /** Turn summary disclosure — survives transcript remounts like tool/group expand state. */
+  collapsedTurnIndices: number[]
 }
 
 export type ChatStreamController = ChatStreamState & {
@@ -473,6 +475,8 @@ export type ChatStreamController = ChatStreamState & {
   setToolExpanded: (toolCallId: string, expanded: boolean) => void
   /** Persist an activity group's disclosure state, keyed by its first tool row. */
   setGroupExpanded: (anchorToolCallId: string, expanded: boolean) => void
+  /** Persist turn summary collapse across transcript remounts. */
+  toggleTurnCollapsed: (turnIndex: number) => void
   /** Park a gated tool call on its transcript row until the reader answers. */
   handleApprovalRequest: (request: ToolApprovalRequest) => void
   respondToApproval: (requestId: string, decision: ToolApprovalDecision) => Promise<void>
@@ -482,6 +486,8 @@ export type ChatStreamController = ChatStreamState & {
   subscribe: (listener: () => void) => () => void
   getRevision: () => number
   setTranscriptLoading: (loading: boolean) => void
+  /** True after `dispose()`; async restores must not hydrate this instance. */
+  readonly disposed: boolean
   dispose: () => void
 }
 
@@ -714,7 +720,8 @@ export function createChatStreamController(
     runStartedAt: null,
     runTerminalTick: 0,
     pendingRun: false,
-    transcriptLoading: false
+    transcriptLoading: false,
+    collapsedTurnIndices: []
   }
 
   const notify = (): void => {
@@ -726,6 +733,7 @@ export function createChatStreamController(
   const getRevision = (): number => revision
 
   const patch = (partial: Partial<ChatStreamState>): void => {
+    if (disposed) return
     Object.assign(state, partial)
     notify()
   }
@@ -756,7 +764,8 @@ export function createChatStreamController(
       runId: null,
       running: false,
       runStartedAt: null,
-      pendingRun: false
+      pendingRun: false,
+      collapsedTurnIndices: []
     })
   }
 
@@ -777,6 +786,7 @@ export function createChatStreamController(
   }
 
   const handleEvent = (event: AgentEvent): void => {
+    if (disposed) return
     if (closedRuns.has(event.runId)) return
     if (isSupersededEvent(event)) return
 
@@ -1389,6 +1399,7 @@ export function createChatStreamController(
 
   /** Hydrate UI from disk without canceling — used for restore and tab select. */
   const hydrateTranscript = (loaded: ChatMessage[], events?: PersistedEvent[]): void => {
+    if (disposed) return
     // Never clobber an in-flight live stream with a lagging disk snapshot.
     if (state.running || state.pendingRun || awaitingRun) return
     applyTranscriptUi(loaded, events)
@@ -1421,6 +1432,7 @@ export function createChatStreamController(
       let events: PersistedEvent[] = []
       if (window.vyotiq?.loadRunEvents) {
         const eventsRes = await window.vyotiq.loadRunEvents(workspacePath, id)
+        if (closedRuns.has(id) || disposed) return
         if (eventsRes.ok) events = eventsRes.data
       }
       if (events.length > 0) {
@@ -1430,6 +1442,7 @@ export function createChatStreamController(
     }
     if (!window.vyotiq?.loadRun) return
     const res = await window.vyotiq.loadRun(workspacePath, id)
+    if (closedRuns.has(id) || disposed) return
     if (!res.ok) {
       logger.warn('reattachActiveRun loadRun failed', {
         scope: 'chat',
@@ -1441,6 +1454,7 @@ export function createChatStreamController(
     let events: PersistedEvent[] = []
     if (window.vyotiq.loadRunEvents) {
       const eventsRes = await window.vyotiq.loadRunEvents(workspacePath, id)
+      if (closedRuns.has(id) || disposed) return
       if (eventsRes.ok) events = eventsRes.data
     }
     const kept = messagesForNextTurn(res.data.messages)
@@ -1543,6 +1557,12 @@ export function createChatStreamController(
     })
   }
 
+  const toggleTurnCollapsed = (turnIndex: number): void => {
+    const collapsed = new Set(state.collapsedTurnIndices)
+    if (!collapsed.delete(turnIndex)) collapsed.add(turnIndex)
+    patch({ collapsedTurnIndices: [...collapsed] })
+  }
+
   const patchToolContent = (toolCallId: string, content: string): void => {
     toolContentCache.set(toolCallId, content)
     const items = state.items
@@ -1572,6 +1592,7 @@ export function createChatStreamController(
     if (!id || !window.vyotiq?.loadToolResult) return null
 
     const res = await window.vyotiq.loadToolResult(workspacePath, id, toolCallId)
+    if (disposed) return null
     if (!res.ok) {
       logger.warn('loadToolResult failed', {
         scope: 'chat',
@@ -1591,6 +1612,7 @@ export function createChatStreamController(
   }
 
   const setTranscriptLoading = (loading: boolean): void => {
+    if (disposed) return
     patch({ transcriptLoading: loading })
   }
 
@@ -1637,6 +1659,12 @@ export function createChatStreamController(
     get transcriptLoading() {
       return state.transcriptLoading
     },
+    get collapsedTurnIndices() {
+      return state.collapsedTurnIndices
+    },
+    get disposed() {
+      return disposed
+    },
     workspacePath,
     send,
     stop,
@@ -1649,6 +1677,7 @@ export function createChatStreamController(
     setThinkingExpanded,
     setToolExpanded,
     setGroupExpanded,
+    toggleTurnCollapsed,
     handleApprovalRequest,
     respondToApproval,
     syncFromDisk,

@@ -1,6 +1,6 @@
 import { memo, useMemo } from 'react'
 import { cn } from '@renderer/lib/ui'
-import type { DiffLine } from '../utils/toolCardData'
+import type { DiffLine } from '../toolUi'
 import { useDiffHighlight, type DiffTokens } from './useDiffHighlight'
 
 /** Enough of the change to recognise it without turning the transcript into a file. */

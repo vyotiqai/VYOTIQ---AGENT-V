@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from '@shared/ipc'
-import { inferToolStatus, messagesToUiItems, applyEventTimestamps, isMeaningfulThinking, duplicatesReasoning, stripToolShapedAssistantText } from '@shared/transcript'
+import { inferToolStatus, messagesToUiItems, applyEventTimestamps, isMeaningfulThinking, duplicatesReasoning, mergeThinkingContent, stripToolShapedAssistantText } from '@shared/transcript'
 
 describe('messagesToUiItems', () => {
   it('rebuilds user, assistant, and tool rows in order', () => {
@@ -273,6 +273,16 @@ describe('transcript display helpers', () => {
       })
     ).toBe(false)
   })
+
+  it('drops duplicate paragraphs when merging thinking chunks', () => {
+    const repeated =
+      'Good, I have a comprehensive view of the codebase. Now I will launch parallel sub-agents.'
+    const merged = mergeThinkingContent([
+      `First pass.\n\n${repeated}`,
+      `${repeated}\n\nSecond pass.`
+    ])
+    expect(merged).toBe(`First pass.\n\n${repeated}\n\nSecond pass.`)
+  })
 })
 
 describe('stripToolShapedAssistantText', () => {
@@ -292,6 +302,14 @@ describe('stripToolShapedAssistantText', () => {
     expect(stripToolShapedAssistantText('The tool ran successfully.')).toBe(
       'The tool ran successfully.'
     )
+  })
+
+  it('removes leaked pseudo tool call lines', () => {
+    expect(
+      stripToolShapedAssistantText(
+        'tool read src/a.ts\ntool glob **/*.tsx\n\nHere is what I found.'
+      )
+    ).toBe('Here is what I found.')
   })
 })
 

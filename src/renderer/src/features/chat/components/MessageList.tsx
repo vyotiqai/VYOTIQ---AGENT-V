@@ -7,7 +7,8 @@ import {
   CHAT_COLUMN,
   CHAT_GUTTER,
   TRANSCRIPT_ROW_GAP,
-  TRANSCRIPT_TURN_GAP
+  TRANSCRIPT_TURN_GAP,
+  TRANSCRIPT_WORK_ROW_GAP
 } from '@renderer/lib/utils/layout'
 import {
   buildTranscriptRows,
@@ -80,7 +81,11 @@ function ImageLightbox({ url, label, onClose }: { url: string; label: string; on
 
 /** Spacing as padding (not margin) so row rhythm stays consistent. */
 function rowSpacingClass(row: TranscriptRow): string {
-  return cn(TRANSCRIPT_ROW_GAP, rowLeadingGap(row) > 0 && TRANSCRIPT_TURN_GAP)
+  const gap =
+    row.kind === 'activity' || row.kind === 'thinking' || row.kind === 'card'
+      ? TRANSCRIPT_WORK_ROW_GAP
+      : TRANSCRIPT_ROW_GAP
+  return cn(gap, rowLeadingGap(row) > 0 && TRANSCRIPT_TURN_GAP)
 }
 
 const TranscriptRowBlock = memo(function TranscriptRowBlock({
@@ -93,7 +98,8 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   onTurnToggle,
   onApprovalDecision,
   turnCollapsed = false,
-  showThinking = true
+  showThinking = true,
+  mcpServerNames
 }: {
   row: TranscriptRow
   onImageClick: (url: string, label: string) => void
@@ -105,6 +111,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
   turnCollapsed?: boolean
   showThinking?: boolean
+  mcpServerNames?: ReadonlyMap<string, string>
 }) {
   if (row.kind === 'user') {
     return <UserPrompt item={row.item} onImageClick={onImageClick} />
@@ -115,6 +122,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
       <TurnSummary
         span={row.span}
         collapsed={turnCollapsed}
+        panelId={`turn-work-${row.turnIndex}`}
         onToggle={() => onTurnToggle?.(row.turnIndex)}
       />
     )
@@ -166,6 +174,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
         }
         onToolToggle={onToolToggle}
         onLoadFullContent={onLoadToolContent}
+        mcpServerNames={mcpServerNames}
       />
     )
   }
@@ -178,6 +187,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
       // so it still opens instead of swallowing the click.
       onToggle={onToolToggle ? (next) => onToolToggle(row.item.id, next) : undefined}
       onLoadFullContent={onLoadToolContent}
+      mcpServerNames={mcpServerNames}
     />
   )
 })
@@ -193,8 +203,11 @@ export function MessageList({
   onThinkingToggle,
   onToolToggle,
   onGroupToggle,
+  onTurnToggle,
   onApprovalDecision,
-  showThinking = true
+  collapsedTurns,
+  showThinking = true,
+  mcpServerNames
 }: {
   items: UiItem[]
   reserveComposerSpace?: boolean
@@ -207,8 +220,12 @@ export function MessageList({
   onThinkingToggle?: (messageId: string, expanded: boolean) => void
   onToolToggle?: (toolCallId: string, expanded: boolean) => void
   onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
+  onTurnToggle?: (turnIndex: number) => void
   onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
+  /** Persisted turn-summary collapse state from the chat stream controller. */
+  collapsedTurns?: ReadonlySet<number>
   showThinking?: boolean
+  mcpServerNames?: ReadonlyMap<string, string>
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const appliedRestoreRef = useRef<number | null>(null)
@@ -221,7 +238,10 @@ export function MessageList({
     () => !restoreScrollTop || restoreScrollTop <= 0
   )
   const [lightbox, setLightbox] = useState<{ url: string; label: string } | null>(null)
-  const [collapsedTurns, setCollapsedTurns] = useState<ReadonlySet<number>>(() => new Set())
+  const collapsedTurnSet = useMemo(
+    () => collapsedTurns ?? new Set<number>(),
+    [collapsedTurns]
+  )
   const prevStructuralKeyRef = useRef<string | null>(null)
 
   const itemsStructuralKey = useMemo(() => structuralKey(items), [items])
@@ -229,9 +249,9 @@ export function MessageList({
   const displayRows = useMemo(() => {
     let rows = allRows
     if (!showThinking) rows = rows.filter((row) => row.kind !== 'thinking')
-    if (collapsedTurns.size === 0) return rows
-    return rows.filter((row) => !(collapsedTurns.has(row.turnIndex) && isTurnWorkRow(row)))
-  }, [allRows, collapsedTurns, showThinking])
+    if (collapsedTurnSet.size === 0) return rows
+    return rows.filter((row) => !(collapsedTurnSet.has(row.turnIndex) && isTurnWorkRow(row)))
+  }, [allRows, collapsedTurnSet, showThinking])
 
   const nearBottomPx = nearBottomThreshold(dockReservePx)
   const nearBottomPxRef = useRef(nearBottomPx)
@@ -243,13 +263,12 @@ export function MessageList({
     setLightbox({ url, label })
   }, [])
 
-  const onTurnToggle = useCallback((turnIndex: number) => {
-    setCollapsedTurns((prev) => {
-      const next = new Set(prev)
-      if (!next.delete(turnIndex)) next.add(turnIndex)
-      return next
-    })
-  }, [])
+  const handleTurnToggle = useCallback(
+    (turnIndex: number) => {
+      onTurnToggle?.(turnIndex)
+    },
+    [onTurnToggle]
+  )
 
   useLayoutEffect(() => {
     appliedRestoreRef.current = null
@@ -398,10 +417,17 @@ export function MessageList({
     ? ({ paddingBottom: 'var(--vy-dock-h, 8rem)' } as const)
     : undefined
 
-  const blocks = useMemo(
-    () =>
-      displayRows.map((row) => (
-        <div key={row.id} className={rowSpacingClass(row)}>
+  const blocks = useMemo(() => {
+    const turnWorkPanelAssigned = new Set<number>()
+    return displayRows.map((row) => {
+      const turnPanelId =
+        isTurnWorkRow(row) && !turnWorkPanelAssigned.has(row.turnIndex)
+          ? `turn-work-${row.turnIndex}`
+          : undefined
+      if (turnPanelId) turnWorkPanelAssigned.add(row.turnIndex)
+
+      return (
+        <div key={row.id} id={turnPanelId} className={rowSpacingClass(row)}>
           <TranscriptRowBlock
             row={row}
             onImageClick={onImageClick}
@@ -409,26 +435,28 @@ export function MessageList({
             onThinkingToggle={onThinkingToggle}
             onToolToggle={onToolToggle}
             onGroupToggle={onGroupToggle}
-            onTurnToggle={onTurnToggle}
+            onTurnToggle={handleTurnToggle}
             onApprovalDecision={onApprovalDecision}
-            turnCollapsed={collapsedTurns.has(row.turnIndex)}
+            turnCollapsed={collapsedTurnSet.has(row.turnIndex)}
             showThinking={showThinking}
+            mcpServerNames={mcpServerNames}
           />
         </div>
-      )),
-    [
+      )
+    })
+  }, [
       displayRows,
-      collapsedTurns,
+      collapsedTurnSet,
       onImageClick,
       onLoadToolContent,
       onThinkingToggle,
       onToolToggle,
       onGroupToggle,
-      onTurnToggle,
+      handleTurnToggle,
       onApprovalDecision,
-      showThinking
-    ]
-  )
+      showThinking,
+      mcpServerNames
+  ])
 
   return (
     <>
@@ -438,7 +466,7 @@ export function MessageList({
         className={cn('flex min-h-0 flex-1 flex-col overflow-auto pt-4', CHAT_GUTTER)}
         style={dockReserveStyle}
         aria-live="polite"
-        aria-relevant="additions"
+        aria-relevant="additions text"
         aria-atomic="false"
         onScroll={(e) => handleScroll(e.currentTarget.scrollTop)}
       >

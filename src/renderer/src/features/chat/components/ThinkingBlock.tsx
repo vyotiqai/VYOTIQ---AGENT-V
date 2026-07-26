@@ -5,6 +5,9 @@ import { DISCLOSURE_ROW } from '@renderer/lib/utils/layout'
 import { isMeaningfulThinking } from '@shared/transcript'
 import { TextShimmer } from './TextShimmer'
 
+/** Hide finished reasoning stubs that would render as empty "Thought" headers. */
+const MIN_VISIBLE_THINKING_CHARS = 24
+
 export function ThinkingBlock({
   content,
   streaming,
@@ -22,6 +25,7 @@ export function ThinkingBlock({
   const isExpanded = expanded ?? override ?? streaming === true
 
   if (!isMeaningfulThinking(content)) return null
+  if (!streaming && content.trim().length < MIN_VISIBLE_THINKING_CHARS) return null
 
   const toggle = (): void => {
     const next = !isExpanded

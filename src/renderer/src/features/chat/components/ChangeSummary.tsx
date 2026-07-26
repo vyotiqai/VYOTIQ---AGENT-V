@@ -2,7 +2,7 @@ import { memo } from 'react'
 import { cn } from '@renderer/lib/ui'
 import { TOOL_CARD_HEADER, TOOL_CARD_SURFACE } from '@renderer/lib/utils/layout'
 import type { ChangedFile } from '../utils/transcriptRows'
-import { basename } from '../utils/toolCardData'
+import { basename } from '../toolUi'
 import { FileBadge } from './FileBadge'
 
 export const ChangeSummary = memo(function ChangeSummary({ files }: { files: ChangedFile[] }) {

@@ -4,7 +4,7 @@ import {
   parseDiffPreview,
   parseEditCardData,
   parseTerminalCardData
-} from '@renderer/features/chat/utils/toolCardData'
+} from '@renderer/features/chat/toolUi'
 import type { UiToolRow } from '@shared/transcript'
 
 function tool(overrides: Partial<UiToolRow> & Pick<UiToolRow, 'name'>): UiToolRow {

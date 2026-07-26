@@ -1,7 +1,12 @@
 import type { UiItem, UiToolApproval } from '@shared/transcript'
-import { duplicatesReasoning, isMeaningfulThinking, stripToolShapedAssistantText } from '@shared/transcript'
-import { parseArgsRecord } from '@shared/toolSummary'
-import { countDiffLines, countLines, parseEditCardData } from './toolCardData'
+import {
+  duplicatesReasoning,
+  isMeaningfulThinking,
+  mergeThinkingContent,
+  stripToolShapedAssistantText
+} from '@shared/transcript'
+import { isProminentTool } from '../toolUi'
+import { collectWritingChanges } from '../toolUi/parsers/edit'
 
 export type MessageItem = Extract<UiItem, { kind: 'message' }>
 export type UserItem = MessageItem & { role: 'user' }
@@ -49,21 +54,12 @@ export function isTurnWorkRow(row: TranscriptRow): boolean {
 }
 
 /** Tools whose output is worth a dedicated card instead of a group line. */
-const CARD_TOOLS = new Set([
-  'terminal',
-  'edit',
-  'multi_edit',
-  'todo_write',
-  'subagent',
-  'delete'
-])
+function isCardTool(item: ToolItem): boolean {
+  return isProminentTool(item.tool.name, item.tool.argsPreview)
+}
 
 /** Extra lead-in above a user prompt that opens a new turn (matches TRANSCRIPT_TURN_GAP). */
 export const TURN_GAP_PX = 24
-
-function isCardTool(item: ToolItem): boolean {
-  return CARD_TOOLS.has(item.tool.name)
-}
 
 /**
  * Build turn-aware transcript rows.
@@ -141,7 +137,25 @@ export function buildTranscriptRows(items: UiItem[]): TranscriptRow[] {
 
     flush()
     if (showThinking) {
-      rows.push({ kind: 'thinking', id: `${assistant.id}:thinking`, item: assistant, turnIndex })
+      const last = rows[rows.length - 1]
+      if (
+        last?.kind === 'thinking' &&
+        last.turnIndex === turnIndex &&
+        !last.item.thinkingStreaming &&
+        !assistant.thinkingStreaming
+      ) {
+        const merged = mergeThinkingContent(
+          [last.item.thinking, assistant.thinking].filter(Boolean) as string[]
+        )
+        rows[rows.length - 1] = {
+          kind: 'thinking',
+          id: last.id,
+          item: { ...last.item, thinking: merged, thinkingStreaming: assistant.thinkingStreaming },
+          turnIndex
+        }
+      } else {
+        rows.push({ kind: 'thinking', id: `${assistant.id}:thinking`, item: assistant, turnIndex })
+      }
     }
     if (showContent) {
       rows.push({
@@ -157,7 +171,7 @@ export function buildTranscriptRows(items: UiItem[]): TranscriptRow[] {
   flush()
   // Turn summaries stand for the work rows, and which text row is the closing
   // answer decides what counts as work, so that has to be settled first.
-  return withChangeSummaries(withTurnSummaries(markFinalText(rows)))
+  return coalesceTurnWork(withChangeSummaries(withTurnSummaries(markFinalText(rows))))
 }
 
 /** Tools that write files, and so contribute to a turn's change summary. */
@@ -165,33 +179,7 @@ const WRITING_TOOLS = new Set(['edit', 'multi_edit'])
 
 function writingToolChanges(item: ToolItem): ChangedFile[] {
   if (!WRITING_TOOLS.has(item.tool.name) || item.tool.status !== 'done') return []
-
-  if (item.tool.name === 'multi_edit') {
-    const args = parseArgsRecord(item.tool.argsPreview)
-    const edits = args?.edits
-    if (!Array.isArray(edits)) return []
-    const out: ChangedFile[] = []
-    for (const entry of edits) {
-      if (!entry || typeof entry !== 'object') continue
-      const edit = entry as Record<string, unknown>
-      const path = typeof edit.path === 'string' ? edit.path : ''
-      if (!path) continue
-      if (typeof edit.contents === 'string') {
-        const added = countLines(edit.contents)
-        if (added > 0) out.push({ path, added, removed: 0 })
-        continue
-      }
-      if (typeof edit.diff === 'string' && edit.diff.trim()) {
-        const { added, removed } = countDiffLines(edit.diff)
-        if (added > 0 || removed > 0) out.push({ path, added, removed })
-      }
-    }
-    return out
-  }
-
-  const { path, added, removed } = parseEditCardData(item.tool)
-  if (!path || (added === 0 && removed === 0)) return []
-  return [{ path, added, removed }]
+  return collectWritingChanges(item.tool)
 }
 
 function turnToolItems(row: TranscriptRow): ToolItem[] {
@@ -350,4 +338,65 @@ function withTurnSummaries(rows: TranscriptRow[]): TranscriptRow[] {
 /** Leading space a row reserves for turn separation. */
 export function rowLeadingGap(row: TranscriptRow): number {
   return row.kind === 'user' && row.turnIndex > 0 ? TURN_GAP_PX : 0
+}
+
+/**
+ * Within a turn, fold interleaved activity batches into one group while keeping
+ * thinking rows in their original positions relative to the merged activity.
+ */
+function coalesceTurnWork(rows: TranscriptRow[]): TranscriptRow[] {
+  const out: TranscriptRow[] = []
+  let index = 0
+
+  while (index < rows.length) {
+    const row = rows[index]!
+    if (row.kind !== 'activity' && row.kind !== 'thinking') {
+      out.push(row)
+      index += 1
+      continue
+    }
+
+    const turnIndex = row.turnIndex
+    const run: TranscriptRow[] = []
+    while (index < rows.length) {
+      const next = rows[index]!
+      if (next.turnIndex !== turnIndex) break
+      if (next.kind !== 'activity' && next.kind !== 'thinking') break
+      run.push(next)
+      index += 1
+    }
+
+    const activities = run.filter((entry): entry is Extract<TranscriptRow, { kind: 'activity' }> => {
+      return entry.kind === 'activity'
+    })
+    if (activities.length <= 1) {
+      out.push(...run)
+      continue
+    }
+
+    const mergedActivity: TranscriptRow = {
+      kind: 'activity',
+      id: activities[0]!.id,
+      tools: activities.flatMap((entry) => entry.tools),
+      turnIndex
+    }
+
+    const lastActivityIndex = run.findLastIndex((entry) => entry.kind === 'activity')
+    const firstActivityIndex = run.findIndex((entry) => entry.kind === 'activity')
+    const prefix: TranscriptRow[] = []
+    const between: TranscriptRow[] = []
+    const suffix: TranscriptRow[] = []
+
+    for (let runIndex = 0; runIndex < run.length; runIndex++) {
+      const entry = run[runIndex]!
+      if (entry.kind !== 'thinking') continue
+      if (runIndex < firstActivityIndex) prefix.push(entry)
+      else if (runIndex < lastActivityIndex) between.push(entry)
+      else suffix.push(entry)
+    }
+
+    out.push(...prefix, ...between, mergedActivity, ...suffix)
+  }
+
+  return out
 }

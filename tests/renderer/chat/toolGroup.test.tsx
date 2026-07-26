@@ -44,8 +44,8 @@ describe('ToolGroup', () => {
       toolItem('t2', 'search', 'query', 'running')
     ]
     render(<ToolGroup tools={tools} />)
-    expect(screen.getByText('Exploring')).toBeTruthy()
-    expect(screen.getByText('1 file and 1 search')).toBeTruthy()
+    expect(screen.getByText('Reading and searching')).toBeTruthy()
+    expect(screen.getByText('1 file and 1 lookup')).toBeTruthy()
   })
 
   it('lists the calls as they land while the group is still running', () => {
@@ -67,8 +67,8 @@ describe('ToolGroup', () => {
       toolItem('t2', 'search', 'query', 'done')
     ]
     render(<ToolGroup tools={tools} />)
-    expect(screen.getByText('Explored')).toBeTruthy()
-    expect(screen.getByText('1 file and 1 search')).toBeTruthy()
+    expect(screen.getByText('Read and searched')).toBeTruthy()
+    expect(screen.getByText('1 file and 1 lookup')).toBeTruthy()
     expect(screen.getByText('6s')).toBeTruthy()
     expect(screen.queryByText('a.ts')).toBeNull()
   })
@@ -80,8 +80,8 @@ describe('ToolGroup', () => {
     tools[0]!.tool.content = 'Cancelled'
     render(<ToolGroup tools={tools} />)
     expect(screen.getByText('interrupted')).toBeTruthy()
-    expect(screen.getByText('Read')).toBeTruthy()
     expect(screen.getByText('1 file')).toBeTruthy()
+    expect(screen.getByText(/a\.ts/)).toBeTruthy()
   })
 
   it('names the group after a single kind of work', () => {
@@ -118,6 +118,7 @@ describe('ToolGroup', () => {
 
   it('follows the host disclosure state instead of local state', () => {
     const tools = [toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 })]
+    tools[0]!.tool.content = 'alpha output'
     const onGroupToggle = vi.fn()
 
     const { rerender } = render(
@@ -127,10 +128,10 @@ describe('ToolGroup', () => {
 
     expect(onGroupToggle).toHaveBeenCalledWith(true)
     // Still closed: the host owns the state and has not applied the change yet.
-    expect(screen.queryByText('a.ts')).toBeNull()
+    expect(screen.queryByText('alpha output')).toBeNull()
 
     rerender(<ToolGroup tools={tools} groupExpanded onGroupToggle={onGroupToggle} />)
-    expect(screen.getByText('a.ts')).toBeTruthy()
+    expect(screen.getByText('alpha output')).toBeTruthy()
   })
 
   it('spans elapsed time across batches that only carry partial timing', () => {

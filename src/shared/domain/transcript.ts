@@ -125,6 +125,27 @@ function collapseWhitespace(text: string): string {
   return text.replace(/\s+/g, ' ').trim().toLowerCase()
 }
 
+/** Join thinking chunks and drop near-duplicate paragraphs. */
+export function mergeThinkingContent(chunks: string[]): string {
+  const seen = new Set<string>()
+  const parts: string[] = []
+
+  for (const chunk of chunks) {
+    for (const paragraph of chunk.split(/\n\n+/)) {
+      const trimmed = paragraph.trim()
+      if (!trimmed) continue
+      const key = collapseWhitespace(trimmed)
+      if (key.length >= DUPLICATE_TEXT_MIN_CHARS) {
+        if (seen.has(key)) continue
+        seen.add(key)
+      }
+      parts.push(trimmed)
+    }
+  }
+
+  return parts.join('\n\n')
+}
+
 /**
  * Hide assistant text that only repeats the reasoning already shown beside it.
  *
@@ -149,23 +170,34 @@ export function stripToolShapedAssistantText(content: string): string {
   let result = ''
   let i = 0
   while (i < content.length) {
-    const match = content.slice(i).match(/^(\s*)tool\s*\{/)
-    if (!match) {
-      result += content[i]!
-      i += 1
+    const rest = content.slice(i)
+    const jsonMatch = rest.match(/^(\s*)tool\s*\{/)
+    if (jsonMatch) {
+      i += jsonMatch[0].length
+      let depth = 1
+      while (i < content.length && depth > 0) {
+        const ch = content[i]!
+        i += 1
+        if (ch === '{') depth += 1
+        else if (ch === '}') depth -= 1
+      }
+      while (i < content.length && (content[i] === ' ' || content[i] === '\t')) i += 1
+      if (content[i] === '\r') i += 1
+      if (content[i] === '\n') i += 1
       continue
     }
-    i += match[0].length
-    let depth = 1
-    while (i < content.length && depth > 0) {
-      const ch = content[i]!
-      i += 1
-      if (ch === '{') depth += 1
-      else if (ch === '}') depth -= 1
+
+    const atLineStart = i === 0 || content[i - 1] === '\n'
+    if (atLineStart) {
+      const lineMatch = rest.match(/^tool\s+([a-z_]+)\s+(\S.+?)(?:\r?\n|$)/i)
+      if (lineMatch) {
+        i += lineMatch[0].length
+        continue
+      }
     }
-    while (i < content.length && (content[i] === ' ' || content[i] === '\t')) i += 1
-    if (content[i] === '\r') i += 1
-    if (content[i] === '\n') i += 1
+
+    result += content[i]!
+    i += 1
   }
   return result.replace(/\n{3,}/g, '\n\n').trim()
 }

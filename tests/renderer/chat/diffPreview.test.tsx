@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { DiffPreview } from '@renderer/features/chat/components/DiffPreview'
-import type { DiffLine } from '@renderer/features/chat/utils/toolCardData'
+import type { DiffLine } from '@renderer/features/chat/toolUi'
 
 const highlightToLines = vi.hoisted(() => vi.fn())
 
