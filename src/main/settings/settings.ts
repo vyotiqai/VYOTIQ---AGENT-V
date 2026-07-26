@@ -1,18 +1,17 @@
 import { app } from 'electron'
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { DEFAULT_SETTINGS, SettingsSchema, type Settings } from '../../shared/ipc'
 import { defaultModelFor, normalizeOllamaHost } from '../../shared/providers'
 import { logger } from '../../shared/logger'
+import { atomicWriteJson } from '../storage/atomicWrite'
 
 function settingsPath(): string {
   return join(app.getPath('userData'), 'settings.json')
 }
 
 function writeSettings(next: Settings): void {
-  const dir = app.getPath('userData')
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  writeFileSync(settingsPath(), JSON.stringify(next, null, 2), 'utf8')
+  atomicWriteJson(settingsPath(), next)
 }
 
 function normalizeSettings(data: Settings): Settings {

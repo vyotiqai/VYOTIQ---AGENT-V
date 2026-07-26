@@ -488,6 +488,7 @@ export function registerIpc(): void {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
       const req = CompactRunRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
       if (isActive(req.runId)) {
         return fail('Stop the run before compacting its history.')
       }
@@ -512,6 +513,7 @@ export function registerIpc(): void {
         return ok({ runs: [], capped: false })
       }
       const req = ListRunsRequestSchema.parse({ workspacePath })
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
       return ok(await listRuns(req.workspacePath))
     } catch (err) {
       return failFrom(err, IPC.listRuns)
@@ -524,6 +526,7 @@ export function registerIpc(): void {
       if (!senderOk(event)) return fail('Invalid sender')
       try {
         const req = LoadRunRequestSchema.parse(raw)
+        if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
         const messages = loadMessages(req.workspacePath, req.runId)
         return ok({ runId: req.runId, messages })
       } catch (err) {
@@ -538,6 +541,7 @@ export function registerIpc(): void {
       if (!senderOk(event)) return fail('Invalid sender')
       try {
         const req = LoadRunEventsRequestSchema.parse(raw)
+        if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
         return ok(loadEventsForRun(req.workspacePath, req.runId))
       } catch (err) {
         return failFrom(err, IPC.loadRunEvents)
@@ -549,6 +553,7 @@ export function registerIpc(): void {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
       const req = LoadToolResultRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
       const content = await loadToolResultContent(
         req.workspacePath,
         req.runId,
@@ -565,6 +570,7 @@ export function registerIpc(): void {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
       const req = DeleteRunRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
       const result = deleteRun(req.workspacePath, req.runId)
       if (!result.ok) return fail(result.error)
       return ok(true)
@@ -579,6 +585,7 @@ export function registerIpc(): void {
       if (!senderOk(event)) return fail('Invalid sender')
       try {
         const req = RenameRunRequestSchema.parse(raw)
+        if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
         return ok(renameRun(req.workspacePath, req.runId, req.goal))
       } catch (err) {
         return failFrom(err, IPC.runsRename)

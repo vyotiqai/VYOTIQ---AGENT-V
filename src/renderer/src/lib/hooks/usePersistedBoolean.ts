@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 
 /** Persist a boolean in localStorage; falls back to `initial` when missing/invalid. */
 export function usePersistedBoolean(
@@ -15,18 +15,19 @@ export function usePersistedBoolean(
     }
     return initial
   })
+  const valueRef = useRef(value)
+  valueRef.current = value
 
   const setPersisted = useCallback(
     (next: boolean | ((prev: boolean) => boolean)) => {
-      setValue((prev) => {
-        const resolved = typeof next === 'function' ? next(prev) : next
-        try {
-          localStorage.setItem(key, resolved ? '1' : '0')
-        } catch {
-          /* ignore */
-        }
-        return resolved
-      })
+      const resolved = typeof next === 'function' ? next(valueRef.current) : next
+      valueRef.current = resolved
+      setValue(resolved)
+      try {
+        localStorage.setItem(key, resolved ? '1' : '0')
+      } catch {
+        /* ignore */
+      }
     },
     [key]
   )

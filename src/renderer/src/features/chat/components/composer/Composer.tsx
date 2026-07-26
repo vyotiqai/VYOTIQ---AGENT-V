@@ -12,6 +12,8 @@ import { useComposerDraft } from './useComposerDraft'
 import { useComposerImages, MAX_IMAGES } from './useComposerImages'
 import { useComposerFiles, ATTACHMENT_ACCEPT, MAX_FILES, isImageFile } from './useComposerFiles'
 import { useComposerModels } from './useComposerModels'
+import { pickVisionFallback } from './composerModelUtils'
+import { useWorkspaceHotUi } from '@renderer/lib/hooks/workspaceHotUiStore'
 
 const HERO_HINT =
   'Use /create-rule to control agent behavior through system-level instructions'
@@ -27,6 +29,7 @@ export function Composer({
   modelsRefreshKey,
   draft,
   onDraftChange,
+  workspacePath,
   onProviderModel,
   favoriteModels = [],
   recentModels = [],
@@ -60,6 +63,8 @@ export function Composer({
   modelsRefreshKey?: string | number
   draft?: string
   onDraftChange?: (draft: string) => void
+  /** When set, draft is read from the hot UI store (avoids App re-renders on keystrokes). */
+  workspacePath?: string | null
   onProviderModel: (provider: ProviderId, model: string) => void
   favoriteModels?: string[]
   recentModels?: string[]
@@ -92,6 +97,8 @@ export function Composer({
   const taRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const locked = Boolean(disabled || running)
+  const hotUi = useWorkspaceHotUi(workspacePath)
+  const resolvedDraft = workspacePath ? hotUi.composerDraft : (draft ?? '')
 
   const {
     images,
@@ -113,7 +120,7 @@ export function Composer({
   } = useComposerFiles()
 
   const { text, setText, canSend, submit, onKeyDown } = useComposerDraft({
-    draft,
+    draft: resolvedDraft,
     onDraftChange,
     images,
     setImages,
@@ -125,15 +132,6 @@ export function Composer({
     disabled,
     onSend
   })
-
-  const onPickAttachments = async (list: FileList | null): Promise<void> => {
-    if (!list?.length) return
-    const picked = Array.from(list)
-    const imageFiles = picked.filter(isImageFile)
-    const documents = picked.filter((file) => !isImageFile(file))
-    if (imageFiles.length) await onPickImages(imageFiles)
-    if (documents.length) await addFiles(documents)
-  }
 
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [browsedProvider, setBrowsedProvider] = useState<ProviderId>(provider)
@@ -148,6 +146,8 @@ export function Composer({
     seedsByProvider,
     modelMetaByValue,
     modelsWarning,
+    catalog,
+    filterOpts,
     refreshCatalog
   } = useComposerModels({
     provider,
@@ -156,10 +156,31 @@ export function Composer({
     modelsRefreshKey,
     hasWorkspace,
     hasImages: images.length > 0,
-    running,
-    browsedProvider,
-    onProviderModel
+    browsedProvider
   })
+
+  const ensureVisionModel = (): void => {
+    if (running) return
+    const fallback = pickVisionFallback(catalog, model, {
+      ...filterOpts,
+      hasImages: true
+    })
+    if (fallback && fallback !== model) {
+      onProviderModel(provider, fallback)
+    }
+  }
+
+  const onPickAttachments = async (list: FileList | null): Promise<void> => {
+    if (!list?.length) return
+    const picked = Array.from(list)
+    const imageFiles = picked.filter(isImageFile)
+    const documents = picked.filter((file) => !isImageFile(file))
+    if (imageFiles.length) {
+      await onPickImages(imageFiles)
+      ensureVisionModel()
+    }
+    if (documents.length) await addFiles(documents)
+  }
 
   const isDock = variant === 'dock'
 

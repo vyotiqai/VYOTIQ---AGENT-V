@@ -90,6 +90,10 @@ describe('balanceIncompleteMarkdown', () => {
       '```\ncode\n```\n\nthen **bold**'
     )
   })
+
+  it('balances italic outside fences when a stream completes', () => {
+    expect(balanceIncompleteMarkdown('Partial *italic')).toBe('Partial *italic*')
+  })
 })
 
 describe('MarkdownContent streaming', () => {

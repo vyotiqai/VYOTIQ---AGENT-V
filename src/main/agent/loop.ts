@@ -1003,7 +1003,7 @@ export async function* runAgent(input: {
       }
     }
   } finally {
-    if (runDir) await flushEventAppends(runDir)
+    if (runDir && isCurrentInvoke(runId, invokeId)) await flushEventAppends(runDir)
     clearRunAbort(runId, invokeId)
   }
 }

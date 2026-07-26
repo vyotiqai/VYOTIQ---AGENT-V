@@ -9,8 +9,8 @@ import {
 import { Sidebar } from './Sidebar'
 import { BreakpointProvider, useIsDesktop } from '@renderer/lib/context/BreakpointProvider'
 import { useOverlayPanel } from '@renderer/lib/hooks/useOverlayPanel'
-import { useEscapeToClose } from '@renderer/lib/hooks/useEscapeToClose'
 import { usePersistedBoolean } from '@renderer/lib/hooks/usePersistedBoolean'
+import { getWorkspaceHotUi } from '@renderer/lib/hooks/workspaceHotUiStore'
 import type { RunSummary } from '@shared/ipc'
 import { SIDEBAR_COLLAPSED_KEY, TITLE_BAR_HEIGHT_PX } from '@renderer/lib/utils/layout'
 import { TitleBar } from './TitleBar'
@@ -136,8 +136,8 @@ function AppShellInner({
   }, [isDesktop])
 
   useEffect(() => {
-    if (!hasWorkspace && sessionQuery) onSessionQuery('')
-  }, [hasWorkspace, sessionQuery, onSessionQuery])
+    if (!hasWorkspace) onSessionQuery('')
+  }, [hasWorkspace, onSessionQuery])
 
   // Focus search after expand/drawer mount — single rAF is too early for the new tree.
   useEffect(() => {
@@ -168,11 +168,19 @@ function AppShellInner({
     }
   }, [sidebarCollapsed, drawerOpen, isDesktop, hasWorkspace, focusSearchInput])
 
-  useEscapeToClose(
-    () => onSessionQuery(''),
-    Boolean(sessionQuery.trim()) && !drawerOpen,
-    { deferToMenus: true, capture: true }
-  )
+  useEffect(() => {
+    if (drawerOpen) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      if (document.querySelector('[aria-expanded="true"][aria-haspopup]')) return
+      if (!getWorkspaceHotUi(workspacePath).sessionQuery.trim()) return
+      e.preventDefault()
+      e.stopPropagation()
+      onSessionQuery('')
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [drawerOpen, workspacePath, onSessionQuery])
 
   useOverlayPanel({
     open: drawerOpen,

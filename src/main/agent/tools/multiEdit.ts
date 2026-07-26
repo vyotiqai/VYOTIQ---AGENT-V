@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync } from 'fs'
 import { dirname } from 'path'
-import { assertInsideWorkspace } from '../../../shared/workspacePath'
+import { resolveInsideWorkspace } from '../../workspace/safePath'
 import { atomicWriteFile } from '@main/storage/atomicWrite'
 import { applyUnifiedDiff } from './edit'
 
@@ -33,7 +33,7 @@ export function toolMultiEdit(workspaceRoot: string, edits: MultiEditEntry[]): s
   for (const [index, edit] of edits.entries()) {
     const path = String(edit.path ?? '').trim()
     if (!path) throw new Error(`multi_edit edit #${index + 1} is missing a path`)
-    const resolved = assertInsideWorkspace(workspaceRoot, path)
+    const resolved = resolveInsideWorkspace(workspaceRoot, path)
 
     if (seen.has(resolved)) {
       throw new Error(

@@ -99,6 +99,9 @@ function balanceInlineSegment(text: string): string {
   let result = text
   const doubleStars = (result.match(/(?<!\\)\*\*/g) ?? []).length
   if (doubleStars % 2 === 1) result += '**'
+  const withoutDouble = result.replace(/(?<!\\)\*\*/g, '\u0000')
+  const singles = (withoutDouble.match(/(?<!\\)\*/g) ?? []).length
+  if (singles % 2 === 1) result += '*'
   const backticks = (result.match(/(?<!\\)`/g) ?? []).length
   if (backticks % 2 === 1) result += '`'
   return result

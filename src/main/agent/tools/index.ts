@@ -253,8 +253,11 @@ export async function executeTool(
       return toolFail(name, name, 'Failed to parse tool arguments JSON')
     }
     const def = getMcpToolDefinition(name)
+    if (!def) {
+      return toolFail(name, name, `Unknown or unavailable MCP tool: ${name}`)
+    }
     const checked = validateAgainstJsonSchema(
-      def?.parameters as Record<string, unknown> | undefined,
+      def.parameters as Record<string, unknown> | undefined,
       parsed
     )
     if (!checked.ok) {

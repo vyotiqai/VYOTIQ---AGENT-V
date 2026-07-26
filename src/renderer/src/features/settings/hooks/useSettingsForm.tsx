@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   SECRET_PROVIDERS,
   type McpServerStatus,
@@ -67,6 +67,7 @@ export function useSettingsForm({
   const [logsPath, setLogsPath] = useState<string | null>(null)
   const [mcpStatus, setMcpStatus] = useState<McpServerStatus[]>([])
   const [mcpStatusLoading, setMcpStatusLoading] = useState(false)
+  const mcpStatusReqIdRef = useRef(0)
 
   const mcpStatusById = useMemo(() => {
     const map = new Map<string, McpServerStatus>()
@@ -76,15 +77,17 @@ export function useSettingsForm({
 
   const loadMcpStatus = async (refresh = false): Promise<void> => {
     if (!window.vyotiq.mcpStatus) return
+    const reqId = ++mcpStatusReqIdRef.current
     setMcpStatusLoading(true)
     try {
       const res =
         refresh && window.vyotiq.mcpRefresh
           ? await window.vyotiq.mcpRefresh()
           : await window.vyotiq.mcpStatus()
+      if (reqId !== mcpStatusReqIdRef.current) return
       if (res.ok) setMcpStatus(res.data.servers)
     } finally {
-      setMcpStatusLoading(false)
+      if (reqId === mcpStatusReqIdRef.current) setMcpStatusLoading(false)
     }
   }
 

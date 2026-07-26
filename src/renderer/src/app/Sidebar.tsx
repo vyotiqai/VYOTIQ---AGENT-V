@@ -24,6 +24,7 @@ import {
   MACOS_TRAFFIC_LIGHT_Y
 } from '@shared/windowChrome'
 import { WorkspaceTabs } from './WorkspaceTabs'
+import { useWorkspaceHotUi } from '@renderer/lib/hooks/workspaceHotUiStore'
 
 function runTitle(run: RunSummary): string {
   const goal = run.goal?.trim()
@@ -253,7 +254,7 @@ export function Sidebar({
   runsError,
   onDismissRunsError,
   activeRunId,
-  sessionQuery,
+  sessionQuery: sessionQueryProp,
   searchRef,
   harnessActive,
   hasWorkspace,
@@ -313,6 +314,8 @@ export function Sidebar({
   const isDarwin = window.vyotiq?.platform === 'darwin'
   const isDrawer = variant === 'drawer'
   const isCollapsed = collapsed && !isDrawer
+  const hotUi = useWorkspaceHotUi(activePath)
+  const sessionQuery = activePath ? hotUi.sessionQuery : sessionQueryProp
 
   const filteredRuns = useMemo(() => {
     const q = sessionQuery.trim().toLowerCase()

@@ -1,4 +1,4 @@
-import { assertInsideWorkspace } from '../../../shared/workspacePath'
+import { resolveInsideWorkspace } from '../../workspace/safePath'
 import {
   existsSync,
   readFileSync,
@@ -45,7 +45,8 @@ function listDirectoryEntries(resolved: string, relPath: string): string {
 function suggestSimilarPaths(workspaceRoot: string, relPath: string): string[] {
   const parent = dirname(relPath)
   const target = basename(relPath).toLowerCase()
-  const parentResolved = parent === '.' ? workspaceRoot : assertInsideWorkspace(workspaceRoot, parent)
+  const parentResolved =
+    parent === '.' ? workspaceRoot : resolveInsideWorkspace(workspaceRoot, parent)
   if (!existsSync(parentResolved)) return []
   try {
     const names = readdirSync(parentResolved)
@@ -89,7 +90,7 @@ export function toolRead(
   pathArg: string,
   options: ReadOptions = {}
 ): string {
-  const resolved = assertInsideWorkspace(workspaceRoot, pathArg)
+  const resolved = resolveInsideWorkspace(workspaceRoot, pathArg)
   if (!existsSync(resolved)) {
     throw new Error(formatMissingFileHint(workspaceRoot, pathArg))
   }
