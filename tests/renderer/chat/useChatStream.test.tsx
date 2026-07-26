@@ -681,6 +681,58 @@ describe('useChatStream', () => {
     })
   })
 
+  it('prunes orphan edit deltas when assistant_message only keeps other tools', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('audit')
+    })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({
+        type: 'tool_call_delta',
+        runId: 'run-1',
+        toolCallId: 'pending_0',
+        name: 'multi_edit',
+        argumentsDelta: '{"edits":[{"path":"api/page.tsx","contents":"x"}]}'
+      })
+      handler?.({
+        type: 'assistant_message',
+        runId: 'run-1',
+        content: 'tool {"edits":[{"path":"api/page.tsx","contents":"x"}]}\nChecking routes.',
+        toolCalls: [{ id: 'c1', name: 'read', arguments: '{"path":"routes.ts"}' }]
+      })
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        toolCallId: 'c1',
+        name: 'read',
+        summary: 'routes.ts'
+      })
+      handler?.({
+        type: 'tool_result',
+        runId: 'run-1',
+        toolCallId: 'c1',
+        name: 'read',
+        summary: 'routes.ts',
+        ok: true,
+        content: 'ok'
+      })
+    })
+
+    const tools = result.current.items.filter((i) => i.kind === 'tool')
+    expect(tools).toHaveLength(1)
+    expect(tools[0]).toMatchObject({
+      id: 'c1',
+      tool: { name: 'read', status: 'done' }
+    })
+    const assistant = result.current.items.find(
+      (i) => i.kind === 'message' && i.role === 'assistant'
+    )
+    expect(assistant?.kind === 'message' ? assistant.content : null).toBe('Checking routes.')
+  })
+
   it('does not stack later assistant text before orphaned live tools', async () => {
     const { result } = renderHook(() => useChatStream('/ws'))
 

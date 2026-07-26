@@ -73,6 +73,10 @@ export function countLines(text: string): number {
 
 export function parseEditCardData(tool: UiToolRow): EditCardData {
   const args = parseArgsRecord(tool.argsPreview)
+
+  const fromEdits = parseMultiEditCardData(args, tool.summary)
+  if (fromEdits) return fromEdits
+
   const path = typeof args?.path === 'string' ? args.path : tool.summary?.trim() || 'file'
 
   // Lines are what a reader can picture; a character count is noise.
@@ -87,6 +91,38 @@ export function parseEditCardData(tool: UiToolRow): EditCardData {
   }
 
   return { path, added: 0, removed: 0, changeLabel: '' }
+}
+
+function parseMultiEditCardData(
+  args: Record<string, unknown> | null,
+  summary: string | undefined
+): EditCardData | null {
+  const edits = args?.edits
+  if (!Array.isArray(edits) || edits.length === 0) return null
+
+  let added = 0
+  let removed = 0
+  const paths: string[] = []
+  for (const entry of edits) {
+    if (!entry || typeof entry !== 'object') continue
+    const edit = entry as Record<string, unknown>
+    if (typeof edit.path === 'string' && edit.path.trim()) paths.push(edit.path)
+    if (typeof edit.contents === 'string') {
+      added += countLines(edit.contents)
+      continue
+    }
+    if (typeof edit.diff === 'string' && edit.diff.trim()) {
+      const counts = countDiffLines(edit.diff)
+      added += counts.added
+      removed += counts.removed
+    }
+  }
+
+  const path =
+    paths.length > 1
+      ? summary?.trim() || paths.join(', ')
+      : paths[0] ?? (summary?.trim() || 'file')
+  return { path, added, removed, changeLabel: changeLabelFor(added, removed) }
 }
 
 function changeLabelFor(added: number, removed: number): string {
@@ -107,7 +143,28 @@ function changeLabelFor(added: number, removed: number): string {
 export function parseDiffPreview(tool: UiToolRow): DiffLine[] {
   const args = parseArgsRecord(tool.argsPreview)
 
-  if (typeof args?.contents === 'string') {
+  const edits = args?.edits
+  if (Array.isArray(edits) && edits.length > 0) {
+    const out: DiffLine[] = []
+    for (const entry of edits) {
+      if (!entry || typeof entry !== 'object') continue
+      const edit = entry as Record<string, unknown>
+      const chunk = diffLinesFromEditArgs(edit)
+      if (!chunk.length) continue
+      if (out.length > 0) out.push({ kind: 'gap', text: '', lineNumber: null })
+      if (typeof edit.path === 'string' && edit.path.trim()) {
+        out.push({ kind: 'context', text: edit.path, lineNumber: null })
+      }
+      out.push(...chunk)
+    }
+    return out
+  }
+
+  return diffLinesFromEditArgs(args ?? {})
+}
+
+function diffLinesFromEditArgs(args: Record<string, unknown>): DiffLine[] {
+  if (typeof args.contents === 'string') {
     return splitLines(args.contents).map((text, index) => ({
       kind: 'add' as const,
       text,
@@ -115,7 +172,7 @@ export function parseDiffPreview(tool: UiToolRow): DiffLine[] {
     }))
   }
 
-  const diff = typeof args?.diff === 'string' ? args.diff : ''
+  const diff = typeof args.diff === 'string' ? args.diff : ''
   if (!diff.trim()) return []
 
   const out: DiffLine[] = []

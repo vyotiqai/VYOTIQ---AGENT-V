@@ -140,6 +140,36 @@ export function duplicatesReasoning(item: UiItem): boolean {
   return collapseWhitespace(item.thinking ?? '').includes(collapseWhitespace(content))
 }
 
+/**
+ * Drop model-emitted pseudo tool calls that leaked into the text channel
+ * (e.g. `tool {"edits":[...]}`) so they do not render as plain transcript text.
+ */
+export function stripToolShapedAssistantText(content: string): string {
+  if (!content) return content
+  let result = ''
+  let i = 0
+  while (i < content.length) {
+    const match = content.slice(i).match(/^(\s*)tool\s*\{/)
+    if (!match) {
+      result += content[i]!
+      i += 1
+      continue
+    }
+    i += match[0].length
+    let depth = 1
+    while (i < content.length && depth > 0) {
+      const ch = content[i]!
+      i += 1
+      if (ch === '{') depth += 1
+      else if (ch === '}') depth -= 1
+    }
+    while (i < content.length && (content[i] === ' ' || content[i] === '\t')) i += 1
+    if (content[i] === '\r') i += 1
+    if (content[i] === '\n') i += 1
+  }
+  return result.replace(/\n{3,}/g, '\n\n').trim()
+}
+
 /** Join a turn's reasoning steps into the single Thought row the turn renders. */
 export function mergeThinking(previous: string | undefined, next: string): string {
   const before = previous?.trim() ?? ''

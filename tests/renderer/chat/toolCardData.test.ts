@@ -56,6 +56,24 @@ describe('parseEditCardData', () => {
     expect(data.added).toBe(2)
     expect(data.removed).toBe(1)
   })
+  it('counts multi_edit edits[] for the header totals', () => {
+    const data = parseEditCardData(
+      tool({
+        name: 'multi_edit',
+        summary: 'a.ts, b.ts',
+        argsPreview: JSON.stringify({
+          edits: [
+            { path: 'a.ts', contents: 'one\ntwo\n' },
+            { path: 'b.ts', diff: '@@\n-old\n+new\n' }
+          ]
+        })
+      })
+    )
+    expect(data.path).toBe('a.ts, b.ts')
+    expect(data.added).toBe(3)
+    expect(data.removed).toBe(1)
+    expect(data.changeLabel).toBe('+3 -1')
+  })
 })
 
 describe('parseDiffPreview', () => {
@@ -97,6 +115,27 @@ describe('parseDiffPreview', () => {
 
   it('returns nothing when the arguments never arrived', () => {
     expect(parseDiffPreview(tool({ name: 'edit' }))).toEqual([])
+  })
+
+  it('flattens multi_edit edits[] into a preview body', () => {
+    const lines = parseDiffPreview(
+      tool({
+        name: 'multi_edit',
+        argsPreview: JSON.stringify({
+          edits: [
+            { path: 'api/page.tsx', contents: '"use client"\n' },
+            { path: 'api/layout.tsx', contents: 'export default function Layout() {}\n' }
+          ]
+        })
+      })
+    )
+
+    expect(lines[0]).toEqual({ kind: 'context', text: 'api/page.tsx', lineNumber: null })
+    expect(lines.some((line) => line.kind === 'add' && line.text.includes('use client'))).toBe(true)
+    expect(lines.some((line) => line.kind === 'gap')).toBe(true)
+    expect(lines.some((line) => line.kind === 'context' && line.text === 'api/layout.tsx')).toBe(
+      true
+    )
   })
 })
 

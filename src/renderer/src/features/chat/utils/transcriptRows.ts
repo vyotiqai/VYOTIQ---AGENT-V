@@ -1,5 +1,5 @@
 import type { UiItem, UiToolApproval } from '@shared/transcript'
-import { duplicatesReasoning, isMeaningfulThinking } from '@shared/transcript'
+import { duplicatesReasoning, isMeaningfulThinking, stripToolShapedAssistantText } from '@shared/transcript'
 import { parseArgsRecord } from '@shared/toolSummary'
 import { countDiffLines, countLines, parseEditCardData } from './toolCardData'
 
@@ -131,7 +131,10 @@ export function buildTranscriptRows(items: UiItem[]): TranscriptRow[] {
 
     const assistant = item as AssistantItem
     const showThinking = isMeaningfulThinking(assistant.thinking)
-    const showContent = Boolean(assistant.content && !duplicatesReasoning(assistant))
+    const cleanedContent = stripToolShapedAssistantText(assistant.content)
+    const showContent = Boolean(
+      cleanedContent && !duplicatesReasoning({ ...assistant, content: cleanedContent })
+    )
     // A row with nothing to show must not split the stretch around it, or the
     // transcript stacks identical group headers with no separator between them.
     if (!showThinking && !showContent) continue
@@ -141,7 +144,13 @@ export function buildTranscriptRows(items: UiItem[]): TranscriptRow[] {
       rows.push({ kind: 'thinking', id: `${assistant.id}:thinking`, item: assistant, turnIndex })
     }
     if (showContent) {
-      rows.push({ kind: 'text', id: assistant.id, item: assistant, turnIndex, final: false })
+      rows.push({
+        kind: 'text',
+        id: assistant.id,
+        item: cleanedContent === assistant.content ? assistant : { ...assistant, content: cleanedContent },
+        turnIndex,
+        final: false
+      })
     }
   }
 

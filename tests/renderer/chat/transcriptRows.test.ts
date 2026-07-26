@@ -267,4 +267,20 @@ describe('buildTranscriptRows', () => {
     expect(rows.map((row) => row.kind)).toEqual(['approval'])
     expect(rows.some((row) => row.kind === 'card')).toBe(false)
   })
+
+  it('strips leaked tool JSON from assistant text rows', () => {
+    const rows = buildTranscriptRows([
+      {
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        content: 'tool {"edits":[{"path":"api.ts","contents":"x"}]}\nVerified the routes.'
+      }
+    ])
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.kind).toBe('text')
+    if (rows[0]?.kind === 'text') {
+      expect(rows[0].item.content).toBe('Verified the routes.')
+    }
+  })
 })

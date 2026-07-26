@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from '@shared/ipc'
-import { inferToolStatus, messagesToUiItems, applyEventTimestamps, isMeaningfulThinking, duplicatesReasoning } from '@shared/transcript'
+import { inferToolStatus, messagesToUiItems, applyEventTimestamps, isMeaningfulThinking, duplicatesReasoning, stripToolShapedAssistantText } from '@shared/transcript'
 
 describe('messagesToUiItems', () => {
   it('rebuilds user, assistant, and tool rows in order', () => {
@@ -272,6 +272,26 @@ describe('transcript display helpers', () => {
         thinking: 'Done. Now I will summarize what changed for the reader.'
       })
     ).toBe(false)
+  })
+})
+
+describe('stripToolShapedAssistantText', () => {
+  it('removes a leaked tool JSON blob from assistant text', () => {
+    expect(
+      stripToolShapedAssistantText(
+        'tool {"edits":[{"path":"api/page.tsx","contents":"\\"use client\\";"}]}\nNow I have the COMPLETE picture.'
+      )
+    ).toBe('Now I have the COMPLETE picture.')
+  })
+
+  it('drops a message that is only a tool dump', () => {
+    expect(stripToolShapedAssistantText('tool {"path":"a.ts","contents":"x"}')).toBe('')
+  })
+
+  it('leaves ordinary narration alone', () => {
+    expect(stripToolShapedAssistantText('The tool ran successfully.')).toBe(
+      'The tool ran successfully.'
+    )
   })
 })
 

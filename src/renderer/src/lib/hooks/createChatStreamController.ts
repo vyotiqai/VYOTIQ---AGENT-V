@@ -27,6 +27,7 @@ import {
   applyEventTimestamps,
   mergeThinking,
   messageUiId,
+  stripToolShapedAssistantText,
   uiAttachments,
   type UiItem
 } from '@shared/transcript'
@@ -233,6 +234,37 @@ function ensureToolRowsForCalls(
     )
   }
   return next
+}
+
+/**
+ * Drop streaming tool rows that never made it into this step's canonical
+ * `toolCalls`. Otherwise a cancelled/malformed edit delta stays `running`
+ * forever above later completed work.
+ */
+function pruneOrphanDeltaToolRows(
+  items: UiItem[],
+  toolCalls: Array<{ id: string }> | undefined
+): UiItem[] {
+  const keep = new Set((toolCalls ?? []).map((tc) => tc.id))
+  let changed = false
+  const next = items.filter((item) => {
+    if (item.kind !== 'tool' || item.tool.status !== 'running') return true
+    if (keep.has(item.id) || keep.has(item.tool.id)) return true
+
+    const pending = isPendingToolId(item.id) || isPendingToolId(item.tool.id)
+    if (pending) {
+      changed = true
+      return false
+    }
+
+    // Real id from a delta that the final assistant_message dropped.
+    if (toolCalls && toolCalls.length > 0) {
+      changed = true
+      return false
+    }
+    return true
+  })
+  return changed ? next : items
 }
 
 /** Close a live trailing tool stretch once every tool in it has finished. */
@@ -800,6 +832,7 @@ export function createChatStreamController(
       assistantId = null
       reasoningSegmentBreak = true
       const messageAt = new Date().toISOString()
+      const content = stripToolShapedAssistantText(event.content)
       // Keep same-turn tool stretches live when this message still has toolCalls.
       // Only close when this is a text-only follow-up (next iteration / final answer).
       const base = event.toolCalls?.length
@@ -826,7 +859,7 @@ export function createChatStreamController(
           item.kind === 'message' && item.id === id
             ? {
                 ...item,
-                content: event.content || item.content,
+                content: content || stripToolShapedAssistantText(item.content),
                 thinking: reasoningTarget
                   ? item.thinking
                   : mergeThinking(item.thinking, event.thinking ?? ''),
@@ -836,12 +869,12 @@ export function createChatStreamController(
               }
             : item
         )
-      } else if (event.content || (event.thinking && !reasoningTarget)) {
+      } else if (content || (event.thinking && !reasoningTarget)) {
         nextItems = insertAssistantItem(nextItems, {
           kind: 'message',
           id,
           role: 'assistant',
-          content: event.content,
+          content,
           thinking: event.thinking,
           thinkingStreaming: false,
           streaming: false,
@@ -853,11 +886,12 @@ export function createChatStreamController(
       reasoningId = null
       const nextMessages = appendAssistantWithTools(
         state.messages,
-        event.content,
+        content,
         event.toolCalls,
         event.thinking
       )
       nextItems = ensureToolRowsForCalls(nextItems, event.toolCalls, state.runStartedAt)
+      nextItems = pruneOrphanDeltaToolRows(nextItems, event.toolCalls)
       patch({ items: nextItems, messages: nextMessages })
     } else if (event.type === 'tool_call_delta') {
       scheduleToolCallDelta(event)
