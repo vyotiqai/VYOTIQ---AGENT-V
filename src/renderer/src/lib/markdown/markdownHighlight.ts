@@ -54,7 +54,6 @@ function resolveLanguage(lang: string): SupportedLanguage | null {
   return LANGUAGE_ALIASES[normalized] ?? null
 }
 
-/** The grammar to use for a file, or null when we have none for that extension. */
 export function languageFromPath(path: string): string | null {
   const name = path.split(/[/\\]/).pop() ?? ''
   const dot = name.lastIndexOf('.')
@@ -82,7 +81,6 @@ async function prepare(lang: string): Promise<{ core: HighlighterCore; language:
   }
 }
 
-/** Returns highlighted HTML, or null when the language is unsupported or loading fails. */
 export async function highlightCode(text: string, lang: string): Promise<string | null> {
   const ready = await prepare(lang)
   if (!ready) return null

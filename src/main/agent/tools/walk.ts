@@ -2,7 +2,6 @@ import { readdirSync } from 'fs'
 import { join } from 'path'
 import { gitignoreMatcherForDir } from './gitignore'
 
-/** Directories never worth walking, even when .gitignore does not mention them. */
 export const IGNORED_DIRS = new Set([
   'node_modules',
   '.git',
@@ -51,7 +50,6 @@ export const TEXT_EXTS = new Set([
   '.svelte'
 ])
 
-/** Yield the event loop so long scans stay responsive to abort/cancel. */
 const YIELD_EVERY_DIRS = 64
 
 export function yieldToEventLoop(): Promise<void> {

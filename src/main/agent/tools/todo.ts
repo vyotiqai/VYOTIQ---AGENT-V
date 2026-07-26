@@ -40,13 +40,6 @@ export function readTodos(runDir: string): TodoItem[] {
   }
 }
 
-/**
- * Replace or merge the run's task list.
- *
- * The list lives in the run directory rather than the message history so it
- * stays the same size no matter how many times the model rewrites it, and it
- * survives a reload of the transcript.
- */
 export function toolTodoWrite(
   runDir: string,
   todos: TodoItem[],

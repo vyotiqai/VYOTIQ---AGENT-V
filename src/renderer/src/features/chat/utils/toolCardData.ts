@@ -75,7 +75,6 @@ export function parseEditCardData(tool: UiToolRow): EditCardData {
   const args = parseArgsRecord(tool.argsPreview)
   const path = typeof args?.path === 'string' ? args.path : tool.summary?.trim() || 'file'
 
-  // Lines are what a reader can picture; a character count is noise.
   if (typeof args?.contents === 'string') {
     const added = countLines(args.contents)
     return { path, added, removed: 0, changeLabel: changeLabelFor(added, 0) }
@@ -96,14 +95,6 @@ function changeLabelFor(added: number, removed: number): string {
   return parts.join(' ')
 }
 
-/**
- * Turn an edit's arguments into renderable diff lines.
- *
- * The tool result is only a status string, so the change itself has to come
- * from the arguments: either a unified diff or the full replacement contents.
- * Line numbers track the post-edit file, which is what a reader is looking for
- * when they jump to the file afterwards.
- */
 export function parseDiffPreview(tool: UiToolRow): DiffLine[] {
   const args = parseArgsRecord(tool.argsPreview)
 
@@ -137,7 +128,6 @@ export function parseDiffPreview(tool: UiToolRow): DiffLine[] {
     } else if (raw.startsWith('-')) {
       out.push({ kind: 'del', text: raw.slice(1), lineNumber: null })
     } else if (raw.startsWith('\\')) {
-      // "\ No newline at end of file" is diff bookkeeping, not file content.
       continue
     } else {
       out.push({ kind: 'context', text: raw.startsWith(' ') ? raw.slice(1) : raw, lineNumber })
@@ -166,10 +156,6 @@ export function basename(path: string): string {
   return parts[parts.length - 1] || path
 }
 
-/**
- * Extensions worth abbreviating, where the short form is not just the extension
- * shouted back. Anything absent falls through to its own extension.
- */
 const BADGE_OVERRIDES: Record<string, string> = {
   javascript: 'js',
   typescript: 'ts',
@@ -179,7 +165,6 @@ const BADGE_OVERRIDES: Record<string, string> = {
   shell: 'sh'
 }
 
-/** A short mark for a file's type, e.g. `ts`, or null when it has no extension. */
 export function fileBadge(path: string): string | null {
   const name = basename(path)
   const dot = name.lastIndexOf('.')
@@ -187,7 +172,5 @@ export function fileBadge(path: string): string | null {
   const extension = name.slice(dot + 1).toLowerCase()
   const shortened = BADGE_OVERRIDES[extension]
   if (shortened) return shortened
-  // Anything longer is not an extension we recognise, and a long badge would
-  // crowd the filename it is meant to label.
   return extension && extension.length <= 4 ? extension : null
 }

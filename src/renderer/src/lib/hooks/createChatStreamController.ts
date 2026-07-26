@@ -46,7 +46,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** Prefer event.code from main; fall back for older events without a code. */
 function agentErrorCode(event: Extract<AgentEvent, { type: 'error' }>): string {
   if (event.code) return event.code
   if (/^Stopped after \d+ steps/i.test(event.message)) return 'AGENT_MAX_STEPS'
@@ -363,7 +362,6 @@ function findToolResultRowIndex(items: UiItem[], toolCallId: string, name: strin
     const item = items[idx]
     if (item.kind === 'tool' && item.tool.name === name) return idx
   }
-  // Only adopt an unrelated row when there is no ambiguity about which one is live.
   if (running.length === 1) return running[0]
   return -1
 }
@@ -398,7 +396,6 @@ function hydrateFromDisk(kept: ChatMessage[], events: PersistedEvent[]) {
   }
 }
 
-/** A turn that ended before the work was finished, offering a Continue affordance. */
 export type IncompleteTurnState = {
   reason: IncompleteReason
   message: string
@@ -837,8 +834,6 @@ export function createChatStreamController(
           at: messageAt
         })
       }
-      // The step is over. Whatever the model reasons about next belongs beside
-      // the calls that reasoning leads to, not appended to the step just closed.
       reasoningId = null
       const nextMessages = appendAssistantWithTools(
         state.messages,

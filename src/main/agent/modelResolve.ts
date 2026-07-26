@@ -3,10 +3,6 @@ import { seedModelsFor } from '../../shared/providers'
 import { idSuggestsVision } from './providers/normalize'
 import { listProviderModels } from './providers'
 
-/**
- * Resolve model metadata, falling back to seeds and finally to conservative
- * defaults so an unlisted model still runs instead of failing the turn.
- */
 export async function resolveModelInfo(
   providerId: ProviderId,
   modelId: string,

@@ -8,7 +8,6 @@ import {
 import { basename, dirname, join } from 'path'
 
 const MAX_BYTES = 512 * 1024
-/** Line slicing needs the whole file in memory, so it gets a wider but finite cap. */
 const LINE_RANGE_MAX_BYTES = 8 * 1024 * 1024
 const DIR_LIST_CAP = 80
 const SUGGEST_CAP = 8
@@ -122,11 +121,6 @@ export function toolRead(
   return buf.toString('utf8')
 }
 
-/**
- * Read an inclusive, 1-based line range. The header states the range actually
- * returned, which is both what the model needs to cite and what the transcript
- * shows next to the file name.
- */
 function readLineRange(
   resolved: string,
   pathArg: string,
@@ -145,7 +139,6 @@ function readLineRange(
   }
 
   const lines = buf.toString('utf8').split('\n')
-  // A trailing newline terminates the last line rather than starting a new one.
   if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
 
   const total = lines.length
