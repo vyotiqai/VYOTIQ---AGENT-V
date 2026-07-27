@@ -123,12 +123,16 @@ function ModelRow({
           onToggleFavorite()
         }}
       >
-        {favorite ? '★' : '☆'}
+        <Icon
+          name="star"
+          size={16}
+          weight={favorite ? 'fill' : 'bold'}
+        />
       </button>
       {selected ? (
-        <Icon name="check" size={13} className="shrink-0 text-fg" />
+        <Icon name="check" size={16} className="shrink-0 text-fg" />
       ) : (
-        <span className="inline-block size-[13px] shrink-0" aria-hidden />
+        <span className="inline-block size-4 shrink-0" aria-hidden />
       )}
     </li>
   )
@@ -507,7 +511,7 @@ export function ModelPicker({
         </span>
         <Icon
           name="chevron"
-          size={12}
+          size={14}
           className={cn('shrink-0 text-muted vy-transition', open && 'rotate-180')}
         />
       </button>

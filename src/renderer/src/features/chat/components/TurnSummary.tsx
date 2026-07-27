@@ -54,7 +54,7 @@ export const TurnSummary = memo(function TurnSummary({
       )}
       <Icon
         name="chevronRight"
-        size={12}
+        size={14}
         className={cn('shrink-0 self-center vy-transition', !collapsed && 'rotate-90')}
       />
     </button>

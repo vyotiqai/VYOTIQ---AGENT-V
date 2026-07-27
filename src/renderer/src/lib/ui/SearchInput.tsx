@@ -37,7 +37,7 @@ export const SearchInput = forwardRef<
         className
       )}
     >
-      <Icon name="search" size={13} className="shrink-0 text-secondary" />
+      <Icon name="search" size={16} className="shrink-0 text-secondary" />
       <input
         ref={ref}
         className={cn(
@@ -60,7 +60,7 @@ export const SearchInput = forwardRef<
           aria-label={clearLabel}
           onClick={onClear}
         >
-          <Icon name="close" size={12} />
+          <Icon name="close" size={14} />
         </button>
       ) : null}
       {trailing}

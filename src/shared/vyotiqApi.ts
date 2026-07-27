@@ -98,7 +98,6 @@ export interface VyotiqApi {
     message: string,
     push: boolean
   ) => Promise<IpcResult<GitCommitResult>>
-  openHarness: () => Promise<IpcResult<true>>
   windowMinimize: () => Promise<IpcResult<true>>
   windowMaximize: () => Promise<IpcResult<boolean>>
   windowClose: () => Promise<IpcResult<true>>

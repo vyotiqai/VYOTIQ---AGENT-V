@@ -6,24 +6,20 @@ import type { WorkspaceSwitcherProps } from './types'
 
 export function SidebarCollapsed({
   view,
-  harnessActive,
   workspaceReady,
   workspaceProps,
   needsWorkspaceLabel,
   onNewChat,
   onOpenSettings,
-  onOpenHarness,
   onFocusSearch,
   clearSearch
 }: {
   view: SidebarView
-  harnessActive?: boolean
   workspaceReady: boolean
   workspaceProps: WorkspaceSwitcherProps | null
   needsWorkspaceLabel: string
   onNewChat: () => void
   onOpenSettings: () => void
-  onOpenHarness: () => void
   onFocusSearch?: () => void
   clearSearch: () => void
 }) {
@@ -57,14 +53,6 @@ export function SidebarCollapsed({
       {workspaceProps ? <WorkspaceSwitcher {...workspaceProps} collapsed /> : null}
 
       <div className="mt-auto flex flex-col items-center gap-1">
-        <NavItem
-          variant="icon"
-          label="Harness"
-          icon="doc"
-          active={harnessActive}
-          pressed={harnessActive}
-          onClick={onOpenHarness}
-        />
         <NavItem
           variant="icon"
           label="Settings"

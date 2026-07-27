@@ -63,7 +63,7 @@ export function ThinkingBlock({
         )}
         <Icon
           name="chevronRight"
-          size={12}
+          size={14}
           className={cn(
             'self-center text-[var(--vy-gray-500)]/80 vy-transition',
             isExpanded && 'rotate-90'

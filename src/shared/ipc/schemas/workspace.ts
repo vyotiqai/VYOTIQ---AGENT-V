@@ -69,5 +69,3 @@ export const WorkspacesSetSettingsOverrideRequestSchema = z.object({
 export type WorkspacesSetSettingsOverrideRequest = z.infer<
   typeof WorkspacesSetSettingsOverrideRequestSchema
 >
-
-export const OpenHarnessRequestSchema = z.object({})

@@ -130,7 +130,7 @@ export function WorkspaceSwitcher({
         className="flex w-full min-w-0 items-center gap-1 rounded px-1 py-0.5 text-left text-[11px] text-muted vy-transition hover:bg-surface hover:text-fg"
         onClick={onAdd}
       >
-        <Icon name="folderPlus" size={11} />
+        <Icon name="folderPlus" size={14} />
         <span className="truncate">Add workspace</span>
       </button>
     )
@@ -177,7 +177,7 @@ export function WorkspaceSwitcher({
                 {showDot ? (
                   <span className="size-1 shrink-0 rounded-full bg-fg motion-safe:animate-pulse" aria-hidden />
                 ) : (
-                  <Icon name="folder" size={10} className="shrink-0 opacity-50" />
+                  <Icon name="folder" size={12} className="shrink-0 opacity-50" />
                 )}
                 <span className="truncate">{name}</span>
               </span>

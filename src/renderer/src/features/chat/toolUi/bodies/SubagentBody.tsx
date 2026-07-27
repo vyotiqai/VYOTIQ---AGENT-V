@@ -6,11 +6,11 @@ import { MarkdownContent } from '@renderer/lib/ui'
 import type { ToolBodyProps } from '../types'
 import type { SubagentContextUsageState } from '@shared/utils/contextUsage'
 
-const STEP_ICON: Record<string, 'search' | 'edit' | 'check'> = {
+const STEP_ICON: Record<string, 'edit' | 'sparkles' | 'check' | 'doc'> = {
   tool: 'edit',
-  thinking: 'search',
+  thinking: 'sparkles',
   done: 'check',
-  text: 'search'
+  text: 'doc'
 }
 
 function SubagentContextBar({ usage }: { usage: SubagentContextUsageState }) {
@@ -57,8 +57,8 @@ export function SubagentBody({
           {steps.map((entry, index) => (
             <li key={index} className="flex min-w-0 items-start gap-2 text-[11px]">
               <Icon
-                name={STEP_ICON[entry.kind] ?? 'search'}
-                size={10}
+                name={STEP_ICON[entry.kind] ?? 'bot'}
+                size={14}
                 className="mt-0.5 shrink-0 text-tertiary"
               />
               <span className="min-w-0 whitespace-pre-wrap break-words text-tertiary">

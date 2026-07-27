@@ -49,7 +49,7 @@ export function NavItem({
         title={title ?? label}
         onClick={onClick}
       >
-        {icon ? <Icon name={icon} size={15} /> : null}
+        {icon ? <Icon name={icon} size={18} weight={active ? 'fill' : 'bold'} /> : null}
       </button>
     )
   }
@@ -61,7 +61,11 @@ export function NavItem({
         'app-region-no-drag rounded-md text-left text-sm tracking-[var(--vy-tracking-tight)] vy-transition',
         'disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)] disabled:hover:bg-transparent disabled:hover:text-secondary',
         dense ? 'px-2 py-1.5' : 'px-2.5 py-[7px]',
-        variant === 'sidebar' ? 'flex w-full items-center gap-2.5' : 'shrink-0 sm:w-full',
+        variant === 'sidebar'
+          ? 'flex w-full items-center gap-2.5'
+          : variant === 'settings'
+            ? 'inline-flex shrink-0 items-center gap-2 sm:flex sm:w-full'
+            : 'shrink-0 sm:w-full',
         active
           ? 'bg-surface-2 text-fg-strong'
           : 'text-secondary hover:bg-surface hover:text-fg active:bg-surface-2',
@@ -73,7 +77,14 @@ export function NavItem({
       title={title}
       onClick={onClick}
     >
-      {icon ? <Icon name={icon} size={15} className="shrink-0 opacity-80" /> : null}
+      {icon ? (
+        <Icon
+          name={icon}
+          size={18}
+          weight={active ? 'fill' : 'bold'}
+          className="shrink-0"
+        />
+      ) : null}
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {trailing}
     </button>

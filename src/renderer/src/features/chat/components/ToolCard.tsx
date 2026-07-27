@@ -59,18 +59,8 @@ export const ToolCard = memo(function ToolCard({
         <FileBadge path={headerMeta.filePath} />
       ) : (
         <Icon
-          name={
-            headerMeta.icon === 'terminal'
-              ? 'terminal'
-              : headerMeta.icon === 'search'
-                ? 'search'
-                : headerMeta.icon === 'check'
-                  ? 'check'
-                  : headerMeta.icon === 'trash'
-                    ? 'warning'
-                    : 'edit'
-          }
-          size={12}
+          name={headerMeta.icon ?? 'file'}
+          size={14}
           className={cn('shrink-0', failed ? 'text-danger' : 'text-tertiary')}
         />
       )}

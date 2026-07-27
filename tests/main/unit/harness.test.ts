@@ -15,17 +15,13 @@ vi.mock('electron', () => ({
     getAppPath: () => appPath,
     isPackaged: false
   },
-  shell: {
-    openPath: vi.fn(async () => '')
-  }
 }))
 
 import {
   cleanupLegacyHarnessArtifacts,
   cleanupAllLegacyHarnessArtifacts,
   getHarnessPath,
-  loadHarness,
-  openHarness
+  loadHarness
 } from '@main/agent/harness'
 import { ensureWorkspaceStorage, workspaceMetaDir, workspaceId } from '@main/storage/paths'
 import { canonicalizeWorkspacePath } from '@shared/workspacePath'
@@ -68,12 +64,6 @@ describe('harness', () => {
     expect(existsSync(join(legacyDir, 'harness.md'))).toBe(false)
     expect(existsSync(userDataHarness)).toBe(false)
     expect(readFileSync(getHarnessPath(), 'utf8')).toBe('# System harness\n')
-  })
-
-  it('openHarness opens the bundled file', async () => {
-    const { shell } = await import('electron')
-    await openHarness()
-    expect(shell.openPath).toHaveBeenCalledWith(getHarnessPath())
   })
 
   it('cleanupAllLegacyHarnessArtifacts dedupes workspace paths', () => {

@@ -172,7 +172,7 @@ export function CopyButton({ text, className }: { text: string; className?: stri
       aria-label={copied ? 'Copied' : 'Copy'}
       title={copied ? 'Copied' : 'Copy'}
     >
-      <Icon name={copied ? 'check' : 'copy'} size={10} />
+      <Icon name={copied ? 'check' : 'copy'} size={14} />
       {copied ? 'Copied' : 'Copy'}
     </button>
   )

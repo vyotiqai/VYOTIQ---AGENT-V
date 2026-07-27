@@ -1,0 +1,29 @@
+---
+description: Build and restart the Electron app after code changes
+alwaysApply:
+---
+
+# Build and restart after changes
+
+After making code changes in this repo, build and restart the app before ending your turn — do not ask the user to reload manually.
+
+## Workflow
+
+1. Stop any running app instance (Electron / `pnpm start` / `pnpm dev`).
+2. Run `pnpm build` from the repo root and fix build failures before continuing.
+3. Start the app with `pnpm start` in the background.
+
+## Commands (Windows / PowerShell)
+
+```powershell
+Get-Process -Name electron -ErrorAction SilentlyContinue | Stop-Process -Force
+pnpm build
+pnpm start
+```
+
+Use `pnpm dev` only when the user explicitly asks for hot-reload development mode.
+
+## When to skip
+
+- Question-only or review-only tasks with no code changes.
+- A build/restart was already done in the same turn for the same changes.

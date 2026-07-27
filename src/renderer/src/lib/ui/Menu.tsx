@@ -300,9 +300,9 @@ export function Menu({
                     >
                       <span className="min-w-0 flex-1 truncate">{opt.label}</span>
                       {isSelected ? (
-                        <Icon name="check" size={13} className="shrink-0 text-fg" />
+                        <Icon name="check" size={16} className="shrink-0 text-fg" />
                       ) : (
-                        <span className="inline-block size-[13px] shrink-0" aria-hidden />
+                        <span className="inline-block size-4 shrink-0" aria-hidden />
                       )}
                     </li>
                   )
@@ -338,7 +338,7 @@ export function Menu({
         <span className="truncate">{label}</span>
         <Icon
           name="chevron"
-          size={12}
+          size={14}
           className={cn('text-muted vy-transition', open && 'rotate-180')}
         />
       </button>

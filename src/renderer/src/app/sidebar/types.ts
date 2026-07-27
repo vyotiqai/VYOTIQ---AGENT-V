@@ -9,7 +9,6 @@ export type SidebarProps = {
   onDismissRunsError?: (path?: string) => void
   sessionQuery: string
   searchRef: RefObject<HTMLInputElement | null>
-  harnessActive?: boolean
   hasWorkspace?: boolean
   openPaths?: string[]
   activePath?: string | null
@@ -22,7 +21,6 @@ export type SidebarProps = {
   onSessionQuery: (q: string) => void
   onOpenSettings: () => void
   onOpenChat: () => void
-  onOpenHarness: () => void
   onNewChat: () => void
   onSelectRun: (runId: string) => void
   onSelectRunInWorkspace?: (path: string, runId: string) => void

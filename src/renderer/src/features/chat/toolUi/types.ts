@@ -1,3 +1,4 @@
+import type { IconName } from '@renderer/lib/icons'
 import type { UiSubagentContextUsage, UiSubagentEntry, UiToolRow } from '@shared/transcript'
 
 export type ToolPresentation = 'prominent' | 'compact'
@@ -25,7 +26,7 @@ export type ToolHeaderMeta = {
   target: string
   added?: number
   removed?: number
-  icon?: 'terminal' | 'search' | 'check' | 'edit' | 'trash'
+  icon?: IconName
   filePath?: string
   exitCode?: number | null
 }

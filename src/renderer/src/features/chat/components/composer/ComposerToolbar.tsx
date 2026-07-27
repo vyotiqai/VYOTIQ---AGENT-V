@@ -112,7 +112,7 @@ export function ComposerToolbar({
           disabled={locked || attachFull}
           onClick={onAttachClick}
         >
-          <Icon name="plus" size={14} />
+          <Icon name="paperclip" size={18} />
         </button>
         <ModelPicker
           className={cn('min-w-0 flex-shrink', modelMenuClass)}
@@ -172,7 +172,7 @@ export function ComposerToolbar({
             aria-label="Send"
             disabled={!canSend}
           >
-            <Icon name="arrowUp" size={14} />
+            <Icon name="send" size={16} weight="fill" />
           </button>
         )}
       </div>

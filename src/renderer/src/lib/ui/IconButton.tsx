@@ -15,17 +15,17 @@ const iconButtonVariants = {
 } as const
 
 const iconButtonSizes = {
-  xs: 'size-5',
-  sm: 'size-6',
+  xs: 'size-6',
+  sm: 'size-7',
   md: 'size-8',
-  lg: 'size-8'
+  lg: 'size-9'
 } as const
 
 const iconSizes: Record<keyof typeof iconButtonSizes, number> = {
-  xs: 12,
-  sm: 14,
-  md: 16,
-  lg: 16
+  xs: 16,
+  sm: 18,
+  md: 20,
+  lg: 24
 }
 
 export function IconButton({

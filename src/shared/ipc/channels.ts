@@ -30,7 +30,6 @@ export const IPC = {
   runsActive: 'runs:active',
   gitStatus: 'git:status',
   gitCommit: 'git:commit',
-  openHarness: 'harness:open',
   windowMinimize: 'window:minimize',
   windowMaximize: 'window:maximize',
   windowClose: 'window:close',

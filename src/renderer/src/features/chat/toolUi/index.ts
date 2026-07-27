@@ -1,4 +1,4 @@
-export { isProminentTool, toolPresentation, toolCategory, toolLabel, categoryLabels, mixedGroupLabels } from './meta'
+export { isProminentTool, toolPresentation, toolCategory, toolLabel, categoryLabels, mixedGroupLabels, toolIconName } from './meta'
 export { getToolEntry, getToolBody, toolHasBody, getToolHeaderMeta } from './registry'
 export { ToolBodyView } from './presentation'
 export { ProminentChrome, CompactRow } from './chrome'

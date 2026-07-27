@@ -315,21 +315,6 @@ describe('settings', () => {
     expect(window.vyotiq.listModels).not.toHaveBeenCalled()
   })
 
-  it('disables harness open without workspace', () => {
-    render(
-      <SettingsView
-        settings={baseSettings}
-        activeWorkspacePath={null}
-        secrets={emptySecrets}
-        onClose={vi.fn()}
-        onUpdate={vi.fn(async () => ({ ok: true as const }))}
-        onSaveSecret={vi.fn(async () => ({ ok: true as const }))}
-        onClearSecret={vi.fn(async () => ({ ok: true as const }))}
-      />
-    )
-    expect(screen.queryByRole('button', { name: /^Harness$/i })).toBeNull()
-  })
-
   it('theme menu calls onSetTheme', () => {
     const onSetTheme = vi.fn()
     render(

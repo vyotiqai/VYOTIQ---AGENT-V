@@ -16,7 +16,7 @@ import { SubagentBody } from './bodies/SubagentBody'
 import { TerminalBody } from './bodies/TerminalBody'
 import { TodoBody } from './bodies/TodoBody'
 import { WebFetchBody } from './bodies/WebFetchBody'
-import { isMcpTool, toolLabel } from './meta'
+import { isMcpTool, toolIconName, toolLabel } from './meta'
 import { parseDeleteData } from './parsers/delete'
 import { parseDiffPreview, parseEditCardData } from './parsers/edit'
 import { parseReadData } from './parsers/read'
@@ -121,10 +121,42 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
       }
     }
   },
-  search: { Body: SearchBody, hasBody: defaultHasBody },
-  glob: { Body: GlobBody, hasBody: defaultHasBody },
-  grep: { Body: GrepBody, hasBody: defaultHasBody },
-  list_dir: { Body: ListDirBody, hasBody: defaultHasBody },
+  search: {
+    Body: SearchBody,
+    hasBody: defaultHasBody,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'fileSearch'
+    })
+  },
+  glob: {
+    Body: GlobBody,
+    hasBody: defaultHasBody,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'folderSearch'
+    })
+  },
+  grep: {
+    Body: GrepBody,
+    hasBody: defaultHasBody,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'scanSearch'
+    })
+  },
+  list_dir: {
+    Body: ListDirBody,
+    hasBody: defaultHasBody,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'folderOpen'
+    })
+  },
   delete: {
     Body: DeleteBody,
     hasBody: deleteHasBody,
@@ -145,18 +177,26 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
       return {
         verb: toolLabel(tool.name, tool.status),
         target: data.total > 0 ? `${data.done}/${data.total} complete` : tool.summary,
-        icon: 'check'
+        icon: 'listTodo'
       }
     }
   },
-  web_fetch: { Body: WebFetchBody, hasBody: defaultHasBody },
+  web_fetch: {
+    Body: WebFetchBody,
+    hasBody: defaultHasBody,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'globe'
+    })
+  },
   subagent: {
     Body: SubagentBody,
     hasBody: subagentHasBody,
     headerMeta: (tool) => ({
       verb: toolLabel(tool.name, tool.status),
       target: tool.summary,
-      icon: 'search'
+      icon: 'bot'
     })
   },
   terminal: {
@@ -173,14 +213,43 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
       }
     }
   },
-  memory_list: { Body: MemoryListBody, hasBody: defaultHasBody },
-  memory_read: { Body: MemoryReadBody, hasBody: defaultHasBody },
-  memory_write: { Body: MemoryWriteBody, hasBody: defaultHasBody }
+  memory_list: {
+    Body: MemoryListBody,
+    hasBody: defaultHasBody,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'memory'
+    })
+  },
+  memory_read: {
+    Body: MemoryReadBody,
+    hasBody: defaultHasBody,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'memory'
+    })
+  },
+  memory_write: {
+    Body: MemoryWriteBody,
+    hasBody: defaultHasBody,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'memory'
+    })
+  }
 }
 
 const MCP_ENTRY: ToolRegistryEntry = {
   Body: McpBody,
-  hasBody: defaultHasBody
+  hasBody: defaultHasBody,
+  headerMeta: (tool) => ({
+    verb: toolLabel(tool.name, tool.status),
+    target: tool.summary,
+    icon: 'plug'
+  })
 }
 
 const FALLBACK_ENTRY: ToolRegistryEntry = {
@@ -219,6 +288,7 @@ export function getToolHeaderMeta(
   if (entry.headerMeta) return entry.headerMeta(tool, ctx)
   return {
     verb: toolLabel(tool.name, tool.status),
-    target: tool.summary || summarizeToolArgs(tool.name, tool.argsPreview)
+    target: tool.summary || summarizeToolArgs(tool.name, tool.argsPreview),
+    icon: toolIconName(tool.name)
   }
 }

@@ -3,11 +3,11 @@ import { Icon } from '@renderer/lib/icons'
 import { NavItem } from '@renderer/lib/ui'
 import type { SettingsSection } from '../types'
 
-const SECTIONS: { id: SettingsSection; label: string }[] = [
-  { id: 'general', label: 'General' },
-  { id: 'providers', label: 'Providers' },
-  { id: 'agent', label: 'Agent' },
-  { id: 'advanced', label: 'Advanced' }
+const SECTIONS: { id: SettingsSection; label: string; icon: 'home' | 'cpu' | 'bot' | 'plug' }[] = [
+  { id: 'general', label: 'General', icon: 'home' },
+  { id: 'providers', label: 'Providers', icon: 'cpu' },
+  { id: 'agent', label: 'Agent', icon: 'bot' },
+  { id: 'advanced', label: 'Advanced', icon: 'plug' }
 ]
 
 export function SettingsNav({
@@ -32,15 +32,16 @@ export function SettingsNav({
         className="mr-1 inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-muted vy-transition hover:bg-surface hover:text-fg sm:mb-1.5 sm:mr-0 sm:w-full"
         onClick={onClose}
       >
-        <Icon name="chevron" size={12} className="rotate-90" />
+        <Icon name="chevron" size={14} className="rotate-90" />
         Back
       </button>
       <div className="flex min-w-0 flex-1 gap-1 sm:flex-col sm:gap-px">
-        {SECTIONS.map(({ id, label }) => (
+        {SECTIONS.map(({ id, label, icon }) => (
           <NavItem
             key={id}
             variant="settings"
             label={label}
+            icon={icon}
             active={section === id}
             current={section === id}
             onClick={() => onSectionChange(id)}

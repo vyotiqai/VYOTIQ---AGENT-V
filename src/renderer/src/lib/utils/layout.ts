@@ -72,9 +72,6 @@ export const FLOATING_CHROME_SHADOW_BOTTOM =
 
 /** App chrome dimensions — sidebar header row aligns with title bar height. */
 export const SIDEBAR_WIDTH_PX = 220
-export const SIDEBAR_COLLAPSED_WIDTH_PX = 44
-/** Wider collapsed rail on macOS so the toggle clears traffic lights. */
-export const SIDEBAR_COLLAPSED_WIDTH_DARWIN_PX = 72
 export const TITLE_BAR_HEIGHT = 'h-9'
 export const TITLE_BAR_HEIGHT_PX = 36
 /**
@@ -83,8 +80,6 @@ export const TITLE_BAR_HEIGHT_PX = 36
  */
 export const SIDEBAR_WIDTH = 'w-[min(220px,92vw)]'
 export const SIDEBAR_WIDTH_DESKTOP = 'w-[220px]'
-export const SIDEBAR_WIDTH_COLLAPSED = 'w-[44px]'
-export const SIDEBAR_WIDTH_COLLAPSED_DARWIN = 'w-[72px]'
 
 /** Named container — children use `@sidebar/…` for width-aware density. */
 export const SIDEBAR_CONTAINER = '@container/sidebar'
@@ -92,6 +87,3 @@ export const SIDEBAR_CONTAINER = '@container/sidebar'
 /** Sidebar section label — quiet category headers. */
 export const SIDEBAR_SECTION_LABEL =
   'm-0 px-2.5 text-[10px] font-medium uppercase tracking-[0.07em] text-secondary'
-
-/** localStorage key for desktop sidebar collapse preference. */
-export const SIDEBAR_COLLAPSED_KEY = 'vyotiq.sidebarCollapsed'

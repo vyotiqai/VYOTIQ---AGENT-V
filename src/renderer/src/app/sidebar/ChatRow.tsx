@@ -52,7 +52,7 @@ function RowActionButton({
         onClick()
       }}
     >
-      <Icon name={icon} size={11} />
+      <Icon name={icon} size={14} />
     </button>
   )
 }
@@ -133,7 +133,7 @@ export function ChatRow({
       <button
         type="button"
         className={cn(
-          'app-region-no-drag flex w-full min-w-0 items-center gap-1 rounded-md py-1 pl-1.5 pr-11 text-left text-[13px] leading-snug vy-transition',
+          'app-region-no-drag flex w-full min-w-0 items-center gap-1 rounded-md py-1 pl-1.5 pr-12 text-left text-[13px] leading-snug vy-transition',
           active ? 'bg-surface' : 'hover:bg-surface/60 hover:text-fg'
         )}
         aria-current={active ? 'true' : undefined}
@@ -142,17 +142,14 @@ export function ChatRow({
       >
         <RunStatusDot status={run.status} />
         <span className="min-w-0 flex-1 truncate">{title}</span>
-        <span className="hidden shrink-0 text-[10px] text-muted tabular-nums @min-[12.5rem]/sidebar:inline group-hover:opacity-0">
+        <span className="hidden shrink-0 text-[10px] text-muted tabular-nums @min-[12.5rem]/sidebar:inline group-hover:invisible [@media(hover:none)]:invisible">
           {relativeTime(run.updatedAt)}
         </span>
       </button>
 
       <div
         className={cn(
-          'app-region-no-drag absolute inset-y-0 right-0 z-10 flex items-center pr-px vy-transition',
-          active
-            ? 'pointer-events-auto opacity-100'
-            : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100',
+          'app-region-no-drag absolute inset-y-1 right-1 z-10 flex items-center gap-0.5 vy-transition pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100',
           '[@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100'
         )}
       >
@@ -163,7 +160,7 @@ export function ChatRow({
         />
         <RowActionButton
           label={`Delete ${title}`}
-          icon="close"
+          icon="trash"
           className="hover:text-danger"
           onClick={() => {
             if (window.confirm(`Delete "${title}"? This cannot be undone.`)) onDelete()

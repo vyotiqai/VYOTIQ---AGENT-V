@@ -81,7 +81,6 @@ const api: VyotiqApi = {
   gitStatus: (workspacePath) => ipcRenderer.invoke(IPC.gitStatus, { workspacePath }),
   gitCommit: (workspacePath, message, push) =>
     ipcRenderer.invoke(IPC.gitCommit, { workspacePath, message, push }),
-  openHarness: () => ipcRenderer.invoke(IPC.openHarness, {}),
   windowMinimize: () => ipcRenderer.invoke(IPC.windowMinimize),
   windowMaximize: () => ipcRenderer.invoke(IPC.windowMaximize),
   windowClose: () => ipcRenderer.invoke(IPC.windowClose),

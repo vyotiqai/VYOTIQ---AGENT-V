@@ -38,7 +38,7 @@ export function MessageFooter({ content, at }: { content: string; at?: string })
         onClick={onCopy}
         aria-label={copied ? 'Copied' : 'Copy message'}
       >
-        <Icon name={copied ? 'check' : 'copy'} size={12} />
+        <Icon name={copied ? 'check' : 'copy'} size={14} />
       </button>
     </div>
   )

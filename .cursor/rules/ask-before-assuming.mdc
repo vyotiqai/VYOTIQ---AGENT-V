@@ -1,0 +1,36 @@
+---
+description: Ask clarifying questions before assuming scope or adding features
+alwaysApply: true
+---
+
+# Ask before assuming
+
+When anything is unclear, ask the user **before** proceeding. Do not guess or silently expand scope.
+
+## When to ask
+
+- Requirements are ambiguous or incomplete
+- Multiple valid implementations would change the plan significantly
+- You are about to add a feature, capability, or behavior that was not explicitly requested
+- Trade-offs matter (performance, cost, UX, security, context limits)
+- You need a product or preference decision only the user can make
+
+Use the **AskQuestion** tool when choices can be structured; otherwise ask in chat.
+
+## When not to ask
+
+- The answer is already in the user's message, the plan, or the codebase
+- A sensible default is obvious from existing project conventions and the request is narrow
+- You are executing an already-approved plan with no open decisions
+
+## How to ask
+
+- Ask **1–2 critical questions at a time**, not a long questionnaire
+- Present concrete options when possible; state your recommendation
+- Base questions on **verified evidence** from the codebase — not assumptions
+
+## Do not
+
+- Assume the user wants extra features "to be helpful"
+- Pick an approach silently when it materially affects behavior
+- Treat plan iteration as permission to implement without confirmation

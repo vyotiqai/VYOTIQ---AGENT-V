@@ -45,7 +45,7 @@ export function ProminentChrome({
         {hasBody ? (
           <Icon
             name="chevronRight"
-            size={12}
+            size={14}
             className={cn('ml-auto shrink-0 text-tertiary vy-transition', expanded && 'rotate-90')}
           />
         ) : null}
@@ -102,12 +102,12 @@ export const CompactRow = memo(function CompactRow({
       ) : null}
       <span className="ml-auto flex shrink-0 items-center gap-1">
         {status === 'fail' ? (
-          <Icon name="warning" size={11} className="shrink-0 text-danger" />
+          <Icon name="warning" size={14} className="shrink-0 text-danger" />
         ) : null}
         {hasBody ? (
           <Icon
             name="chevronRight"
-            size={11}
+            size={14}
             className={cn('text-tertiary vy-transition', expanded && 'rotate-90')}
           />
         ) : null}

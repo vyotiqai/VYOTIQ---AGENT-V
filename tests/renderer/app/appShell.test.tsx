@@ -38,7 +38,6 @@ const baseProps = {
   onSessionQuery: vi.fn(),
   onOpenSettings: vi.fn(),
   onOpenChat: vi.fn(),
-  onOpenHarness: vi.fn(),
   onNewChat: vi.fn(),
   onSelectRun: vi.fn(),
   onSelectRunInWorkspace: vi.fn(),
@@ -146,30 +145,7 @@ describe('AppShell', () => {
     expect(screen.getByText(/workspaces/i)).toBeTruthy()
     expect(screen.getByRole('button', { name: /new chat/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /settings/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /harness/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /collapse sidebar/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /open menu/i })).toBeNull()
-  })
-
-  it('collapses the desktop sidebar to an icon rail', () => {
-    render(
-      <AppShell {...baseProps}>
-        <p>Main content</p>
-      </AppShell>
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }))
-    expect(screen.getByRole('button', { name: /expand sidebar/i })).toBeTruthy()
-    expect(screen.queryByRole('textbox', { name: /search chats/i })).toBeNull()
-    expect(localStorage.getItem('vyotiq.sidebarCollapsed')).toBe('1')
-
-    // Collapsed rail: essentials only
-    expect(screen.getByRole('button', { name: /^new chat$/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^search chats$/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^settings$/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^harness$/i })).toBeTruthy()
-    expect(screen.getByRole('tablist', { name: /workspaces/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /add workspace/i })).toBeTruthy()
   })
 
   it('disables workspace-dependent sidebar actions when no workspace is open', () => {
@@ -185,54 +161,20 @@ describe('AppShell', () => {
     expect((screen.getByRole('textbox', { name: /search chats/i }) as HTMLInputElement).disabled).toBe(
       true
     )
-    expect((screen.getByRole('button', { name: /harness/i }) as HTMLButtonElement).disabled).toBe(
-      false
-    )
     expect((screen.getByRole('button', { name: /settings/i }) as HTMLButtonElement).disabled).toBe(
       false
     )
     expect(screen.getByText('Open a workspace to see chats')).toBeTruthy()
   })
 
-  it('toggles the desktop sidebar with Ctrl/Cmd+B', () => {
+  it('focuses chat search with Ctrl/Cmd+K', async () => {
     render(
       <AppShell {...baseProps}>
         <p>Main content</p>
       </AppShell>
     )
-
-    fireEvent.keyDown(window, { key: 'b', ctrlKey: true })
-    expect(screen.getByRole('button', { name: /expand sidebar/i })).toBeTruthy()
-    fireEvent.keyDown(window, { key: 'b', ctrlKey: true })
-    expect(screen.getByRole('button', { name: /collapse sidebar/i })).toBeTruthy()
-  })
-
-  it('focuses chat search with Ctrl/Cmd+K after expanding', async () => {
-    render(
-      <AppShell {...baseProps}>
-        <p>Main content</p>
-      </AppShell>
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }))
-    expect(screen.queryByRole('textbox', { name: /search chats/i })).toBeNull()
 
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
-    const search = await screen.findByRole('textbox', { name: /search chats/i })
-    await waitFor(() => {
-      expect(document.activeElement).toBe(search)
-    })
-  })
-
-  it('opens search from the collapsed rail icon', async () => {
-    render(
-      <AppShell {...baseProps}>
-        <p>Main content</p>
-      </AppShell>
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }))
-    fireEvent.click(screen.getByRole('button', { name: /^search chats$/i }))
     const search = await screen.findByRole('textbox', { name: /search chats/i })
     await waitFor(() => {
       expect(document.activeElement).toBe(search)

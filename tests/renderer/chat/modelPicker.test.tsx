@@ -92,7 +92,7 @@ describe('ModelPicker', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Select model/i }))
     expect(screen.getByRole('listbox', { name: /Select model/i })).toBeTruthy()
-    expect(screen.getByText('OpenAI')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /OpenAI/i })).toBeTruthy()
     expect(screen.queryByLabelText(/Max steps/i)).toBeNull()
   })
 

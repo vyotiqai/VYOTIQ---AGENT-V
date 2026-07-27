@@ -2,6 +2,7 @@ import type { UiToolRow } from '@shared/transcript'
 import { MCP_TOOL_PREFIX, TOOL_LABELS, parseArgsRecord, parseMcpToolDisplay } from '@shared/toolSummary'
 import { mcpDoneLabel, mcpRunningLabel, mcpToolKind, humanizeSnakeCase } from '@shared/utils/mcpToolMeta'
 import { isReadOnlyTerminalCommand } from '@shared/utils/displayPath'
+import type { IconName } from '@renderer/lib/icons'
 import type { ToolCategory, ToolPresentation } from './types'
 
 const PROMINENT_TOOLS = new Set([
@@ -96,6 +97,29 @@ export function mixedGroupLabels(): { running: string; done: string } {
 
 export function isMcpTool(name: string): boolean {
   return name.startsWith(MCP_TOOL_PREFIX)
+}
+
+const TOOL_ICON_BY_NAME: Record<string, IconName> = {
+  read: 'file',
+  edit: 'edit',
+  multi_edit: 'edit',
+  search: 'fileSearch',
+  grep: 'scanSearch',
+  glob: 'folderSearch',
+  list_dir: 'folderOpen',
+  delete: 'trash',
+  todo_write: 'listTodo',
+  web_fetch: 'globe',
+  subagent: 'bot',
+  terminal: 'terminal',
+  memory_list: 'memory',
+  memory_read: 'memory',
+  memory_write: 'memory'
+}
+
+export function toolIconName(name: string): IconName {
+  if (isMcpTool(name)) return 'plug'
+  return TOOL_ICON_BY_NAME[name] ?? 'file'
 }
 
 export { FILE_TOOLS, EDIT_TOOLS, SEARCH_TOOLS, BROWSE_TOOLS, COMMAND_TOOLS }

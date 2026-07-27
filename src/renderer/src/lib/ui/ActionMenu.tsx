@@ -133,7 +133,7 @@ export function ActionMenu({
                 close(true)
               }}
             >
-              {item.icon ? <Icon name={item.icon} size={14} /> : null}
+              {item.icon ? <Icon name={item.icon} size={16} /> : null}
               {item.label}
             </button>
           </li>

@@ -157,7 +157,7 @@ export function GitChangePills({ chrome }: { chrome: GitChrome }) {
           {status.hasRemote ? 'Commit…' : 'Commit'}
           <Icon
             name="chevronRight"
-            size={11}
+            size={14}
             className={cn('vy-transition', composing ? 'rotate-90' : '-rotate-90')}
           />
         </button>
@@ -183,7 +183,7 @@ export function GitBranchStrip({ chrome }: { chrome: GitChrome }) {
   return (
     <div className="pointer-events-auto flex items-center gap-2 px-1 text-[11px] text-tertiary">
       <span className="inline-flex items-center gap-1.5">
-        <Icon name="branch" size={12} />
+        <Icon name="branch" size={14} />
         <span className="max-w-[24ch] truncate text-fg">{status.branch ?? 'detached'}</span>
       </span>
 
@@ -193,7 +193,7 @@ export function GitBranchStrip({ chrome }: { chrome: GitChrome }) {
         onClick={refresh}
         aria-label="Refresh git status"
       >
-        <Icon name="refresh" size={12} />
+        <Icon name="refresh" size={14} />
       </button>
     </div>
   )

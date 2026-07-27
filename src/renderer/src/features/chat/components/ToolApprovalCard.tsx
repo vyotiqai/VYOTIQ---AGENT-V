@@ -48,7 +48,7 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
       aria-busy={phase === 'pending' ? true : undefined}
     >
       <div className={cn(TOOL_CARD_HEADER, 'flex items-center gap-2 text-fg')}>
-        <Icon name="warning" size={12} className="shrink-0 text-danger" />
+        <Icon name="warning" size={14} className="shrink-0 text-danger" />
         <span className="font-medium">
           Allow tool: <span className="font-mono">{approval.toolName}</span>?
         </span>

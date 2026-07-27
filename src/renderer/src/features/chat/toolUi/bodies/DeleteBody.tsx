@@ -10,7 +10,7 @@ export function DeleteBody({ tool }: ToolBodyProps) {
 
   return (
     <div className={cn(TOOL_BODY_PAD, 'flex items-start gap-2 text-[11px]')}>
-      <Icon name="warning" size={14} className="mt-0.5 shrink-0 text-danger" />
+      <Icon name="trash" size={16} className="mt-0.5 shrink-0 text-danger" />
       <div className="min-w-0">
         <p className="m-0 text-fg/80">{data.message}</p>
         {data.recursive ? (

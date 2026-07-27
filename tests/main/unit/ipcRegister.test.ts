@@ -53,10 +53,6 @@ vi.mock('@main/workspace/workspace', () => ({
   pickWorkspace: vi.fn()
 }))
 
-vi.mock('@main/agent/harness', () => ({
-  openHarness: vi.fn()
-}))
-
 vi.mock('@main/settings/settings', () => ({
   getSettings: () => ({
     provider: 'ollama',

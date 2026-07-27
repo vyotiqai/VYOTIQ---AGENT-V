@@ -13,7 +13,6 @@ import {
   LoadRunRequestSchema,
   LoadRunEventsRequestSchema,
   LoadToolResultRequestSchema,
-  OpenHarnessRequestSchema,
   DeleteRunRequestSchema,
   RenameRunRequestSchema,
   WorkspacesAddRequestSchema,
@@ -51,7 +50,6 @@ import { existsSync, mkdirSync } from 'fs'
 import { formatError, AppError, isAbortError } from '../../shared/errors'
 import { logger, logErrorSummary } from '../../shared/logger'
 import { pickWorkspace } from '@main/workspace/workspace'
-import { openHarness } from '@main/agent/harness'
 import { getSettings, setSettings } from '@main/settings/settings'
 import { syncMcpServers, getMcpServerStatus, refreshMcpServers } from '@main/agent/mcp'
 import { setSecret, clearSecret, getSecret, secretStatus } from '@main/settings/secrets'
@@ -621,17 +619,6 @@ export function registerIpc(): void {
       return ok(await commitAll(req.workspacePath, req.message, req.push === true))
     } catch (err) {
       return failFrom(err, IPC.gitCommit)
-    }
-  })
-
-  ipcMain.handle(IPC.openHarness, async (event): Promise<IpcResult<true>> => {
-    if (!senderOk(event)) return fail('Invalid sender')
-    try {
-      OpenHarnessRequestSchema.parse({})
-      await openHarness()
-      return ok(true)
-    } catch (err) {
-      return failFrom(err, IPC.openHarness)
     }
   })
 

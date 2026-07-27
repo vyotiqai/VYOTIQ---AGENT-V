@@ -81,7 +81,6 @@ export function App() {
   const [view, setView] = useState<'chat' | 'settings'>('chat')
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
   const [modelsRefreshNonce, setModelsRefreshNonce] = useState(0)
-  const [harnessActive, setHarnessActive] = useState(false)
   const chatHeadingRef = useRef<HTMLHeadingElement>(null)
   const settingsBackRef = useRef<HTMLButtonElement>(null)
 
@@ -218,18 +217,6 @@ export function App() {
   const onNewChat = (): void => {
     openRunTab(null)
     setView('chat')
-  }
-
-  const onOpenHarness = async (): Promise<void> => {
-    setSettingsError(null)
-    const res = await window.vyotiq.openHarness()
-    if (!res.ok) {
-      logger.warn('openHarness failed', { scope: 'harness', err: res.error })
-      setSettingsError(res.error)
-      return
-    }
-    setHarnessActive(true)
-    window.setTimeout(() => setHarnessActive(false), 2000)
   }
 
   const onPickWorkspace = (): void => {
@@ -385,7 +372,6 @@ export function App() {
         onSessionQuery={() => {}}
         onOpenSettings={() => {}}
         onOpenChat={() => {}}
-        onOpenHarness={() => {}}
         onNewChat={() => {}}
         onSelectRun={() => {}}
         onRenameRun={() => {}}
@@ -412,11 +398,9 @@ export function App() {
       onDismissRunsError={clearRunsError}
       activeRunId={activeContext?.activeRunId ?? chat.runId}
       sessionQuery=""
-      harnessActive={harnessActive}
       onSessionQuery={setSessionQuery}
       onOpenSettings={() => setView('settings')}
       onOpenChat={() => setView('chat')}
-      onOpenHarness={() => void onOpenHarness()}
       onNewChat={onNewChat}
       onSelectRun={(runId) => void onSelectRun(runId)}
       onRenameRun={(runId, goal) => void onRenameRun(runId, goal)}

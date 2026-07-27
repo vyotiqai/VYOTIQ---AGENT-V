@@ -12,7 +12,6 @@ import {
   MAX_ATTACHMENT_DATA_CHARS,
   SetSettingsRequestSchema,
   SetSecretRequestSchema,
-  OpenHarnessRequestSchema,
   ListModelsRequestSchema,
   ModelInfoSchema,
   ProviderIdSchema,
@@ -66,10 +65,6 @@ describe('ipc schemas', () => {
     expect(() =>
       SetSecretRequestSchema.parse({ provider: 'openai', key: '   ' })
     ).toThrow()
-  })
-
-  it('accepts empty open harness request', () => {
-    expect(OpenHarnessRequestSchema.parse({})).toEqual({})
   })
 
   it('parses multimodal user content parts', () => {

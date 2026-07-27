@@ -9,11 +9,10 @@ import {
 import { Sidebar } from './sidebar'
 import { BreakpointProvider, useIsDesktop } from '@renderer/lib/context/BreakpointProvider'
 import { useOverlayPanel } from '@renderer/lib/hooks/useOverlayPanel'
-import { usePersistedBoolean } from '@renderer/lib/hooks/usePersistedBoolean'
 import { getWorkspaceHotUi } from '@renderer/lib/hooks/workspaceHotUiStore'
 import type { RunSummary } from '@shared/ipc'
 import type { WorkspaceSidebarRuns } from './sidebar/types'
-import { SIDEBAR_COLLAPSED_KEY, TITLE_BAR_HEIGHT_PX } from '@renderer/lib/utils/layout'
+import { TITLE_BAR_HEIGHT_PX } from '@renderer/lib/utils/layout'
 import { TitleBar } from './TitleBar'
 
 function AppShellInner({
@@ -28,11 +27,9 @@ function AppShellInner({
   onDismissRunsError,
   activeRunId,
   sessionQuery,
-  harnessActive,
   onSessionQuery,
   onOpenSettings,
   onOpenChat,
-  onOpenHarness,
   onNewChat,
   onSelectRun,
   onSelectRunInWorkspace,
@@ -58,11 +55,9 @@ function AppShellInner({
   onDismissRunsError?: (path?: string) => void
   activeRunId: string | null
   sessionQuery: string
-  harnessActive?: boolean
   onSessionQuery: (q: string) => void
   onOpenSettings: () => void
   onOpenChat: () => void
-  onOpenHarness: () => void
   onNewChat: () => void
   onSelectRun: (runId: string) => void
   onSelectRunInWorkspace?: (path: string, runId: string) => void
@@ -78,10 +73,6 @@ function AppShellInner({
   loading?: boolean
 }) {
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const [sidebarCollapsed, setSidebarCollapsed] = usePersistedBoolean(
-    SIDEBAR_COLLAPSED_KEY,
-    false
-  )
   const searchRef = useRef<HTMLInputElement>(null)
   const pendingSearchFocusRef = useRef(false)
   const drawerRef = useRef<HTMLDivElement>(null)
@@ -92,14 +83,11 @@ function AppShellInner({
   const closeDrawer = useCallback((): void => setDrawerOpen(false), [])
 
   const onToggleSidebar = useCallback((): void => {
-    drawerTriggerRef.current = document.activeElement as HTMLElement | null
-    if (isDesktop) {
-      setSidebarCollapsed((v) => !v)
-      setDrawerOpen(false)
-    } else {
+    if (!isDesktop) {
+      drawerTriggerRef.current = document.activeElement as HTMLElement | null
       setDrawerOpen((v) => !v)
     }
-  }, [isDesktop, setSidebarCollapsed])
+  }, [isDesktop])
 
   const focusSearchInput = useCallback((): boolean => {
     const el = searchRef.current
@@ -114,13 +102,7 @@ function AppShellInner({
   }, [])
 
   const focusSearch = useCallback((): void => {
-    if (isDesktop) {
-      if (sidebarCollapsed) {
-        pendingSearchFocusRef.current = true
-        setSidebarCollapsed(false)
-        return
-      }
-    } else if (!drawerOpen) {
+    if (!isDesktop && !drawerOpen) {
       pendingSearchFocusRef.current = true
       drawerTriggerRef.current = document.activeElement as HTMLElement | null
       setDrawerOpen(true)
@@ -129,13 +111,7 @@ function AppShellInner({
     if (!focusSearchInput()) {
       pendingSearchFocusRef.current = true
     }
-  }, [
-    isDesktop,
-    sidebarCollapsed,
-    drawerOpen,
-    setSidebarCollapsed,
-    focusSearchInput
-  ])
+  }, [isDesktop, drawerOpen, focusSearchInput])
 
   const hasWorkspace =
     Boolean(workspacePath) || (openWorkspaces?.length ?? 0) > 0
@@ -151,7 +127,7 @@ function AppShellInner({
   // Focus search after expand/drawer mount — single rAF is too early for the new tree.
   useEffect(() => {
     if (!pendingSearchFocusRef.current) return
-    if (isDesktop ? sidebarCollapsed : !drawerOpen) return
+    if (!isDesktop && !drawerOpen) return
     if (!hasWorkspace) {
       pendingSearchFocusRef.current = false
       return
@@ -175,7 +151,7 @@ function AppShellInner({
     return () => {
       cancelled = true
     }
-  }, [sidebarCollapsed, drawerOpen, isDesktop, hasWorkspace, focusSearchInput])
+  }, [drawerOpen, isDesktop, hasWorkspace, focusSearchInput])
 
   useEffect(() => {
     if (drawerOpen) return
@@ -204,12 +180,6 @@ function AppShellInner({
       const mod = e.metaKey || e.ctrlKey
       if (!mod || e.altKey) return
       const key = e.key.toLowerCase()
-
-      if (key === 'b') {
-        e.preventDefault()
-        onToggleSidebar()
-        return
-      }
 
       if (key === 'k') {
         const tag = (e.target as HTMLElement | null)?.tagName
@@ -243,7 +213,6 @@ function AppShellInner({
     activeRunId,
     sessionQuery,
     searchRef,
-    harnessActive,
     hasWorkspace,
     openPaths: openWorkspaces,
     activePath: workspacePath,
@@ -256,7 +225,6 @@ function AppShellInner({
     onSessionQuery,
     onOpenSettings,
     onOpenChat,
-    onOpenHarness,
     onNewChat,
     onSelectRun,
     onSelectRunInWorkspace,
@@ -265,8 +233,7 @@ function AppShellInner({
     onDeleteRun,
     onDeleteRunInWorkspace,
     onCloseDrawer: closeDrawer,
-    onToggleSidebar,
-    onFocusSearch: focusSearch
+    onToggleSidebar
   }
 
   return (
@@ -274,7 +241,7 @@ function AppShellInner({
       {/* Mount only on desktop so searchRef is never bound to a hidden sibling. */}
       {isDesktop ? (
         <div className="flex h-full min-h-0 shrink-0 flex-col overflow-hidden self-stretch">
-          <Sidebar {...sidebarProps} collapsed={sidebarCollapsed} />
+          <Sidebar {...sidebarProps} />
         </div>
       ) : null}
 

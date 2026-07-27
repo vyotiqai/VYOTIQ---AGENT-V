@@ -211,7 +211,7 @@ export const ToolGroup = memo(function ToolGroup({
           ) : null}
           <Icon
             name="chevronRight"
-            size={12}
+            size={14}
             className={cn('text-tertiary vy-transition', expanded && 'rotate-90')}
           />
         </span>

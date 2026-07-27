@@ -10,22 +10,18 @@ export function SidebarSearchChrome({
   workspaceReady,
   disabledTitle,
   view,
-  harnessActive,
   onSessionQuery,
   onNewChat,
-  onOpenSettings,
-  onOpenHarness
+  onOpenSettings
 }: {
   searchRef: RefObject<HTMLInputElement | null>
   sessionQuery: string
   workspaceReady: boolean
   disabledTitle?: string
   view: SidebarView
-  harnessActive?: boolean
   onSessionQuery: (q: string) => void
   onNewChat: () => void
   onOpenSettings: () => void
-  onOpenHarness: () => void
 }) {
   const showShortcut = workspaceReady && !sessionQuery
 
@@ -36,7 +32,7 @@ export function SidebarSearchChrome({
         'h-7 vy-transition focus-within:border-border focus-within:bg-surface focus-within:vy-focus-ring'
       )}
     >
-      <Icon name="search" size={12} className="shrink-0 text-muted" aria-hidden />
+      <Icon name="search" size={16} className="shrink-0 text-muted" aria-hidden />
 
       <input
         ref={searchRef}
@@ -53,11 +49,11 @@ export function SidebarSearchChrome({
       {sessionQuery ? (
         <button
           type="button"
-          className="inline-grid size-4 shrink-0 place-items-center rounded text-muted vy-transition hover:text-fg"
+          className="inline-grid size-5 shrink-0 place-items-center rounded text-muted vy-transition hover:text-fg"
           aria-label="Clear search"
           onClick={() => onSessionQuery('')}
         >
-          <Icon name="close" size={10} />
+          <Icon name="close" size={14} />
         </button>
       ) : showShortcut ? (
         <kbd className="hidden shrink-0 rounded border border-border/50 px-0.5 py-px text-[9px] font-medium text-muted @min-[13rem]/sidebar:inline">
@@ -78,15 +74,6 @@ export function SidebarSearchChrome({
           disabled={!workspaceReady}
           title={!workspaceReady ? disabledTitle : 'New chat'}
           onClick={onNewChat}
-        />
-        <IconButton
-          icon="doc"
-          label="Harness"
-          size="xs"
-          variant="bare"
-          aria-pressed={harnessActive}
-          className={harnessActive ? 'bg-surface' : undefined}
-          onClick={onOpenHarness}
         />
         <IconButton
           icon="gear"

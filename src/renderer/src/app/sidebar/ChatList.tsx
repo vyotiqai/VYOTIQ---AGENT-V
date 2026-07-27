@@ -50,7 +50,20 @@ function WorkspaceHeader({
           onToggle()
         }}
       >
-        <Icon name={expanded ? 'chevron' : 'chevronRight'} size={10} />
+        <span className="relative inline-flex size-4 items-center justify-center">
+          <Icon
+            name="folder"
+            size={12}
+            className="absolute opacity-70 group-hover:opacity-0 vy-transition"
+            aria-hidden="true"
+          />
+          <Icon
+            name={expanded ? 'chevron' : 'chevronRight'}
+            size={12}
+            className="absolute opacity-0 group-hover:opacity-100 vy-transition"
+            aria-hidden="true"
+          />
+        </span>
       </button>
       <button
         type="button"
@@ -59,9 +72,7 @@ function WorkspaceHeader({
       >
         {hasActivity ? (
           <span className="size-1 shrink-0 rounded-full bg-fg motion-safe:animate-pulse" aria-hidden />
-        ) : (
-          <Icon name="folder" size={11} className="shrink-0 opacity-60" />
-        )}
+        ) : null}
         <span className="truncate font-medium">{name}</span>
       </button>
       <button
@@ -74,7 +85,7 @@ function WorkspaceHeader({
           confirmCloseWorkspace(name, hasActivity, onCloseWorkspace)
         }}
       >
-        <Icon name="close" size={10} />
+        <Icon name="close" size={12} />
       </button>
     </div>
   )
@@ -126,7 +137,7 @@ export function ChatList({
               title="Add workspace"
               onClick={onAddWorkspace}
             >
-              <Icon name="folderPlus" size={12} />
+              <Icon name="folderPlus" size={14} />
             </button>
           </div>
 

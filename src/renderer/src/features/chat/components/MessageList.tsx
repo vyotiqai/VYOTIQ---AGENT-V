@@ -85,7 +85,7 @@ function ImageLightbox({ url, label, onClose }: { url: string; label: string; on
         aria-label="Close image preview"
         onClick={onClose}
       >
-        <Icon name="close" size={14} />
+        <Icon name="close" size={16} />
       </button>
       <img
         src={url}
@@ -507,7 +507,7 @@ export function MessageList({
               aria-live="polite"
               aria-busy="true"
             >
-              <Icon name="refresh" size={16} className="motion-safe:animate-spin" />
+              <Icon name="loader" size={16} className="motion-safe:animate-spin" />
               <span>Loading chat…</span>
             </div>
           ) : (
