@@ -71,16 +71,23 @@ export const FLOATING_CHROME_SHADOW_BOTTOM =
   'shadow-[0_8px_32px_-12px_rgb(0_0_0/0.45)] animate-chrome-rise-in'
 
 /** App chrome dimensions — sidebar header row aligns with title bar height. */
-export const SIDEBAR_WIDTH_PX = 260
-export const SIDEBAR_COLLAPSED_WIDTH_PX = 52
+export const SIDEBAR_WIDTH_PX = 220
+export const SIDEBAR_COLLAPSED_WIDTH_PX = 44
 /** Wider collapsed rail on macOS so the toggle clears traffic lights. */
-export const SIDEBAR_COLLAPSED_WIDTH_DARWIN_PX = 80
+export const SIDEBAR_COLLAPSED_WIDTH_DARWIN_PX = 72
 export const TITLE_BAR_HEIGHT = 'h-9'
 export const TITLE_BAR_HEIGHT_PX = 36
-export const SIDEBAR_WIDTH = `w-[min(${SIDEBAR_WIDTH_PX}px,88vw)]`
-export const SIDEBAR_WIDTH_DESKTOP = `w-[${SIDEBAR_WIDTH_PX}px]`
-export const SIDEBAR_WIDTH_COLLAPSED = `w-[${SIDEBAR_COLLAPSED_WIDTH_PX}px]`
-export const SIDEBAR_WIDTH_COLLAPSED_DARWIN = `w-[${SIDEBAR_COLLAPSED_WIDTH_DARWIN_PX}px]`
+/**
+ * Width class names must be complete static strings so Tailwind can emit them.
+ * Template-interpolated `w-[${n}px]` is invisible to the scanner and never ships.
+ */
+export const SIDEBAR_WIDTH = 'w-[min(220px,92vw)]'
+export const SIDEBAR_WIDTH_DESKTOP = 'w-[220px]'
+export const SIDEBAR_WIDTH_COLLAPSED = 'w-[44px]'
+export const SIDEBAR_WIDTH_COLLAPSED_DARWIN = 'w-[72px]'
+
+/** Named container — children use `@sidebar/…` for width-aware density. */
+export const SIDEBAR_CONTAINER = '@container/sidebar'
 
 /** Sidebar section label — quiet category headers. */
 export const SIDEBAR_SECTION_LABEL =

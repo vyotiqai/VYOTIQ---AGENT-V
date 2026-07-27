@@ -6,7 +6,7 @@ import {
   type ReactElement,
   type ReactNode
 } from 'react'
-import { Sidebar } from './Sidebar'
+import { Sidebar } from './sidebar'
 import { BreakpointProvider, useIsDesktop } from '@renderer/lib/context/BreakpointProvider'
 import { useOverlayPanel } from '@renderer/lib/hooks/useOverlayPanel'
 import { usePersistedBoolean } from '@renderer/lib/hooks/usePersistedBoolean'
@@ -259,7 +259,7 @@ function AppShellInner({
     <div className="flex h-full overflow-hidden bg-bg text-fg">
       {/* Mount only on desktop so searchRef is never bound to a hidden sibling. */}
       {isDesktop ? (
-        <div className="flex h-full min-h-0 shrink-0 self-stretch">
+        <div className="flex h-full min-h-0 shrink-0 flex-col overflow-hidden self-stretch">
           <Sidebar {...sidebarProps} collapsed={sidebarCollapsed} />
         </div>
       ) : null}
@@ -283,7 +283,7 @@ function AppShellInner({
               aria-hidden
               onClick={closeDrawer}
             />
-            <div className="relative z-sticky h-full animate-slide-in-left">
+            <div className="relative z-sticky h-full min-h-0 animate-slide-in-left">
               <Sidebar {...sidebarProps} variant="drawer" />
             </div>
           </div>

@@ -114,18 +114,18 @@ describe('AppShell', () => {
     expect(onOpenChat).toHaveBeenCalled()
   })
 
-  it('shows categorized sidebar sections with toggle inside the sidebar', () => {
+  it('shows agent-first sidebar with chats and workspace controls', () => {
     render(
       <AppShell {...baseProps}>
         <p>Main content</p>
       </AppShell>
     )
-    expect(screen.getByText('Chats')).toBeTruthy()
-    expect(screen.getByText('Workspaces')).toBeTruthy()
-    expect(screen.getByText('Navigate')).toBeTruthy()
+    expect(screen.getByRole('region', { name: /chats/i })).toBeTruthy()
     expect(screen.getByRole('tablist', { name: /workspaces/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /new chat/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /settings/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /harness/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /collapse sidebar/i })).toBeTruthy()
-    // Desktop: toggle is not in the title bar
     expect(screen.queryByRole('button', { name: /open menu/i })).toBeNull()
   })
 
@@ -144,10 +144,9 @@ describe('AppShell', () => {
     // Collapsed rail: essentials only
     expect(screen.getByRole('button', { name: /^new chat$/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^settings$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^harness$/i })).toBeTruthy()
     expect(screen.getByRole('tablist', { name: /workspaces/i })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /add workspace/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /harness/i })).toBeNull()
-    expect(screen.queryByText('Local agent')).toBeNull()
+    expect(screen.getByRole('button', { name: /add workspace/i })).toBeTruthy()
   })
 
   it('disables workspace-dependent sidebar actions when no workspace is open', () => {
@@ -160,7 +159,9 @@ describe('AppShell', () => {
     expect((screen.getByRole('button', { name: /new chat/i }) as HTMLButtonElement).disabled).toBe(
       true
     )
-    expect(screen.queryByRole('textbox', { name: /search chats/i })).toBeNull()
+    expect((screen.getByRole('textbox', { name: /search chats/i }) as HTMLInputElement).disabled).toBe(
+      true
+    )
     expect((screen.getByRole('button', { name: /harness/i }) as HTMLButtonElement).disabled).toBe(
       false
     )
