@@ -14,7 +14,6 @@ afterEach(() => {
 const chatSettings: EffectiveChatSettings = {
   provider: 'openai',
   model: 'gpt-5.6',
-  maxSteps: 25,
   compactionTriggerRatio: 0.7,
   keepRecentTurns: 12,
   memoryAutoPromote: true,
@@ -31,6 +30,19 @@ describe('ThinkingControls', () => {
         model="gpt-4o"
         chatSettings={chatSettings}
         onChatSettingsChange={vi.fn()}
+      />
+    )
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('is hidden while the agent is running', () => {
+    const { container } = render(
+      <ThinkingControls
+        provider="openai"
+        model="gpt-5.6"
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+        running
       />
     )
     expect(container.firstChild).toBeNull()

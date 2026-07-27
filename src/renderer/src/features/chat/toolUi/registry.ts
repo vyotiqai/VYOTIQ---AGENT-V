@@ -26,8 +26,20 @@ import type { ToolBodyProps, ToolHeaderMeta } from './types'
 
 export type ToolRegistryEntry = {
   Body: ComponentType<ToolBodyProps>
-  hasBody: (tool: UiToolRow, ctx?: { subagent?: ToolBodyProps['subagent'] }) => boolean
-  headerMeta?: (tool: UiToolRow, ctx?: { subagent?: ToolBodyProps['subagent'] }) => ToolHeaderMeta
+  hasBody: (
+    tool: UiToolRow,
+    ctx?: {
+      subagent?: ToolBodyProps['subagent']
+      subagentContextUsage?: ToolBodyProps['subagentContextUsage']
+    }
+  ) => boolean
+  headerMeta?: (
+    tool: UiToolRow,
+    ctx?: {
+      subagent?: ToolBodyProps['subagent']
+      subagentContextUsage?: ToolBodyProps['subagentContextUsage']
+    }
+  ) => ToolHeaderMeta
 }
 
 function editHasBody(tool: UiToolRow): boolean {
@@ -45,9 +57,16 @@ function todoHasBody(tool: UiToolRow): boolean {
 
 function subagentHasBody(
   tool: UiToolRow,
-  ctx?: { subagent?: ToolBodyProps['subagent'] }
+  ctx?: {
+    subagent?: ToolBodyProps['subagent']
+    subagentContextUsage?: ToolBodyProps['subagentContextUsage']
+  }
 ): boolean {
-  return Boolean((tool.content ?? '').trim()) || (ctx?.subagent?.length ?? 0) > 0
+  return (
+    Boolean((tool.content ?? '').trim()) ||
+    (ctx?.subagent?.length ?? 0) > 0 ||
+    Boolean(ctx?.subagentContextUsage)
+  )
 }
 
 function deleteHasBody(tool: UiToolRow): boolean {
@@ -180,7 +199,10 @@ export function getToolBody(name: string): ComponentType<ToolBodyProps> {
 
 export function toolHasBody(
   tool: UiToolRow,
-  ctx?: { subagent?: ToolBodyProps['subagent'] }
+  ctx?: {
+    subagent?: ToolBodyProps['subagent']
+    subagentContextUsage?: ToolBodyProps['subagentContextUsage']
+  }
 ): boolean {
   if (tool.status === 'running') return true
   return getToolEntry(tool.name).hasBody(tool, ctx)
@@ -188,7 +210,10 @@ export function toolHasBody(
 
 export function getToolHeaderMeta(
   tool: UiToolRow,
-  ctx?: { subagent?: ToolBodyProps['subagent'] }
+  ctx?: {
+    subagent?: ToolBodyProps['subagent']
+    subagentContextUsage?: ToolBodyProps['subagentContextUsage']
+  }
 ): ToolHeaderMeta {
   const entry = getToolEntry(tool.name)
   if (entry.headerMeta) return entry.headerMeta(tool, ctx)

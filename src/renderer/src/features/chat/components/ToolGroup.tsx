@@ -7,7 +7,7 @@ import type { ToolItem } from '../utils/transcriptRows'
 import { mapToolGroupProps, type ToolGroupNestedTool } from '../utils/toolGroupAdapter'
 import { TextShimmer } from './TextShimmer'
 import { ToolRowOutput } from './ToolRow'
-import { CompactRow } from '../toolUi'
+import { CompactRow, toolHasBody } from '../toolUi'
 
 /** Earliest start to latest end across every batch in the group. */
 function spanGroupTiming(tools: ToolItem[]): ToolItem['groupTiming'] {
@@ -55,6 +55,8 @@ function NestedToolRow({
       {isToolExpanded ? (
         <ToolRowOutput
           tool={item.tool}
+          subagent={item.subagent}
+          subagentContextUsage={item.subagentContextUsage}
           onLoadFullContent={onLoadFullContent}
           mcpServerNames={mcpServerNames}
           inGroup
@@ -134,10 +136,14 @@ export const ToolGroup = memo(function ToolGroup({
     const item = tools[0]
     const nested = nestedById.get(item.id)
     if (!nested) return null
+    const defaultExpanded =
+      isPending ||
+      toolHasBody(item.tool, {
+        subagent: item.subagent,
+        subagentContextUsage: item.subagentContextUsage
+      })
     const isToolExpanded =
-      expandedToolIds != null
-        ? expandedToolIds.has(item.id)
-        : (groupExpanded ?? localOverride ?? isPending)
+      item.toolExpanded ?? (groupExpanded ?? localOverride ?? defaultExpanded)
     const toggleSingle = (): void => {
       const next = !isToolExpanded
       if (onGroupToggle) onGroupToggle(next)
@@ -162,6 +168,8 @@ export const ToolGroup = memo(function ToolGroup({
         {isToolExpanded ? (
           <ToolRowOutput
             tool={item.tool}
+            subagent={item.subagent}
+            subagentContextUsage={item.subagentContextUsage}
             onLoadFullContent={onLoadFullContent}
             mcpServerNames={mcpServerNames}
           />

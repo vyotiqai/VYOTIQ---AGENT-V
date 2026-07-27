@@ -48,20 +48,14 @@ export const TurnSummary = memo(function TurnSummary({
       onClick={onToggle}
     >
       {active ? (
-        <>
-          <span
-            className="size-1.5 shrink-0 rounded-full bg-secondary motion-safe:animate-pulse"
-            aria-hidden
-          />
-          <TextShimmer className="shrink-0">{activeLabel}</TextShimmer>
-        </>
+        <TextShimmer className="shrink-0">{activeLabel}</TextShimmer>
       ) : (
         <span className="shrink-0 tabular-nums">{doneLabel}</span>
       )}
       <Icon
         name="chevronRight"
         size={12}
-        className={cn('self-center vy-transition', !collapsed && 'rotate-90')}
+        className={cn('shrink-0 self-center vy-transition', !collapsed && 'rotate-90')}
       />
     </button>
   )

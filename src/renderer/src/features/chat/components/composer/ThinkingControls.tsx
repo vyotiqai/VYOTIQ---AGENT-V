@@ -21,6 +21,7 @@ export function ThinkingControls({
   chatSettings,
   onChatSettingsChange,
   disabled,
+  running = false,
   className
 }: {
   provider: ProviderId
@@ -28,6 +29,7 @@ export function ThinkingControls({
   chatSettings: EffectiveChatSettings
   onChatSettingsChange: (patch: ChatSettingsPatch) => void
   disabled?: boolean
+  running?: boolean
   className?: string
 }) {
   const [open, setOpen] = useState(false)
@@ -47,6 +49,7 @@ export function ThinkingControls({
   const closePanel = useCallback(() => close(false), [close])
 
   if (!modelSupportsThinking(model, provider)) return null
+  if (running) return null
 
   const effortShort =
     EFFORT_OPTIONS.find((o) => o.value === chatSettings.thinkingEffort)?.short ??

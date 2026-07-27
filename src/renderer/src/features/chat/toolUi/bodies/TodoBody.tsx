@@ -8,7 +8,7 @@ import type { TodoStatus } from '../parsers/todo'
 
 const STATUS_ICON: Record<TodoStatus, { name: 'check' | 'refresh' | 'close' | 'doc' | 'search'; className: string }> = {
   pending: { name: 'search', className: 'text-tertiary' },
-  in_progress: { name: 'refresh', className: 'text-accent' },
+  in_progress: { name: 'refresh', className: 'text-secondary' },
   completed: { name: 'check', className: 'text-success' },
   cancelled: { name: 'close', className: 'text-tertiary' }
 }

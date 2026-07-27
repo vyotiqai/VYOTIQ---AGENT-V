@@ -48,7 +48,6 @@ const baseProps = {
   chatSettings: {
     provider: 'ollama' as const,
     model: 'qwen2.5',
-    maxSteps: 25,
     compactionTriggerRatio: 0.7,
     keepRecentTurns: 12,
     memoryAutoPromote: true,

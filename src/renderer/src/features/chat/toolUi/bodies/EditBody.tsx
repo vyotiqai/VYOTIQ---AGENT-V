@@ -12,9 +12,7 @@ export function EditBody({ tool, expanded, loading, loadFailed }: ToolBodyProps)
   return (
     <div aria-busy={loading || undefined}>
       {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
-      {tool.contentTruncated && loadFailed ? (
-        <p className="m-0 px-3 py-2 text-[10px] text-tertiary">Could not load full output.</p>
-      ) : (
+      {tool.contentTruncated && loadFailed ? null : (
         <DiffPreview lines={diffLines} path={editData.path} expanded={expanded} />
       )}
     </div>

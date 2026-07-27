@@ -1,6 +1,6 @@
 import type { UiToolRow } from '@shared/transcript'
 import { MCP_TOOL_PREFIX, TOOL_LABELS, parseArgsRecord, parseMcpToolDisplay } from '@shared/toolSummary'
-import { mcpDoneLabel, mcpRunningLabel, mcpToolKind } from '@shared/utils/mcpToolMeta'
+import { mcpDoneLabel, mcpRunningLabel, mcpToolKind, humanizeSnakeCase } from '@shared/utils/mcpToolMeta'
 import { isReadOnlyTerminalCommand } from '@shared/utils/displayPath'
 import type { ToolCategory, ToolPresentation } from './types'
 
@@ -9,7 +9,6 @@ const PROMINENT_TOOLS = new Set([
   'edit',
   'multi_edit',
   'todo_write',
-  'subagent',
   'delete'
 ])
 
@@ -80,7 +79,10 @@ export function toolLabel(name: string, status: UiToolRow['status']): string {
     return status === 'running' ? mcpRunningLabel(mcp.toolName) : mcpDoneLabel(mcp.toolName)
   }
   const labels = TOOL_LABELS[name]
-  if (!labels) return status === 'running' ? 'Running' : 'Done'
+  if (!labels) {
+    const human = humanizeSnakeCase(name)
+    return status === 'running' ? `Running ${human}` : human
+  }
   return status === 'running' ? labels.running : labels.done
 }
 

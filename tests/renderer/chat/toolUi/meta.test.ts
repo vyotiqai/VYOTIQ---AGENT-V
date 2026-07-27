@@ -30,4 +30,9 @@ describe('toolUi meta', () => {
     expect(toolLabel('mcp__github__read_text_file', 'done')).toBe('Read file')
     expect(toolLabel('mcp__github__list_allowed_directories', 'done')).toBe('Listed directories')
   })
+
+  it('humanizes unknown built-in tool names', () => {
+    expect(toolLabel('ask_question', 'running')).toBe('Running Ask Question')
+    expect(toolLabel('ask_question', 'done')).toBe('Ask Question')
+  })
 })

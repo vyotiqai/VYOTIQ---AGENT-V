@@ -248,7 +248,21 @@ describe('transcript display helpers', () => {
     expect(duplicatesReasoning({ ...narration, streaming: true })).toBe(false)
   })
 
-  it('hides text a reasoning model already said in its thinking', () => {
+  it('hides text that repeats the opening of reasoning verbatim', () => {
+    const passage = 'The router builds its table before the first request arrives.'
+
+    expect(
+      duplicatesReasoning({
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        content: passage,
+        thinking: `${passage}\n\nNow I will verify the handlers.`
+      })
+    ).toBe(true)
+  })
+
+  it('keeps an answer that only appears later inside reasoning', () => {
     const passage = 'The router builds its table before the first request arrives.'
 
     expect(
@@ -259,7 +273,7 @@ describe('transcript display helpers', () => {
         content: passage,
         thinking: `Let me check.\n\n${passage}`
       })
-    ).toBe(true)
+    ).toBe(false)
   })
 
   it('does not treat a shared phrase as a duplicate', () => {
@@ -669,6 +683,57 @@ describe('applyEventTimestamps', () => {
         { kind: 'thinking', text: 'Checking files' },
         { kind: 'done', text: 'Finished' }
       ])
+    }
+  })
+
+  it('replays subagent_context_usage onto the parent tool row', () => {
+    const items = messagesToUiItems([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'subagent', arguments: '{}' }]
+      },
+      { role: 'tool', toolCallId: 'c1', toolName: 'subagent', content: 'report', ok: true }
+    ])
+    const enriched = applyEventTimestamps(items, [
+      {
+        at: '2026-07-24T12:00:00.000Z',
+        event: {
+          type: 'subagent_context_usage',
+          runId: 'r1',
+          parentToolCallId: 'c1',
+          step: 1,
+          estimatedTokens: 4_000,
+          contextWindow: 128_000,
+          contentWindow: 110_000,
+          model: 'test-model'
+        }
+      },
+      {
+        at: '2026-07-24T12:00:02.000Z',
+        event: {
+          type: 'subagent_context_usage',
+          runId: 'r1',
+          parentToolCallId: 'c1',
+          step: 2,
+          estimatedTokens: 12_000,
+          contextWindow: 128_000,
+          contentWindow: 110_000,
+          model: 'test-model'
+        }
+      }
+    ])
+    const tool = enriched.find((i) => i.kind === 'tool')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind === 'tool') {
+      expect(tool.subagentContextUsage).toMatchObject({
+        step: 2,
+        used: 12_000,
+        window: 128_000,
+        contentWindow: 110_000,
+        model: 'test-model',
+        updatedAt: '2026-07-24T12:00:02.000Z'
+      })
     }
   })
 })

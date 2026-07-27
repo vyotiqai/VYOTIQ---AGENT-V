@@ -31,12 +31,20 @@ export const ToolCard = memo(function ToolCard({
   const running = tool.status === 'running'
 
   const headerMeta = useMemo(
-    () => getToolHeaderMeta(tool, { subagent: item.subagent }),
-    [tool, item.subagent]
+    () =>
+      getToolHeaderMeta(tool, {
+        subagent: item.subagent,
+        subagentContextUsage: item.subagentContextUsage
+      }),
+    [tool, item.subagent, item.subagentContextUsage]
   )
   const hasBody = useMemo(
-    () => toolHasBody(tool, { subagent: item.subagent }),
-    [tool, item.subagent]
+    () =>
+      toolHasBody(tool, {
+        subagent: item.subagent,
+        subagentContextUsage: item.subagentContextUsage
+      }),
+    [tool, item.subagent, item.subagentContextUsage]
   )
 
   const toggle = (): void => {
@@ -114,6 +122,7 @@ export const ToolCard = memo(function ToolCard({
             tool,
             expanded: isOpen,
             subagent: item.subagent,
+            subagentContextUsage: item.subagentContextUsage,
             onLoadFullContent,
             mcpServerNames
           }}

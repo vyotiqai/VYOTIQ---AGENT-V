@@ -65,11 +65,11 @@ describe('buildTranscriptRows', () => {
     ]
     expect(buildTranscriptRows(items).map((row) => row.kind)).toEqual([
       'user',
-      'turn',
       'card',
-      'user',
       'turn',
-      'activity'
+      'user',
+      'activity',
+      'turn'
     ])
   })
 
@@ -126,11 +126,11 @@ describe('buildTranscriptRows', () => {
     const rows = buildTranscriptRows(items)
     expect(rows.map((row) => row.kind)).toEqual([
       'user',
-      'turn',
       'activity',
-      'user',
       'turn',
-      'activity'
+      'user',
+      'activity',
+      'turn'
     ])
   })
 
@@ -186,6 +186,54 @@ describe('buildTranscriptRows', () => {
       .filter((row) => row.kind === 'text')
       .map((row) => (row.kind === 'text' ? row.final : null))
     expect(finals).toEqual([false, true])
+  })
+
+  it('does not treat mid-turn narration as final when work continues after it', () => {
+    const todo = tool('todo1', 'todo_write')
+    todo.tool.summary = '0/5 complete'
+    const running = tool('sub1', 'subagent')
+    running.tool.status = 'running'
+    running.tool.summary = 'Audit the codebase'
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'hi' },
+      {
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        thinking: 'Planning the audit.',
+        content: ''
+      },
+      { kind: 'message', id: 'a2', role: 'assistant', content: 'Hi again! Starting the audit.' },
+      todo,
+      {
+        kind: 'message',
+        id: 'a3',
+        role: 'assistant',
+        thinking: 'Launching sub-agents.',
+        thinkingStreaming: true,
+        content: ''
+      },
+      running
+    ]
+    const rows = buildTranscriptRows(items)
+    const kinds = rows.map((row) => row.kind)
+    const narration = rows.find((row) => row.kind === 'text' && row.id === 'a2')
+    const summaryIndex = rows.findIndex((row) => row.kind === 'turn')
+    const subagentIndex = rows.findIndex((row) => row.kind === 'activity')
+
+    expect(narration?.kind === 'text' ? narration.final : undefined).toBe(false)
+    expect(summaryIndex).toBeGreaterThan(subagentIndex)
+    expect(kinds.indexOf('turn')).toBeGreaterThan(kinds.lastIndexOf('activity'))
+  })
+
+  it('places the turn summary after work and before a trailing closing answer', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'go' },
+      tool('r1', 'read'),
+      { kind: 'message', id: 'a1', role: 'assistant', content: 'Here is the answer.' }
+    ]
+    const kinds = buildTranscriptRows(items).map((row) => row.kind)
+    expect(kinds).toEqual(['user', 'activity', 'turn', 'text'])
   })
 
   it('rolls up a turn that edited several files', () => {
@@ -284,7 +332,7 @@ describe('buildTranscriptRows', () => {
     }
   })
 
-  it('coalesces activity batches split by thinking within a turn', () => {
+  it('keeps activity batches split by thinking in step order', () => {
     const items: UiItem[] = [
       tool('r1', 'read'),
       tool('r2', 'read'),
@@ -299,12 +347,54 @@ describe('buildTranscriptRows', () => {
       tool('r4', 'read')
     ]
     const rows = buildTranscriptRows(items)
+    expect(rows.map((row) => row.kind)).toEqual(['activity', 'thinking', 'activity'])
     const activities = rows.filter((row) => row.kind === 'activity')
-    expect(activities).toHaveLength(1)
-    if (activities[0]?.kind === 'activity') {
-      expect(activities[0].tools).toHaveLength(4)
+    expect(activities).toHaveLength(2)
+    if (activities[0]?.kind === 'activity' && activities[1]?.kind === 'activity') {
+      expect(activities[0].tools).toHaveLength(2)
+      expect(activities[1].tools).toHaveLength(2)
     }
-    expect(rows.filter((row) => row.kind === 'thinking')).toHaveLength(1)
+  })
+
+  it('keeps step reasoning inline between tool batches', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'audit' },
+      {
+        kind: 'message',
+        id: 'm1',
+        role: 'assistant',
+        thinking: 'First I will read the core files.',
+        content: ''
+      },
+      tool('r1', 'read'),
+      {
+        kind: 'message',
+        id: 'm2',
+        role: 'assistant',
+        thinking: 'Next I will grep for auth usage.',
+        content: ''
+      },
+      tool('g1', 'grep'),
+      {
+        kind: 'message',
+        id: 'm3',
+        role: 'assistant',
+        thinking: 'Finally I will run the tests.',
+        content: ''
+      },
+      tool('t1', 'terminal')
+    ]
+    const rows = buildTranscriptRows(items)
+    expect(rows.map((row) => row.kind)).toEqual([
+      'user',
+      'thinking',
+      'activity',
+      'thinking',
+      'activity',
+      'thinking',
+      'card',
+      'turn'
+    ])
   })
 
   it('attaches tool activity to an active turn with a running tool', () => {
@@ -326,7 +416,7 @@ describe('buildTranscriptRows', () => {
     }
   })
 
-  it('attaches thinking activity while reasoning streams', () => {
+  it('attaches thinking activity while reasoning streams and no tools are running', () => {
     const items: UiItem[] = [
       { kind: 'message', id: 'u1', role: 'user', content: 'go' },
       {
@@ -344,14 +434,94 @@ describe('buildTranscriptRows', () => {
     }
   })
 
-  it('shows a starting turn summary while pendingRun is true', () => {
+  it('shows a planning turn summary while pendingRun is true', () => {
     const items: UiItem[] = [{ kind: 'message', id: 'u1', role: 'user', content: 'go' }]
     const rows = buildTranscriptRows(items, { pendingRun: true })
     const summary = rows.find((row) => row.kind === 'turn')
     expect(summary?.kind).toBe('turn')
     if (summary?.kind === 'turn') {
       expect(summary.span.active).toBe(true)
-      expect(summary.span.activity).toEqual({ kind: 'starting' })
+      expect(summary.span.activity).toEqual({ kind: 'planning' })
+    }
+  })
+
+  it('prefers a running subagent over streaming thinking in the turn summary', () => {
+    const running = tool('sub1', 'subagent')
+    running.tool.status = 'running'
+    running.tool.summary = 'Audit routes'
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'go' },
+      {
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        thinking: 'Let me delegate.',
+        thinkingStreaming: true,
+        content: ''
+      },
+      running
+    ]
+    const summary = buildTranscriptRows(items).find((row) => row.kind === 'turn')
+    if (summary?.kind === 'turn') {
+      expect(summary.span.activity).toEqual({
+        kind: 'tool',
+        label: 'Investigating',
+        detail: 'Audit routes'
+      })
+    }
+  })
+
+  it('keeps the turn summary live while running before the first stream event', () => {
+    const items: UiItem[] = [{ kind: 'message', id: 'u1', role: 'user', content: 'go' }]
+    const rows = buildTranscriptRows(items, { running: true })
+    const summary = rows.find((row) => row.kind === 'turn')
+    expect(summary?.kind).toBe('turn')
+    if (summary?.kind === 'turn') {
+      expect(summary.span.active).toBe(true)
+      expect(summary.span.activity).toEqual({ kind: 'planning' })
+    }
+  })
+
+  it('keeps only the latest todo_write card even when separated by thinking', () => {
+    const first = tool('todo1', 'todo_write')
+    first.tool.summary = '5 tasks'
+    const second = tool('todo2', 'todo_write')
+    second.tool.summary = '0/5 complete'
+    second.tool.content = '0/5 complete\n[ ] Audit core library code'
+    const rows = buildTranscriptRows([
+      { kind: 'message', id: 'u1', role: 'user', content: 'plan' },
+      first,
+      {
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        thinking: 'Updating the checklist.',
+        content: ''
+      },
+      second
+    ])
+    const todoCards = rows.filter((row) => row.kind === 'card' && row.item.tool.name === 'todo_write')
+    expect(todoCards).toHaveLength(1)
+    if (todoCards[0]?.kind === 'card') {
+      expect(todoCards[0].item.id).toBe('todo2')
+    }
+  })
+
+  it('groups parallel subagent tools into one activity row', () => {
+    const first = tool('sub1', 'subagent')
+    first.tool.summary = 'Audit core library'
+    const second = tool('sub2', 'subagent')
+    second.tool.summary = 'Audit API routes'
+    const rows = buildTranscriptRows([
+      { kind: 'message', id: 'u1', role: 'user', content: 'audit' },
+      first,
+      second
+    ])
+    expect(rows.map((row) => row.kind)).toEqual(['user', 'activity', 'turn'])
+    const activity = rows.find((row) => row.kind === 'activity')
+    if (activity?.kind === 'activity') {
+      expect(activity.tools).toHaveLength(2)
+      expect(activity.tools.map((item) => item.id)).toEqual(['sub1', 'sub2'])
     }
   })
 })

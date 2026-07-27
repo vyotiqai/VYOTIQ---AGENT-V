@@ -26,28 +26,42 @@ function McpResultBody({
   truncated: boolean
 }) {
   const view = data.resultView
+  const banner = truncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null
 
   if (view.kind === 'paths') {
-    return <PathList paths={view.paths} />
+    return (
+      <div>
+        {banner}
+        <PathList paths={view.paths} />
+      </div>
+    )
   }
   if (view.kind === 'code') {
-    return <CodeBlock lines={view.lines} />
+    return (
+      <div>
+        {banner}
+        <CodeBlock lines={view.lines} />
+      </div>
+    )
   }
   if (view.kind === 'lines') {
     return (
-      <ul className={cn(TOOL_BODY_INNER, 'm-0 max-h-48 list-none overflow-auto p-0')}>
-        {view.lines.map((line) => (
-          <li key={line} className="truncate py-0.5 font-mono text-[11px] text-fg/80" title={line}>
-            {line}
-          </li>
-        ))}
-      </ul>
+      <div>
+        {banner}
+        <ul className={cn(TOOL_BODY_INNER, 'm-0 max-h-48 list-none overflow-auto p-0')}>
+          {view.lines.map((line) => (
+            <li key={line} className="truncate py-0.5 font-mono text-[11px] text-fg/80" title={line}>
+              {line}
+            </li>
+          ))}
+        </ul>
+      </div>
     )
   }
 
   return (
     <div className={TOOL_BODY_INNER}>
-      {truncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
+      {banner}
       <div className="flex items-start gap-1">
         <pre
           className={cn(

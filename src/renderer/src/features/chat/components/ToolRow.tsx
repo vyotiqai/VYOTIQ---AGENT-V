@@ -1,19 +1,24 @@
-import type { UiToolRow } from '@shared/transcript'
+import type { UiSubagentContextUsage, UiSubagentEntry, UiToolRow } from '@shared/transcript'
+import { toolHasBody } from '../toolUi'
 import { ToolBodyView } from '../toolUi'
 
 /** Output pane for an expanded compact tool. The caller owns the surrounding indent. */
 export function ToolRowOutput({
   tool,
+  subagent,
+  subagentContextUsage,
   onLoadFullContent,
   mcpServerNames,
   inGroup
 }: {
   tool: UiToolRow
+  subagent?: UiSubagentEntry[]
+  subagentContextUsage?: UiSubagentContextUsage
   onLoadFullContent?: (toolCallId: string) => Promise<string | null>
   mcpServerNames?: ReadonlyMap<string, string>
   inGroup?: boolean
 }) {
-  const hasDetails = Boolean(tool.content || tool.argsPreview)
+  const hasDetails = toolHasBody(tool, { subagent, subagentContextUsage })
   if (!hasDetails) return null
 
   return (
@@ -22,6 +27,8 @@ export function ToolRowOutput({
         context={{
           tool,
           expanded: true,
+          subagent,
+          subagentContextUsage,
           onLoadFullContent,
           mcpServerNames,
           inGroup

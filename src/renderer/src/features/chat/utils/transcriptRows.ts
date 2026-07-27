@@ -76,7 +76,7 @@ export const TURN_GAP_PX = 24
  */
 export function buildTranscriptRows(
   items: UiItem[],
-  options?: { pendingRun?: boolean }
+  options?: { pendingRun?: boolean; running?: boolean }
 ): TranscriptRow[] {
   const rows: TranscriptRow[] = []
   let turnIndex = -1
@@ -179,8 +179,18 @@ export function buildTranscriptRows(
   flush()
   // Turn summaries stand for the work rows, and which text row is the closing
   // answer decides what counts as work, so that has to be settled first.
+  // Reasoning stays in step order (thinking → tools → thinking) — do not hoist
+  // every step into one Thought at the top of the turn.
   return coalesceTurnWork(
-    withChangeSummaries(withTurnSummaries(markFinalText(rows), options?.pendingRun))
+    withChangeSummaries(
+      withTurnSummaries(
+        coalesceProminentCards(markFinalText(rows)),
+        {
+          pendingRun: options?.pendingRun,
+          running: options?.running
+        }
+      )
+    )
   )
 }
 
@@ -245,16 +255,61 @@ function withChangeSummaries(rows: TranscriptRow[]): TranscriptRow[] {
   return out
 }
 
-/** Only the last answer of a turn is "the reply"; earlier ones are steps toward it. */
-function markFinalText(rows: TranscriptRow[]): TranscriptRow[] {
-  const lastByTurn = new Map<number, number>()
-  rows.forEach((row, index) => {
-    if (row.kind === 'text') lastByTurn.set(row.turnIndex, index)
-  })
-  if (lastByTurn.size === 0) return rows
+/**
+ * Fold duplicate prominent cards that represent the same surface in one turn.
+ * - todo_write: keep only the latest checklist snapshot for the turn.
+ */
+function coalesceProminentCards(rows: TranscriptRow[]): TranscriptRow[] {
+  const lastTodoByTurn = new Map<number, string>()
+  for (const row of rows) {
+    if (row.kind === 'card' && row.item.tool.name === 'todo_write') {
+      lastTodoByTurn.set(row.turnIndex, row.item.id)
+    }
+  }
 
-  return rows.map((row, index) =>
-    row.kind === 'text' ? { ...row, final: lastByTurn.get(row.turnIndex) === index } : row
+  const out: TranscriptRow[] = []
+  for (const row of rows) {
+    if (row.kind === 'card' && row.item.tool.name === 'todo_write') {
+      if (lastTodoByTurn.get(row.turnIndex) !== row.item.id) continue
+    }
+    out.push(row)
+  }
+  return out
+}
+
+/**
+ * Index where the closing answer begins: a trailing run of text rows only.
+ * Mid-turn narration followed by tools is not closing, so it stays out of this suffix.
+ */
+function closingAnswerStart(turnRows: TranscriptRow[]): number {
+  let index = turnRows.length
+  while (index > 0 && turnRows[index - 1]!.kind === 'text') {
+    index -= 1
+  }
+  return index
+}
+
+/** Only trailing answer text earns a footer; earlier narration stays mid-turn work. */
+function markFinalText(rows: TranscriptRow[]): TranscriptRow[] {
+  const rowsByTurn = new Map<number, TranscriptRow[]>()
+  for (const row of rows) {
+    if (row.kind === 'user') continue
+    const list = rowsByTurn.get(row.turnIndex) ?? []
+    list.push(row)
+    rowsByTurn.set(row.turnIndex, list)
+  }
+  if (rowsByTurn.size === 0) return rows
+
+  const finalTextIds = new Set<string>()
+  for (const turnRows of rowsByTurn.values()) {
+    const start = closingAnswerStart(turnRows)
+    const closing = turnRows.slice(start).filter((row) => row.kind === 'text')
+    const last = closing[closing.length - 1]
+    if (last?.kind === 'text') finalTextIds.add(last.id)
+  }
+
+  return rows.map((row) =>
+    row.kind === 'text' ? { ...row, final: finalTextIds.has(row.id) } : row
   )
 }
 
@@ -305,50 +360,80 @@ function isRowActive(row: TranscriptRow): boolean {
 }
 
 /**
- * Prefix each turn that did some work with a summary of how long it took.
+ * Append a turn summary after the work block, just before the closing answer.
  *
  * The span runs from the prompt to the last thing the turn produced, which is
  * the interval a reader means by "how long did that take" — not the sum of the
  * individual tool durations, which would exclude the model's own thinking.
  */
-function withTurnSummaries(rows: TranscriptRow[], pendingRun?: boolean): TranscriptRow[] {
-  const out: TranscriptRow[] = []
+function withTurnSummaries(
+  rows: TranscriptRow[],
+  options?: { pendingRun?: boolean; running?: boolean }
+): TranscriptRow[] {
+  const pendingRun = options?.pendingRun
+  const running = options?.running
   let maxTurnIndex = -1
   for (const row of rows) {
     if (row.kind === 'user') maxTurnIndex = Math.max(maxTurnIndex, row.turnIndex)
   }
 
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i]!
-    out.push(row)
-    if (row.kind !== 'user') continue
+  const out: TranscriptRow[] = []
+  let index = 0
 
-    const turn: TranscriptRow[] = []
-    for (let j = i + 1; j < rows.length && rows[j]!.turnIndex === row.turnIndex; j++) {
-      turn.push(rows[j]!)
+  while (index < rows.length) {
+    const row = rows[index]!
+    if (row.kind !== 'user') {
+      out.push(row)
+      index += 1
+      continue
     }
-    const isLastTurn = row.turnIndex === maxTurnIndex
-    const hasWork = turn.some(isTurnWorkRow)
-    if (!hasWork && !(pendingRun && isLastTurn)) continue
 
-    const startedAt = toMs(row.item.at)
-    let endedAt: number | null = null
-    for (const entry of turn) {
-      const { at, endedAt: closed } = rowTimestamps(entry)
-      for (const candidate of [at, closed]) {
-        if (candidate != null) endedAt = endedAt == null ? candidate : Math.max(endedAt, candidate)
+    const userRow = row
+    out.push(userRow)
+    index += 1
+
+    const turnIndex = userRow.turnIndex
+    const turnRows: TranscriptRow[] = []
+    while (index < rows.length && rows[index]!.turnIndex === turnIndex) {
+      turnRows.push(rows[index]!)
+      index += 1
+    }
+
+    const isLastTurn = turnIndex === maxTurnIndex
+    const hasWork = turnRows.some(isTurnWorkRow)
+    const isLiveTurn = isLastTurn && (pendingRun === true || running === true)
+
+    const closingStart = closingAnswerStart(turnRows)
+    const beforeClosing = turnRows.slice(0, closingStart)
+    const closingAnswer = turnRows.slice(closingStart)
+
+    out.push(...beforeClosing)
+
+    if (hasWork || isLiveTurn) {
+      const startedAt = toMs(userRow.item.at)
+      let endedAt: number | null = null
+      for (const entry of turnRows) {
+        const { at, endedAt: closed } = rowTimestamps(entry)
+        for (const candidate of [at, closed]) {
+          if (candidate != null) endedAt = endedAt == null ? candidate : Math.max(endedAt, candidate)
+        }
       }
+
+      const rowActive = turnRows.some(isRowActive)
+      const active = rowActive || isLiveTurn
+      const activity = active
+        ? deriveRunActivity(turnRows, isLiveTurn && !rowActive)
+        : null
+
+      out.push({
+        kind: 'turn',
+        id: `turn:${userRow.id}`,
+        turnIndex,
+        span: { startedAt, endedAt, active, activity }
+      })
     }
 
-    const active = turn.some(isRowActive) || (pendingRun === true && isLastTurn)
-    const activity = active ? deriveRunActivity(turn, pendingRun && isLastTurn) : null
-
-    out.push({
-      kind: 'turn',
-      id: `turn:${row.id}`,
-      turnIndex: row.turnIndex,
-      span: { startedAt, endedAt, active, activity }
-    })
+    out.push(...closingAnswer)
   }
 
   return out
@@ -360,8 +445,9 @@ export function rowLeadingGap(row: TranscriptRow): number {
 }
 
 /**
- * Within a turn, fold interleaved activity batches into one group while keeping
- * thinking rows in their original positions relative to the merged activity.
+ * Within a turn, fold consecutive activity batches into one group.
+ * Stop at thinking (or anything else) so reasoning stays between tool batches
+ * instead of being hoisted into one pile above the work.
  */
 function coalesceTurnWork(rows: TranscriptRow[]): TranscriptRow[] {
   const out: TranscriptRow[] = []
@@ -369,52 +455,32 @@ function coalesceTurnWork(rows: TranscriptRow[]): TranscriptRow[] {
 
   while (index < rows.length) {
     const row = rows[index]!
-    if (row.kind !== 'activity' && row.kind !== 'thinking') {
+    if (row.kind !== 'activity') {
       out.push(row)
       index += 1
       continue
     }
 
     const turnIndex = row.turnIndex
-    const run: TranscriptRow[] = []
+    const activities: Extract<TranscriptRow, { kind: 'activity' }>[] = []
     while (index < rows.length) {
       const next = rows[index]!
-      if (next.turnIndex !== turnIndex) break
-      if (next.kind !== 'activity' && next.kind !== 'thinking') break
-      run.push(next)
+      if (next.turnIndex !== turnIndex || next.kind !== 'activity') break
+      activities.push(next)
       index += 1
     }
 
-    const activities = run.filter((entry): entry is Extract<TranscriptRow, { kind: 'activity' }> => {
-      return entry.kind === 'activity'
-    })
-    if (activities.length <= 1) {
-      out.push(...run)
+    if (activities.length === 1) {
+      out.push(activities[0]!)
       continue
     }
 
-    const mergedActivity: TranscriptRow = {
+    out.push({
       kind: 'activity',
       id: activities[0]!.id,
       tools: activities.flatMap((entry) => entry.tools),
       turnIndex
-    }
-
-    const lastActivityIndex = run.findLastIndex((entry) => entry.kind === 'activity')
-    const firstActivityIndex = run.findIndex((entry) => entry.kind === 'activity')
-    const prefix: TranscriptRow[] = []
-    const between: TranscriptRow[] = []
-    const suffix: TranscriptRow[] = []
-
-    for (let runIndex = 0; runIndex < run.length; runIndex++) {
-      const entry = run[runIndex]!
-      if (entry.kind !== 'thinking') continue
-      if (runIndex < firstActivityIndex) prefix.push(entry)
-      else if (runIndex < lastActivityIndex) between.push(entry)
-      else suffix.push(entry)
-    }
-
-    out.push(...prefix, ...between, mergedActivity, ...suffix)
+    })
   }
 
   return out

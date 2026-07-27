@@ -89,7 +89,7 @@ export const CompactRow = memo(function CompactRow({
       aria-expanded={expanded}
       onClick={onToggle}
     >
-      <span className={cn('shrink-0 font-medium', status === 'fail' ? 'text-danger' : 'text-fg')}>
+      <span className={cn('flex shrink-0 items-center gap-1.5 font-medium', status === 'fail' ? 'text-danger' : 'text-fg')}>
         {status === 'running' ? <TextShimmer>{title}</TextShimmer> : title}
       </span>
       {subtitle ? (

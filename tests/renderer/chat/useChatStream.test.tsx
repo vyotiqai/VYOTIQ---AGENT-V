@@ -992,7 +992,7 @@ describe('useChatStream', () => {
     })
   })
 
-  it('gives every step of a turn its own reasoning row, in place', async () => {
+  it('keeps each step reasoning inline before its tools', async () => {
     const { result } = renderHook(() => useChatStream('/ws'))
 
     await act(async () => {
@@ -1045,7 +1045,6 @@ describe('useChatStream', () => {
       'Now I edit.'
     ])
 
-    // Each step reads top to bottom: what the model thought, then what it did.
     const shape = result.current.items.map((item) =>
       item.kind === 'tool' ? `tool:${item.tool.name}` : item.thinking || item.content
     )

@@ -41,7 +41,7 @@ function subagentItem(overrides: Partial<Extract<UiItem, { kind: 'tool' }>> = {}
   }
 }
 
-describe('sub-agent transcript card', () => {
+describe('sub-agent transcript row', () => {
   it('shows nested progress while the child is still working', () => {
     render(<MessageList items={[subagentItem()]} />)
 
@@ -67,11 +67,28 @@ describe('sub-agent transcript card', () => {
     expect(screen.getByText('Auth lives in src/auth.ts:12.')).toBeTruthy()
   })
 
+  it('shows sub-agent context usage when present', () => {
+    const item = subagentItem({
+      subagentContextUsage: {
+        step: 2,
+        used: 12_000,
+        window: 128_000,
+        contentWindow: 110_000,
+        model: 'test-model',
+        updatedAt: new Date().toISOString()
+      }
+    })
+    render(<MessageList items={[item]} />)
+
+    expect(screen.getByText(/Sub-agent context/)).toBeTruthy()
+    expect(screen.getByText(/step 2/)).toBeTruthy()
+  })
+
   it('collapses and expands the nested group', () => {
     render(<MessageList items={[subagentItem()]} />)
 
-    const header = screen.getByRole('button', { expanded: false })
+    const header = screen.getByRole('button', { expanded: true })
     fireEvent.click(header)
-    expect(screen.getByRole('button', { expanded: true })).toBeTruthy()
+    expect(screen.getByRole('button', { expanded: false })).toBeTruthy()
   })
 })

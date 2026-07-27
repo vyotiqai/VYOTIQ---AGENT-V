@@ -3,7 +3,8 @@ import { mapToolGroupProps } from './toolGroupAdapter'
 import type { TranscriptRow } from './transcriptRows'
 
 export type RunActivityPhase =
-  | { kind: 'starting' }
+  | { kind: 'planning' }
+  | { kind: 'working' }
   | { kind: 'thinking' }
   | { kind: 'writing' }
   | { kind: 'tool'; label: string; detail?: string }
@@ -33,7 +34,19 @@ function toolPhaseFromCard(row: Extract<TranscriptRow, { kind: 'card' }>): RunAc
 function toolPhaseFromActivity(row: Extract<TranscriptRow, { kind: 'activity' }>): RunActivityPhase {
   const uiTools = row.tools.map((item) => item.tool)
   const props = mapToolGroupProps(uiTools, {})
-  const runningTool = row.tools.find((item) => item.tool.status === 'running')
+  const runningTools = row.tools.filter((item) => item.tool.status === 'running')
+  const allSubagents = row.tools.length > 0 && row.tools.every((item) => item.tool.name === 'subagent')
+
+  if (allSubagents && row.tools.length > 1) {
+    const count = runningTools.length > 0 ? runningTools.length : row.tools.length
+    return {
+      kind: 'tool',
+      label: props.runningLabel,
+      detail: `${count} agent${count === 1 ? '' : 's'}`
+    }
+  }
+
+  const runningTool = runningTools[runningTools.length - 1]
   let detail: string | undefined
   if (runningTool && props.singleTool) {
     const meta = getToolHeaderMeta(runningTool.tool, {
@@ -41,6 +54,8 @@ function toolPhaseFromActivity(row: Extract<TranscriptRow, { kind: 'activity' }>
       subagentContextUsage: runningTool.subagentContextUsage
     })
     detail = truncateDetail(meta.target)
+  } else if (runningTool && props.summary) {
+    detail = truncateDetail(props.summary)
   }
   return {
     kind: 'tool',
@@ -51,8 +66,10 @@ function toolPhaseFromActivity(row: Extract<TranscriptRow, { kind: 'activity' }>
 
 export function formatRunActivityLabel(phase: RunActivityPhase): string {
   switch (phase.kind) {
-    case 'starting':
-      return 'Starting'
+    case 'planning':
+      return 'Planning'
+    case 'working':
+      return 'Working'
     case 'thinking':
       return 'Thinking'
     case 'writing':
@@ -66,43 +83,53 @@ export function formatRunActivityLabel(phase: RunActivityPhase): string {
   }
 }
 
+function lastActiveRow(
+  turnRows: TranscriptRow[],
+  matches: (row: TranscriptRow) => boolean
+): TranscriptRow | undefined {
+  for (let index = turnRows.length - 1; index >= 0; index -= 1) {
+    const row = turnRows[index]!
+    if (matches(row)) return row
+  }
+  return undefined
+}
+
 /**
  * Derive what the agent is doing right now within an active turn.
- * Priority: thinking → prominent tool → compact tools → writing → starting.
+ * Priority: prominent tool → compact tools → thinking → writing → planning/working.
+ * Within each tier, prefer the latest row so live work beats earlier steps.
  */
 export function deriveRunActivity(
   turnRows: TranscriptRow[],
   pendingRun?: boolean
 ): RunActivityPhase {
-  for (const row of turnRows) {
-    if (row.kind === 'thinking' && row.item.thinkingStreaming === true) {
-      return { kind: 'thinking' }
-    }
+  const runningCard = lastActiveRow(
+    turnRows,
+    (row) => row.kind === 'card' && row.item.tool.status === 'running'
+  )
+  if (runningCard?.kind === 'card') return toolPhaseFromCard(runningCard)
+
+  const runningActivity = lastActiveRow(
+    turnRows,
+    (row) => row.kind === 'activity' && row.tools.some((item) => item.tool.status === 'running')
+  )
+  if (runningActivity?.kind === 'activity') return toolPhaseFromActivity(runningActivity)
+
+  const streamingThinking = lastActiveRow(
+    turnRows,
+    (row) => row.kind === 'thinking' && row.item.thinkingStreaming === true
+  )
+  if (streamingThinking) return { kind: 'thinking' }
+
+  const streamingText = lastActiveRow(
+    turnRows,
+    (row) => row.kind === 'text' && row.item.streaming === true
+  )
+  if (streamingText) return { kind: 'writing' }
+
+  if (pendingRun) {
+    return { kind: 'planning' }
   }
 
-  for (let index = turnRows.length - 1; index >= 0; index -= 1) {
-    const row = turnRows[index]!
-    if (row.kind === 'card' && row.item.tool.status === 'running') {
-      return toolPhaseFromCard(row)
-    }
-  }
-
-  for (let index = turnRows.length - 1; index >= 0; index -= 1) {
-    const row = turnRows[index]!
-    if (row.kind === 'activity' && row.tools.some((item) => item.tool.status === 'running')) {
-      return toolPhaseFromActivity(row)
-    }
-  }
-
-  for (const row of turnRows) {
-    if (row.kind === 'text' && row.item.streaming === true) {
-      return { kind: 'writing' }
-    }
-  }
-
-  if (pendingRun || turnRows.length === 0) {
-    return { kind: 'starting' }
-  }
-
-  return { kind: 'starting' }
+  return { kind: 'working' }
 }

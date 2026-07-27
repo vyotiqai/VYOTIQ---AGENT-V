@@ -1,6 +1,7 @@
 import type { AgentEvent, ChatMessage, MessageContent, PersistedEvent } from '../ipc'
 import { contentDisplayText, contentFiles, contentImages, contentToText } from '../ipc'
 import { isAgentEvent } from '../utils/eventUtils'
+import { subagentContextUsageFromEvent } from '../utils/contextUsage'
 import { summarizeToolArgs } from '../utils/toolSummary'
 
 export type UiToolRow = {
@@ -23,6 +24,15 @@ export type UiGroupTiming = {
 export type UiSubagentEntry = {
   kind: 'text' | 'thinking' | 'tool' | 'done'
   text: string
+}
+
+export type UiSubagentContextUsage = {
+  step: number
+  used: number
+  window: number
+  contentWindow: number
+  model: string
+  updatedAt: string
 }
 
 /** A document the user attached, shown as a chip instead of its extracted text. */
@@ -72,6 +82,8 @@ export type UiItem =
       approval?: UiToolApproval
       /** Progress a nested sub-agent reported while this call ran. */
       subagent?: UiSubagentEntry[]
+      /** Latest context fill for this nested sub-agent run. */
+      subagentContextUsage?: UiSubagentContextUsage
     }
 
 /** Attachment chips for a message: names and sizes only, never the quoted text. */
@@ -158,7 +170,11 @@ export function duplicatesReasoning(item: UiItem): boolean {
   const content = item.content?.trim()
   if (!content || content.length < DUPLICATE_TEXT_MIN_CHARS) return false
   if (!isMeaningfulThinking(item.thinking)) return false
-  return collapseWhitespace(item.thinking ?? '').includes(collapseWhitespace(content))
+  const normalizedThinking = collapseWhitespace(item.thinking ?? '')
+  const normalizedContent = collapseWhitespace(content)
+  // Only hide when the answer is a verbatim prefix of reasoning — not when it
+  // merely shares a long passage somewhere inside the thinking block.
+  return normalizedThinking.startsWith(normalizedContent)
 }
 
 /**
@@ -202,7 +218,7 @@ export function stripToolShapedAssistantText(content: string): string {
   return result.replace(/\n{3,}/g, '\n\n').trim()
 }
 
-/** Join a turn's reasoning steps into the single Thought row the turn renders. */
+/** Join adjacent reasoning chunks for one inline step. */
 export function mergeThinking(previous: string | undefined, next: string): string {
   const before = previous?.trim() ?? ''
   const after = next.trim()
@@ -358,7 +374,8 @@ function reconstructGroupTiming(items: UiItem[], events: PersistedEvent[]): UiIt
   return out
 }
 
-const MAX_SUBAGENT_REPLAY_ENTRIES = 40
+/** Tail cap for live + replayed nested sub-agent progress lines. */
+export const MAX_SUBAGENT_PROGRESS_ENTRIES = 200
 
 function applySubagentUpdates(items: UiItem[], events: PersistedEvent[]): UiItem[] {
   const out = [...items]
@@ -371,7 +388,27 @@ function applySubagentUpdates(items: UiItem[], events: PersistedEvent[]): UiItem
     const item = out[idx]
     if (item.kind !== 'tool') continue
     const entries = [...(item.subagent ?? []), { kind: row.event.kind, text: row.event.text }]
-    out[idx] = { ...item, subagent: entries.slice(-MAX_SUBAGENT_REPLAY_ENTRIES) }
+    out[idx] = { ...item, subagent: entries.slice(-MAX_SUBAGENT_PROGRESS_ENTRIES) }
+  }
+  return out
+}
+
+function applySubagentContextUsage(items: UiItem[], events: PersistedEvent[]): UiItem[] {
+  const out = [...items]
+  for (const row of events) {
+    if (!isAgentEvent(row.event)) continue
+    if (row.event.type !== 'subagent_context_usage') continue
+    const usage = subagentContextUsageFromEvent(row.event)
+    if (!usage) continue
+    const parentToolCallId = row.event.parentToolCallId
+    const idx = out.findIndex((item) => item.kind === 'tool' && item.id === parentToolCallId)
+    if (idx < 0) continue
+    const item = out[idx]
+    if (item.kind !== 'tool') continue
+    out[idx] = {
+      ...item,
+      subagentContextUsage: { ...usage, updatedAt: row.at }
+    }
   }
   return out
 }
@@ -436,14 +473,12 @@ export function applyEventTimestamps(items: UiItem[], events: PersistedEvent[]):
     visibleAssistantMessageAts
   })
 
-  return applySubagentUpdates(
-    withTools.map((item) => {
-      if (item.kind !== 'message') return item
-      const at = messageAtById.get(item.id)
-      return at ? { ...item, at } : item
-    }),
-    events
-  )
+  const withMessages = withTools.map((item) => {
+    if (item.kind !== 'message') return item
+    const at = messageAtById.get(item.id)
+    return at ? { ...item, at } : item
+  })
+  return applySubagentContextUsage(applySubagentUpdates(withMessages, events), events)
 }
 
 function messageTimestampsFromEvents(

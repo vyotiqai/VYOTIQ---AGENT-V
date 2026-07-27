@@ -227,10 +227,15 @@ export function mapToolGroupProps(
     tools.map((tool) => tool.name)
   )
 
+  const allSubagents = tools.length > 0 && tools.every((tool) => tool.name === 'subagent')
+  const summary = allSubagents
+    ? `${tools.length} agent${tools.length === 1 ? '' : 's'}`
+    : summarizeCounts(nestedTools)
+
   return {
     state,
     nestedTools,
-    summary: summarizeCounts(nestedTools),
+    summary,
     runningLabel: labels.running,
     doneLabel: labels.done,
     elapsedMs,

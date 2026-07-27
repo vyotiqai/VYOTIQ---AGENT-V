@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, waitFor } from '@testing-library/react'
 import { ToolRowOutput } from '@renderer/features/chat/components/ToolRow'
+import { ToolBodyView } from '@renderer/features/chat/toolUi'
 import { TOOL_RESULT_IPC_PREVIEW_CHARS } from '@shared/utils/toolResultIpc'
 
 afterEach(() => {
@@ -9,7 +10,7 @@ afterEach(() => {
 })
 
 describe('ToolRowOutput lazy load', () => {
-  it('fetches full content when a truncated tool result is shown', async () => {
+  it('fetches full content when a truncated tool result is shown expanded', async () => {
     const preview = `${'x'.repeat(TOOL_RESULT_IPC_PREVIEW_CHARS)}\n…`
     const load = vi.fn().mockResolvedValue('x'.repeat(TOOL_RESULT_IPC_PREVIEW_CHARS + 800))
 
@@ -30,6 +31,31 @@ describe('ToolRowOutput lazy load', () => {
     await waitFor(() => {
       expect(load).toHaveBeenCalledWith('call-1')
     })
+  })
+
+  it('does not fetch truncated content while collapsed', async () => {
+    const preview = `${'x'.repeat(TOOL_RESULT_IPC_PREVIEW_CHARS)}\n…`
+    const load = vi.fn().mockResolvedValue('full')
+
+    render(
+      <ToolBodyView
+        context={{
+          tool: {
+            id: 'call-collapsed',
+            name: 'read',
+            summary: 'big.ts',
+            status: 'done',
+            content: preview,
+            contentTruncated: true
+          },
+          expanded: false,
+          onLoadFullContent: load
+        }}
+      />
+    )
+
+    await new Promise((r) => setTimeout(r, 30))
+    expect(load).not.toHaveBeenCalled()
   })
 
   it('does not fetch when content is not truncated', () => {

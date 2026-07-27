@@ -63,13 +63,13 @@ function activityRow(
 }
 
 describe('deriveRunActivity', () => {
-  it('prefers thinking over tools and writing', () => {
+  it('prefers running tools over thinking and writing when all are active', () => {
     const phase = deriveRunActivity([
       activityRow([{ id: 't1', name: 'grep', summary: 'foo', status: 'running' }]),
       thinkingRow(true),
       textRow(true)
     ])
-    expect(phase).toEqual({ kind: 'thinking' })
+    expect(phase).toEqual({ kind: 'tool', label: 'Grepping', detail: 'foo' })
   })
 
   it('prefers a prominent running card over compact activity and writing', () => {
@@ -93,12 +93,22 @@ describe('deriveRunActivity', () => {
     expect(phase).toEqual({ kind: 'writing' })
   })
 
-  it('reports starting when pendingRun is true with no rows yet', () => {
-    expect(deriveRunActivity([], true)).toEqual({ kind: 'starting' })
+  it('reports agent count for parallel subagents', () => {
+    const phase = deriveRunActivity([
+      activityRow([
+        { id: 's1', name: 'subagent', summary: 'Audit core', status: 'running' },
+        { id: 's2', name: 'subagent', summary: 'Audit API', status: 'running' }
+      ])
+    ])
+    expect(phase).toEqual({ kind: 'tool', label: 'Investigating', detail: '2 agents' })
   })
 
-  it('reports starting as the active-turn fallback', () => {
-    expect(deriveRunActivity([])).toEqual({ kind: 'starting' })
+  it('reports planning when pendingRun is true with no rows yet', () => {
+    expect(deriveRunActivity([], true)).toEqual({ kind: 'planning' })
+  })
+
+  it('reports working as the active-turn fallback between steps', () => {
+    expect(deriveRunActivity([])).toEqual({ kind: 'working' })
   })
 })
 
@@ -112,6 +122,7 @@ describe('formatRunActivityLabel', () => {
   it('formats non-tool phases', () => {
     expect(formatRunActivityLabel({ kind: 'thinking' })).toBe('Thinking')
     expect(formatRunActivityLabel({ kind: 'writing' })).toBe('Writing')
-    expect(formatRunActivityLabel({ kind: 'starting' })).toBe('Starting')
+    expect(formatRunActivityLabel({ kind: 'planning' })).toBe('Planning')
+    expect(formatRunActivityLabel({ kind: 'working' })).toBe('Working')
   })
 })

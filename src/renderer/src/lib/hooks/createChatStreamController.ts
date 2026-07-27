@@ -29,17 +29,18 @@ import {
   messageUiId,
   stripToolShapedAssistantText,
   uiAttachments,
+  MAX_SUBAGENT_PROGRESS_ENTRIES,
   type UiItem
 } from '@shared/transcript'
 import { summarizeToolArgs } from '@shared/toolSummary'
 import type { ContextUsageState } from '@shared/utils/contextUsage'
 import {
   contextUsageFromEvent,
+  subagentContextUsageFromEvent,
   summarizeContextUsageFromEvents
 } from '@shared/utils/contextUsage'
 
 /** A sub-agent's progress is a live view, not a log; keep the recent tail. */
-const MAX_SUBAGENT_ENTRIES = 40
 const CANCEL_RECOVERY_POLL_MS = 500
 const CANCEL_RECOVERY_TIMEOUT_MS = 5_000
 
@@ -50,7 +51,6 @@ function sleep(ms: number): Promise<void> {
 /** Prefer event.code from main; fall back for older events without a code. */
 function agentErrorCode(event: Extract<AgentEvent, { type: 'error' }>): string {
   if (event.code) return event.code
-  if (/^Stopped after \d+ steps/i.test(event.message)) return 'AGENT_MAX_STEPS'
   return 'AGENT_LOOP'
 }
 
@@ -638,14 +638,14 @@ export function createChatStreamController(
           kind: 'message',
           id,
           role: 'assistant',
-          content: text,
+          content: stripToolShapedAssistantText(text),
           streaming: true
         })
       } else {
         const current = items[index] as Extract<UiItem, { kind: 'message' }>
         items = replaceAt(items, index, {
           ...current,
-          content: current.content + text,
+          content: stripToolShapedAssistantText(current.content + text),
           streaming: true
         })
       }
@@ -849,8 +849,6 @@ export function createChatStreamController(
         ? state.items
         : closeOpenGroupTimings(state.items)
       const exists = base.some((i) => i.kind === 'message' && i.id === id)
-      // This step's reasoning already streamed into a row of its own; fold the
-      // final text back into that row rather than opening a second Thought.
       const reasoningTarget =
         event.thinking && reasoningId && reasoningId !== id ? reasoningId : null
       let nextItems = reasoningTarget
@@ -891,8 +889,6 @@ export function createChatStreamController(
           at: messageAt
         })
       }
-      // The step is over. Whatever the model reasons about next belongs beside
-      // the calls that reasoning leads to, not appended to the step just closed.
       reasoningId = null
       const nextMessages = appendAssistantWithTools(
         state.messages,
@@ -920,6 +916,7 @@ export function createChatStreamController(
                   {
                     ...item,
                     at: item.at ?? toolAt,
+                    toolExpanded: event.name === 'subagent' ? true : item.toolExpanded,
                     tool: {
                       ...item.tool,
                       name: event.name,
@@ -940,6 +937,7 @@ export function createChatStreamController(
               kind: 'tool' as const,
               id: event.toolCallId,
               at: toolAt,
+              toolExpanded: event.name === 'subagent' ? true : undefined,
               tool: {
                 id: event.toolCallId,
                 name: event.name,
@@ -1011,11 +1009,26 @@ export function createChatStreamController(
       const idx = findToolRowIndex(state.items, event.parentToolCallId)
       const item = idx >= 0 ? state.items[idx] : undefined
       if (!item || item.kind !== 'tool') return
-      const entries = [...(item.subagent ?? []), { kind: event.kind, text: event.text }]
+      const entries = [...(item.subagent ?? []), { kind: event.kind, text: event.text }].slice(
+        -MAX_SUBAGENT_PROGRESS_ENTRIES
+      )
       patch({
         items: replaceAt(state.items, idx, {
           ...item,
-          subagent: entries.slice(-MAX_SUBAGENT_ENTRIES)
+          subagent: entries,
+          toolExpanded: true
+        })
+      })
+    } else if (event.type === 'subagent_context_usage') {
+      const idx = findToolRowIndex(state.items, event.parentToolCallId)
+      const item = idx >= 0 ? state.items[idx] : undefined
+      if (!item || item.kind !== 'tool') return
+      const usage = subagentContextUsageFromEvent(event)
+      if (!usage) return
+      patch({
+        items: replaceAt(state.items, idx, {
+          ...item,
+          subagentContextUsage: usage
         })
       })
     } else if (event.type === 'error') {
@@ -1061,10 +1074,6 @@ export function createChatStreamController(
     } else if (event.type === 'compaction') {
       patch({
         runNotice: 'Context summarized to stay within the model window.'
-      })
-    } else if (event.type === 'step_budget') {
-      patch({
-        runNotice: `Approaching step limit (${event.step}/${event.maxSteps}). Wrap up or checkpoint to memory.`
       })
     } else if (event.type === 'step_usage') {
       const usage = stepUsageFromEvent(event)
@@ -1167,7 +1176,7 @@ export function createChatStreamController(
       patch({ error: 'Pick a workspace before starting a chat.' })
       return false
     }
-    patch({ error: null, runNotice: null, incomplete: null })
+    patch({ error: null, runNotice: null, incomplete: null, contextUsage: null })
     lastRunErrorMessage = null
     usageTotals = emptyStepUsageTotals()
     pendingCancel = false

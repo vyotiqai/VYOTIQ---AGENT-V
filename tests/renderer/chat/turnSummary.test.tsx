@@ -11,7 +11,7 @@ afterEach(() => {
 })
 
 describe('TurnSummary', () => {
-  it('shows phase label with shimmer and pulse while active', () => {
+  it('shows phase label with shimmer while active', () => {
     render(
       <TurnSummary
         span={{
@@ -26,7 +26,6 @@ describe('TurnSummary', () => {
     )
 
     expect(screen.getByRole('button', { name: /Thinking · 3s/i })).toBeTruthy()
-    expect(document.querySelector('.motion-safe\\:animate-pulse')).toBeTruthy()
     expect(document.querySelector('.vy-text-shimmer--active')).toBeTruthy()
   })
 
@@ -50,20 +49,20 @@ describe('TurnSummary', () => {
     expect(document.querySelector('.vy-text-shimmer--active')).toBeNull()
   })
 
-  it('shows starting when activity is starting', () => {
+  it('shows planning when activity is planning', () => {
     render(
       <TurnSummary
         span={{
           startedAt: Date.now(),
           endedAt: null,
           active: true,
-          activity: { kind: 'starting' }
+          activity: { kind: 'planning' }
         }}
         collapsed={false}
         onToggle={() => {}}
       />
     )
 
-    expect(screen.getByRole('button', { name: /Starting/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Planning/i })).toBeTruthy()
   })
 })

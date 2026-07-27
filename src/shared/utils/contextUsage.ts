@@ -49,6 +49,27 @@ export function contextUsageFromEvent(
   }
 }
 
+export type SubagentContextUsageState = {
+  step: number
+  used: number
+  window: number
+  contentWindow: number
+  model: string
+  updatedAt: string
+}
+
+export function subagentContextUsageFromEvent(event: AgentEvent): SubagentContextUsageState | null {
+  if (event.type !== 'subagent_context_usage') return null
+  return {
+    step: event.step,
+    used: event.estimatedTokens,
+    window: event.contextWindow,
+    contentWindow: event.contentWindow ?? event.contextWindow,
+    model: event.model,
+    updatedAt: new Date().toISOString()
+  }
+}
+
 export function summarizeContextUsageFromEvents(
   events: PersistedEvent[]
 ): ContextUsageState | null {

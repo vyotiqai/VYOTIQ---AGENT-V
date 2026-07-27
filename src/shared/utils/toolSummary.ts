@@ -5,6 +5,7 @@ import {
   sanitizeCommandForDisplay,
   sanitizeDisplayPath
 } from './displayPath'
+import { humanizeSnakeCase } from './mcpToolMeta'
 
 export const MCP_TOOL_PREFIX = 'mcp__'
 
@@ -150,7 +151,7 @@ function genericFallbackLabel(name: string): string {
   if (labels) return labels.done.toLowerCase()
   const mcp = parseMcpToolDisplay(name)
   if (mcp) return mcp.toolName.replace(/_/g, ' ')
-  return 'tool call'
+  return humanizeSnakeCase(name)
 }
 
 export function summarizeToolArgsFromRecord(

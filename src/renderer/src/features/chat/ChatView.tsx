@@ -306,6 +306,7 @@ export function ChatView({
               key={`transcript:${surfaceKey}`}
               items={items}
               pendingRun={pendingRun}
+              running={running}
               reserveComposerSpace
               dockReservePx={dockReservePx}
               restoreScrollTop={restoreScrollTop}

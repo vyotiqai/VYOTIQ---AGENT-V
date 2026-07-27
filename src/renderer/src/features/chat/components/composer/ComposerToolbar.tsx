@@ -133,6 +133,7 @@ export function ComposerToolbar({
           chatSettings={chatSettings}
           onChatSettingsChange={onChatSettingsChange}
           disabled={locked}
+          running={running}
         />
       </div>
 

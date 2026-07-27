@@ -81,6 +81,9 @@ function ImageLightbox({ url, label, onClose }: { url: string; label: string; on
 
 /** Spacing as padding (not margin) so row rhythm stays consistent. */
 function rowSpacingClass(row: TranscriptRow): string {
+  if (row.kind === 'turn') {
+    return cn('pt-1', TRANSCRIPT_ROW_GAP)
+  }
   const gap =
     row.kind === 'activity' || row.kind === 'thinking' || row.kind === 'card'
       ? TRANSCRIPT_WORK_ROW_GAP
@@ -208,7 +211,8 @@ export function MessageList({
   collapsedTurns,
   showThinking = true,
   mcpServerNames,
-  pendingRun = false
+  pendingRun = false,
+  running = false
 }: {
   items: UiItem[]
   reserveComposerSpace?: boolean
@@ -228,6 +232,7 @@ export function MessageList({
   showThinking?: boolean
   mcpServerNames?: ReadonlyMap<string, string>
   pendingRun?: boolean
+  running?: boolean
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const appliedRestoreRef = useRef<number | null>(null)
@@ -248,8 +253,8 @@ export function MessageList({
 
   const itemsStructuralKey = useMemo(() => structuralKey(items), [items])
   const allRows = useMemo(
-    () => buildTranscriptRows(items, { pendingRun }),
-    [items, pendingRun]
+    () => buildTranscriptRows(items, { pendingRun, running }),
+    [items, pendingRun, running]
   )
   const displayRows = useMemo(() => {
     let rows = allRows
