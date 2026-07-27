@@ -112,13 +112,21 @@ export function GeneralSection({
 
       <SettingsRow
         title="Show thinking in chat"
-        description="Collapsed thinking blocks above assistant replies when the model returns reasoning."
+        description={
+          form.workspaceOverrideActive
+            ? 'Collapsed thinking blocks above assistant replies. With workspace override on, this applies to the active workspace only.'
+            : 'Collapsed thinking blocks above assistant replies when the model returns reasoning.'
+        }
       >
         <label className="inline-flex items-center gap-2 text-xs text-secondary">
           <input
             type="checkbox"
             className="size-3.5 accent-fg"
-            aria-label="Show thinking in chat"
+            aria-label={
+              form.workspaceOverrideActive
+                ? 'Show thinking in chat for this workspace'
+                : 'Show thinking in chat'
+            }
             disabled={form.formLocked}
             checked={
               form.effectiveChatSettings?.showThinking ?? settings.showThinking
@@ -128,8 +136,12 @@ export function GeneralSection({
             }}
           />
           {(form.effectiveChatSettings?.showThinking ?? settings.showThinking)
-            ? 'On'
-            : 'Off'}
+            ? form.workspaceOverrideActive
+              ? 'On (this workspace)'
+              : 'On'
+            : form.workspaceOverrideActive
+              ? 'Off (this workspace)'
+              : 'Off'}
         </label>
       </SettingsRow>
 

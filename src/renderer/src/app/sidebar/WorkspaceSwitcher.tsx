@@ -94,8 +94,8 @@ export function WorkspaceSwitcher({
                     'relative inline-grid size-7 place-items-center rounded vy-transition',
                     active ? 'bg-surface text-fg' : 'text-muted hover:bg-surface/60 hover:text-fg'
                   )}
-                  title={name}
-                  aria-label={name}
+                  title={`${name} — Shift+click or right-click to close`}
+                  aria-label={`${name}. Shift+click or right-click to close.`}
                   onClick={(e) => {
                     if (e.shiftKey) {
                       e.preventDefault()
@@ -166,7 +166,7 @@ export function WorkspaceSwitcher({
                 openPaths.length === 1 ? 'max-w-full flex-1' : 'max-w-[5.75rem]',
                 active ? 'bg-surface text-fg' : 'text-muted hover:bg-surface/60 hover:text-fg'
               )}
-              title={path}
+              title={`${path} — Right-click to close`}
               onClick={() => onSwitch(path)}
               onContextMenu={(e) => {
                 e.preventDefault()

@@ -353,9 +353,8 @@ export function useSettingsForm({
         const label = providerLabel(provider)
         if (res.warning) {
           setModelsInfo(
-            `${res.models.length} seed models for ${label} (live catalog unavailable)`
+            `${res.models.length} seed models for ${label} (live catalog unavailable): ${res.warning}`
           )
-          setError(res.warning)
         } else {
           setModelsInfo(`${res.models.length} models for ${label}`)
         }

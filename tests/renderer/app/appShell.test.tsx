@@ -165,6 +165,7 @@ describe('AppShell', () => {
 
     // Collapsed rail: essentials only
     expect(screen.getByRole('button', { name: /^new chat$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^search chats$/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^settings$/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^harness$/i })).toBeTruthy()
     expect(screen.getByRole('tablist', { name: /workspaces/i })).toBeTruthy()
@@ -217,6 +218,21 @@ describe('AppShell', () => {
     expect(screen.queryByRole('textbox', { name: /search chats/i })).toBeNull()
 
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
+    const search = await screen.findByRole('textbox', { name: /search chats/i })
+    await waitFor(() => {
+      expect(document.activeElement).toBe(search)
+    })
+  })
+
+  it('opens search from the collapsed rail icon', async () => {
+    render(
+      <AppShell {...baseProps}>
+        <p>Main content</p>
+      </AppShell>
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^search chats$/i }))
     const search = await screen.findByRole('textbox', { name: /search chats/i })
     await waitFor(() => {
       expect(document.activeElement).toBe(search)

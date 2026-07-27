@@ -1,4 +1,5 @@
 import { NavItem } from '@renderer/lib/ui'
+import { searchShortcutLabel } from '@renderer/lib/utils/searchShortcut'
 import type { SidebarView } from './types'
 import { WorkspaceSwitcher } from './WorkspaceSwitcher'
 import type { WorkspaceSwitcherProps } from './types'
@@ -12,6 +13,7 @@ export function SidebarCollapsed({
   onNewChat,
   onOpenSettings,
   onOpenHarness,
+  onFocusSearch,
   clearSearch
 }: {
   view: SidebarView
@@ -22,8 +24,11 @@ export function SidebarCollapsed({
   onNewChat: () => void
   onOpenSettings: () => void
   onOpenHarness: () => void
+  onFocusSearch?: () => void
   clearSearch: () => void
 }) {
+  const searchTitle = `Search chats (${searchShortcutLabel()})`
+
   return (
     <nav
       className="app-region-no-drag sidebar-scroll flex min-h-0 flex-1 flex-col items-center gap-1 px-1 py-2"
@@ -39,6 +44,14 @@ export function SidebarCollapsed({
           clearSearch()
           onNewChat()
         }}
+      />
+      <NavItem
+        variant="icon"
+        label="Search chats"
+        icon="search"
+        disabled={!workspaceReady || !onFocusSearch}
+        title={!workspaceReady ? needsWorkspaceLabel : searchTitle}
+        onClick={() => onFocusSearch?.()}
       />
 
       {workspaceProps ? <WorkspaceSwitcher {...workspaceProps} collapsed /> : null}

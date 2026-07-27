@@ -265,7 +265,8 @@ function AppShellInner({
     onDeleteRun,
     onDeleteRunInWorkspace,
     onCloseDrawer: closeDrawer,
-    onToggleSidebar
+    onToggleSidebar,
+    onFocusSearch: focusSearch
   }
 
   return (

@@ -42,6 +42,7 @@ export function Sidebar({
   onDeleteRunInWorkspace,
   onCloseDrawer,
   onToggleSidebar,
+  onFocusSearch,
   collapsed = false,
   variant = 'desktop'
 }: SidebarProps) {
@@ -163,6 +164,7 @@ export function Sidebar({
           onNewChat={onNewChat}
           onOpenSettings={onOpenSettings}
           onOpenHarness={onOpenHarness}
+          onFocusSearch={onFocusSearch}
           clearSearch={clearSearch}
         />
       ) : (
