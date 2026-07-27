@@ -9,6 +9,7 @@ export function logProviderFailure(
 ): void {
   const status = detail.status
   const isAuth = status === 401 || status === 403
+  const isBilling = status === 402
   const code: ErrorCode = isAuth
     ? 'PROVIDER_AUTH'
     : kind === 'timeout'
@@ -26,7 +27,7 @@ export function logProviderFailure(
     ...(detail.bytes !== undefined ? { bytes: detail.bytes } : {})
   }
 
-  if (isAuth) {
+  if (isAuth || isBilling) {
     logger.warn(`Provider ${kind} failure`, fields)
     return
   }

@@ -149,7 +149,7 @@ describe('createApprovalGate', () => {
     const verdict = gate.authorize(WRITE)
     await Promise.resolve()
     controller.abort()
-    expect((await verdict).allowed).toBe(false)
+    await expect(verdict).rejects.toMatchObject({ name: 'AbortError' })
   })
 
   it('releases prompts left over when a run ends', async () => {
@@ -164,7 +164,7 @@ describe('createApprovalGate', () => {
     const verdict = gate.authorize(WRITE)
     await Promise.resolve()
     cancelPendingApprovals('run-1')
-    expect((await verdict).allowed).toBe(false)
+    await expect(verdict).rejects.toMatchObject({ name: 'AbortError' })
   })
 
   it('does not deny a later invoke when cancelling an earlier invoke', async () => {
@@ -194,7 +194,7 @@ describe('createApprovalGate', () => {
     expect(requests).toHaveLength(2)
 
     cancelPendingApprovals('run-1', 1)
-    expect((await oldVerdict).allowed).toBe(false)
+    await expect(oldVerdict).rejects.toMatchObject({ name: 'AbortError' })
 
     resolveToolApproval({ requestId: requests[1]!.requestId, decision: 'once' })
     expect((await newVerdict).allowed).toBe(true)

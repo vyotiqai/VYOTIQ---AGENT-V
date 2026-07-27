@@ -14,7 +14,6 @@ export type WorkspaceUiState = z.infer<typeof WorkspaceUiStateSchema>
 export const WorkspaceSettingsOverrideSchema = z.object({
   provider: ProviderIdSchema.optional(),
   model: z.string().min(1).optional(),
-  maxSteps: z.number().int().min(1).max(100).optional(),
   compactionTriggerRatio: z.number().min(0.5).max(0.95).optional(),
   keepRecentTurns: z.number().int().min(4).max(50).optional(),
   memoryAutoPromote: z.boolean().optional(),
@@ -22,6 +21,8 @@ export const WorkspaceSettingsOverrideSchema = z.object({
   thinkingEffort: ThinkingEffortSchema.optional(),
   showThinking: z.boolean().optional(),
   toolApproval: ToolApprovalSettingsSchema.optional(),
+  subagentProvider: ProviderIdSchema.optional(),
+  subagentModel: z.string().min(1).optional(),
   useOverride: z.boolean()
 })
 export type WorkspaceSettingsOverride = z.infer<typeof WorkspaceSettingsOverrideSchema>

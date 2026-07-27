@@ -201,14 +201,14 @@ describe('ipc schemas', () => {
       AgentEventSchema.parse({
         type: 'error',
         runId: 'r1',
-        message: 'Stopped after 25 steps.',
-        code: 'AGENT_MAX_STEPS'
+        message: 'boom',
+        code: 'AGENT_LOOP'
       })
     ).toEqual({
       type: 'error',
       runId: 'r1',
-      message: 'Stopped after 25 steps.',
-      code: 'AGENT_MAX_STEPS'
+      message: 'boom',
+      code: 'AGENT_LOOP'
     })
     expect(
       AgentEventSchema.parse({
@@ -265,6 +265,18 @@ describe('ipc schemas', () => {
         text: 'read a.ts'
       }).parentToolCallId
     ).toBe('c1')
+    expect(
+      AgentEventSchema.parse({
+        type: 'subagent_context_usage',
+        runId: 'r1',
+        parentToolCallId: 'c1',
+        step: 2,
+        estimatedTokens: 1200,
+        contextWindow: 128_000,
+        contentWindow: 110_000,
+        model: 'gpt-test'
+      }).model
+    ).toBe('gpt-test')
     expect(WindowMaximizedChangedSchema.parse(true)).toBe(true)
     expect(LoadRunRequestSchema.parse({ workspacePath: '/ws', runId: 'r1' })).toEqual({
       workspacePath: '/ws',
@@ -350,7 +362,6 @@ describe('ipc schemas', () => {
       provider: 'ollama',
       model: 'qwen2.5',
       ollamaBaseUrl: 'http://127.0.0.1:11434',
-      maxSteps: 25,
       theme: 'system'
     })
     expect(legacy.telemetryEnabled).toBe(false)

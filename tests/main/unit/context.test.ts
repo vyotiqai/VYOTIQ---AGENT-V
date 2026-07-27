@@ -47,6 +47,26 @@ describe('context budget + trim', () => {
     expect(String(tools[1].content)).not.toContain('cleared')
   })
 
+  it('preserves subagent reports from clearing and char trim', () => {
+    const long = 'x'.repeat(20_000)
+    const msgs: ChatMessage[] = [
+      { role: 'user', content: 'a' },
+      { role: 'assistant', content: '', toolCalls: [{ id: '1', name: 'read', arguments: '{}' }] },
+      { role: 'tool', toolCallId: '1', toolName: 'read', content: 'OLD'.repeat(100) },
+      { role: 'assistant', content: '', toolCalls: [{ id: '2', name: 'read', arguments: '{}' }] },
+      { role: 'tool', toolCallId: '2', toolName: 'read', content: 'OLD2'.repeat(100) },
+      { role: 'assistant', content: '', toolCalls: [{ id: '3', name: 'read', arguments: '{}' }] },
+      { role: 'tool', toolCallId: '3', toolName: 'read', content: 'NEW'.repeat(100) },
+      { role: 'assistant', content: '', toolCalls: [{ id: '4', name: 'subagent', arguments: '{}' }] },
+      { role: 'tool', toolCallId: '4', toolName: 'subagent', content: long },
+      { role: 'assistant', content: '', toolCalls: [{ id: '5', name: 'read', arguments: '{}' }] },
+      { role: 'tool', toolCallId: '5', toolName: 'read', content: 'NEWER'.repeat(100) }
+    ]
+    const trimmed = trimToolResults(msgs, 3)
+    const subagent = trimmed.find((m) => m.role === 'tool' && m.toolName === 'subagent')
+    expect(subagent?.content).toBe(long)
+  })
+
   it('preserves recent user turns', () => {
     const msgs: ChatMessage[] = []
     for (let i = 0; i < 20; i++) {

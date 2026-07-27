@@ -22,6 +22,7 @@ export {
 } from './memory'
 export { trimToolsToBudget } from './toolsBudget'
 export { trimToolResults } from './toolTrim'
+export { estimateSubagentOverheadTokens, prepareSubagentMessages } from './subagentContext'
 export { dropOldestTurn, trimHistoryToBudget } from './historyTrim'
 export { stripImagesFromMessages } from './stripImages'
 export { buildWorkspaceSnapshot, buildWorkspaceSnapshotAsync, clearWorkspaceSnapshotCache } from './workspaceSnapshot'

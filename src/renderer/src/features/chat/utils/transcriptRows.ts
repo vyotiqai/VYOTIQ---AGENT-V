@@ -1,9 +1,10 @@
 import type { UiItem, UiToolApproval } from '@shared/transcript'
 import {
   duplicatesReasoning,
-  isMeaningfulThinking,
   mergeThinkingContent,
-  stripToolShapedAssistantText
+  shouldRenderThinking,
+  stripToolShapedAssistantText,
+  stripToolShapedAssistantTextForStream
 } from '@shared/transcript'
 import { isProminentTool } from '../toolUi'
 import { collectWritingChanges } from '../toolUi/parsers/edit'
@@ -60,6 +61,7 @@ export function isTurnWorkRow(row: TranscriptRow): boolean {
 
 /** Tools whose output is worth a dedicated card instead of a group line. */
 function isCardTool(item: ToolItem): boolean {
+  if (item.tool.presentation) return item.tool.presentation === 'prominent'
   return isProminentTool(item.tool.name, item.tool.argsPreview)
 }
 
@@ -76,11 +78,12 @@ export const TURN_GAP_PX = 24
  */
 export function buildTranscriptRows(
   items: UiItem[],
-  options?: { pendingRun?: boolean; running?: boolean }
+  options?: { pendingRun?: boolean; running?: boolean; showThinking?: boolean }
 ): TranscriptRow[] {
   const rows: TranscriptRow[] = []
   let turnIndex = -1
   let pending: ToolItem[] = []
+  const includeThinking = options?.showThinking !== false
 
   const flush = (): void => {
     const run = pending
@@ -134,8 +137,12 @@ export function buildTranscriptRows(
     }
 
     const assistant = item as AssistantItem
-    const showThinking = isMeaningfulThinking(assistant.thinking)
-    const cleanedContent = stripToolShapedAssistantText(assistant.content)
+    const showThinking =
+      includeThinking &&
+      shouldRenderThinking(assistant.thinking, assistant.thinkingStreaming)
+    const cleanedContent = assistant.streaming
+      ? stripToolShapedAssistantTextForStream(assistant.content)
+      : stripToolShapedAssistantText(assistant.content)
     const showContent = Boolean(
       cleanedContent && !duplicatesReasoning({ ...assistant, content: cleanedContent })
     )

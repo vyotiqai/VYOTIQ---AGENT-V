@@ -4,7 +4,8 @@ export type EffectiveChatSettings = Pick<
   Settings,
   | 'provider'
   | 'model'
-  | 'maxSteps'
+  | 'subagentProvider'
+  | 'subagentModel'
   | 'compactionTriggerRatio'
   | 'keepRecentTurns'
   | 'memoryAutoPromote'
@@ -27,7 +28,8 @@ export function resolveEffectiveSettings(
     return {
       provider: global.provider,
       model: global.model,
-      maxSteps: global.maxSteps,
+      subagentProvider: global.subagentProvider,
+      subagentModel: global.subagentModel,
       compactionTriggerRatio: global.compactionTriggerRatio,
       keepRecentTurns: global.keepRecentTurns,
       memoryAutoPromote: global.memoryAutoPromote,
@@ -40,7 +42,8 @@ export function resolveEffectiveSettings(
   return {
     provider: override.provider ?? global.provider,
     model: override.model ?? global.model,
-    maxSteps: override.maxSteps ?? global.maxSteps,
+    subagentProvider: override.subagentProvider ?? global.subagentProvider,
+    subagentModel: override.subagentModel ?? global.subagentModel,
     compactionTriggerRatio: override.compactionTriggerRatio ?? global.compactionTriggerRatio,
     keepRecentTurns: override.keepRecentTurns ?? global.keepRecentTurns,
     memoryAutoPromote: override.memoryAutoPromote ?? global.memoryAutoPromote,

@@ -75,7 +75,6 @@ export function WorkspaceOverrideCard({
                   useOverride: true,
                   provider: globalSettings.provider,
                   model: globalSettings.model,
-                  maxSteps: globalSettings.maxSteps,
                   thinkingEnabled: globalSettings.thinkingEnabled,
                   thinkingEffort: globalSettings.thinkingEffort,
                   showThinking: globalSettings.showThinking,
@@ -133,7 +132,7 @@ export function WorkspaceOverrideCard({
             }}
           />
           <p className="m-0 text-[10px] leading-snug text-muted">
-            Reasoning and thinking effort are in the composer. Agent limits are in Settings → Agent.
+            Reasoning and thinking effort are in the composer. Compaction and sub-agent settings are in Settings → Agent.
           </p>
         </div>
       ) : (

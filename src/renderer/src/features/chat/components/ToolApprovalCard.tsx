@@ -19,11 +19,13 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
   onDecide?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
 }) {
   const [phase, setPhase] = useState<'idle' | 'pending' | 'done'>('idle')
+  const [pendingDecision, setPendingDecision] = useState<ToolApprovalDecision | null>(null)
   const [localError, setLocalError] = useState<string | null>(null)
 
   const decide = (decision: ToolApprovalDecision): void => {
     if (phase !== 'idle') return
     setPhase('pending')
+    setPendingDecision(decision)
     setLocalError(null)
     void Promise.resolve(onDecide?.(approval.requestId, decision))
       .then(() => {
@@ -32,15 +34,19 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
       })
       .catch((err: unknown) => {
         setPhase('idle')
+        setPendingDecision(null)
         setLocalError(err instanceof Error ? err.message : 'Could not send decision')
       })
   }
 
   const busy = phase !== 'idle'
-  const sending = phase === 'pending'
 
   return (
-    <div className={cn(TOOL_CARD_SURFACE, 'w-full border-accent/50')} role="group">
+    <div
+      className={cn(TOOL_CARD_SURFACE, 'w-full border-accent/50')}
+      role="group"
+      aria-busy={phase === 'pending' ? true : undefined}
+    >
       <div className={cn(TOOL_CARD_HEADER, 'flex items-center gap-2 text-fg')}>
         <Icon name="warning" size={12} className="shrink-0 text-danger" />
         <span className="font-medium">
@@ -77,7 +83,7 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
             )}
             onClick={() => decide(choice.decision)}
           >
-            {sending ? 'Sending…' : choice.label}
+            {pendingDecision === choice.decision && phase === 'pending' ? 'Sending…' : choice.label}
           </button>
         ))}
         <button
@@ -86,7 +92,7 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
           className="ml-auto rounded-md border border-border px-2 py-1 text-xs text-danger vy-transition hover:bg-surface disabled:opacity-[var(--vy-disabled-opacity)]"
           onClick={() => decide('deny')}
         >
-          {sending ? 'Sending…' : 'Deny'}
+          {pendingDecision === 'deny' && phase === 'pending' ? 'Sending…' : 'Deny'}
         </button>
       </div>
     </div>

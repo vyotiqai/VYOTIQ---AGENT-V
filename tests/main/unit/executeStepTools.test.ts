@@ -155,6 +155,59 @@ describe('executeStepToolCalls', () => {
     expect(outcome.messages[0]?.ok).toBe(false)
   })
 
+  it('routes parallel subagent live updates to distinct parentToolCallIds', async () => {
+    const live: AgentEvent[] = []
+    executeTool.mockImplementation(
+      async (
+        _name: string,
+        _args: string,
+        _workspace: string,
+        _signal: AbortSignal,
+        context?: {
+          onProgress?: (u: { kind: 'tool'; text: string }) => void
+          onSubagentContextUsage?: (u: {
+            step: number
+            estimatedTokens: number
+            contextWindow: number
+            contentWindow: number
+            model: string
+          }) => void
+        }
+      ) => {
+        context?.onProgress?.({ kind: 'tool', text: 'reading' })
+        context?.onSubagentContextUsage?.({
+          step: 1,
+          estimatedTokens: 1000,
+          contextWindow: 128_000,
+          contentWindow: 110_000,
+          model: 'm'
+        })
+        await new Promise((r) => setTimeout(r, 10))
+        return { ok: true, summary: 'task', content: 'report' }
+      }
+    )
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    ctx.emitLiveEvent = (ev) => live.push(ev)
+    const outcome = await executeStepToolCalls(
+      [
+        { id: 'sa1', name: 'subagent', arguments: '{"task":"a"}' },
+        { id: 'sa2', name: 'subagent', arguments: '{"task":"b"}' }
+      ],
+      ctx
+    )
+
+    expect(outcome.messages.map((m) => m.toolCallId)).toEqual(['sa1', 'sa2'])
+    const updates = live.filter((ev) => ev.type === 'subagent_update')
+    const usages = live.filter((ev) => ev.type === 'subagent_context_usage')
+    expect(updates.map((ev) => (ev.type === 'subagent_update' ? ev.parentToolCallId : ''))).toEqual(
+      expect.arrayContaining(['sa1', 'sa2'])
+    )
+    expect(usages.map((ev) => (ev.type === 'subagent_context_usage' ? ev.parentToolCallId : ''))).toEqual(
+      expect.arrayContaining(['sa1', 'sa2'])
+    )
+  })
+
   it('runs read-only tools serially when maxParallelReadTools is 1', async () => {
     const order: string[] = []
     executeTool.mockImplementation(async (name: string) => {

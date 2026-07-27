@@ -1,10 +1,24 @@
-import type { ToolApprovalMode } from '@shared/ipc'
+import type { ProviderId, ToolApprovalMode } from '@shared/ipc'
+import { defaultModelFor } from '@shared/providers'
 import { Input, Menu, Button } from '@renderer/lib/ui'
 import type { SettingsFormState } from '../hooks/useSettingsForm'
-import { TOOL_APPROVAL_OPTIONS } from '../constants'
+import { ACTIVE_PROVIDER_OPTIONS, TOOL_APPROVAL_OPTIONS } from '../constants'
 import { SettingsRow } from '../components/SettingsRow'
 
+const SUBAGENT_PROVIDER_OPTIONS = [
+  { value: '', label: 'Same as agent' },
+  ...ACTIVE_PROVIDER_OPTIONS
+]
+
 export function AgentSection({ form }: { form: SettingsFormState }) {
+  const subagentProviderOverride = form.displaySubagentProvider
+  const blankModelHint = subagentProviderOverride
+    ? `Blank uses ${defaultModelFor(subagentProviderOverride)} (default for that provider)`
+    : `Blank uses the agent model (${form.displayModel})`
+  const modelPlaceholder = subagentProviderOverride
+    ? `Default for provider (${defaultModelFor(subagentProviderOverride)})`
+    : `Same as agent (${form.displayModel})`
+
   return (
     <>
       {form.workspaceOverrideActive ? (
@@ -12,38 +26,6 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
           Editing this workspace’s overrides. Changes here apply only while the override is on.
         </p>
       ) : null}
-
-      <SettingsRow
-        title="Max steps"
-        description="Maximum agent tool loop iterations per run (1–100)."
-      >
-        <Input
-          type="number"
-          className="w-24"
-          aria-label="Max steps"
-          min={1}
-          max={100}
-          disabled={form.formLocked}
-          defaultValue={form.agentMaxSteps}
-          key={`max-steps-${form.agentMaxSteps}-${form.workspaceOverrideActive}`}
-          aria-invalid={form.errorField === 'maxSteps' ? true : undefined}
-          aria-describedby={form.errorField === 'maxSteps' ? 'max-steps-error' : undefined}
-          onBlur={(e) => {
-            form.commitNumberField('maxSteps', e.target, {
-              label: 'Max steps',
-              min: 1,
-              max: 100,
-              integer: true,
-              current: form.agentMaxSteps,
-              apply: (maxSteps) => ({ maxSteps }),
-              persist: (partial) => {
-                void form.runAgentUpdate(partial)
-              }
-            })
-          }}
-        />
-        {form.fieldError('maxSteps', 'max-steps-error')}
-      </SettingsRow>
 
       <SettingsRow
         title="Compaction trigger"
@@ -107,6 +89,45 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
           }}
         />
         {form.fieldError('keepTurns', 'keep-turns-error')}
+      </SettingsRow>
+
+      <SettingsRow
+        title="Sub-agent provider"
+        description="Optional provider for read-only sub-agents. Leave on “Same as agent” to inherit the active provider."
+      >
+        <Menu
+          aria-label="Sub-agent provider"
+          value={form.displaySubagentProvider ?? ''}
+          options={SUBAGENT_PROVIDER_OPTIONS}
+          searchable={false}
+          placement="down"
+          disabled={form.formLocked}
+          onChange={(v) => {
+            const subagentProvider = v ? (v as ProviderId) : undefined
+            void form.runAgentUpdate({ subagentProvider })
+          }}
+        />
+      </SettingsRow>
+
+      <SettingsRow
+        title="Sub-agent model"
+        description={blankModelHint}
+      >
+        <Input
+          className="w-[240px] max-w-[46vw]"
+          aria-label="Sub-agent model"
+          placeholder={modelPlaceholder}
+          disabled={form.formLocked}
+          defaultValue={form.displaySubagentModel ?? ''}
+          key={`subagent-model-${form.displaySubagentModel ?? ''}-${form.workspaceOverrideActive}`}
+          onBlur={(e) => {
+            const raw = e.target.value.trim()
+            void form.runAgentUpdate({ subagentModel: raw || undefined })
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur()
+          }}
+        />
       </SettingsRow>
 
       <SettingsRow

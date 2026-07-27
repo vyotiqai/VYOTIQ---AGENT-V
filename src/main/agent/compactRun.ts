@@ -10,6 +10,7 @@ import { getSettings } from '@main/settings/settings'
 import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/workspace/workspaces'
 import { allocateBudget, contentWindow } from './context/budget'
 import { compactMessages, preserveRecentMessages } from './context/compact'
+import { promoteCompactionToMemory } from './context/memoryPromote'
 import { KEEP_RECENT_TURNS } from './context/types'
 import { getProvider, listProviderModels } from './providers'
 import { loadCompaction, loadMessages, runExists, saveCompaction } from './state'
@@ -115,13 +116,26 @@ export async function compactRunNow(input: {
     signal,
     messages: toSummarize.map(({ thinking: _thinking, ...rest }) => rest),
     supportsStructuredOutput: model.supportsStructuredOutput,
-    contextWindow: contentWindow(model)
+    contextWindow: contentWindow(model),
+    priorSummary: existing?.summary
   })
 
   if (!record) throw new CompactionUnavailableError('The model returned no summary.')
 
   const foldedMessages = folded + toSummarize.length
-  saveCompaction(runDir, { ...record, foldedMessages })
+  const compactionRecord = { ...record, foldedMessages }
+  saveCompaction(runDir, compactionRecord)
+  if (settings.memoryAutoPromote) {
+    try {
+      promoteCompactionToMemory(input.workspacePath, compactionRecord)
+    } catch (err) {
+      logger.warn('Memory auto-promote failed', {
+        scope: 'agent',
+        correlationId: input.runId,
+        err
+      })
+    }
+  }
 
   logger.info('Manual compaction complete', {
     scope: 'agent',

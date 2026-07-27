@@ -15,7 +15,7 @@ import { toolDelete } from './deletePath'
 import { toolTodoWrite, type TodoItem } from './todo'
 import { toolWebFetch } from './webFetch'
 import { isFindstrNoMatchContent, isDirMissingPathContent, toolTerminal } from './terminal'
-import { runSubagent, SubagentDepthError } from '../subagent'
+import { runSubagent, SubagentDepthError, type SubagentContextUsage } from '../subagent'
 import { toolMemoryList, toolMemoryRead, toolMemoryWrite } from './memory'
 
 export interface ToolResult {
@@ -34,6 +34,8 @@ export type ToolExecutionContext = {
   depth?: number
   /** Live progress from a long-running tool, surfaced under its transcript row. */
   onProgress?: (update: { kind: 'text' | 'thinking' | 'tool' | 'done'; text: string }) => void
+  /** Per-step context fill for nested sub-agents. */
+  onSubagentContextUsage?: (usage: SubagentContextUsage) => void
 }
 
 type ToolHandler = (
@@ -197,8 +199,8 @@ const BUILTIN_HANDLERS: Record<string, ToolHandler> = {
         workspace,
         signal,
         depth: context.depth ?? 0,
-        maxSteps: typeof args.maxSteps === 'number' ? args.maxSteps : undefined,
-        emit: context.onProgress
+        emit: context.onProgress,
+        onContextUsage: context.onSubagentContextUsage
       })
     } catch (err) {
       if (err instanceof SubagentDepthError) return toolFail('subagent', summary, err.message)

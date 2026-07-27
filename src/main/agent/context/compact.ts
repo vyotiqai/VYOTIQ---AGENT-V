@@ -64,6 +64,8 @@ export async function compactMessages(input: {
   messages: ChatMessage[]
   supportsStructuredOutput?: boolean
   contextWindow?: number
+  /** Previous compaction summary to retain across successive folds. */
+  priorSummary?: string
 }): Promise<CompactionRecord | null> {
   if (input.signal.aborted) return null
 
@@ -73,14 +75,21 @@ export async function compactMessages(input: {
   )
   const charCap = tokenCap * 4
 
-  const historyText = input.messages
-    .map((m) => {
-      const body = contentToText(m.content)
-      const tools = m.toolCalls?.map((t) => `${t.name}(${t.arguments})`).join(', ')
-      return `${m.role}${tools ? ` tools=${tools}` : ''}: ${body}`
-    })
-    .join('\n\n')
-    .slice(0, charCap)
+  const prior = input.priorSummary?.trim() ?? ''
+  const priorBlock = prior
+    ? `## Prior session summary\n${prior}\n\n## Recent history to fold\n`
+    : ''
+
+  const historyText = (
+    priorBlock +
+    input.messages
+      .map((m) => {
+        const body = contentToText(m.content)
+        const tools = m.toolCalls?.map((t) => `${t.name}(${t.arguments})`).join(', ')
+        return `${m.role}${tools ? ` tools=${tools}` : ''}: ${body}`
+      })
+      .join('\n\n')
+  ).slice(0, charCap)
 
   if (!historyText.trim()) return null
 
@@ -145,10 +154,12 @@ export async function compactMessages(input: {
     })
     return null
   }
+
+  const merged = prior ? `${prior}\n\n---\n\n${summary.trim()}` : summary.trim()
   return {
-    summary,
+    summary: merged,
     createdAt: new Date().toISOString(),
-    tokenEstimate: estimateTextTokens(summary)
+    tokenEstimate: estimateTextTokens(merged)
   }
 }
 

@@ -260,7 +260,8 @@ export async function assembleContext(
         signal: input.signal,
         messages: stripThinkingForCompaction(toSummarize),
         supportsStructuredOutput: input.model.supportsStructuredOutput,
-        contextWindow: window
+        contextWindow: window,
+        priorSummary: input.priorCompaction?.summary
       })
       if (record) {
         messages = preserveRecentMessages(messages, keepRecent, budgets.history, input.model)
@@ -317,7 +318,8 @@ export async function assembleContext(
           signal: input.signal,
           messages: stripThinkingForCompaction(toSummarize),
           supportsStructuredOutput: input.model.supportsStructuredOutput,
-          contextWindow: window
+          contextWindow: window,
+          priorSummary: compaction?.summary ?? input.priorCompaction?.summary
         })
         if (record) {
           messages = preserveRecentMessages(messages, Math.max(2, Math.floor(keepRecent / 2)), budgets.history, input.model)

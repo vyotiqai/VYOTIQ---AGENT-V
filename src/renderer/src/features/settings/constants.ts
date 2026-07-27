@@ -31,7 +31,7 @@ export const SECTION_LABELS: Record<
   },
   agent: {
     title: 'Agent',
-    description: 'Tool loop limits, compaction, and approval settings.'
+    description: 'Compaction, memory, approval, and sub-agent settings.'
   },
   advanced: {
     title: 'Advanced',

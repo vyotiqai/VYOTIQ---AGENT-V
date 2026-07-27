@@ -12,7 +12,6 @@ export type SettingsSection = 'general' | 'providers' | 'agent' | 'advanced'
 export type SettingsErrorField =
   | 'ollama'
   | 'apikey'
-  | 'maxSteps'
   | 'compaction'
   | 'keepTurns'
   | null

@@ -54,7 +54,6 @@ export const SettingsSchema = z.object({
   provider: ProviderIdSchema,
   model: z.string().min(1),
   ollamaBaseUrl: z.string().min(1),
-  maxSteps: z.number().int().min(1).max(100),
   theme: ThemeIdSchema,
   telemetryEnabled: z.boolean().default(false),
   mcpServers: z.array(McpServerSchema).default([]),
@@ -69,7 +68,11 @@ export const SettingsSchema = z.object({
   thinkingPrefsByProvider: z.record(ProviderIdSchema, ThinkingPrefsSchema).default({}),
   serviceTierByModel: z.record(z.string(), ServiceTierSchema).default({}),
   serviceTier: ServiceTierSchema.default('default'),
-  toolApproval: ToolApprovalSettingsSchema.default(DEFAULT_TOOL_APPROVAL)
+  toolApproval: ToolApprovalSettingsSchema.default(DEFAULT_TOOL_APPROVAL),
+  /** When set, sub-agents use this provider instead of `provider`. */
+  subagentProvider: ProviderIdSchema.optional(),
+  /** When set, sub-agents use this model instead of `model`. */
+  subagentModel: z.string().min(1).optional()
 })
 export type Settings = z.infer<typeof SettingsSchema>
 
@@ -77,7 +80,6 @@ export const DEFAULT_SETTINGS: Settings = {
   provider: 'ollama',
   model: 'qwen2.5',
   ollamaBaseUrl: 'http://127.0.0.1:11434',
-  maxSteps: 25,
   theme: 'system',
   telemetryEnabled: false,
   mcpServers: [],

@@ -18,6 +18,7 @@ export function trimToolResults(
 
   return messages.map((m, i) => {
     if (m.role !== 'tool') return m
+    if (m.toolName === 'subagent') return m
     const text = contentToText(m.content)
     if (!keep.has(i) && text && text !== STUB) {
       return { ...m, content: STUB }

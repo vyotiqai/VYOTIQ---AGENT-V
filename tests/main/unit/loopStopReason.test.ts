@@ -32,7 +32,6 @@ vi.mock('@main/settings/settings', () => ({
     provider: 'ollama',
     model: 'qwen2.5',
     ollamaBaseUrl: 'http://127.0.0.1:11434',
-    maxSteps: 4,
     theme: 'system',
     telemetryEnabled: false
   }),
@@ -200,21 +199,6 @@ describe('runAgent stop-reason classification', () => {
     const events = await collect('stop-unset', workspace)
 
     expect(events.some((e) => e.type === 'incomplete')).toBe(false)
-  })
-
-  it('flags max_steps when the budget runs out mid-work', async () => {
-    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
-      yield {
-        type: 'tool_call',
-        toolCall: { id: `c${Math.random()}`, name: 'read', arguments: '{"path":"a.ts"}' }
-      }
-      yield { type: 'done', stopReason: 'tool_calls' }
-    })
-    executeTool.mockResolvedValue({ ok: true, summary: 'file', content: 'body' })
-
-    const events = await collect('stop-max-steps', workspace)
-
-    expect(events.find((e) => e.type === 'incomplete')?.reason).toBe('max_steps')
   })
 })
 

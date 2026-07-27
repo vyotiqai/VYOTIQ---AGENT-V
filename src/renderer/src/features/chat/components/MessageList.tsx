@@ -45,12 +45,29 @@ function structuralKey(items: UiItem[]): string {
 }
 
 function ImageLightbox({ url, label, onClose }: { url: string; label: string; onClose: () => void }) {
+  const closeRef = useRef<HTMLButtonElement>(null)
+  const previousFocusRef = useRef<HTMLElement | null>(null)
+
   useEffect(() => {
+    previousFocusRef.current = document.activeElement as HTMLElement | null
+    closeRef.current?.focus()
+
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        onClose()
+        return
+      }
+      if (e.key !== 'Tab') return
+      // Single focusable control in the dialog — keep focus trapped on Close.
+      e.preventDefault()
+      closeRef.current?.focus()
     }
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      previousFocusRef.current?.focus?.()
+    }
   }, [onClose])
 
   return (
@@ -62,6 +79,7 @@ function ImageLightbox({ url, label, onClose }: { url: string; label: string; on
       onClick={onClose}
     >
       <button
+        ref={closeRef}
         type="button"
         className="absolute right-4 top-4 inline-grid size-8 place-items-center rounded-full bg-black/50 text-white vy-transition hover:bg-black/70"
         aria-label="Close image preview"
@@ -212,7 +230,8 @@ export function MessageList({
   showThinking = true,
   mcpServerNames,
   pendingRun = false,
-  running = false
+  running = false,
+  transcriptLoading = false
 }: {
   items: UiItem[]
   reserveComposerSpace?: boolean
@@ -233,6 +252,8 @@ export function MessageList({
   mcpServerNames?: ReadonlyMap<string, string>
   pendingRun?: boolean
   running?: boolean
+  /** True while the selected chat transcript is still loading. */
+  transcriptLoading?: boolean
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const appliedRestoreRef = useRef<number | null>(null)
@@ -253,15 +274,13 @@ export function MessageList({
 
   const itemsStructuralKey = useMemo(() => structuralKey(items), [items])
   const allRows = useMemo(
-    () => buildTranscriptRows(items, { pendingRun, running }),
-    [items, pendingRun, running]
+    () => buildTranscriptRows(items, { pendingRun, running, showThinking }),
+    [items, pendingRun, running, showThinking]
   )
   const displayRows = useMemo(() => {
-    let rows = allRows
-    if (!showThinking) rows = rows.filter((row) => row.kind !== 'thinking')
-    if (collapsedTurnSet.size === 0) return rows
-    return rows.filter((row) => !(collapsedTurnSet.has(row.turnIndex) && isTurnWorkRow(row)))
-  }, [allRows, collapsedTurnSet, showThinking])
+    if (collapsedTurnSet.size === 0) return allRows
+    return allRows.filter((row) => !(collapsedTurnSet.has(row.turnIndex) && isTurnWorkRow(row)))
+  }, [allRows, collapsedTurnSet])
 
   const nearBottomPx = nearBottomThreshold(dockReservePx)
   const nearBottomPxRef = useRef(nearBottomPx)
@@ -481,7 +500,19 @@ export function MessageList({
         onScroll={(e) => handleScroll(e.currentTarget.scrollTop)}
       >
         <div className={columnClass} data-chat-column>
-          {blocks}
+          {transcriptLoading && items.length === 0 ? (
+            <div
+              className="flex min-h-[12rem] flex-col items-center justify-center gap-2 text-sm text-muted"
+              role="status"
+              aria-live="polite"
+              aria-busy="true"
+            >
+              <Icon name="refresh" size={16} className="motion-safe:animate-spin" />
+              <span>Loading chat…</span>
+            </div>
+          ) : (
+            blocks
+          )}
         </div>
       </div>
       {lightbox ? (

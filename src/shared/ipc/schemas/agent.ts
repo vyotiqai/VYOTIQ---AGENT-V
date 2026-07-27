@@ -89,8 +89,7 @@ export type IpcResult<T> = { ok: true; data: T } | { ok: false; error: string }
 export const IncompleteReasonSchema = z.enum([
   'truncated',
   'empty_response',
-  'filtered',
-  'max_steps'
+  'filtered'
 ])
 export type IncompleteReason = z.infer<typeof IncompleteReasonSchema>
 
@@ -156,6 +155,16 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     text: z.string()
   }),
   z.object({
+    type: z.literal('subagent_context_usage'),
+    ...eventBase,
+    parentToolCallId: z.string(),
+    step: z.number().int().min(1),
+    estimatedTokens: z.number().int().min(0),
+    contextWindow: z.number().int().min(1),
+    contentWindow: z.number().int().min(1).optional(),
+    model: z.string()
+  }),
+  z.object({
     type: z.literal('status'),
     ...eventBase,
     status: z.enum(['running', 'cancelled', 'error', 'done'])
@@ -203,13 +212,6 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     type: z.literal('stream_reset'),
     ...eventBase,
     step: z.number().int().min(1)
-  }),
-  z.object({
-    type: z.literal('step_budget'),
-    ...eventBase,
-    step: z.number().int().min(1),
-    maxSteps: z.number().int().min(1),
-    ratio: z.number().min(0).max(1)
   }),
   z.object({
     type: z.literal('step_usage'),

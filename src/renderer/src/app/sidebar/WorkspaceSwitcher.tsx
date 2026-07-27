@@ -80,7 +80,7 @@ export function WorkspaceSwitcher({
             }
           >
             {openPaths.map((path) => {
-              const active = path === activePath
+              const active = activePath !== null && workspacePathsEqual(path, activePath)
               const name = formatWorkspaceName(path, path)
               const showDot = workspaceIsActive(path, activeRuns, workspaceHasBackgroundRun)
               return (
@@ -151,7 +151,7 @@ export function WorkspaceSwitcher({
         }
       >
         {openPaths.map((path) => {
-          const active = path === activePath
+          const active = activePath !== null && workspacePathsEqual(path, activePath)
           const name = formatWorkspaceName(path, path)
           const showDot = workspaceIsActive(path, activeRuns, workspaceHasBackgroundRun)
           return (

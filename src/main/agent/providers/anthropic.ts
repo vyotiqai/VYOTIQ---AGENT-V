@@ -16,6 +16,7 @@ import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
+import { formatProviderHttpError } from './httpErrors'
 import { anthropicThinkingBlocksFromMessage, anthropicThinkingFields } from './thinkingPolicy'
 
 function asContentBlocks(content: unknown): Array<Record<string, unknown>> {
@@ -320,7 +321,7 @@ export const anthropicProvider: LlmProvider = {
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       logProviderFailure('anthropic', 'http', { status: res.status })
-      throw new Error(`HTTP ${res.status}: ${text.slice(0, 400)}`)
+      throw new Error(formatProviderHttpError(res.status, text, 'anthropic'))
     }
     const data = (await res.json()) as { data?: Array<Record<string, unknown>> }
     const out: ModelInfo[] = []
@@ -448,7 +449,7 @@ export const anthropicProvider: LlmProvider = {
       logProviderFailure('anthropic', 'http', {
         status: res.status
       })
-      yield { type: 'error', error: `HTTP ${res.status}: ${text.slice(0, 400)}` }
+      yield { type: 'error', error: formatProviderHttpError(res.status, text, 'anthropic') }
       return
     }
 

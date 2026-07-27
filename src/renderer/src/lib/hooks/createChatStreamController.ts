@@ -27,12 +27,17 @@ import {
   applyEventTimestamps,
   mergeThinking,
   messageUiId,
+  isToolShapedTextLeak,
+  scrubStreamingAssistantToolLeak,
   stripToolShapedAssistantText,
+  stripToolShapedAssistantTextForStream,
   uiAttachments,
   MAX_SUBAGENT_PROGRESS_ENTRIES,
-  type UiItem
+  type UiItem,
+  type UiToolRow
 } from '@shared/transcript'
 import { summarizeToolArgs } from '@shared/toolSummary'
+import { toolPresentation } from '@renderer/features/chat/toolUi/meta'
 import type { ContextUsageState } from '@shared/utils/contextUsage'
 import {
   contextUsageFromEvent,
@@ -43,6 +48,11 @@ import {
 /** A sub-agent's progress is a live view, not a log; keep the recent tail. */
 const CANCEL_RECOVERY_POLL_MS = 500
 const CANCEL_RECOVERY_TIMEOUT_MS = 5_000
+
+function withPresentationLock(tool: UiToolRow, name: string, argsPreview?: string): UiToolRow {
+  if (tool.presentation) return tool
+  return { ...tool, presentation: toolPresentation(name, argsPreview) }
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -529,10 +539,6 @@ export function createChatStreamController(
   let streamPatchRaf: number | null = null
   let pendingTextDelta = ''
   let pendingThinkingDelta = ''
-  const pendingToolDeltas = new Map<
-    string,
-    { toolCallId: string; name?: string; argumentsDelta: string }
-  >()
   const toolContentCache = new Map<string, string>()
 
   const applyToolCallDelta = (
@@ -554,12 +560,16 @@ export function createChatStreamController(
         withCanonicalToolId(
           {
             ...existing,
-            tool: {
-              ...existing.tool,
-              name: toolName || existing.tool.name,
-              argsPreview,
-              summary: summarized || existing.tool.summary || ''
-            }
+            tool: withPresentationLock(
+              {
+                ...existing.tool,
+                name: toolName || existing.tool.name,
+                argsPreview,
+                summary: summarized || existing.tool.summary || ''
+              },
+              toolName || existing.tool.name,
+              argsPreview
+            )
           },
           event.toolCallId
         )
@@ -570,30 +580,36 @@ export function createChatStreamController(
       {
         kind: 'tool' as const,
         id: event.toolCallId,
-        tool: {
-          id: event.toolCallId,
-          name: toolName || 'tool',
-          summary: summarized,
-          status: 'running' as const,
-          argsPreview: event.argumentsDelta
-        }
+        tool: withPresentationLock(
+          {
+            id: event.toolCallId,
+            name: toolName || 'tool',
+            summary: summarized,
+            status: 'running' as const,
+            argsPreview: event.argumentsDelta
+          },
+          toolName || 'tool',
+          event.argumentsDelta
+        )
       },
       runStartedAt
     )
   }
 
+  const applyToolCallDeltaEvent = (
+    event: Extract<AgentEvent, { type: 'tool_call_delta' }>
+  ): void => {
+    if (isToolShapedTextLeak(pendingTextDelta)) {
+      pendingTextDelta = ''
+    }
+    let items = applyToolCallDelta(state.items, event, state.runStartedAt)
+    items = scrubStreamingAssistantToolLeak(items)
+    patch({ items })
+  }
+
   const applyStreamingPatches = (): void => {
     let items = state.items
     let changed = false
-
-    if (pendingToolDeltas.size > 0) {
-      const deltas = [...pendingToolDeltas.values()]
-      pendingToolDeltas.clear()
-      for (const delta of deltas) {
-        items = applyToolCallDelta(items, delta, state.runStartedAt)
-      }
-      changed = true
-    }
 
     if (pendingThinkingDelta && reasoningId) {
       const text = pendingThinkingDelta
@@ -638,14 +654,14 @@ export function createChatStreamController(
           kind: 'message',
           id,
           role: 'assistant',
-          content: stripToolShapedAssistantText(text),
+          content: stripToolShapedAssistantTextForStream(text),
           streaming: true
         })
       } else {
         const current = items[index] as Extract<UiItem, { kind: 'message' }>
         items = replaceAt(items, index, {
           ...current,
-          content: stripToolShapedAssistantText(current.content + text),
+          content: stripToolShapedAssistantTextForStream(current.content + text),
           streaming: true
         })
       }
@@ -654,7 +670,10 @@ export function createChatStreamController(
       pendingTextDelta = ''
     }
 
-    if (changed) patch({ items })
+    if (changed) {
+      items = scrubStreamingAssistantToolLeak(items)
+      patch({ items })
+    }
   }
 
   const flushStreamingPatches = (): void => {
@@ -671,31 +690,6 @@ export function createChatStreamController(
       streamPatchRaf = null
       applyStreamingPatches()
     })
-  }
-
-  const flushPendingToolDeltas = (): void => {
-    flushStreamingPatches()
-  }
-
-  const flushPendingTextDelta = (): void => {
-    flushStreamingPatches()
-  }
-
-  const scheduleToolCallDelta = (
-    event: Extract<AgentEvent, { type: 'tool_call_delta' }>
-  ): void => {
-    const existing = pendingToolDeltas.get(event.toolCallId)
-    if (existing) {
-      existing.argumentsDelta += event.argumentsDelta
-      if (event.name) existing.name = event.name
-    } else {
-      pendingToolDeltas.set(event.toolCallId, {
-        toolCallId: event.toolCallId,
-        name: event.name,
-        argumentsDelta: event.argumentsDelta
-      })
-    }
-    scheduleStreamingPatch()
   }
 
   const scheduleTextDelta = (text: string): void => {
@@ -802,11 +796,9 @@ export function createChatStreamController(
 
     if (
       event.type !== 'text_delta' &&
-      event.type !== 'thinking_delta' &&
-      event.type !== 'tool_call_delta'
+      event.type !== 'thinking_delta'
     ) {
-      flushPendingTextDelta()
-      flushPendingToolDeltas()
+      flushStreamingPatches()
     }
 
     if (event.type === 'text_delta') {
@@ -900,7 +892,7 @@ export function createChatStreamController(
       nextItems = pruneOrphanDeltaToolRows(nextItems, event.toolCalls)
       patch({ items: nextItems, messages: nextMessages })
     } else if (event.type === 'tool_call_delta') {
-      scheduleToolCallDelta(event)
+      applyToolCallDeltaEvent(event)
     } else if (event.type === 'tool_start') {
       assistantId = null
       const items = state.items
@@ -917,12 +909,16 @@ export function createChatStreamController(
                     ...item,
                     at: item.at ?? toolAt,
                     toolExpanded: event.name === 'subagent' ? true : item.toolExpanded,
-                    tool: {
-                      ...item.tool,
-                      name: event.name,
-                      summary: event.summary,
-                      status: 'running' as const
-                    }
+                    tool: withPresentationLock(
+                      {
+                        ...item.tool,
+                        name: event.name,
+                        summary: event.summary,
+                        status: 'running' as const
+                      },
+                      event.name,
+                      item.tool.argsPreview
+                    )
                   },
                   event.toolCallId
                 )
@@ -938,12 +934,15 @@ export function createChatStreamController(
               id: event.toolCallId,
               at: toolAt,
               toolExpanded: event.name === 'subagent' ? true : undefined,
-              tool: {
-                id: event.toolCallId,
-                name: event.name,
-                summary: event.summary,
-                status: 'running' as const
-              }
+              tool: withPresentationLock(
+                {
+                  id: event.toolCallId,
+                  name: event.name,
+                  summary: event.summary,
+                  status: 'running' as const
+                },
+                event.name
+              )
             },
             state.runStartedAt
           )
@@ -1047,7 +1046,6 @@ export function createChatStreamController(
       // text, thinking, and any tool rows that only exist from streamed deltas.
       pendingTextDelta = ''
       pendingThinkingDelta = ''
-      pendingToolDeltas.clear()
       flushStreamingPatches()
       const discardIds = new Set([assistantId, reasoningId].filter((id): id is string => !!id))
       const nextItems = state.items

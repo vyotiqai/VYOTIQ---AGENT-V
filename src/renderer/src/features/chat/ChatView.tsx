@@ -307,6 +307,7 @@ export function ChatView({
               items={items}
               pendingRun={pendingRun}
               running={running}
+              transcriptLoading={transcriptLoading}
               reserveComposerSpace
               dockReservePx={dockReservePx}
               restoreScrollTop={restoreScrollTop}

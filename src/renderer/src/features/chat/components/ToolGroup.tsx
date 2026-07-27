@@ -43,6 +43,10 @@ function NestedToolRow({
   onLoadFullContent?: (toolCallId: string) => Promise<string | null>
   mcpServerNames?: ReadonlyMap<string, string>
 }) {
+  const hasBody = toolHasBody(item.tool, {
+    subagent: item.subagent,
+    subagentContextUsage: item.subagentContextUsage
+  })
   return (
     <div className="flex min-w-0 flex-col">
       <CompactRow
@@ -50,9 +54,10 @@ function NestedToolRow({
         subtitle={nested.subtitle}
         status={nested.status}
         expanded={isToolExpanded}
+        hasBody={hasBody}
         onToggle={() => onToolToggle?.(item.id, !isToolExpanded)}
       />
-      {isToolExpanded ? (
+      {hasBody && isToolExpanded ? (
         <ToolRowOutput
           tool={item.tool}
           subagent={item.subagent}
@@ -136,15 +141,15 @@ export const ToolGroup = memo(function ToolGroup({
     const item = tools[0]
     const nested = nestedById.get(item.id)
     if (!nested) return null
-    const defaultExpanded =
-      isPending ||
-      toolHasBody(item.tool, {
-        subagent: item.subagent,
-        subagentContextUsage: item.subagentContextUsage
-      })
+    const hasBody = toolHasBody(item.tool, {
+      subagent: item.subagent,
+      subagentContextUsage: item.subagentContextUsage
+    })
+    const defaultExpanded = isPending || hasBody
     const isToolExpanded =
       item.toolExpanded ?? (groupExpanded ?? localOverride ?? defaultExpanded)
     const toggleSingle = (): void => {
+      if (!hasBody) return
       const next = !isToolExpanded
       if (onGroupToggle) onGroupToggle(next)
       else if (onToolToggle) onToolToggle(item.id, next)
@@ -163,9 +168,10 @@ export const ToolGroup = memo(function ToolGroup({
           subtitle={nested.subtitle}
           status={nested.status}
           expanded={isToolExpanded}
+          hasBody={hasBody}
           onToggle={toggleSingle}
         />
-        {isToolExpanded ? (
+        {hasBody && isToolExpanded ? (
           <ToolRowOutput
             tool={item.tool}
             subagent={item.subagent}

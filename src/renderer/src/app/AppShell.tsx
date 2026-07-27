@@ -12,6 +12,7 @@ import { useOverlayPanel } from '@renderer/lib/hooks/useOverlayPanel'
 import { usePersistedBoolean } from '@renderer/lib/hooks/usePersistedBoolean'
 import { getWorkspaceHotUi } from '@renderer/lib/hooks/workspaceHotUiStore'
 import type { RunSummary } from '@shared/ipc'
+import type { WorkspaceSidebarRuns } from './sidebar/types'
 import { SIDEBAR_COLLAPSED_KEY, TITLE_BAR_HEIGHT_PX } from '@renderer/lib/utils/layout'
 import { TitleBar } from './TitleBar'
 
@@ -19,6 +20,7 @@ function AppShellInner({
   view,
   workspacePath,
   openWorkspaces,
+  runsByWorkspacePath,
   activeRuns,
   runs,
   runsCapped,
@@ -33,8 +35,11 @@ function AppShellInner({
   onOpenHarness,
   onNewChat,
   onSelectRun,
+  onSelectRunInWorkspace,
   onRenameRun,
+  onRenameRunInWorkspace,
   onDeleteRun,
+  onDeleteRunInWorkspace,
   onSwitchWorkspace,
   onCloseWorkspace,
   onAddWorkspace,
@@ -45,11 +50,12 @@ function AppShellInner({
   view: 'chat' | 'settings'
   workspacePath: string | null
   openWorkspaces?: string[]
+  runsByWorkspacePath?: Record<string, WorkspaceSidebarRuns>
   activeRuns?: { runId: string; workspacePath: string }[]
   runs: RunSummary[]
   runsCapped?: boolean
   runsError?: string | null
-  onDismissRunsError?: () => void
+  onDismissRunsError?: (path?: string) => void
   activeRunId: string | null
   sessionQuery: string
   harnessActive?: boolean
@@ -59,8 +65,11 @@ function AppShellInner({
   onOpenHarness: () => void
   onNewChat: () => void
   onSelectRun: (runId: string) => void
+  onSelectRunInWorkspace?: (path: string, runId: string) => void
   onRenameRun: (runId: string, goal: string) => void
+  onRenameRunInWorkspace?: (path: string, runId: string, goal: string) => void
   onDeleteRun: (runId: string) => void
+  onDeleteRunInWorkspace?: (path: string, runId: string) => void
   onSwitchWorkspace?: (path: string) => void
   onCloseWorkspace?: (path: string) => void
   onAddWorkspace?: () => void
@@ -238,6 +247,7 @@ function AppShellInner({
     hasWorkspace,
     openPaths: openWorkspaces,
     activePath: workspacePath,
+    runsByWorkspacePath,
     activeRuns,
     onSwitchWorkspace,
     onCloseWorkspace,
@@ -249,8 +259,11 @@ function AppShellInner({
     onOpenHarness,
     onNewChat,
     onSelectRun,
+    onSelectRunInWorkspace,
     onRenameRun,
+    onRenameRunInWorkspace,
     onDeleteRun,
+    onDeleteRunInWorkspace,
     onCloseDrawer: closeDrawer,
     onToggleSidebar
   }
@@ -271,11 +284,12 @@ function AppShellInner({
           <div
             ref={drawerRef}
             id="app-nav-drawer"
-            className="absolute inset-x-0 bottom-0 z-drawer flex"
+            className="absolute inset-x-0 bottom-0 z-drawer flex outline-none"
             style={{ top: TITLE_BAR_HEIGHT_PX }}
             role="dialog"
             aria-modal="true"
             aria-label="Navigation"
+            tabIndex={-1}
           >
             <div
               className="absolute inset-0 bg-overlay animate-fade-in"

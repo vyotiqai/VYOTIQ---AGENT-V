@@ -4,6 +4,8 @@ import { isAgentEvent } from '../utils/eventUtils'
 import { subagentContextUsageFromEvent } from '../utils/contextUsage'
 import { summarizeToolArgs } from '../utils/toolSummary'
 
+export type ToolPresentation = 'prominent' | 'compact'
+
 export type UiToolRow = {
   id: string
   name: string
@@ -13,6 +15,8 @@ export type UiToolRow = {
   /** Live IPC shipped a preview only; expand to lazy-load from disk. */
   contentTruncated?: boolean
   argsPreview?: string
+  /** Locked at first render so args streaming cannot flip card ↔ activity. */
+  presentation?: ToolPresentation
 }
 
 export type UiGroupTiming = {
@@ -107,7 +111,7 @@ function toolContentText(content: MessageContent): string {
 export function inferToolStatus(content: MessageContent, ok?: boolean): 'done' | 'fail' {
   if (ok !== undefined) return ok ? 'done' : 'fail'
   const text = toolContentText(content)
-  if (text === 'Cancelled') return 'fail'
+  if (text === 'Cancelled' || text === 'Interrupted' || text === 'Stopped') return 'fail'
   if (!text) return 'done'
   if (/^Failed to parse tool arguments/i.test(text)) return 'fail'
   if (/^Unknown tool:/i.test(text)) return 'fail'
@@ -125,6 +129,22 @@ export function isMeaningfulThinking(text: string | undefined): boolean {
   if (!trimmed) return false
   if (/^[.…,;:!?\-–—\s]+$/.test(trimmed)) return false
   return trimmed.length >= 2
+}
+
+/**
+ * Finished stubs shorter than this render as empty padded gaps if a thinking
+ * row is emitted — keep the threshold shared by row builders and ThinkingBlock.
+ */
+export const MIN_VISIBLE_FINISHED_THINKING_CHARS = 24
+
+/** Whether a thinking row / ThinkingBlock should render for this content. */
+export function shouldRenderThinking(
+  text: string | undefined,
+  streaming?: boolean
+): boolean {
+  if (!isMeaningfulThinking(text)) return false
+  if (streaming) return true
+  return (text?.trim().length ?? 0) >= MIN_VISIBLE_FINISHED_THINKING_CHARS
 }
 
 /**
@@ -177,11 +197,56 @@ export function duplicatesReasoning(item: UiItem): boolean {
   return normalizedThinking.startsWith(normalizedContent)
 }
 
+/** True when assistant text looks like a leaked pseudo tool call, not narration. */
+export function isToolShapedTextLeak(content: string): boolean {
+  const trimmed = content.trimStart()
+  if (!trimmed) return false
+  return /^tool\s*(\{|[a-z_]+\b)/i.test(trimmed)
+}
+
 /**
- * Drop model-emitted pseudo tool calls that leaked into the text channel
- * (e.g. `tool {"edits":[...]}`) so they do not render as plain transcript text.
+ * Drop a tool JSON blob still being streamed (no closing brace yet) and any
+ * trailing partial `tool <name> …` line at the end of the buffer.
  */
-export function stripToolShapedAssistantText(content: string): string {
+export function stripIncompleteToolPrefix(content: string): string {
+  if (!content) return content
+
+  let searchFrom = 0
+  let cutAt: number | null = null
+  while (searchFrom < content.length) {
+    const rest = content.slice(searchFrom)
+    const match = rest.match(/\btool\s*\{/)
+    if (!match || match.index === undefined) break
+    const start = searchFrom + match.index
+    let i = start + match[0].length
+    let depth = 1
+    while (i < content.length && depth > 0) {
+      const ch = content[i]!
+      i += 1
+      if (ch === '{') depth += 1
+      else if (ch === '}') depth -= 1
+    }
+    if (depth > 0) {
+      cutAt = start
+      break
+    }
+    searchFrom = i
+  }
+
+  if (cutAt !== null) {
+    return content.slice(0, cutAt).replace(/[ \t]*(?:\r?\n)+$/, '')
+  }
+
+  const lineMatch = content.match(/(?:^|\n)(tool\s+[a-z_]+(?:\s+\S[^\n]*)?)$/i)
+  if (lineMatch && lineMatch.index !== undefined) {
+    const start = lineMatch.index === 0 ? 0 : lineMatch.index + 1
+    return content.slice(0, start).replace(/[ \t]*(?:\r?\n)+$/, '')
+  }
+
+  return content
+}
+
+function stripToolShapedAssistantTextInner(content: string, options?: { trim?: boolean }): string {
   if (!content) return content
   let result = ''
   let i = 0
@@ -215,7 +280,37 @@ export function stripToolShapedAssistantText(content: string): string {
     result += content[i]!
     i += 1
   }
-  return result.replace(/\n{3,}/g, '\n\n').trim()
+  const collapsed = result.replace(/\n{3,}/g, '\n\n')
+  return options?.trim === false ? collapsed : collapsed.trim()
+}
+
+/**
+ * Drop model-emitted pseudo tool calls that leaked into the text channel
+ * (e.g. `tool {"edits":[...]}`) so they do not render as plain transcript text.
+ */
+export function stripToolShapedAssistantText(content: string): string {
+  return stripToolShapedAssistantTextInner(content, { trim: true })
+}
+
+/** Like stripToolShapedAssistantText but also hides in-progress tool blobs while streaming. */
+export function stripToolShapedAssistantTextForStream(content: string): string {
+  if (!content) return content
+  return stripToolShapedAssistantTextInner(stripIncompleteToolPrefix(content), { trim: false })
+}
+
+/** Scrub leaked tool text from any assistant rows still marked streaming. */
+export function scrubStreamingAssistantToolLeak(items: UiItem[]): UiItem[] {
+  let changed = false
+  const next = items.map((item) => {
+    if (item.kind !== 'message' || item.role !== 'assistant' || item.streaming !== true) {
+      return item
+    }
+    const content = stripToolShapedAssistantTextForStream(item.content)
+    if (content === item.content) return item
+    changed = true
+    return { ...item, content }
+  })
+  return changed ? next : items
 }
 
 /** Join adjacent reasoning chunks for one inline step. */
@@ -257,7 +352,7 @@ export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
           kind: 'message',
           id: messageUiId('assistant', i),
           role: 'assistant',
-          content: text,
+          content: stripToolShapedAssistantText(text),
           thinking: m.thinking
         })
       }

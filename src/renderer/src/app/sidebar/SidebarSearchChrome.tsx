@@ -60,7 +60,7 @@ export function SidebarSearchChrome({
           <Icon name="close" size={10} />
         </button>
       ) : showShortcut ? (
-        <kbd className="hidden shrink-0 rounded border border-border/50 px-0.5 py-px text-[9px] font-medium text-muted @sidebar/min-w-[13rem]:inline">
+        <kbd className="hidden shrink-0 rounded border border-border/50 px-0.5 py-px text-[9px] font-medium text-muted @min-[13rem]/sidebar:inline">
           {searchShortcutLabel()}
         </kbd>
       ) : null}
@@ -85,6 +85,7 @@ export function SidebarSearchChrome({
           size="xs"
           variant="bare"
           aria-pressed={harnessActive}
+          className={harnessActive ? 'bg-surface' : undefined}
           onClick={onOpenHarness}
         />
         <IconButton

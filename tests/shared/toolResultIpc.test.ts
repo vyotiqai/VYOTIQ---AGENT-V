@@ -35,6 +35,24 @@ describe('toolResultEventForIpc', () => {
     expect(trimmed.contentTruncated).toBe(true)
   })
 
+  it('truncates large subagent tool results for IPC', () => {
+    const content = 'x'.repeat(TOOL_RESULT_IPC_PREVIEW_CHARS + 500)
+    const event = {
+      type: 'tool_result' as const,
+      runId: 'r1',
+      toolCallId: 'c1',
+      name: 'subagent',
+      summary: 'investigate',
+      ok: true,
+      content
+    }
+    const trimmed = toolResultEventForIpc(event)
+    expect(trimmed.type).toBe('tool_result')
+    if (trimmed.type !== 'tool_result') return
+    expect(trimmed.content?.length).toBeLessThan(content.length)
+    expect(trimmed.contentTruncated).toBe(true)
+  })
+
   it('does not modify non-tool events', () => {
     const event = { type: 'status' as const, runId: 'r1', status: 'done' as const }
     expect(toolResultEventForIpc(event)).toBe(event)

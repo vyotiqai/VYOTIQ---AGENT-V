@@ -41,9 +41,7 @@ export function SidebarCollapsed({
         }}
       />
 
-      {workspaceProps && workspaceProps.openPaths.length > 0 ? (
-        <WorkspaceSwitcher {...workspaceProps} collapsed />
-      ) : null}
+      {workspaceProps ? <WorkspaceSwitcher {...workspaceProps} collapsed /> : null}
 
       <div className="mt-auto flex flex-col items-center gap-1">
         <NavItem

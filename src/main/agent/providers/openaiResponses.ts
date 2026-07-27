@@ -12,6 +12,7 @@ import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
+import { formatProviderHttpError } from './httpErrors'
 
 function toolOutputsFromMessages(messages: ChatMessage[]): Array<Record<string, unknown>> {
   return messages
@@ -166,7 +167,7 @@ export async function* streamOpenAiResponses(
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     logProviderFailure('openai', 'http', { status: res.status })
-    yield { type: 'error', error: `HTTP ${res.status}: ${text.slice(0, 400)}` }
+    yield { type: 'error', error: formatProviderHttpError(res.status, text, 'openai') }
     return
   }
 

@@ -3,6 +3,7 @@ import { IconButton, cn } from '@renderer/lib/ui'
 import type { ProviderId, ServiceTier } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { MAX_IMAGES } from './useComposerImages'
+import { MAX_FILES } from './useComposerFiles'
 import { ContextMeter, type ContextUsageState } from './ContextMeter'
 import { ModelPicker } from './ModelPicker'
 import { ThinkingControls } from './ThinkingControls'
@@ -24,7 +25,8 @@ export function ComposerToolbar({
   variant,
   disabled,
   locked,
-  imagesCount,
+  imageCount,
+  fileCount,
   onAttachClick,
   providers,
   optionsByProvider,
@@ -53,7 +55,8 @@ export function ComposerToolbar({
   variant: ComposerVariant
   disabled?: boolean
   locked: boolean
-  imagesCount: number
+  imageCount: number
+  fileCount: number
   onAttachClick: () => void
   providers: ProviderId[]
   optionsByProvider: Record<ProviderId, ModelPickerOption[]>
@@ -84,6 +87,17 @@ export function ComposerToolbar({
       ? 'min-w-0 max-w-full sm:max-w-[320px]'
       : 'min-w-0 max-w-[min(100%,20rem)] sm:max-w-[320px]'
 
+  const imagesFull = imageCount >= MAX_IMAGES
+  const filesFull = fileCount >= MAX_FILES
+  const attachFull = imagesFull && filesFull
+  const attachLabel = attachFull
+    ? `Attach files (limits reached: ${MAX_IMAGES} images, ${MAX_FILES} files)`
+    : imagesFull
+      ? `Attach files (image limit ${MAX_IMAGES}; documents still available)`
+      : filesFull
+        ? `Attach files (file limit ${MAX_FILES}; images still available)`
+        : 'Attach files'
+
   return (
     <div
       className="col-span-full flex items-center justify-between gap-2"
@@ -93,15 +107,9 @@ export function ComposerToolbar({
         <button
           type="button"
           className={iconCtl}
-          aria-label={
-            imagesCount >= MAX_IMAGES ? `Attach files (image limit ${MAX_IMAGES})` : 'Attach files'
-          }
-          title={
-            imagesCount >= MAX_IMAGES
-              ? `Up to ${MAX_IMAGES} images (documents also supported)`
-              : 'Attach files'
-          }
-          disabled={locked || imagesCount >= MAX_IMAGES}
+          aria-label={attachLabel}
+          title={attachLabel}
+          disabled={locked || attachFull}
           onClick={onAttachClick}
         >
           <Icon name="plus" size={14} />
@@ -140,7 +148,8 @@ export function ComposerToolbar({
       <div className="flex shrink-0 items-center gap-2">
         <ContextMeter
           usage={contextUsage ?? null}
-          onCompact={running ? undefined : onCompactContext}
+          onCompact={onCompactContext}
+          compactDisabled={running}
         />
         {running ? (
           <IconButton

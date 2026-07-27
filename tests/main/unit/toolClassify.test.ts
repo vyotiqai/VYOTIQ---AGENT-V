@@ -20,6 +20,7 @@ describe('tool classify', () => {
     expect(isParallelSafeTool('list_dir')).toBe(true)
     expect(isParallelSafeTool('web_fetch')).toBe(true)
     expect(isParallelSafeTool('memory_read')).toBe(true)
+    expect(isParallelSafeTool('subagent')).toBe(true)
     expect(isReadOnlyTool('read')).toBe(true)
   })
 
@@ -27,7 +28,6 @@ describe('tool classify', () => {
     expect(isParallelSafeTool('edit')).toBe(false)
     expect(isParallelSafeTool('terminal')).toBe(false)
     expect(isParallelSafeTool('memory_write')).toBe(false)
-    expect(isParallelSafeTool('subagent')).toBe(false)
   })
 
   it('gates web_fetch for approval while keeping it parallel-safe', () => {

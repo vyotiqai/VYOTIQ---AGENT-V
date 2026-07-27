@@ -21,7 +21,8 @@ describe('resolveEffectiveSettings', () => {
       useOverride: true,
       provider: 'openai',
       model: 'gpt-5.6',
-      maxSteps: 8,
+      subagentProvider: 'anthropic',
+      subagentModel: 'claude-sonnet-5',
       thinkingEnabled: false,
       thinkingEffort: 'high',
       showThinking: false,
@@ -32,7 +33,8 @@ describe('resolveEffectiveSettings', () => {
     expect(effective).toEqual({
       provider: 'openai',
       model: 'gpt-5.6',
-      maxSteps: 8,
+      subagentProvider: 'anthropic',
+      subagentModel: 'claude-sonnet-5',
       thinkingEnabled: false,
       thinkingEffort: 'high',
       showThinking: false,
@@ -41,6 +43,23 @@ describe('resolveEffectiveSettings', () => {
       memoryAutoPromote: false,
       toolApproval: DEFAULT_SETTINGS.toolApproval
     })
+  })
+
+  it('falls back to global subagent fields when override omits them', () => {
+    const effective = resolveEffectiveSettings(
+      {
+        ...DEFAULT_SETTINGS,
+        subagentProvider: 'openai',
+        subagentModel: 'gpt-5.6'
+      },
+      {
+        useOverride: true,
+        provider: 'anthropic',
+        model: 'claude-sonnet-5'
+      }
+    )
+    expect(effective.subagentProvider).toBe('openai')
+    expect(effective.subagentModel).toBe('gpt-5.6')
   })
 
   it('takes the tool approval policy from the workspace override', () => {
@@ -64,6 +83,5 @@ describe('resolveEffectiveSettings', () => {
     expect(effective.model).toBe('claude-sonnet-5')
     expect(effective.thinkingEffort).toBe('low')
     expect(effective.showThinking).toBe(false)
-    expect(effective.maxSteps).toBe(DEFAULT_SETTINGS.maxSteps)
   })
 })

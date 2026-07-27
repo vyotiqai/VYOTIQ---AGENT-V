@@ -219,7 +219,7 @@ describe('settings', () => {
     )
   })
 
-  it('validates ollama url and max steps', async () => {
+  it('validates ollama url', async () => {
     const onUpdate = vi.fn(async () => ({ ok: true as const }))
     render(
       <SettingsView
@@ -231,13 +231,6 @@ describe('settings', () => {
         onClearSecret={vi.fn(async () => ({ ok: true as const }))}
       />
     )
-
-    fireEvent.click(screen.getByRole('button', { name: /^Agent$/i }))
-    const steps = screen.getByLabelText(/Max steps/i)
-    fireEvent.change(steps, { target: { value: '999' } })
-    fireEvent.blur(steps)
-    expect((await screen.findByRole('alert')).textContent).toMatch(/1 to 100/)
-    expect(onUpdate).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: /^Providers$/i }))
     const ollama = screen.getByLabelText(/Ollama base URL/i)

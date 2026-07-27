@@ -10,6 +10,21 @@ const baseProps = {
   workspacePath: '/ws/demo',
   openWorkspaces: ['/ws/demo'],
   activeRuns: [] as { runId: string; workspacePath: string }[],
+  runsByWorkspacePath: {
+    '/ws/demo': {
+      runs: [
+        {
+          runId: 'run-abc',
+          goal: 'Fix tests',
+          status: 'done' as const,
+          updatedAt: new Date().toISOString()
+        }
+      ],
+      runsCapped: false,
+      runsError: null,
+      activeRunId: null
+    }
+  },
   runs: [
     {
       runId: 'run-abc',
@@ -26,8 +41,11 @@ const baseProps = {
   onOpenHarness: vi.fn(),
   onNewChat: vi.fn(),
   onSelectRun: vi.fn(),
+  onSelectRunInWorkspace: vi.fn(),
   onRenameRun: vi.fn(),
+  onRenameRunInWorkspace: vi.fn(),
   onDeleteRun: vi.fn(),
+  onDeleteRunInWorkspace: vi.fn(),
   onSwitchWorkspace: vi.fn(),
   onCloseWorkspace: vi.fn(),
   onAddWorkspace: vi.fn(),
@@ -101,16 +119,20 @@ describe('AppShell', () => {
   })
 
   it('selects a chat from the sidebar', () => {
-    const onSelectRun = vi.fn()
+    const onSelectRunInWorkspace = vi.fn()
     const onOpenChat = vi.fn()
     render(
-      <AppShell {...baseProps} onSelectRun={onSelectRun} onOpenChat={onOpenChat}>
+      <AppShell
+        {...baseProps}
+        onSelectRunInWorkspace={onSelectRunInWorkspace}
+        onOpenChat={onOpenChat}
+      >
         <p>Main content</p>
       </AppShell>
     )
 
     fireEvent.click(screen.getAllByRole('button', { name: /fix tests/i })[0])
-    expect(onSelectRun).toHaveBeenCalledWith('run-abc')
+    expect(onSelectRunInWorkspace).toHaveBeenCalledWith('/ws/demo', 'run-abc')
     expect(onOpenChat).toHaveBeenCalled()
   })
 
@@ -120,8 +142,8 @@ describe('AppShell', () => {
         <p>Main content</p>
       </AppShell>
     )
-    expect(screen.getByRole('region', { name: /chats/i })).toBeTruthy()
-    expect(screen.getByRole('tablist', { name: /workspaces/i })).toBeTruthy()
+    expect(screen.getByRole('region', { name: /workspace sessions/i })).toBeTruthy()
+    expect(screen.getByText(/workspaces/i)).toBeTruthy()
     expect(screen.getByRole('button', { name: /new chat/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /settings/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /harness/i })).toBeTruthy()
@@ -208,8 +230,40 @@ describe('AppShell', () => {
       </AppShell>
     )
 
-    expect(screen.getByRole('alert')).toBeTruthy()
-    expect(screen.getByText('Failed to load chats')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.getAllByRole('button', { name: /fix tests/i }).length).toBeGreaterThan(0)
+  })
+
+  it('switches workspace when selecting a run from another workspace', () => {
+    const onSelectRunInWorkspace = vi.fn()
+    render(
+      <AppShell
+        {...baseProps}
+        openWorkspaces={['/ws/demo', '/ws/other']}
+        runsByWorkspacePath={{
+          '/ws/demo': baseProps.runsByWorkspacePath['/ws/demo'],
+          '/ws/other': {
+            runs: [
+              {
+                runId: 'run-xyz',
+                goal: 'Other workspace chat',
+                status: 'done',
+                updatedAt: new Date().toISOString()
+              }
+            ],
+            runsCapped: false,
+            runsError: null,
+            activeRunId: null
+          }
+        }}
+        onSelectRunInWorkspace={onSelectRunInWorkspace}
+      >
+        <p>Main content</p>
+      </AppShell>
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /expand .*other/i }))
+    fireEvent.click(screen.getAllByRole('button', { name: /other workspace chat/i })[0])
+    expect(onSelectRunInWorkspace).toHaveBeenCalledWith('/ws/other', 'run-xyz')
   })
 })

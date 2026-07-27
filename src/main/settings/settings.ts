@@ -20,7 +20,7 @@ function normalizeSettings(data: Settings): Settings {
 }
 
 function stripLegacyFields(raw: Record<string, unknown>): Record<string, unknown> {
-  const { workspacePath: _legacy, ...rest } = raw
+  const { workspacePath: _legacy, maxSteps: _maxSteps, ...rest } = raw
   return rest
 }
 
@@ -73,11 +73,11 @@ export function getSettings(): Settings {
         })
       }
     }
-    if ('workspacePath' in raw) {
+    if ('workspacePath' in raw || 'maxSteps' in raw) {
       try {
         writeSettings(data)
       } catch (err) {
-        logger.warn('Failed to strip legacy workspacePath from settings', {
+        logger.warn('Failed to strip legacy fields from settings', {
           scope: 'settings',
           code: 'SETTINGS',
           err

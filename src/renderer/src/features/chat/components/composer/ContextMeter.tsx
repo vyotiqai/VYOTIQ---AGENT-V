@@ -2,16 +2,11 @@ import { useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { cn } from '@renderer/lib/ui/cn'
 import { useDropdownMenu } from '@renderer/lib/hooks/useDropdownMenu'
+import { formatTokens } from '@renderer/lib/utils/formatTokens'
 import type { ContextUsageState } from '@shared/utils/contextUsage'
 import type { StepUsageTotals } from '@shared/utils/runTelemetry'
 
 export type { ContextUsageState }
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1000) return `${Math.round(n / 1000)}k`
-  return String(n)
-}
 
 function formatPct(n: number, total: number): string {
   if (total <= 0) return '0%'
@@ -114,12 +109,14 @@ function ContextMeterPanel({
   usage,
   onCompact,
   compacting,
+  compactDisabled,
   compactMessage,
   compactFailed
 }: {
   usage: ContextUsageState
   onCompact?: () => void
   compacting?: boolean
+  compactDisabled?: boolean
   compactMessage?: string | null
   compactFailed?: boolean
 }) {
@@ -191,7 +188,14 @@ function ContextMeterPanel({
           <button
             type="button"
             onClick={onCompact}
-            disabled={compacting}
+            disabled={compacting || compactDisabled}
+            title={
+              compactDisabled
+                ? 'Unavailable while the agent is running'
+                : compacting
+                  ? 'Compacting…'
+                  : 'Compact older history now'
+            }
             className="shrink-0 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-medium text-fg vy-transition hover:bg-surface disabled:opacity-[var(--vy-disabled-opacity)]"
           >
             {compacting ? 'Compacting…' : 'Compact now'}
@@ -262,11 +266,14 @@ function ContextMeterPanel({
 export function ContextMeter({
   usage,
   onCompact,
+  compactDisabled = false,
   className
 }: {
   usage: ContextUsageState | null
   /** Summarize the run's older history on demand; omitted when no run exists. */
   onCompact?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
+  /** When true, Compact stays visible but disabled (e.g. agent is running). */
+  compactDisabled?: boolean
   className?: string
 }) {
   const [open, setOpen] = useState(false)
@@ -287,7 +294,7 @@ export function ContextMeter({
   })
 
   const runCompaction = async (): Promise<void> => {
-    if (!onCompact || compacting) return
+    if (!onCompact || compacting || compactDisabled) return
     setCompacting(true)
     setCompactMessage(null)
     setCompactFailed(false)
@@ -361,6 +368,7 @@ export function ContextMeter({
                 usage={usage}
                 onCompact={onCompact ? () => void runCompaction() : undefined}
                 compacting={compacting}
+                compactDisabled={compactDisabled}
                 compactMessage={compactMessage}
                 compactFailed={compactFailed}
               />

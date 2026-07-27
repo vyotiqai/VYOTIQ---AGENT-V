@@ -21,7 +21,7 @@ import {
   WEB_FETCH_DEFAULT_TIMEOUT_MS,
   WEB_FETCH_MAX_TIMEOUT_MS
 } from '@main/agent/tools/webFetch'
-import { SUBAGENT_MAX_REPORT_CHARS, SUBAGENT_MAX_STEPS } from '@main/agent/subagent'
+import { MAX_PARALLEL_SUBAGENTS } from '@main/agent/tools/classify'
 import { MEMORY_LIST_INDEX_EXCERPT } from '@main/agent/context/memory'
 
 const SECTIONS = ['WHEN TO USE:', 'WORKFLOW:', 'AVOID:', 'LIMITS:'] as const
@@ -59,8 +59,9 @@ describe('toolGuidance', () => {
     expect(TOOL_GUIDANCE.web_fetch).toContain(String(WEB_FETCH_DEFAULT_MAX_CHARS))
     expect(TOOL_GUIDANCE.web_fetch).toContain(String(WEB_FETCH_DEFAULT_TIMEOUT_MS))
     expect(TOOL_GUIDANCE.web_fetch).toContain(String(WEB_FETCH_MAX_TIMEOUT_MS))
-    expect(TOOL_GUIDANCE.subagent).toContain(String(SUBAGENT_MAX_REPORT_CHARS))
-    expect(TOOL_GUIDANCE.subagent).toContain(String(SUBAGENT_MAX_STEPS))
+    expect(TOOL_GUIDANCE.subagent).toContain(String(MAX_PARALLEL_SUBAGENTS))
+    expect(TOOL_GUIDANCE.subagent).toContain('full')
+    expect(TOOL_GUIDANCE.subagent).not.toMatch(/truncated at/i)
   })
 
   it('states real behavioral caveats (not overclaims)', () => {

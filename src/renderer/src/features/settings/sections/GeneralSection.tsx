@@ -1,5 +1,6 @@
 import type { Settings, ThemeId } from '@shared/ipc'
 import { PROVIDER_DEFAULTS } from '@shared/providers'
+import { findByWorkspacePath, workspacePathsEqual } from '@shared/workspacePathMatch'
 import { Button, Menu } from '@renderer/lib/ui'
 import type { SettingsFormState } from '../hooks/useSettingsForm'
 import type { SettingsViewProps } from '../types'
@@ -46,7 +47,7 @@ export function GeneralSection({
       <SettingsRow
         stacked
         title="Workspaces"
-        description="Open workspace tabs. Enable Override for per-workspace provider and model only."
+        description="Open workspace tabs. Enable Override for per-workspace provider, model, and agent settings."
       >
         {openWorkspaces.length === 0 ? (
           <p className="m-0 text-xs text-secondary">No workspaces open.</p>
@@ -56,9 +57,14 @@ export function GeneralSection({
               <WorkspaceOverrideCard
                 key={path}
                 path={path}
-                isActive={path === activeWorkspacePath}
+                isActive={
+                  activeWorkspacePath !== null &&
+                  workspacePathsEqual(path, activeWorkspacePath)
+                }
                 globalSettings={settings}
-                override={settingsOverridesByPath?.[path]}
+                override={
+                  findByWorkspacePath(settingsOverridesByPath ?? {}, path) ?? undefined
+                }
                 disabled={form.formLocked || !onSetSettingsOverride}
                 onSetOverride={onSetSettingsOverride ?? (async () => ({ ok: true as const }))}
                 onOverrideError={(message) => form.setErrorMessage(message)}
@@ -114,12 +120,16 @@ export function GeneralSection({
             className="size-3.5 accent-fg"
             aria-label="Show thinking in chat"
             disabled={form.formLocked}
-            checked={settings.showThinking}
+            checked={
+              form.effectiveChatSettings?.showThinking ?? settings.showThinking
+            }
             onChange={(e) => {
-              void form.runUpdate({ showThinking: e.target.checked })
+              void form.runAgentUpdate({ showThinking: e.target.checked })
             }}
           />
-          {settings.showThinking ? 'On' : 'Off'}
+          {(form.effectiveChatSettings?.showThinking ?? settings.showThinking)
+            ? 'On'
+            : 'Off'}
         </label>
       </SettingsRow>
 

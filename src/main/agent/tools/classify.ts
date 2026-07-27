@@ -7,7 +7,8 @@ const PARALLEL_SAFE_BUILTIN = new Set([
   'list_dir',
   'web_fetch',
   'memory_list',
-  'memory_read'
+  'memory_read',
+  'subagent'
 ])
 
 /**
@@ -41,3 +42,5 @@ export function isReadOnlyTool(name: string): boolean {
 }
 
 export const MAX_PARALLEL_READ_TOOLS = 4
+/** Full LLM loops — keep concurrency lower than read-only tools. */
+export const MAX_PARALLEL_SUBAGENTS = 2

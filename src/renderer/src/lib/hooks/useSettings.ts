@@ -87,7 +87,6 @@ export function useSettings() {
   const pickWorkspace = useCallback(async (): Promise<IpcResult<string | null>> => {
     const res = await window.vyotiq.pickWorkspace()
     if (res.ok && res.data) {
-      setSettings((prev) => ({ ...prev, workspacePath: res.data }))
       setError(null)
     } else if (!res.ok) {
       logger.error('pickWorkspace failed', { scope: 'settings', err: res.error })

@@ -206,13 +206,6 @@ const subagentArgs = z.object({
   context: z
     .string()
     .describe('Findings so far that save the sub-agent re-deriving them')
-    .optional(),
-  maxSteps: z
-    .number()
-    .int()
-    .min(1)
-    .max(16)
-    .describe('Step budget (default 8, max 16)')
     .optional()
 })
 

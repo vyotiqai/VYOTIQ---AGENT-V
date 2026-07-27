@@ -14,7 +14,11 @@ function RunStatusDot({ status }: { status: RunSummary['status'] }) {
     )
   }
   if (status === 'error') {
-    return <span className="size-1.5 shrink-0 rounded-full bg-danger" title="Error" />
+    return (
+      <span className="size-1.5 shrink-0 rounded-full bg-danger" title="Error">
+        <span className="sr-only">Error</span>
+      </span>
+    )
   }
   return null
 }
@@ -138,7 +142,7 @@ export function ChatRow({
       >
         <RunStatusDot status={run.status} />
         <span className="min-w-0 flex-1 truncate">{title}</span>
-        <span className="hidden shrink-0 text-[10px] text-muted tabular-nums @sidebar/min-w-[12.5rem]:inline group-hover:opacity-0">
+        <span className="hidden shrink-0 text-[10px] text-muted tabular-nums @min-[12.5rem]/sidebar:inline group-hover:opacity-0">
           {relativeTime(run.updatedAt)}
         </span>
       </button>

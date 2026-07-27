@@ -15,8 +15,19 @@ export type ApprovalSender = (request: ToolApprovalRequest) => void
 const senders = new Map<string, ApprovalSender>()
 const pending = new Map<
   string,
-  { resolve: (decision: ToolApprovalDecision) => void; runId: string; invokeId?: number }
+  {
+    resolve: (decision: ToolApprovalDecision) => void
+    reject: (err: Error) => void
+    runId: string
+    invokeId?: number
+  }
 >()
+
+function abortApprovalError(): Error {
+  const err = new Error('Aborted')
+  err.name = 'AbortError'
+  return err
+}
 
 export function registerApprovalSender(runId: string, sender: ApprovalSender): () => void {
   senders.set(runId, sender)
@@ -36,15 +47,15 @@ export function resolveToolApproval(response: ToolApprovalResponse): boolean {
 
 /**
  * Cancelling a run must not leave its approval prompts waiting forever.
- * When `invokeId` is set, only that turn's prompts are denied — so a prior
- * turn's IPC `finally` cannot auto-deny the active follow-up turn.
+ * When `invokeId` is set, only that turn's prompts are cleared — so a prior
+ * turn's IPC `finally` cannot auto-abort the active follow-up turn.
  */
 export function cancelPendingApprovals(runId: string, invokeId?: number): void {
   for (const [requestId, entry] of pending) {
     if (entry.runId !== runId) continue
     if (invokeId !== undefined && entry.invokeId !== invokeId) continue
     pending.delete(requestId)
-    entry.resolve('deny')
+    entry.reject(abortApprovalError())
   }
 }
 
@@ -96,20 +107,27 @@ function askThroughRenderer(
     return Promise.resolve('deny')
   }
 
-  return new Promise<ToolApprovalDecision>((resolve) => {
+  return new Promise<ToolApprovalDecision>((resolve, reject) => {
     const settle = (decision: ToolApprovalDecision): void => {
       pending.delete(request.requestId)
       signal.removeEventListener('abort', onAbort)
       resolve(decision)
     }
     function onAbort(): void {
-      settle('deny')
+      pending.delete(request.requestId)
+      signal.removeEventListener('abort', onAbort)
+      reject(abortApprovalError())
     }
     if (signal.aborted) {
-      resolve('deny')
+      reject(abortApprovalError())
       return
     }
-    pending.set(request.requestId, { resolve: settle, runId: request.runId, invokeId })
+    pending.set(request.requestId, {
+      resolve: settle,
+      reject,
+      runId: request.runId,
+      invokeId
+    })
     signal.addEventListener('abort', onAbort, { once: true })
     sender(request)
   })

@@ -36,8 +36,6 @@ Stay narrow: one clear next step at a time.
 
 **Acceptance-gated retry:** After edits or commands, check the result against the goal / done-when (read the file, re-run the test, inspect command output). On failure, adjust **once** narrowly (different path, smaller edit, clearer command) before broadening. Do not invent parallel exploration, multi-candidate search, verifier agents, or heavy frameworks. If still blocked, explain and stop or ask.
 
-Near step limits: checkpoint durable facts to memory, summarize partial progress against `contract.md`, and stop cleanly rather than thrashing.
-
 ## Safety
 
 - Never escape the workspace root with file tools (memory tools stay under `.vyotiq/memory/`).

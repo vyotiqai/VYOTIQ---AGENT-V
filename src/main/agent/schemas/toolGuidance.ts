@@ -20,11 +20,8 @@ import {
   WEB_FETCH_MAX_TIMEOUT_MS
 } from '../tools/webFetch'
 
+import { MAX_PARALLEL_SUBAGENTS } from '../tools/classify'
 import { MEMORY_LIST_INDEX_EXCERPT } from '../context/memory'
-
-/** Keep in sync with `SUBAGENT_MAX_STEPS` / `SUBAGENT_MAX_REPORT_CHARS` in subagent.ts (tests assert). */
-const SUBAGENT_DEFAULT_STEPS = 8
-const SUBAGENT_REPORT_CHARS = 12_000
 
 const READ_KIB = READ_CONTENT_CAP / 1024
 const READ_LINE_MIB = READ_LINE_RANGE_MAX_BYTES / (1024 * 1024)
@@ -264,8 +261,10 @@ AVOID:
 - Nesting sub-agents (depth hard-capped at 1).
 
 LIMITS:
-- Default maxSteps ${SUBAGENT_DEFAULT_STEPS} (Zod max 16).
-- Report truncated at ${SUBAGENT_REPORT_CHARS} characters; must stand alone for the parent.`,
+- Up to ${MAX_PARALLEL_SUBAGENTS} sub-agents may run in parallel.
+- Reports are returned in full; write a complete, self-contained summary.
+- Optional dedicated sub-agent model may be configured; otherwise uses the parent model.
+- Rely on returned reports rather than re-reading files the sub-agent already covered.`,
 
   terminal: `Run a shell command with cwd at the workspace root. Output is capped.
 

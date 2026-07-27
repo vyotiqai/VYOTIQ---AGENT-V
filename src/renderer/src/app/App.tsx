@@ -15,9 +15,11 @@ import {
 import {
   DEFAULT_THINKING_PREFS,
   modelSelectionKey,
-  pushRecentModel
+  pushRecentModel,
+  resolveServiceTier
 } from '@shared/domain/modelSelection'
 import { logger } from '@shared/logger'
+import { workspacePathsEqual } from '@shared/workspacePathMatch'
 
 /** Sent as a visible user turn when resuming a run that was cut short. */
 const CONTINUE_PROMPT = 'Continue from where you stopped.'
@@ -42,6 +44,7 @@ export function App() {
     activeWorkspace,
     openWorkspaces,
     activeContext,
+    contexts,
     activeRuns,
     chat,
     chatActions,
@@ -53,6 +56,7 @@ export function App() {
     onApprovalDecision,
     collapsedTurns,
     openRunTab,
+    openRunInWorkspace,
     closeRunTab,
     setSessionQuery,
     addWorkspace,
@@ -61,6 +65,7 @@ export function App() {
     getRunController,
     loadRunIntoTab: loadRunTranscriptIntoTab,
     refreshActiveRuns,
+    refreshWorkspaceRuns,
     workspaceHasBackgroundRun,
     scrollRestoreToken,
     setComposerDraft,
@@ -112,7 +117,9 @@ export function App() {
         ...override,
         useOverride: true,
         provider,
-        model: resolvedModel
+        model: resolvedModel,
+        thinkingEnabled: prefs.thinkingEnabled,
+        thinkingEffort: prefs.thinkingEffort
       }).then((res) => {
         if (!res.ok) setSettingsError(res.error)
       })
@@ -194,12 +201,18 @@ export function App() {
     setView('chat')
   }
 
-  const onSelectRunTab = async (runId: string): Promise<void> => {
-    openRunTab(runId)
+  const onSelectRunInWorkspace = async (path: string, runId: string): Promise<void> => {
+    if (!chatActions) {
+      setSettingsError('Session loading is unavailable.')
+      setView('chat')
+      return
+    }
+    await openRunInWorkspace(path, runId)
     const ctrl = getRunController(runId)
     if (!ctrl || ctrl.items.length === 0) {
-      await loadRunIntoTab(runId)
+      await loadRunTranscriptIntoTab(path, runId)
     }
+    setView('chat')
   }
 
   const onNewChat = (): void => {
@@ -288,6 +301,20 @@ export function App() {
     refreshActiveRuns()
   }
 
+  const onRenameRunInWorkspace = async (
+    path: string,
+    runId: string,
+    goal: string
+  ): Promise<void> => {
+    if (!window.vyotiq?.renameRun) return
+    const res = await window.vyotiq.renameRun(path, runId, goal)
+    if (!res.ok) {
+      setSettingsError(res.error)
+      return
+    }
+    refreshWorkspaceRuns(path)
+  }
+
   const onDeleteRun = async (runId: string): Promise<void> => {
     if (!activeWorkspace || !window.vyotiq?.deleteRun) return
     const res = await window.vyotiq.deleteRun(activeWorkspace, runId)
@@ -297,6 +324,19 @@ export function App() {
     }
     closeRunTab(runId)
     refreshActiveRuns()
+  }
+
+  const onDeleteRunInWorkspace = async (path: string, runId: string): Promise<void> => {
+    if (!window.vyotiq?.deleteRun) return
+    const res = await window.vyotiq.deleteRun(path, runId)
+    if (!res.ok) {
+      setSettingsError(res.error)
+      return
+    }
+    if (activeWorkspace && workspacePathsEqual(path, activeWorkspace)) {
+      closeRunTab(runId)
+    }
+    refreshWorkspaceRuns(path)
   }
 
   const onCloseWorkspace = (path: string): void => {
@@ -313,10 +353,25 @@ export function App() {
   const shellWorkspaceProps = {
     openWorkspaces,
     activeRuns,
+    runsByWorkspacePath: Object.fromEntries(
+      Object.entries(contexts).map(([path, ctx]) => [
+        path,
+        {
+          runs: ctx.runs,
+          runsCapped: ctx.runsCapped,
+          runsError: ctx.runsError,
+          activeRunId: ctx.activeRunId
+        }
+      ])
+    ),
     onSwitchWorkspace: (path: string) => void switchWorkspace(path),
     onCloseWorkspace,
     onAddWorkspace: onPickWorkspace,
-    workspaceHasBackgroundRun
+    workspaceHasBackgroundRun,
+    onSelectRunInWorkspace: (path: string, runId: string) => void onSelectRunInWorkspace(path, runId),
+    onRenameRunInWorkspace: (path: string, runId: string, goal: string) =>
+      void onRenameRunInWorkspace(path, runId, goal),
+    onDeleteRunInWorkspace: (path: string, runId: string) => void onDeleteRunInWorkspace(path, runId)
   }
 
   if (loading) {
@@ -432,7 +487,11 @@ export function App() {
             onProviderModel={onProviderModel}
             favoriteModels={settings.favoriteModels}
             recentModels={settings.recentModels}
-            serviceTier={settings.serviceTier}
+            serviceTier={resolveServiceTier(
+              settings,
+              effectiveChatSettings.provider,
+              effectiveChatSettings.model
+            )}
             onToggleFavorite={onToggleFavorite}
             onServiceTierChange={onServiceTierChange}
             chatSettings={effectiveChatSettings}

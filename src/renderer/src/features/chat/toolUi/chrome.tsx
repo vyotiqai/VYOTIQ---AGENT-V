@@ -74,19 +74,22 @@ export const CompactRow = memo(function CompactRow({
   subtitle,
   status,
   expanded,
+  hasBody = true,
   onToggle
 }: {
   title: string
   subtitle: string
   status: 'running' | 'done' | 'fail'
   expanded: boolean
+  hasBody?: boolean
   onToggle: () => void
 }) {
   return (
     <button
       type="button"
-      className={cn(DISCLOSURE_ROW, 'w-full text-left')}
-      aria-expanded={expanded}
+      className={cn(DISCLOSURE_ROW, 'w-full text-left', !hasBody && 'cursor-default')}
+      aria-expanded={hasBody ? expanded : undefined}
+      disabled={!hasBody}
       onClick={onToggle}
     >
       <span className={cn('flex shrink-0 items-center gap-1.5 font-medium', status === 'fail' ? 'text-danger' : 'text-fg')}>
@@ -101,11 +104,13 @@ export const CompactRow = memo(function CompactRow({
         {status === 'fail' ? (
           <Icon name="warning" size={11} className="shrink-0 text-danger" />
         ) : null}
-        <Icon
-          name="chevronRight"
-          size={11}
-          className={cn('text-tertiary vy-transition', expanded && 'rotate-90')}
-        />
+        {hasBody ? (
+          <Icon
+            name="chevronRight"
+            size={11}
+            className={cn('text-tertiary vy-transition', expanded && 'rotate-90')}
+          />
+        ) : null}
       </span>
     </button>
   )

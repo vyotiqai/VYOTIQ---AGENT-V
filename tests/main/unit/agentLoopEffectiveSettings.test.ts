@@ -31,7 +31,6 @@ vi.mock('@main/settings/settings', () => ({
     provider: 'ollama',
     model: 'qwen2.5',
     ollamaBaseUrl: 'http://127.0.0.1:11434',
-    maxSteps: 25,
     theme: 'system',
     telemetryEnabled: false
   }),
@@ -106,8 +105,7 @@ describe('runAgent effective workspace settings', () => {
         [workspace]: {
           useOverride: true,
           provider: 'ollama',
-          model: 'override-model',
-          maxSteps: 1
+          model: 'override-model'
         }
       }
     })
@@ -120,7 +118,7 @@ describe('runAgent effective workspace settings', () => {
     if (existsSync(workspace)) rmSync(workspace, { recursive: true, force: true })
   })
 
-  it('uses workspace override for model and maxSteps instead of global settings', async () => {
+  it('uses workspace override for model instead of global settings', async () => {
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
       yield { type: 'text', text: 'hello' }
       yield { type: 'done' }
@@ -141,6 +139,5 @@ describe('runAgent effective workspace settings', () => {
     const request = streamChat.mock.calls[0]?.[0] as { model?: string }
     expect(request.model).toBe('override-model')
     expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
-    expect(events.some((e) => e.code === 'AGENT_MAX_STEPS')).toBe(false)
   })
 })

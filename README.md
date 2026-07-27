@@ -36,7 +36,7 @@ pnpm dev
 
 OpenAI · Anthropic · Gemini · Ollama · DeepSeek · Groq · OpenRouter · xAI · Mistral
 
-- **Extended thinking:** Reasoning-capable models stream a separate thinking channel (collapsed in chat). Configure in the composer **model picker** (thinking on/off, effort, show/hide), along with max steps and compaction.
+- **Extended thinking:** Reasoning-capable models stream a separate thinking channel (collapsed in chat). Configure in the composer **model picker** (thinking on/off, effort, show/hide), along with compaction.
 - **OpenAI** reasoning models use the **Responses API** (`/v1/responses`) with reasoning summaries and tool-loop continuity.
 - **Gemini** thinking models use the **Interactions API** (`/v1beta/interactions`) with stateful `previous_interaction_id`.
 - **Anthropic** uses **Messages API** extended/adaptive thinking; **DeepSeek** and **OpenRouter** use Chat Completions with `reasoning_content` / `reasoning` replay on tool steps.

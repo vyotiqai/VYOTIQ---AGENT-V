@@ -16,7 +16,7 @@ export function AdvancedSection({
       <SettingsRow
         stacked
         title="MCP servers"
-        description="External tool servers (stdio). Tools are namespaced as mcp__serverId__toolName. Agent limits are in Settings → Agent."
+        description="External tool servers (stdio). Tools are namespaced as mcp__serverId__toolName. Agent behavior settings are in Settings → Agent."
       >
         <div className="flex w-full flex-col gap-2">
           <div className="flex items-center justify-end gap-2">

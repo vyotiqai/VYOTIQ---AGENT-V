@@ -258,7 +258,8 @@ export function Composer({
             variant={variant}
             disabled={disabled}
             locked={locked}
-            imagesCount={images.length + files.length}
+            imageCount={images.length}
+            fileCount={files.length}
             onAttachClick={() => {
               if (images.length >= MAX_IMAGES && files.length >= MAX_FILES) {
                 setImageError(`You can attach up to ${MAX_IMAGES} images and ${MAX_FILES} files.`)

@@ -14,7 +14,6 @@ afterEach(() => {
 const chatSettings: EffectiveChatSettings = {
   provider: 'ollama',
   model: 'qwen2.5',
-  maxSteps: DEFAULT_SETTINGS.maxSteps,
   compactionTriggerRatio: DEFAULT_SETTINGS.compactionTriggerRatio,
   keepRecentTurns: DEFAULT_SETTINGS.keepRecentTurns,
   memoryAutoPromote: DEFAULT_SETTINGS.memoryAutoPromote,

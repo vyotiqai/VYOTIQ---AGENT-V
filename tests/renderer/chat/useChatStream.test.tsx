@@ -733,6 +733,32 @@ describe('useChatStream', () => {
     expect(assistant?.kind === 'message' ? assistant.content : null).toBe('Checking routes.')
   })
 
+  it('does not render in-progress leaked tool JSON as streaming assistant text', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('audit')
+    })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({
+        type: 'text_delta',
+        runId: 'run-1',
+        text: 'Checking routes.\ntool {"path":"routes.ts"'
+      })
+    })
+
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+    })
+
+    const assistant = result.current.items.find(
+      (i) => i.kind === 'message' && i.role === 'assistant'
+    )
+    expect(assistant?.kind === 'message' ? assistant.content : null).toBe('Checking routes.')
+  })
+
   it('does not stack later assistant text before orphaned live tools', async () => {
     const { result } = renderHook(() => useChatStream('/ws'))
 
@@ -1001,12 +1027,12 @@ describe('useChatStream', () => {
 
     await act(async () => {
       handler?.({ type: 'status', runId: 'run-1', status: 'running' })
-      handler?.({ type: 'thinking_delta', runId: 'run-1', text: 'First I read.' })
+      handler?.({ type: 'thinking_delta', runId: 'run-1', text: 'First I read the surrounding module.' })
       handler?.({
         type: 'assistant_message',
         runId: 'run-1',
         content: '',
-        thinking: 'First I read.',
+        thinking: 'First I read the surrounding module.',
         toolCalls: [{ id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }]
       })
       handler?.({
@@ -1018,12 +1044,12 @@ describe('useChatStream', () => {
         ok: true,
         content: 'body'
       })
-      handler?.({ type: 'thinking_delta', runId: 'run-1', text: 'Now I edit.' })
+      handler?.({ type: 'thinking_delta', runId: 'run-1', text: 'Now I edit the exported helper.' })
       handler?.({
         type: 'assistant_message',
         runId: 'run-1',
         content: '',
-        thinking: 'Now I edit.',
+        thinking: 'Now I edit the exported helper.',
         toolCalls: [{ id: 'c2', name: 'edit', arguments: '{"path":"a.ts"}' }]
       })
       handler?.({
@@ -1041,8 +1067,8 @@ describe('useChatStream', () => {
 
     const thinkingRows = result.current.items.filter((i) => i.kind === 'message' && i.thinking)
     expect(thinkingRows.map((row) => row.kind === 'message' && row.thinking)).toEqual([
-      'First I read.',
-      'Now I edit.'
+      'First I read the surrounding module.',
+      'Now I edit the exported helper.'
     ])
 
     const shape = result.current.items.map((item) =>
@@ -1050,21 +1076,21 @@ describe('useChatStream', () => {
     )
     expect(shape).toEqual([
       'refactor',
-      'First I read.',
+      'First I read the surrounding module.',
       'tool:read',
-      'Now I edit.',
+      'Now I edit the exported helper.',
       'tool:edit',
       'Refactored.'
     ])
 
-    // Which is what the transcript renders: reasoning inline, per step.
+    // Turn summary sits after work rows and before any closing answer.
     expect(buildTranscriptRows(result.current.items).map((row) => row.kind)).toEqual([
       'user',
-      'turn',
       'thinking',
       'activity',
       'thinking',
       'card',
+      'turn',
       'text'
     ])
   })
@@ -1078,12 +1104,12 @@ describe('useChatStream', () => {
 
     await act(async () => {
       handler?.({ type: 'status', runId: 'run-1', status: 'running' })
-      handler?.({ type: 'thinking_delta', runId: 'run-1', text: 'Start with the router.' })
+      handler?.({ type: 'thinking_delta', runId: 'run-1', text: 'Start with the router module next.' })
       handler?.({
         type: 'assistant_message',
         runId: 'run-1',
         content: '',
-        thinking: 'Start with the router.',
+        thinking: 'Start with the router module next.',
         toolCalls: [{ id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }]
       })
       handler?.({
@@ -1115,11 +1141,11 @@ describe('useChatStream', () => {
     const rows = buildTranscriptRows(result.current.items)
     expect(rows.map((row) => row.kind)).toEqual([
       'user',
-      'turn',
       'thinking',
       'activity',
       'text',
-      'card'
+      'card',
+      'turn'
     ])
     const narration = rows.find((row) => row.kind === 'text')
     expect(narration?.kind === 'text' && narration.item.content).toBe(

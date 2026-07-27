@@ -10,6 +10,7 @@ import {
   DEFAULT_TOOL_APPROVAL
 } from '@shared/ipc'
 import { PROVIDER_DEFAULTS, defaultModelFor, providerLabel, normalizeOllamaHost } from '@shared/providers'
+import { findByWorkspacePath } from '@shared/workspacePathMatch'
 import { useEscapeToClose } from '@renderer/lib/hooks/useEscapeToClose'
 import { useModelCatalog } from '@renderer/lib/hooks/useModelCatalog'
 import type { SettingsErrorField, SettingsSection, SettingsViewProps } from '../types'
@@ -18,11 +19,15 @@ import { defaultKeyProvider, isValidHttpUrl } from '../utils/settingsHelpers'
 export type AgentSettingsPatch = Partial<
   Pick<
     WorkspaceSettingsOverride,
-    | 'maxSteps'
     | 'compactionTriggerRatio'
     | 'keepRecentTurns'
     | 'memoryAutoPromote'
     | 'toolApproval'
+    | 'subagentProvider'
+    | 'subagentModel'
+    | 'showThinking'
+    | 'thinkingEnabled'
+    | 'thinkingEffort'
   >
 >
 
@@ -142,7 +147,8 @@ export function useSettingsForm({
       setModelsInfo(null)
       setSavingField(true)
       try {
-        const current = settingsOverridesByPath[activeWorkspacePath]
+        const current =
+          findByWorkspacePath(settingsOverridesByPath, activeWorkspacePath) ?? undefined
         const res = await onSetSettingsOverride(activeWorkspacePath, {
           ...current,
           useOverride: true,
@@ -195,7 +201,8 @@ export function useSettingsForm({
   const displayModel = effectiveChatSettings?.model ?? settings.model
   const displayProviderMeta = PROVIDER_DEFAULTS.find((p) => p.id === displayProvider)
   const workspaceOverrideActive = Boolean(
-    activeWorkspacePath && settingsOverridesByPath[activeWorkspacePath]?.useOverride
+    activeWorkspacePath &&
+      findByWorkspacePath(settingsOverridesByPath, activeWorkspacePath)?.useOverride
   )
   const keyHasSaved = Boolean(secrets[keyProvider])
   const keyProviderLabel = providerLabel(keyProvider)
@@ -262,8 +269,6 @@ export function useSettingsForm({
     settings.toolApproval ??
     DEFAULT_TOOL_APPROVAL
 
-  const agentMaxSteps =
-    (workspaceOverrideActive ? effectiveChatSettings?.maxSteps : undefined) ?? settings.maxSteps
   const agentCompactionTriggerRatio =
     (workspaceOverrideActive ? effectiveChatSettings?.compactionTriggerRatio : undefined) ??
     settings.compactionTriggerRatio
@@ -447,6 +452,7 @@ export function useSettingsForm({
     displayModel,
     displayProviderMeta,
     workspaceOverrideActive,
+    effectiveChatSettings,
     keyHasSaved,
     keyProviderLabel,
     busy,
@@ -455,10 +461,13 @@ export function useSettingsForm({
     savedKeyProviders,
     savedKeyCount,
     toolApproval,
-    agentMaxSteps,
     agentCompactionTriggerRatio,
     agentKeepRecentTurns,
     agentMemoryAutoPromote,
+    agentSubagentProvider: effectiveChatSettings?.subagentProvider,
+    agentSubagentModel: effectiveChatSettings?.subagentModel,
+    displaySubagentProvider: effectiveChatSettings?.subagentProvider ?? settings.subagentProvider,
+    displaySubagentModel: effectiveChatSettings?.subagentModel ?? settings.subagentModel,
     encryptionAvailable,
     runUpdate,
     runAgentUpdate,

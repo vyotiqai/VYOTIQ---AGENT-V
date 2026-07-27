@@ -1,6 +1,7 @@
 import type { ChatMessage, ProviderId } from '../../shared/ipc'
 import { DEFAULT_SETTINGS } from '../../shared/ipc'
-import { ollamaOpenAiBaseUrl } from '../../shared/providers'
+import { defaultModelFor, ollamaOpenAiBaseUrl } from '../../shared/providers'
+import { resolveServiceTier } from '../../shared/domain/modelSelection'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
 import { formatError, isAbortError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
@@ -9,11 +10,25 @@ import { getSecret } from '@main/settings/secrets'
 import { getSettings } from '@main/settings/settings'
 import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/workspace/workspaces'
 import { getProvider } from './providers'
+import {
+  isRetriableNetworkError,
+  isRetriableProviderMessage,
+  RetriableStreamError
+} from './providers/fetchWithRetry'
+import { requestMaxOutputTokens } from './providers/requestLimits'
 import { resolveModelInfo } from './modelResolve'
 import { AGENT_TOOLS } from './types'
 import type { ToolCall } from './providers/types'
 import { executeTool } from './tools'
 import { repairToolArgs } from './toolArgsRepair'
+import {
+  contentWindow,
+  contextWindowFor,
+  estimateMessagesTokens,
+  estimateSubagentOverheadTokens,
+  estimateTextTokens,
+  prepareSubagentMessages
+} from './context'
 
 /**
  * Investigation is what a sub-agent is for; anything that changes the workspace
@@ -38,12 +53,8 @@ function isAllowedSubagentTool(name: string): boolean {
   return SUBAGENT_TOOL_SET.has(name)
 }
 
-/** A sub-agent may not spawn another one — one level of nesting, no recursion. */
+/** A sub-agent may not spawn another one — callers must pass depth 0 (ceiling is exclusive). */
 export const MAX_SUBAGENT_DEPTH = 1
-export const SUBAGENT_MAX_STEPS = 8
-/** Parent-facing report is truncated beyond this many characters. */
-export const SUBAGENT_MAX_REPORT_CHARS = 12_000
-const MAX_REPORT_CHARS = SUBAGENT_MAX_REPORT_CHARS
 
 const SUBAGENT_SYSTEM = `You are a research sub-agent working inside a larger coding agent.
 
@@ -61,6 +72,14 @@ export type SubagentUpdate = {
   text: string
 }
 
+export type SubagentContextUsage = {
+  step: number
+  estimatedTokens: number
+  contextWindow: number
+  contentWindow: number
+  model: string
+}
+
 export type SubagentOptions = {
   task: string
   context?: string
@@ -68,8 +87,8 @@ export type SubagentOptions = {
   signal: AbortSignal
   /** Nesting level of the caller: 0 for the top-level run. */
   depth: number
-  maxSteps?: number
   emit?: (update: SubagentUpdate) => void
+  onContextUsage?: (usage: SubagentContextUsage) => void
 }
 
 export type SubagentOutcome = {
@@ -95,11 +114,10 @@ function subagentToolDefs() {
 }
 
 /**
- * Run a bounded, read-only agent loop and return its report.
+ * Run a read-only agent loop and return its report.
  *
- * This is deliberately not the main loop: a sub-agent has no run directory, no
- * compaction, and no place in the run list. It is one tool call that happens to
- * think for a while.
+ * Each instance manages its own isolated context window; the parent only sees
+ * the final report string.
  */
 export async function runSubagent(options: SubagentOptions): Promise<SubagentOutcome> {
   if (options.depth >= MAX_SUBAGENT_DEPTH) throw new SubagentDepthError()
@@ -108,78 +126,187 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
   const override = findWorkspaceSettingsOverride(readWorkspacesState(), options.workspace)
   const effective = resolveEffectiveSettings(globalSettings, override)
   const settings = { ...DEFAULT_SETTINGS, ...globalSettings, ...effective }
-  const providerId: ProviderId = settings.provider
+  const parentProvider = settings.provider
+  const parentModel = settings.model
+  const providerId: ProviderId = settings.subagentProvider ?? parentProvider
+  const modelId =
+    settings.subagentModel ??
+    (settings.subagentProvider && settings.subagentProvider !== parentProvider
+      ? defaultModelFor(providerId)
+      : parentModel)
   const provider = getProvider(providerId)
   const apiKey = providerId === 'ollama' ? null : getSecret(providerId)
-  const baseUrl = providerId === 'ollama' ? ollamaOpenAiBaseUrl(settings.ollamaBaseUrl) : undefined
-  const maxSteps = Math.max(1, options.maxSteps ?? SUBAGENT_MAX_STEPS)
+  if (providerId !== 'ollama' && !apiKey) {
+    return {
+      ok: false,
+      steps: 0,
+      report: `API key for ${providerId} is not set. Add it in Settings.`
+    }
+  }
+  const baseUrl =
+    providerId === 'ollama' ? ollamaOpenAiBaseUrl(settings.ollamaBaseUrl) : undefined
+  const serviceTier = resolveServiceTier(settings, providerId, modelId)
 
   const modelInfo = await resolveModelInfo(
     providerId,
-    settings.model,
+    modelId,
     apiKey,
     baseUrl,
     options.signal
   )
   const tools = modelInfo.supportsTools === false ? [] : subagentToolDefs()
+  const toolsJsonEstimate = tools.length ? estimateTextTokens(JSON.stringify(tools)) : 0
+  const overheadTokens = estimateSubagentOverheadTokens(SUBAGENT_SYSTEM, toolsJsonEstimate)
 
   const messages: ChatMessage[] = [
     {
       role: 'user',
-      content: options.context ? `${options.task}\n\nContext from the parent agent:\n${options.context}` : options.task
+      content: options.context
+        ? `${options.task}\n\nContext from the parent agent:\n${options.context}`
+        : options.task
     }
   ]
 
   let steps = 0
   let lastText = ''
 
-  while (steps < maxSteps) {
+  while (true) {
     if (options.signal.aborted) break
     steps++
+
+    const preparedMessages = prepareSubagentMessages(messages, modelInfo, overheadTokens)
+    const estimatedTokens =
+      estimateMessagesTokens(preparedMessages, modelInfo) + overheadTokens
+    const window = contextWindowFor(modelInfo)
+    const contentWin = contentWindow(modelInfo)
+    options.onContextUsage?.({
+      step: steps,
+      estimatedTokens,
+      contextWindow: window,
+      contentWindow: contentWin,
+      model: modelId
+    })
 
     let text = ''
     const toolCalls: ToolCall[] = []
 
-    for await (const chunk of provider.streamChat({
-      model: settings.model,
-      messages,
-      tools,
-      system: SUBAGENT_SYSTEM,
-      signal: options.signal,
-      apiKey,
-      baseUrl,
-      maxOutputTokens: modelInfo.maxOutputTokens,
-      strictTools: tools.length > 0,
-      toolChoice: tools.length > 0 ? 'auto' : undefined,
-      modelInfo,
-      // Nested reasoning would double the transcript noise for a summary the
-      // parent never reads; the report is the deliverable.
-      thinking: { enabled: false },
-      serviceTier: settings.serviceTier
-    })) {
-      if (options.signal.aborted) break
-      if (chunk.type === 'text' && chunk.text) {
-        text += chunk.text
-      } else if (chunk.type === 'tool_call' && chunk.toolCall) {
-        toolCalls.push(chunk.toolCall)
-      } else if (chunk.type === 'error') {
-        const message = chunk.error ?? 'Provider error'
-        logger.warn('Sub-agent stream error', {
-          scope: 'agent',
-          code: 'PROVIDER_STREAM',
-          provider: providerId,
-          step: steps
-        })
-        return { ok: false, report: `Sub-agent failed: ${message}`, steps }
+    const STREAM_RETRY_BACKOFF_MS = 750
+    const MAX_STREAM_ATTEMPTS = 2
+    let streamAttempt = 0
+    let streamFinished = false
+
+    while (!streamFinished && streamAttempt < MAX_STREAM_ATTEMPTS) {
+      streamAttempt++
+      if (streamAttempt > 1) {
+        text = ''
+        toolCalls.length = 0
       }
+
+      let retryStream = false
+      try {
+        for await (const chunk of provider.streamChat({
+          model: modelId,
+          messages: preparedMessages,
+          tools,
+          system: SUBAGENT_SYSTEM,
+          signal: options.signal,
+          apiKey,
+          baseUrl,
+          maxOutputTokens: requestMaxOutputTokens(providerId, modelInfo),
+          strictTools: tools.length > 0,
+          toolChoice: tools.length > 0 ? 'auto' : undefined,
+          modelInfo,
+          // Nested reasoning would double the transcript noise for a summary the
+          // parent never reads; the report is the deliverable.
+          thinking: { enabled: false },
+          serviceTier
+        })) {
+          if (options.signal.aborted) break
+          if (chunk.type === 'text' && chunk.text) {
+            text += chunk.text
+          } else if (chunk.type === 'tool_call' && chunk.toolCall) {
+            toolCalls.push(chunk.toolCall)
+          } else if (chunk.type === 'error') {
+            const message = chunk.error ?? 'Provider error'
+            if (
+              streamAttempt < MAX_STREAM_ATTEMPTS &&
+              isRetriableProviderMessage(message)
+            ) {
+              logger.warn('Sub-agent stream error (retrying)', {
+                scope: 'agent',
+                code: 'PROVIDER_STREAM',
+                provider: providerId,
+                step: steps,
+                attempt: streamAttempt
+              })
+              retryStream = true
+              break
+            }
+            logger.warn('Sub-agent stream error', {
+              scope: 'agent',
+              code: 'PROVIDER_STREAM',
+              provider: providerId,
+              step: steps
+            })
+            return { ok: false, report: `Sub-agent failed: ${message}`, steps }
+          }
+        }
+      } catch (err) {
+        if (
+          !isAbortError(err) &&
+          streamAttempt < MAX_STREAM_ATTEMPTS &&
+          (isRetriableNetworkError(err) || err instanceof RetriableStreamError)
+        ) {
+          logger.warn('Sub-agent stream disconnected (retrying)', {
+            scope: 'agent',
+            code: 'PROVIDER_STREAM',
+            provider: providerId,
+            step: steps,
+            attempt: streamAttempt,
+            err
+          })
+          await new Promise((resolve) => setTimeout(resolve, STREAM_RETRY_BACKOFF_MS))
+          continue
+        }
+        if (isAbortError(err)) break
+        throw err
+      }
+
+      if (retryStream) {
+        await new Promise((resolve) => setTimeout(resolve, STREAM_RETRY_BACKOFF_MS))
+        continue
+      }
+      streamFinished = true
     }
+
+    if (options.signal.aborted) break
 
     if (text.trim()) {
       lastText = text
       options.emit?.({ kind: 'text', text: text.trim() })
     }
 
-    if (!toolCalls.length) break
+    if (!toolCalls.length) {
+      // Only the terminal no-tool step counts as the report — earlier narration
+      // before tool calls is not a finished answer.
+      const report = text.trim()
+      if (!report) {
+        return {
+          ok: false,
+          report: options.signal.aborted
+            ? 'Sub-agent was cancelled before it reported anything.'
+            : lastText.trim()
+              ? 'Sub-agent stopped without a final report after using tools.'
+              : 'Sub-agent finished without producing a report.',
+          steps
+        }
+      }
+      options.emit?.({
+        kind: 'done',
+        text: `Reported in ${steps} ${steps === 1 ? 'step' : 'steps'}`
+      })
+      return { ok: true, report, steps }
+    }
 
     messages.push({ role: 'assistant', content: text, toolCalls })
 
@@ -225,21 +352,11 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
     }
   }
 
-  const report = lastText.trim()
-  if (!report) {
-    return {
-      ok: false,
-      report: options.signal.aborted
-        ? 'Sub-agent was cancelled before it reported anything.'
-        : 'Sub-agent finished without producing a report.',
-      steps
-    }
+  return {
+    ok: false,
+    report: options.signal.aborted
+      ? 'Sub-agent was cancelled before it reported anything.'
+      : 'Sub-agent finished without producing a report.',
+    steps
   }
-
-  const capped =
-    report.length > MAX_REPORT_CHARS
-      ? `${report.slice(0, MAX_REPORT_CHARS)}\n\n[report truncated]`
-      : report
-  options.emit?.({ kind: 'done', text: `Reported in ${steps} ${steps === 1 ? 'step' : 'steps'}` })
-  return { ok: true, report: capped, steps }
 }

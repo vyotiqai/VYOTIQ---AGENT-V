@@ -44,6 +44,16 @@ describe('ThinkingBlock', () => {
     expect(container.firstChild).toBeNull()
   })
 
+  it('does not render short finished reasoning stubs', () => {
+    const { container } = render(<ThinkingBlock content="OK" />)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('still shows short reasoning while it streams', () => {
+    render(<ThinkingBlock content="OK" streaming />)
+    expect(screen.getByRole('button', { name: /thinking/i })).toBeTruthy()
+  })
+
   it('caps open reasoning in a scrollable body so it cannot flood the timeline', () => {
     const long = 'Plan step. '.repeat(80)
     const { container } = render(<ThinkingBlock content={long} streaming />)

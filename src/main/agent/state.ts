@@ -53,7 +53,14 @@ export async function readContractAsync(runDir: string): Promise<string> {
 
 export function saveCompaction(runDir: string, record: CompactionRecord): void {
   const parsed = CompactionRecordSchema.safeParse(record)
-  if (!parsed.success) return
+  if (!parsed.success) {
+    logger.warn('Invalid compaction record; not saved', {
+      scope: 'state',
+      correlationId: basename(runDir),
+      err: parsed.error
+    })
+    return
+  }
   atomicWriteJson(join(runDir, 'compaction.json'), parsed.data)
 }
 

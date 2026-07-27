@@ -11,7 +11,7 @@ import type {
 } from '@shared/ipc'
 import { toLogErr } from '@shared/errors'
 import { logger } from '@shared/logger'
-import { workspacePathsEqual } from '@shared/workspacePathMatch'
+import { workspacePathsEqual, findByWorkspacePath } from '@shared/workspacePathMatch'
 import {
   createChatStreamController,
   type ChatStreamController
@@ -113,11 +113,7 @@ function findSettingsOverride(
   overrides: WorkspacesState['settingsOverridesByPath'],
   path: string
 ): WorkspaceSettingsOverride | null {
-  if (overrides[path] !== undefined) return overrides[path] ?? null
-  for (const key of Object.keys(overrides)) {
-    if (workspacePathsEqual(key, path)) return overrides[key] ?? null
-  }
-  return null
+  return findByWorkspacePath(overrides, path)
 }
 
 export function useWorkspaceManager() {
@@ -140,6 +136,7 @@ export function useWorkspaceManager() {
   const backgroundRunIdsRef = useRef(new Set<string>())
   const refreshRunsRef = useRef<(path: string) => Promise<void>>(async () => {})
   const lastActiveRunsWarnAtRef = useRef(0)
+  const activeRunsRef = useRef<{ runId: string; workspacePath: string }[]>([])
   const orphanSyncTimersRef = useRef(new Map<string, number>())
 
   const bump = useCallback(() => setRevision((r) => r + 1), [])
@@ -487,7 +484,19 @@ export function useWorkspaceManager() {
       }
       return
     }
+    const prevActive = activeRunsRef.current
+    activeRunsRef.current = res.data
     setActiveRuns(res.data)
+    for (const entry of prevActive) {
+      if (
+        res.data.some(
+          (r) => r.runId === entry.runId && workspacePathsEqual(r.workspacePath, entry.workspacePath)
+        )
+      ) {
+        continue
+      }
+      void refreshRunsRef.current(entry.workspacePath)
+    }
     const activeIds = new Set(res.data.map((entry) => entry.runId))
     await reattachActiveRuns(res.data)
     for (const [key, ctrl] of controllersRef.current.entries()) {
@@ -561,7 +570,7 @@ export function useWorkspaceManager() {
               },
               composerDraft
             },
-            settingsOverride: state.settingsOverridesByPath[path] ?? null
+            settingsOverride: findSettingsOverride(state.settingsOverridesByPath, path)
           }
         } else {
           next[path] = contextFromRegistry(path, state)
@@ -804,10 +813,9 @@ export function useWorkspaceManager() {
     [activeWorkspace, ensureController]
   )
 
-  const openRunTab = useCallback(
-    (runId: string | null): void => {
-      if (!activeWorkspace) return
-      const ctx = contextsRef.current[activeWorkspace]
+  const openRunTabInWorkspace = useCallback(
+    (workspacePath: string, runId: string | null): void => {
+      const ctx = contextsRef.current[workspacePath]
       if (!ctx) return
       const sameTab = ctx.activeRunId === runId
       const openRunIds =
@@ -817,29 +825,40 @@ export function useWorkspaceManager() {
         activeRunId: runId,
         openRunIds
       }
-      maybeEvictControllers(activeWorkspace, openRunIds, runId)
-      ensureController(activeWorkspace, runId)
-      contextsRef.current = { ...contextsRef.current, [activeWorkspace]: nextCtx }
+      maybeEvictControllers(workspacePath, openRunIds, runId)
+      ensureController(workspacePath, runId)
+      contextsRef.current = { ...contextsRef.current, [workspacePath]: nextCtx }
       setContexts((prev) => ({
         ...prev,
-        [activeWorkspace]: nextCtx
+        [workspacePath]: nextCtx
       }))
-      schedulePersistUiState(activeWorkspace, nextCtx)
+      schedulePersistUiState(workspacePath, nextCtx)
       if (!sameTab) {
-        flushPersistUiState(activeWorkspace)
+        flushPersistUiState(workspacePath)
         setChatSurfaceEpoch((t) => t + 1)
         setScrollRestoreToken((t) => t + 1)
       }
       bump()
     },
-    [
-      activeWorkspace,
-      bump,
-      ensureController,
-      flushPersistUiState,
-      maybeEvictControllers,
-      schedulePersistUiState
-    ]
+    [bump, ensureController, flushPersistUiState, maybeEvictControllers, schedulePersistUiState]
+  )
+
+  const openRunTab = useCallback(
+    (runId: string | null): void => {
+      if (!activeWorkspace) return
+      openRunTabInWorkspace(activeWorkspace, runId)
+    },
+    [activeWorkspace, openRunTabInWorkspace]
+  )
+
+  const openRunInWorkspace = useCallback(
+    async (path: string, runId: string): Promise<void> => {
+      if (!activeWorkspace || !workspacePathsEqual(activeWorkspace, path)) {
+        await switchWorkspace(path)
+      }
+      openRunTabInWorkspace(path, runId)
+    },
+    [activeWorkspace, openRunTabInWorkspace, switchWorkspace]
   )
 
   const closeRunTab = useCallback(
@@ -1046,6 +1065,13 @@ export function useWorkspaceManager() {
     if (activeWorkspace) void refreshRuns(activeWorkspace)
   }, [activeWorkspace, refreshRuns])
 
+  const refreshWorkspaceRuns = useCallback(
+    (workspacePath: string): void => {
+      void refreshRuns(workspacePath)
+    },
+    [refreshRuns]
+  )
+
   useEffect(() => {
     if (!activeWorkspace) return
     const timer = window.setTimeout(() => {
@@ -1071,14 +1097,15 @@ export function useWorkspaceManager() {
     [activeRuns, contexts]
   )
 
-  const clearRunsError = useCallback(() => {
-    if (!activeWorkspace) return
+  const clearRunsError = useCallback((workspacePath?: string) => {
+    const path = workspacePath ?? activeWorkspace
+    if (!path) return
     setContexts((prev) => {
-      const ctx = prev[activeWorkspace]
+      const ctx = prev[path]
       if (!ctx || !ctx.runsError) return prev
       return {
         ...prev,
-        [activeWorkspace]: { ...ctx, runsError: null }
+        [path]: { ...ctx, runsError: null }
       }
     })
   }, [activeWorkspace])
@@ -1110,6 +1137,7 @@ export function useWorkspaceManager() {
     activeWorkspace,
     openWorkspaces,
     activeContext,
+    contexts,
     activeController,
     activeRuns,
     chat: chatSnapshot,
@@ -1119,9 +1147,11 @@ export function useWorkspaceManager() {
     getRunController,
     loadRunIntoTab,
     openRunTab,
+    openRunInWorkspace,
     closeRunTab,
     setSessionQuery,
     refreshActiveRuns,
+    refreshWorkspaceRuns,
     isRunActiveInBackground,
     workspaceHasBackgroundRun,
     scrollRestoreToken,

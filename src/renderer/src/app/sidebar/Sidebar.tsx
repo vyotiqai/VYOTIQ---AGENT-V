@@ -1,5 +1,6 @@
 import { cn } from '@renderer/lib/ui'
 import { useWorkspaceHotUi } from '@renderer/lib/hooks/workspaceHotUiStore'
+import { useEffect, useState } from 'react'
 import {
   SIDEBAR_CONTAINER,
   SIDEBAR_WIDTH,
@@ -10,23 +11,19 @@ import {
 import { ChatList } from './ChatList'
 import { SidebarCollapsed } from './SidebarCollapsed'
 import { SidebarCollapsedHeader, SidebarTopBar } from './SidebarTopBar'
-import { SidebarFooter } from './SidebarFooter'
 import type { SidebarProps } from './types'
 import { useSidebarChats } from './useSidebarChats'
 
 export function Sidebar({
   view,
-  runs,
-  runsCapped,
-  runsError,
   onDismissRunsError,
-  activeRunId,
   sessionQuery: sessionQueryProp,
   searchRef,
   harnessActive,
   hasWorkspace,
   openPaths,
   activePath,
+  runsByWorkspacePath,
   activeRuns,
   onSwitchWorkspace,
   onCloseWorkspace,
@@ -38,8 +35,11 @@ export function Sidebar({
   onOpenHarness,
   onNewChat,
   onSelectRun,
+  onSelectRunInWorkspace,
   onRenameRun,
+  onRenameRunInWorkspace,
   onDeleteRun,
+  onDeleteRunInWorkspace,
   onCloseDrawer,
   onToggleSidebar,
   collapsed = false,
@@ -52,8 +52,26 @@ export function Sidebar({
   const isCollapsed = collapsed && !isDrawer
   const hotUi = useWorkspaceHotUi(activePath)
   const sessionQuery = activePath ? hotUi.sessionQuery : sessionQueryProp
+  const [expandedByPath, setExpandedByPath] = useState<Record<string, boolean>>({})
 
-  const { filteredRuns, groupedRuns } = useSidebarChats(runs, sessionQuery)
+  useEffect(() => {
+    if (!openPaths?.length) return
+    setExpandedByPath((prev) => {
+      const next: Record<string, boolean> = {}
+      for (const path of openPaths) {
+        next[path] = prev[path] ?? path === activePath
+      }
+      return next
+    })
+  }, [activePath, openPaths])
+
+  const { filteredRuns, workspaceGroups } = useSidebarChats({
+    openPaths: openPaths ?? [],
+    activePath: activePath ?? null,
+    sessionQuery,
+    runsByWorkspacePath: runsByWorkspacePath ?? {},
+    expandedByPath
+  })
 
   const clearSearch = (): void => onSessionQuery('')
 
@@ -156,23 +174,36 @@ export function Sidebar({
             <ChatList
               workspaceReady={workspaceReady}
               sessionQuery={sessionQuery}
-              filteredRuns={filteredRuns}
-              groupedRuns={groupedRuns}
-              runsCapped={runsCapped}
-              runsError={runsError}
-              onDismissRunsError={onDismissRunsError}
-              activeRunId={activeRunId}
-              onSelectRun={(runId) => {
-                onSelectRun(runId)
+              filteredRunsCount={filteredRuns.length}
+              workspaceGroups={workspaceGroups}
+              onToggleWorkspace={(path) =>
+                setExpandedByPath((prev) => ({ ...prev, [path]: !(prev[path] ?? false) }))
+              }
+              onSwitchWorkspace={(path) => {
+                setExpandedByPath((prev) => ({ ...prev, [path]: true }))
+                onSwitchWorkspace?.(path)
+              }}
+              onCloseWorkspace={(path) => onCloseWorkspace?.(path)}
+              onAddWorkspace={() => onAddWorkspace?.()}
+              workspaceHasBackgroundRun={(path) => workspaceHasBackgroundRun?.(path) ?? false}
+              onDismissRunsError={(path) => onDismissRunsError?.(path)}
+              onSelectRun={(path, runId) => {
+                setExpandedByPath((prev) => ({ ...prev, [path]: true }))
+                if (onSelectRunInWorkspace) onSelectRunInWorkspace(path, runId)
+                else onSelectRun(runId)
                 onOpenChat()
                 afterNav()
               }}
-              onRenameRun={onRenameRun}
-              onDeleteRun={onDeleteRun}
+              onRenameRun={(path, runId, goal) => {
+                if (onRenameRunInWorkspace) onRenameRunInWorkspace(path, runId, goal)
+                else onRenameRun(runId, goal)
+              }}
+              onDeleteRun={(path, runId) => {
+                if (onDeleteRunInWorkspace) onDeleteRunInWorkspace(path, runId)
+                else onDeleteRun(runId)
+              }}
             />
           </div>
-
-          <SidebarFooter workspaceProps={workspaceProps} />
         </>
       )}
     </aside>

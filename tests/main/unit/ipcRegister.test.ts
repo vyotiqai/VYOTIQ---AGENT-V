@@ -62,7 +62,6 @@ vi.mock('@main/settings/settings', () => ({
     provider: 'ollama',
     model: 'qwen2.5',
     ollamaBaseUrl: 'http://127.0.0.1:11434',
-    maxSteps: 25,
     theme: 'system',
     telemetryEnabled: false
   }),

@@ -178,6 +178,47 @@ describe('useWorkspaceManager', () => {
     ).toBe(false)
   })
 
+  it('opens a run under a different workspace and switches active path', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    await act(async () => {
+      await result.current.openRunInWorkspace('/ws-b', 'run-b-123')
+    })
+
+    expect(setActiveWorkspace).toHaveBeenCalledWith('/ws-b')
+    expect(result.current.activeWorkspace).toBe('/ws-b')
+    expect(result.current.activeContext?.activeRunId).toBe('run-b-123')
+    expect(result.current.activeContext?.openRunIds).toContain('run-b-123')
+  })
+
+  it('refreshes workspace runs when activeRuns poll drops a finished background run', async () => {
+    listActiveRuns.mockResolvedValue({
+      ok: true,
+      data: [{ runId: 'run-bg', workspacePath: '/ws-a' }]
+    })
+
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    listRuns.mockClear()
+    listActiveRuns.mockResolvedValue({ ok: true, data: [] })
+
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+    })
+
+    await waitFor(() => {
+      expect(listRuns.mock.calls.some((call) => call[0] === '/ws-a')).toBe(true)
+    })
+  })
+
   it('keeps background run demux alive when workspace tab is removed', async () => {
     listActiveRuns.mockResolvedValue({
       ok: true,

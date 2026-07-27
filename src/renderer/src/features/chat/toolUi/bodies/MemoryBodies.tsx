@@ -8,11 +8,12 @@ import {
 } from '../parsers/memory'
 import { CodeBlock, TruncatedBanner } from '../primitives'
 
-export function MemoryListBody({ tool }: ToolBodyProps) {
+export function MemoryListBody({ tool, loading, loadFailed }: ToolBodyProps) {
   const data = useMemo(() => parseMemoryListData(tool), [tool])
 
   return (
-    <div className={`${TOOL_BODY_INNER} space-y-2 text-[11px]`}>
+    <div className={`${TOOL_BODY_INNER} space-y-2 text-[11px]`} aria-busy={loading || undefined}>
+      {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
       <section>
         <h4 className="m-0 mb-1 text-[10px] font-medium uppercase tracking-wide text-tertiary">
           index.md

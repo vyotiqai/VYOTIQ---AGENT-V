@@ -19,6 +19,7 @@ import {
   RetriableStreamError
 } from './providers/fetchWithRetry'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
+import { resolveServiceTier } from '../../shared/domain/modelSelection'
 import { createApprovalGate } from './toolApproval'
 import { persistAlwaysAllow } from './toolApprovalStore'
 import { getSecret, secretStatus } from '@main/settings/secrets'
@@ -47,6 +48,7 @@ import {
 import { MAX_PARALLEL_READ_TOOLS } from './tools/classify'
 import { getProvider } from './providers'
 import { resolveModelInfo } from './modelResolve'
+import { requestMaxOutputTokens } from './providers/requestLimits'
 import type { ProviderReasoningState } from '../../shared/reasoning'
 import { parseProviderReasoningState } from '../../shared/reasoning'
 import type { StopReason, TokenUsage, ToolCall } from './providers/types'
@@ -87,11 +89,10 @@ function dedupeToolCalls(calls: ToolCall[]): ToolCall[] {
   return [...seen.values()]
 }
 
-const INCOMPLETE_MESSAGES: Record<IncompleteReason, string> = {
+const INCOMPLETE_MESSAGES: Record<Exclude<IncompleteReason, never>, string> = {
   truncated: 'The model hit its output token limit before finishing this turn.',
   empty_response: 'The model returned an empty response.',
-  filtered: 'The provider stopped the response because of a content filter.',
-  max_steps: 'The step budget ran out before the work was finished.'
+  filtered: 'The provider stopped the response because of a content filter.'
 }
 
 /** True when two messages are the same role + normalized text (resume dedupe). */
@@ -205,7 +206,8 @@ function* flushPartialAssistant(
       role: 'tool',
       toolCallId: call.id,
       toolName: call.name,
-      content: stub
+      content: stub,
+      ok: false
     }
     messages.push(unfinished)
     appendMessage(runDir, unfinished)
@@ -346,9 +348,7 @@ export async function* runAgent(input: {
       }
     }
 
-    const maxSteps = settings.maxSteps
     let step = 0
-    let lastStepToolsSucceeded = false
     let lastUsage: TokenUsage | undefined
 
     const approvalSettings = settings.toolApproval ?? DEFAULT_SETTINGS.toolApproval
@@ -430,24 +430,10 @@ export async function* runAgent(input: {
     const failedToolKeys = new Map<string, number>()
     let consecutiveToolFailureSteps = 0
 
-    while (step < maxSteps) {
+    while (true) {
       if (controller.signal.aborted) break
       step++
-      lastStepToolsSucceeded = false
       writeStatus({ step, status: 'running' })
-
-      const budgetWarnStep = Math.max(1, Math.ceil(maxSteps * 0.8))
-      if (step === budgetWarnStep && maxSteps > 1) {
-        const budgetEv: AgentEvent = {
-          type: 'step_budget',
-          runId,
-          step,
-          maxSteps,
-          ratio: step / maxSteps
-        }
-        appendEvent(runDir, budgetEv)
-        yield budgetEv
-      }
 
       let assistantText = ''
       let thinkingText = ''
@@ -511,10 +497,7 @@ export async function* runAgent(input: {
         modelInfo,
         settings.compactionTriggerRatio
       )
-      const providerInput =
-        lastUsage?.inputTokens && lastUsage.inputTokens > 0
-          ? lastUsage.inputTokens
-          : assembled.estimatedTokens
+      const providerInput = assembled.estimatedTokens
       const contextUsageEv: AgentEvent = {
         type: 'context_usage',
         runId,
@@ -524,7 +507,7 @@ export async function* runAgent(input: {
         contextWindow,
         contentWindow: effectiveContentWindow,
         compactionTrigger,
-        source: lastUsage?.inputTokens ? 'provider' : 'estimate',
+        source: 'estimate',
         layers: assembled.layers
       }
       appendEvent(runDir, contextUsageEv)
@@ -560,7 +543,7 @@ export async function* runAgent(input: {
           signal: controller.signal,
           apiKey,
           baseUrl,
-          maxOutputTokens: modelInfo.maxOutputTokens,
+          maxOutputTokens: requestMaxOutputTokens(providerId, modelInfo),
           anthropicNative: assembled.anthropicNative,
           strictTools: toolDefs.length > 0,
           toolChoice: toolDefs.length > 0 ? 'auto' : undefined,
@@ -575,7 +558,7 @@ export async function* runAgent(input: {
                 display: settings.showThinking ? 'summarized' : 'omitted'
               }
             : { enabled: false },
-          serviceTier: settings.serviceTier
+          serviceTier: resolveServiceTier(settings, providerId, settings.model)
         })) {
           if (controller.signal.aborted) break
           if (chunk.type === 'text' && chunk.text) {
@@ -898,7 +881,9 @@ export async function* runAgent(input: {
         approval: approvalGate,
         emitLiveEvent: (ev: AgentEvent) => {
           liveEvents.push(ev)
-          if (ev.type === 'subagent_update') appendEvent(runDir!, ev)
+          if (ev.type === 'subagent_update' || ev.type === 'subagent_context_usage') {
+            appendEvent(runDir!, ev)
+          }
           wakeLiveEvents?.()
         }
       }
@@ -945,10 +930,6 @@ export async function* runAgent(input: {
         }
       }
 
-      if (!controller.signal.aborted && stepToolsOk && uniqueToolCalls.length > 0) {
-        lastStepToolsSucceeded = true
-      }
-
       if (controller.signal.aborted) break
     }
 
@@ -956,27 +937,6 @@ export async function* runAgent(input: {
       yield { type: 'status', runId, status: 'cancelled' }
       writeStatus({ status: 'cancelled' })
       appendEvent(runDir, { type: 'status', runId, status: 'cancelled' })
-    } else {
-      // Ran out of steps without a clean wrap-up (including all-failure last step).
-      const incompleteEv: AgentEvent = {
-        type: 'incomplete',
-        runId,
-        reason: 'max_steps',
-        step,
-        message: INCOMPLETE_MESSAGES.max_steps
-      }
-      logger.warn('Step budget exhausted', {
-        scope: 'agent',
-        code: 'AGENT_INCOMPLETE',
-        correlationId: runId,
-        maxSteps,
-        lastStepToolsSucceeded
-      })
-      appendEvent(runDir, incompleteEv)
-      yield incompleteEv
-      yield { type: 'status', runId, status: 'done' }
-      writeStatus({ status: 'done' })
-      appendEvent(runDir, { type: 'status', runId, status: 'done' })
     }
   } catch (err) {
     if (isAbortError(err)) {
@@ -1003,7 +963,9 @@ export async function* runAgent(input: {
       }
     }
   } finally {
-    if (runDir && isCurrentInvoke(runId, invokeId)) await flushEventAppends(runDir)
+    // Always drain the per-run append chain so a superseded invoke cannot leave
+    // events buffered when a follow-up turn starts immediately.
+    if (runDir) await flushEventAppends(runDir)
     clearRunAbort(runId, invokeId)
   }
 }

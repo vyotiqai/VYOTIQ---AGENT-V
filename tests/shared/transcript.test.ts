@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from '@shared/ipc'
-import { inferToolStatus, messagesToUiItems, applyEventTimestamps, isMeaningfulThinking, duplicatesReasoning, mergeThinkingContent, stripToolShapedAssistantText } from '@shared/transcript'
+import { inferToolStatus, messagesToUiItems, applyEventTimestamps, isMeaningfulThinking, shouldRenderThinking, duplicatesReasoning, mergeThinkingContent, stripToolShapedAssistantText, stripToolShapedAssistantTextForStream, stripIncompleteToolPrefix, isToolShapedTextLeak, scrubStreamingAssistantToolLeak } from '@shared/transcript'
 
 describe('messagesToUiItems', () => {
   it('rebuilds user, assistant, and tool rows in order', () => {
@@ -236,6 +236,13 @@ describe('transcript display helpers', () => {
     expect(isMeaningfulThinking('planned approach')).toBe(true)
   })
 
+  it('hides short finished thinking that would leave empty transcript gaps', () => {
+    expect(shouldRenderThinking('OK')).toBe(false)
+    expect(shouldRenderThinking('planned approach')).toBe(false)
+    expect(shouldRenderThinking('Let me reason about this carefully.')).toBe(true)
+    expect(shouldRenderThinking('OK', true)).toBe(true)
+  })
+
   it('keeps narration between tool batches, streaming or not', () => {
     const narration = {
       kind: 'message',
@@ -327,6 +334,65 @@ describe('stripToolShapedAssistantText', () => {
   })
 })
 
+describe('stripToolShapedAssistantTextForStream', () => {
+  it('hides an in-progress tool JSON blob at the end of the buffer', () => {
+    expect(stripToolShapedAssistantTextForStream('Checking routes.\ntool {"path":"a.ts"')).toBe(
+      'Checking routes.'
+    )
+  })
+
+  it('strips complete blobs and trailing incomplete prefixes together', () => {
+    expect(
+      stripToolShapedAssistantTextForStream(
+        'tool {"path":"a.ts"}\nNow reading.\ntool {"path":"b.ts"'
+      )
+    ).toBe('Now reading.')
+  })
+
+  it('leaves ordinary narration alone', () => {
+    expect(stripToolShapedAssistantTextForStream('The tool ran successfully.')).toBe(
+      'The tool ran successfully.'
+    )
+  })
+})
+
+describe('stripIncompleteToolPrefix', () => {
+  it('drops a trailing partial pseudo tool line', () => {
+    expect(stripIncompleteToolPrefix('Summary so far.\ntool read src/a.ts')).toBe('Summary so far.')
+  })
+})
+
+describe('isToolShapedTextLeak', () => {
+  it('detects leaked tool JSON and pseudo calls', () => {
+    expect(isToolShapedTextLeak('tool {"path":"a.ts"}')).toBe(true)
+    expect(isToolShapedTextLeak('tool read src/a.ts')).toBe(true)
+    expect(isToolShapedTextLeak('The tool ran successfully.')).toBe(false)
+  })
+})
+
+describe('scrubStreamingAssistantToolLeak', () => {
+  it('strips leaked tool JSON from streaming assistant rows', () => {
+    const items = scrubStreamingAssistantToolLeak([
+      {
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        content: 'Checking routes.\ntool {"path":"a.ts"',
+        streaming: true
+      },
+      {
+        kind: 'message',
+        id: 'a2',
+        role: 'assistant',
+        content: 'done',
+        streaming: false
+      }
+    ])
+    const streaming = items.find((i) => i.kind === 'message' && i.id === 'a1')
+    expect(streaming?.kind === 'message' ? streaming.content : null).toBe('Checking routes.')
+  })
+})
+
 describe('inferToolStatus', () => {
   it('marks failures from content heuristics', () => {
     expect(inferToolStatus('Unknown tool: foo')).toBe('fail')
@@ -337,6 +403,8 @@ describe('inferToolStatus', () => {
   it('treats empty tool output as success when replaying history', () => {
     expect(inferToolStatus('')).toBe('done')
     expect(inferToolStatus('Cancelled')).toBe('fail')
+    expect(inferToolStatus('Interrupted')).toBe('fail')
+    expect(inferToolStatus('Stopped')).toBe('fail')
     expect(inferToolStatus('Failed to parse tool arguments')).toBe('fail')
     expect(inferToolStatus('invalid args for read')).toBe('fail')
     expect(inferToolStatus('exit_code: 0')).toBe('done')

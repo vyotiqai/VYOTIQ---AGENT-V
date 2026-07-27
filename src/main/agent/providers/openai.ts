@@ -24,6 +24,21 @@ import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
+import {
+  formatProviderHttpError,
+  parseOpenRouterAffordableOutputTokens
+} from './httpErrors'
+
+export function openAiCompatMessageReasoningDelta(
+  messageReasoning: string,
+  accumulated: string
+): string | null {
+  if (!messageReasoning || messageReasoning.length <= accumulated.length) return null
+  if (messageReasoning.startsWith(accumulated) && accumulated.length > 0) {
+    return messageReasoning.slice(accumulated.length) || null
+  }
+  return accumulated ? messageReasoning : messageReasoning
+}
 
 export type OpenAiCompatOptions = {
   defaultBaseUrl: string
@@ -197,7 +212,8 @@ export function parseOpenAiCompatUsage(raw: unknown): TokenUsage | undefined {
 async function fetchJson(
   url: string,
   headers: Record<string, string>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  providerId?: ProviderId
 ): Promise<unknown> {
   let res: Response
   try {
@@ -212,7 +228,7 @@ async function fetchJson(
     logProviderFailure('openai-compat', 'http', {
       status: res.status
     })
-    throw new Error(`HTTP ${res.status}: ${text.slice(0, 400)}`)
+    throw new Error(formatProviderHttpError(res.status, text, providerId))
   }
   return res.json()
 }
@@ -315,7 +331,7 @@ async function listOpenAiCompatModels(
     const openAiBase = `${host}/v1`
     let openAiErr: unknown
     try {
-      const data = await fetchJson(`${openAiBase}/models`, headers, signal)
+      const data = await fetchJson(`${openAiBase}/models`, headers, signal, providerId ?? 'ollama')
       let models = normalizeOpenAiStyleModels(data, {
         requireToolsParam: opts.requireToolsParam,
         providerId: providerId ?? 'ollama'
@@ -355,7 +371,7 @@ async function listOpenAiCompatModels(
       ? `${base}${listPath}?supported_parameters=tools`
       : `${base}${listPath}`
 
-  const data = await fetchJson(url, headers, signal)
+  const data = await fetchJson(url, headers, signal, providerId)
   return normalizeOpenAiStyleModels(data, {
     requireToolsParam: opts.requireToolsParam,
     providerId
@@ -469,7 +485,6 @@ export function createOpenAiCompatibleProvider(
       const raw = (req.baseUrl || opts.defaultBaseUrl).replace(/\/$/, '')
       const base = opts.ollamaVision ? `${normalizeOllamaHost(raw)}/v1` : raw
       const url = `${base}/chat/completions`
-      const body = buildOpenAiCompatBody(req, opts, id)
 
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
@@ -479,27 +494,47 @@ export function createOpenAiCompatibleProvider(
         headers.Authorization = `Bearer ${req.apiKey}`
       }
 
-      let res: Response
-      try {
-        res = await fetchWithRetry(url, {
-          method: 'POST',
-          headers,
-          signal: req.signal,
-          body: JSON.stringify(body)
-        })
-      } catch (err) {
-        if (req.signal.aborted) throw err
-        logProviderFailure(id, 'network', {})
-        yield { type: 'error', error: formatError(err) }
+      let maxOutputTokens = req.maxOutputTokens
+      let res: Response | undefined
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const body = buildOpenAiCompatBody({ ...req, maxOutputTokens }, opts, id)
+        try {
+          res = await fetchWithRetry(url, {
+            method: 'POST',
+            headers,
+            signal: req.signal,
+            body: JSON.stringify(body)
+          })
+        } catch (err) {
+          if (req.signal.aborted) throw err
+          logProviderFailure(id, 'network', {})
+          yield { type: 'error', error: formatError(err) }
+          return
+        }
+
+        if (res.ok) break
+
+        const text = await res.text().catch(() => '')
+        const affordable =
+          id === 'openrouter' && res.status === 402
+            ? parseOpenRouterAffordableOutputTokens(text)
+            : undefined
+        if (
+          attempt === 0 &&
+          affordable &&
+          (maxOutputTokens === undefined || affordable < maxOutputTokens)
+        ) {
+          maxOutputTokens = affordable
+          continue
+        }
+
+        logProviderFailure(id, 'http', { status: res.status })
+        yield { type: 'error', error: formatProviderHttpError(res.status, text, id) }
         return
       }
 
-      if (!res.ok) {
-        const text = await res.text().catch(() => '')
-        logProviderFailure(id, 'http', { status: res.status })
-        yield { type: 'error', error: `HTTP ${res.status}: ${text.slice(0, 400)}` }
-        return
-      }
+      if (!res?.ok) return
 
       const pending = new Map<number, ToolCall>()
       let lastUsage: TokenUsage | undefined
@@ -540,6 +575,10 @@ export function createOpenAiCompatibleProvider(
           (typeof message?.reasoning_content === 'string' ? message.reasoning_content : undefined) ??
           (typeof message?.reasoning === 'string' ? message.reasoning : undefined)
         if (messageReasoning) {
+          const delta = openAiCompatMessageReasoningDelta(messageReasoning, reasoningContent)
+          if (delta) {
+            yield { type: 'thinking_delta', text: delta }
+          }
           reasoningContent = messageReasoning
         }
         if (message?.reasoning_details !== undefined) {

@@ -149,7 +149,7 @@ User-configured stdio MCP servers (Settings → Advanced) expose namespaced tool
 Per-workspace runs live under AppData `workspaces/{workspaceId}/sessions/{runId}/`:
 
 - `messages.jsonl` — canonical chat transcript
-- `events.jsonl` — streamed agent events (including compaction, step budget)
+- `events.jsonl` — streamed agent events (including compaction)
 - `compaction.json` — last compaction record
 - `contract.md` — goal + done-when
 - `status.json` — run status metadata

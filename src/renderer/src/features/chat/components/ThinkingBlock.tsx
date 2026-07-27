@@ -2,11 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { MarkdownContent, cn } from '@renderer/lib/ui'
 import { DISCLOSURE_ROW } from '@renderer/lib/utils/layout'
-import { isMeaningfulThinking } from '@shared/transcript'
+import { shouldRenderThinking } from '@shared/transcript'
 import { TextShimmer } from './TextShimmer'
-
-/** Hide finished reasoning stubs that would render as empty headers. */
-const MIN_VISIBLE_THINKING_CHARS = 24
 
 /**
  * Cap the open thought body so long reasoning cannot dominate the transcript.
@@ -43,8 +40,7 @@ export function ThinkingBlock({
     el.scrollTop = el.scrollHeight
   }, [content, isExpanded, streaming])
 
-  if (!isMeaningfulThinking(content)) return null
-  if (!streaming && content.trim().length < MIN_VISIBLE_THINKING_CHARS) return null
+  if (!shouldRenderThinking(content, streaming)) return null
 
   const toggle = (): void => {
     const next = !isExpanded

@@ -200,7 +200,7 @@ describe('buildTranscriptRows', () => {
         kind: 'message',
         id: 'a1',
         role: 'assistant',
-        thinking: 'Planning the audit.',
+        thinking: 'Planning the full repository audit now.',
         content: ''
       },
       { kind: 'message', id: 'a2', role: 'assistant', content: 'Hi again! Starting the audit.' },
@@ -332,6 +332,41 @@ describe('buildTranscriptRows', () => {
     }
   })
 
+  it('hides in-progress tool JSON while assistant text is still streaming', () => {
+    const rows = buildTranscriptRows([
+      {
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        content: 'Checking routes.\ntool {"path":"api.ts"',
+        streaming: true
+      }
+    ])
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.kind).toBe('text')
+    if (rows[0]?.kind === 'text') {
+      expect(rows[0].item.content).toBe('Checking routes.')
+    }
+  })
+
+  it('keeps terminal tools in card presentation once locked', () => {
+    const rows = buildTranscriptRows([
+      {
+        kind: 'tool',
+        id: 't1',
+        tool: {
+          id: 't1',
+          name: 'terminal',
+          summary: 'pnpm test',
+          status: 'running',
+          argsPreview: '{"command":"pnpm test"}',
+          presentation: 'prominent'
+        }
+      }
+    ])
+    expect(rows[0]?.kind).toBe('card')
+  })
+
   it('keeps activity batches split by thinking in step order', () => {
     const items: UiItem[] = [
       tool('r1', 'read'),
@@ -340,7 +375,7 @@ describe('buildTranscriptRows', () => {
         kind: 'message',
         id: 'm1',
         role: 'assistant',
-        thinking: 'mapping the tree',
+        thinking: 'Mapping the repository tree before edits.',
         content: ''
       },
       tool('r3', 'read'),
@@ -495,7 +530,7 @@ describe('buildTranscriptRows', () => {
         kind: 'message',
         id: 'a1',
         role: 'assistant',
-        thinking: 'Updating the checklist.',
+        thinking: 'Updating the checklist with the latest progress.',
         content: ''
       },
       second
@@ -522,6 +557,40 @@ describe('buildTranscriptRows', () => {
     if (activity?.kind === 'activity') {
       expect(activity.tools).toHaveLength(2)
       expect(activity.tools.map((item) => item.id)).toEqual(['sub1', 'sub2'])
+    }
+  })
+
+  it('omits short finished thinking so padded empty gaps are not created', () => {
+    const rows = buildTranscriptRows([
+      { kind: 'message', id: 'u1', role: 'user', content: 'hi' },
+      {
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        thinking: 'OK',
+        content: 'Done.'
+      }
+    ])
+    expect(rows.map((row) => row.kind)).toEqual(['user', 'text'])
+  })
+
+  it('does not emit thinking rows or thinking activity when showThinking is false', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'go' },
+      {
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        thinking: 'Let me reason about this carefully.',
+        thinkingStreaming: true,
+        content: ''
+      }
+    ]
+    const rows = buildTranscriptRows(items, { showThinking: false, running: true })
+    expect(rows.some((row) => row.kind === 'thinking')).toBe(false)
+    const summary = rows.find((row) => row.kind === 'turn')
+    if (summary?.kind === 'turn') {
+      expect(summary.span.activity?.kind).not.toBe('thinking')
     }
   })
 })
