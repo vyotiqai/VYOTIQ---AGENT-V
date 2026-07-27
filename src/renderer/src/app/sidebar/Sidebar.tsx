@@ -4,10 +4,13 @@ import { useEffect, useState } from 'react'
 import {
   SIDEBAR_CONTAINER,
   SIDEBAR_WIDTH,
+  SIDEBAR_WIDTH_COLLAPSED,
+  SIDEBAR_WIDTH_COLLAPSED_DARWIN,
   SIDEBAR_WIDTH_DESKTOP
 } from '@renderer/lib/utils/layout'
 import { ChatList } from './ChatList'
-import { SidebarTopBar } from './SidebarTopBar'
+import { SidebarCollapsed } from './SidebarCollapsed'
+import { SidebarCollapsedHeader, SidebarTopBar } from './SidebarTopBar'
 import type { SidebarProps } from './types'
 import { useSidebarChats } from './useSidebarChats'
 
@@ -37,12 +40,15 @@ export function Sidebar({
   onDeleteRunInWorkspace,
   onCloseDrawer,
   onToggleSidebar,
+  onFocusSearch,
+  collapsed = false,
   variant = 'desktop'
 }: SidebarProps) {
   const workspaceReady = Boolean(hasWorkspace)
   const needsWorkspaceLabel = 'Open a workspace first'
   const isDarwin = window.vyotiq?.platform === 'darwin'
   const isDrawer = variant === 'drawer'
+  const isCollapsed = collapsed && !isDrawer
   const hotUi = useWorkspaceHotUi(activePath)
   const sessionQuery = activePath ? hotUi.sessionQuery : sessionQueryProp
   const [expandedByPath, setExpandedByPath] = useState<Record<string, boolean>>({})
@@ -88,7 +94,13 @@ export function Sidebar({
       }
     : null
 
-  const widthClass = isDrawer ? SIDEBAR_WIDTH : SIDEBAR_WIDTH_DESKTOP
+  const widthClass = isDrawer
+    ? SIDEBAR_WIDTH
+    : isCollapsed
+      ? isDarwin
+        ? SIDEBAR_WIDTH_COLLAPSED_DARWIN
+        : SIDEBAR_WIDTH_COLLAPSED
+      : SIDEBAR_WIDTH_DESKTOP
 
   const afterNav = (): void => {
     if (isDrawer) onCloseDrawer()
@@ -102,8 +114,17 @@ export function Sidebar({
         widthClass
       )}
       aria-label="Sidebar"
+      data-collapsed={isCollapsed || undefined}
     >
-      <SidebarTopBar
+      {isCollapsed ? (
+        <SidebarCollapsedHeader
+          isDrawer={isDrawer}
+          isCollapsed={isCollapsed}
+          isDarwin={isDarwin}
+          onToggleSidebar={onToggleSidebar}
+        />
+      ) : (
+        <SidebarTopBar
         isDrawer={isDrawer}
         isDarwin={isDarwin}
         view={view}
@@ -124,8 +145,21 @@ export function Sidebar({
           afterNav()
         }}
       />
+      )}
 
-      <div
+      {isCollapsed ? (
+        <SidebarCollapsed
+          view={view}
+          workspaceReady={workspaceReady}
+          workspaceProps={workspaceProps}
+          needsWorkspaceLabel={needsWorkspaceLabel}
+          onNewChat={onNewChat}
+          onOpenSettings={onOpenSettings}
+          onFocusSearch={onFocusSearch}
+          clearSearch={clearSearch}
+        />
+      ) : (
+        <div
         className="app-region-no-drag sidebar-scroll min-h-0 flex-1 overflow-x-hidden"
         data-sidebar-scroll
       >
@@ -162,6 +196,7 @@ export function Sidebar({
               }}
             />
           </div>
+      )}
     </aside>
   )
 }
