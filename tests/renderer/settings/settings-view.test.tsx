@@ -291,8 +291,10 @@ describe('settings', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Providers$/i }))
     expect(screen.getByText(/1\/8 saved/i)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /Refresh models/i }))
-    expect(await screen.findByText(/seed models for Ollama/i)).toBeTruthy()
-    expect((await screen.findByRole('alert')).textContent).toMatch(/Cannot reach Ollama/)
+    expect(
+      await screen.findByText(/seed models for Ollama.*Cannot reach Ollama/i)
+    ).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.queryByText(/^1 models for Ollama · fetch failed$/)).toBeNull()
   })
 
