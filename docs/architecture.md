@@ -128,7 +128,7 @@ flowchart TB
 | Layer | Source |
 |-------|--------|
 | Harness | `resources/harness/default.md` (role, contract, tool policy, loop, memory, safety) |
-| Tool definitions | `AGENT_TOOLS` from `schemas/tools.ts` (per-tool usage guidance) + MCP |
+| Tool definitions | `AGENT_TOOLS` from `schemas/tools.ts` (short capability descriptions) + MCP |
 | Contract | `sessions/{runId}/contract.md` (auto-injected) |
 | Workspace snapshot | Manifest detection + capped `git status` |
 | Memory index | `.vyotiq/memory/index.md` + `state.md` |
@@ -138,15 +138,15 @@ Compaction triggers at `compactionTriggerRatio` of the model content window (15%
 
 Read-only / parallel-safe **built-in** tools (`read`, `search`, `glob`, `grep`, `list_dir`, `web_fetch`, `memory_list`, `memory_read`, `subagent`) may execute in parallel when tool approval is off: ordinary read/network calls allow up to 4 concurrent calls, while sub-agent loops allow up to 2. Mutating tools run serially. When a tool-approval gate is active, all tools run serially so prompts do not stack. `web_fetch` is parallel-safe but still gated in `mutating` approval mode (network egress). **MCP tools are never parallel-safe and are never approval-exempt via `readOnlyHint`** — the hint is not trusted. In `mutating`/`all` modes MCP tools still require approval unless the user allowlists that tool for the session or workspace.
 
-Per-tool usage guidance lives in the generated `TOOL_REGISTRY` descriptions (`src/main/agent/schemas/tools.ts` / `toolGuidance.ts`), not in the harness catalog. Each built-in description carries its use cases, ordered workflow, avoid rules, implementation limits, result interpretation, and runtime execution policy. Keep those descriptions aligned with the handler, argument schema, limits, and classification; `tests/main/unit/toolGuidance.test.ts` enforces the contract. The harness keeps cross-cutting tool policy (MCP naming/approval, attachments, don’t narrate).
+Built-in tool descriptions are short capability blurbs in `TOOL_REGISTRY` (`src/main/agent/schemas/tools.ts`), not a harness catalog. Keep each description aligned with the handler, argument schema, limits, and classification; `tests/main/unit/toolsSchema.test.ts` enforces registry parity and the harness boundary. The harness keeps cross-cutting tool policy (MCP naming/approval, attachments, don’t narrate).
 
 ### MCP tools (`src/main/agent/mcp/`)
 
 User-configured MCP servers expose namespaced tools: `mcp__{serverId}__{toolName}`. Transports: **stdio**, **HTTP (streamable)**, and **SSE**. Main process connects servers; tools merge with the **15** built-ins at runtime. Server ids must not contain `__`.
 
-**Marketplace** (Settings → Marketplace): browse a bundled catalog (and optional remote registry), install unsigned packages into `{userData}/marketplace/`, and enable MCP / skills / plugins globally or per-workspace (`marketplaceOverrides`). Marketplace MCP packages use `vyotiq.mcp.json` (stdio or remote HTTP/SSE). Remote MCP can be added by URL (Marketplace → Add → Remote MCP) with optional Bearer token in OS secure storage, or **Sign in with OAuth** (Authorization Code + PKCE via localhost callback; tokens in safeStorage). Per-server `allowedTools` / `deniedTools` filter which MCP tools are exposed and invokable. When enabled, the local MCP client connects and tools load into the agent. Skills use `skill.md` (eager system-prompt injection). Plugins (`vyotiq.plugin.json`) atomically expand nested MCP + skills + rules when enabled.
+**Marketplace** (Settings → Marketplace): sole UI for MCP servers (stdio / HTTP / SSE), skills, and plugins. Browse a bundled catalog (and optional remote registry), install unsigned packages into `{userData}/marketplace/`, add stdio/remote MCP directly, and enable globally or per-workspace (`marketplaceOverrides`). Marketplace MCP packages use `vyotiq.mcp.json`. Remote MCP supports Bearer tokens in OS secure storage and **Sign in with OAuth** (Authorization Code + PKCE). Per-server `allowedTools` / `deniedTools` filter which tools are exposed and invokable. When enabled, the local MCP client connects and tools load into the agent. Skills use `skill.md` (eager system-prompt injection). Plugins (`vyotiq.plugin.json`) atomically expand nested MCP + skills + rules when enabled.
 
-Manual MCP CRUD remains under Settings → Advanced. Effective MCP set for a run = manual entries + marketplace MCP + plugin-nested MCP, after workspace enable overrides (`src/main/marketplace/resolve.ts`).
+Effective MCP set for a run = configured (manual) entries + marketplace MCP packages + plugin-nested MCP, after workspace enable overrides (`src/main/marketplace/resolve.ts`).
 
 ### Run persistence
 

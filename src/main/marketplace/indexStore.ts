@@ -1,8 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'fs'
-import { dirname } from 'path'
+import { dirname, join } from 'path'
 import { atomicWriteJson } from '../storage/atomicWrite'
 import {
   MarketplaceIndexSchema,
+  VyotiqMcpManifestSchema,
+  VyotiqPluginManifestSchema,
   type MarketplaceIndex,
   type MarketplaceInstalledItem
 } from '../../shared/ipc'
@@ -66,10 +68,53 @@ export function setInstalledEnabled(id: string, enabled: boolean): MarketplaceIn
   return next
 }
 
+/** Clear Bearer + OAuth secrets for an MCP server id (best-effort). */
+function clearMcpSecrets(serverId: string): void {
+  try {
+    clearMcpAuthToken(serverId)
+    clearMcpOAuthState(serverId)
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Nested plugin MCP ids match resolve.ts: `plugin-{pluginId}-{nestedId}`.
+ * Must run before the package directory is removed.
+ */
+function clearNestedPluginMcpSecrets(item: MarketplaceInstalledItem): void {
+  if (item.kind !== 'plugin') return
+  const root = marketplacePackageDir(item.id, item.version)
+  const manifestPath = join(root, 'vyotiq.plugin.json')
+  if (!existsSync(manifestPath)) return
+  try {
+    const plugin = VyotiqPluginManifestSchema.parse(
+      JSON.parse(readFileSync(manifestPath, 'utf8'))
+    )
+    for (const rel of plugin.mcp) {
+      const mcpManifestPath = join(root, rel, 'vyotiq.mcp.json')
+      if (!existsSync(mcpManifestPath)) continue
+      try {
+        const nested = VyotiqMcpManifestSchema.parse(
+          JSON.parse(readFileSync(mcpManifestPath, 'utf8'))
+        )
+        const nestedId = `plugin-${plugin.id}-${nested.id}`.replace(/__/g, '-')
+        clearMcpSecrets(nestedId)
+      } catch {
+        // skip invalid nested manifest
+      }
+    }
+  } catch {
+    // skip invalid plugin manifest
+  }
+}
+
 export function removeInstalledItem(id: string): MarketplaceIndex {
   const index = readMarketplaceIndex()
   const item = index.items.find((i) => i.id === id)
   if (item) {
+    clearNestedPluginMcpSecrets(item)
+    clearMcpSecrets(item.id)
     const dir = marketplacePackageDir(item.id, item.version)
     if (existsSync(dir)) {
       try {
@@ -77,12 +122,6 @@ export function removeInstalledItem(id: string): MarketplaceIndex {
       } catch {
         // ignore cleanup errors
       }
-    }
-    try {
-      clearMcpAuthToken(item.id)
-      clearMcpOAuthState(item.id)
-    } catch {
-      // ignore
     }
   }
   const next = {

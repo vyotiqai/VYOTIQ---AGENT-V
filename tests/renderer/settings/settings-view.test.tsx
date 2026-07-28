@@ -376,7 +376,7 @@ describe('settings', () => {
     expect(onSetTheme).toHaveBeenCalledWith('dark')
   })
 
-  it('edits MCP server fields in Advanced settings', async () => {
+  it('edits MCP server fields in Marketplace settings', async () => {
     const serverId = 'mcp-test-id'
     const onUpdate = vi.fn(async () => ({ ok: true as const }))
     render(
@@ -389,7 +389,8 @@ describe('settings', () => {
               name: 'Echo server',
               command: 'node',
               args: ['echo-server.mjs'],
-              enabled: true
+              enabled: true,
+              source: 'manual'
             }
           ]
         }}
@@ -401,7 +402,8 @@ describe('settings', () => {
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /^Advanced$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Marketplace$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Installed$/i }))
     await waitFor(() => expect(window.vyotiq.mcpStatus).toHaveBeenCalled())
 
     const nameInput = screen.getByLabelText(`MCP server name for ${serverId}`)
@@ -461,7 +463,7 @@ describe('settings', () => {
     )
   })
 
-  it('shows MCP connection status in Advanced settings', async () => {
+  it('shows MCP connection status in Marketplace settings', async () => {
     // @ts-expect-error test bridge
     window.vyotiq.mcpStatus = vi.fn(async () => ({
       ok: true as const,
@@ -489,7 +491,8 @@ describe('settings', () => {
               transport: 'stdio',
               command: 'node',
               args: ['echo.mjs'],
-              enabled: true
+              enabled: true,
+              source: 'manual'
             }
           ]
         }}
@@ -501,7 +504,8 @@ describe('settings', () => {
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /^Advanced$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Marketplace$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Installed$/i }))
     expect(await screen.findByText(/Connected · 2 tools/i)).toBeTruthy()
   })
 

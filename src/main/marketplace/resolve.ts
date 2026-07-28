@@ -19,8 +19,8 @@ function packageRoot(item: MarketplaceInstalledItem): string {
 /**
  * Build the MCP server list: manual settings entries + marketplace MCP packages +
  * MCP nested in enabled plugins. When `marketplaceOverrides` is set, it applies
- * only to marketplace-sourced servers (standalone + plugin-nested), never to
- * manual Advanced entries.
+ * to marketplace-sourced servers (standalone + plugin-nested) and to manual
+ * entries (Marketplace is the sole MCP management UI).
  *
  * Callers that manage the global session map must pass no overrides so a
  * workspace Force-off cannot disconnect MCP for other workspaces. Per-run tool
@@ -33,10 +33,17 @@ export function resolveEffectiveMcpServers(
   const index = readMarketplaceIndex()
   const byId = new Map<string, McpServer>()
 
-  // Manual (non-marketplace) entries — enabled flag is theirs alone
+  // Manual (non-marketplace) entries — still honor per-server workspace mcp overrides
+  // now that Marketplace is the sole MCP UI.
   for (const server of settings.mcpServers ?? []) {
     if (server.source === 'marketplace') continue
-    byId.set(server.id, { ...server })
+    const enabled = effectiveMarketplaceEnabled(
+      server.id,
+      server.enabled,
+      marketplaceOverrides,
+      'mcp'
+    )
+    byId.set(server.id, { ...server, enabled })
   }
 
   // Standalone marketplace MCP packages (overwrite same id as manual — install
@@ -57,18 +64,29 @@ export function resolveEffectiveMcpServers(
         marketplaceOverrides,
         'mcp'
       )
-      // Overlay user allow/deny from settings (sync preserves these across rematerialize).
       const settingsOverlay = (settings.mcpServers ?? []).find(
         (s) => s.id === server.id && s.source === 'marketplace'
       )
       byId.set(server.id, {
         ...server,
         enabled,
-        ...(settingsOverlay?.allowedTools?.length
-          ? { allowedTools: settingsOverlay.allowedTools }
-          : {}),
-        ...(settingsOverlay?.deniedTools?.length
-          ? { deniedTools: settingsOverlay.deniedTools }
+        ...(settingsOverlay
+          ? {
+              ...(settingsOverlay.transport ? { transport: settingsOverlay.transport } : {}),
+              ...(settingsOverlay.command !== undefined
+                ? { command: settingsOverlay.command }
+                : {}),
+              ...(settingsOverlay.args ? { args: settingsOverlay.args } : {}),
+              ...(settingsOverlay.env ? { env: settingsOverlay.env } : {}),
+              ...(settingsOverlay.url !== undefined ? { url: settingsOverlay.url } : {}),
+              ...(settingsOverlay.headers ? { headers: settingsOverlay.headers } : {}),
+              ...(settingsOverlay.allowedTools?.length
+                ? { allowedTools: settingsOverlay.allowedTools }
+                : {}),
+              ...(settingsOverlay.deniedTools?.length
+                ? { deniedTools: settingsOverlay.deniedTools }
+                : {})
+            }
           : {})
       })
     } catch {

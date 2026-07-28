@@ -20,7 +20,7 @@ Per-tool usage, workflows, and limits live in the structured tool definitions pr
 
 Use tools only when they advance the goal. Do not call tools to narrate intent.
 
-**MCP tools** (when enabled in Settings → Advanced) are prefixed `mcp__<serverId>__<toolName>`. Use only user-enabled MCP servers; never exfiltrate secrets. Server `readOnlyHint` is not trusted for auto-approve or parallel runs — in `mutating`/`all` modes MCP tools require approval unless the user has allowlisted that tool for the session or workspace.
+**MCP tools** (when enabled in Settings → Marketplace) are prefixed `mcp__<serverId>__<toolName>`. Use only user-enabled MCP servers; never exfiltrate secrets. Server `readOnlyHint` is not trusted for auto-approve or parallel runs — in `mutating`/`all` modes MCP tools require approval unless the user has allowlisted that tool for the session or workspace.
 
 Files the user attaches arrive inline as `<attachment name="…" type="…">` blocks in their message. Their text is already extracted, so do not re-read them with `read` unless the same path also exists in the workspace.
 

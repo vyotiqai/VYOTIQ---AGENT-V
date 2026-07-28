@@ -188,10 +188,18 @@ export function syncMarketplaceMcpIntoSettings(): void {
     try {
       const server = mcpServerFromManifest(root)
       server.enabled = item.enabled
-      // Preserve user-edited allow/deny from settings (manifest provides defaults only).
+      // Preserve user-edited connection fields from settings (manifest = defaults).
       const prev = prevById.get(server.id)
-      if (prev?.allowedTools) server.allowedTools = prev.allowedTools
-      if (prev?.deniedTools) server.deniedTools = prev.deniedTools
+      if (prev) {
+        if (prev.allowedTools) server.allowedTools = prev.allowedTools
+        if (prev.deniedTools) server.deniedTools = prev.deniedTools
+        if (prev.transport) server.transport = prev.transport
+        if (prev.command !== undefined) server.command = prev.command
+        if (prev.args) server.args = prev.args
+        if (prev.env) server.env = prev.env
+        if (prev.url !== undefined) server.url = prev.url
+        if (prev.headers) server.headers = prev.headers
+      }
       fromMarketplace.push(server)
     } catch (err) {
       logger.warn('Skip invalid marketplace MCP package', {
@@ -398,7 +406,7 @@ export async function installMarketplacePackage(
       )
       if (collision) {
         throw new Error(
-          `MCP id "${detected.id}" already exists as a manual server. Rename or remove it in Advanced settings first.`
+          `MCP id "${detected.id}" already exists as a configured server. Remove it in Settings → Marketplace first.`
         )
       }
     }

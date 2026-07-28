@@ -261,7 +261,7 @@ Body
 })
 
 describe('resolveEffectiveMcpServers', () => {
-  it('does not apply marketplace overrides to manual MCP servers', async () => {
+  it('applies marketplace mcp overrides to configured (manual) MCP servers', async () => {
     const settingsMod = await import('@main/settings/settings')
     const indexMod = await import('@main/marketplace/indexStore')
     const { resolveEffectiveMcpServers } = await import('@main/marketplace/resolve')
@@ -286,7 +286,7 @@ describe('resolveEffectiveMcpServers', () => {
     })
 
     const servers = resolveEffectiveMcpServers({ mcp: { 'manual-fs': false } })
-    expect(servers.find((s) => s.id === 'manual-fs')?.enabled).toBe(true)
+    expect(servers.find((s) => s.id === 'manual-fs')?.enabled).toBe(false)
   })
 })
 

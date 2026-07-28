@@ -20,7 +20,7 @@ export function loopHintForOmittedMcpTools(omittedNames: readonly string[]): str
   const more = omittedNames.length > 8 ? ` (+${omittedNames.length - 8} more)` : ''
   return [
     `${omittedNames.length} MCP tool(s) were omitted from this run to fit the tools token budget: ${preview}${more}.`,
-    'Prefer built-in tools, or disable unused MCP servers in Settings → Advanced so the rest fit.'
+    'Prefer built-in tools, or disable unused MCP servers in Settings → Marketplace so the rest fit.'
   ].join(' ')
 }
 

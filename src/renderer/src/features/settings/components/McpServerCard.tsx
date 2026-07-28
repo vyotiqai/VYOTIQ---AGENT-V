@@ -16,14 +16,23 @@ export function McpServerCard({
   server,
   status,
   disabled,
+  hideEnable,
+  hideRemove,
   onUpdate,
-  onRemove
+  onRemove,
+  onAuthChanged
 }: {
   server: McpServer
   status: McpServerStatus | undefined
   disabled?: boolean
+  /** When true, package-level enable in Marketplace owns the toggle. */
+  hideEnable?: boolean
+  /** When true, Uninstall in Marketplace owns removal. */
+  hideRemove?: boolean
   onUpdate: (next: McpServer) => Promise<boolean>
   onRemove: () => void
+  /** Called after Bearer/OAuth auth changes so the parent can refresh MCP status. */
+  onAuthChanged?: () => void
 }) {
   const transport = server.transport ?? 'stdio'
   const hasStoredToken = status?.hasAuthToken === true
@@ -35,6 +44,7 @@ export function McpServerCard({
   const [bearerToken, setBearerToken] = useState('')
   const [bearerDirty, setBearerDirty] = useState(false)
   const [authError, setAuthError] = useState<string | null>(null)
+  const [oauthPending, setOauthPending] = useState(false)
   const [allowedText, setAllowedText] = useState(() =>
     formatMcpToolNameList(server.allowedTools)
   )
@@ -173,6 +183,7 @@ export function McpServerCard({
             setAuthError(res?.error ?? 'Could not clear auth token')
             return
           }
+          onAuthChanged?.()
         }
         setBearerDirty(false)
         return
@@ -185,6 +196,7 @@ export function McpServerCard({
       await persist({ headers: headersWithoutAuthorization(server.headers) })
       setBearerToken('')
       setBearerDirty(false)
+      onAuthChanged?.()
     })()
   }
 
@@ -215,19 +227,21 @@ export function McpServerCard({
       <div className="flex items-center justify-between gap-2">
         <p className="m-0 truncate text-secondary" title={server.id}>
           ID: {server.id}
-          {server.source === 'marketplace' ? ' · marketplace' : ''}
+          {server.source === 'marketplace' ? ' · marketplace' : ' · manual'}
         </p>
-        <label className="inline-flex shrink-0 items-center gap-1.5 text-secondary">
-          <input
-            type="checkbox"
-            className="size-3.5 accent-fg"
-            checked={server.enabled}
-            disabled={disabled}
-            aria-label={`Enable MCP server ${server.id}`}
-            onChange={(e) => void persist({ enabled: e.target.checked })}
-          />
-          Enabled
-        </label>
+        {hideEnable ? null : (
+          <label className="inline-flex shrink-0 items-center gap-1.5 text-secondary">
+            <input
+              type="checkbox"
+              className="size-3.5 accent-fg"
+              checked={server.enabled}
+              disabled={disabled}
+              aria-label={`Enable MCP server ${server.id}`}
+              onChange={(e) => void persist({ enabled: e.target.checked })}
+            />
+            Enabled
+          </label>
+        )}
       </div>
 
       <div className="mt-2 flex flex-col gap-1.5">
@@ -342,19 +356,25 @@ export function McpServerCard({
             ) : null}
             <Button
               variant="subtle"
-              disabled={disabled}
+              disabled={disabled || oauthPending}
               onClick={() => {
                 void (async () => {
                   setAuthError(null)
-                  const res = await window.vyotiq.mcpStartOAuth?.(server.id)
-                  if (!res?.ok) {
-                    setAuthError(res?.error ?? 'OAuth sign-in failed')
-                    return
+                  setOauthPending(true)
+                  try {
+                    const res = await window.vyotiq.mcpStartOAuth?.(server.id)
+                    if (!res?.ok) {
+                      setAuthError(res?.error ?? 'OAuth sign-in failed')
+                      return
+                    }
+                    onAuthChanged?.()
+                  } finally {
+                    setOauthPending(false)
                   }
                 })()
               }}
             >
-              Sign in with OAuth
+              {oauthPending ? 'Signing in…' : 'Sign in with OAuth'}
             </Button>
             <p className="m-0 text-[11px] text-secondary">
               Opens your browser for Authorization Code + PKCE. Prefer this when the MCP
@@ -411,9 +431,11 @@ export function McpServerCard({
         <p className="m-0 mt-1 text-danger [overflow-wrap:anywhere]">{status.error}</p>
       ) : null}
 
-      <Button variant="subtle" className="mt-2" disabled={disabled} onClick={onRemove}>
-        Remove
-      </Button>
+      {hideRemove ? null : (
+        <Button variant="subtle" className="mt-2" disabled={disabled} onClick={onRemove}>
+          Remove
+        </Button>
+      )}
     </div>
   )
 }

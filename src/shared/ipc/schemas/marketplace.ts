@@ -149,9 +149,9 @@ export const MarketplaceInstallRequestSchema = z.object({
   name: z.string().min(1).optional(),
   /** http | sse when source is `remote` (default http) */
   transport: z.enum(['http', 'sse']).optional(),
-  /** Optional Bearer token (stored as Authorization header on the package) */
+  /** Optional Bearer token (stored in OS secure storage; never written into the package) */
   bearerToken: z.string().optional(),
-  /** Extra headers (merged; Authorization from bearerToken wins when both set) */
+  /** Extra non-secret headers (Authorization from bearerToken / safeStorage wins) */
   headers: z.record(z.string(), z.string()).optional()
 })
 export type MarketplaceInstallRequest = z.infer<typeof MarketplaceInstallRequestSchema>

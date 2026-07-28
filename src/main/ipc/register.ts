@@ -68,7 +68,15 @@ import {
   resolveEffectiveMcpServers,
   getInstalledPackageContents
 } from '@main/marketplace'
-import { setSecret, clearSecret, getSecret, secretStatus, setMcpAuthToken, clearMcpAuthToken } from '@main/settings/secrets'
+import {
+  setSecret,
+  clearSecret,
+  getSecret,
+  secretStatus,
+  setMcpAuthToken,
+  clearMcpAuthToken,
+  clearMcpOAuthState
+} from '@main/settings/secrets'
 import { ChatEventBatcher } from './streamBatch'
 import { runAgent, createRunId } from '../agent/loop'
 import { compactRunNow, CompactionUnavailableError } from '../agent/compactRun'
@@ -726,6 +734,7 @@ export function registerIpc(): void {
     try {
       const { serverId } = z.object({ serverId: z.string().min(1) }).parse(raw)
       clearMcpAuthToken(serverId)
+      clearMcpOAuthState(serverId)
       const settings = getSettings()
       const nextServers = (settings.mcpServers ?? []).map((s) =>
         s.id === serverId

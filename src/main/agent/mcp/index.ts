@@ -90,9 +90,12 @@ export function mcpServerConfigKey(
   }
 ): string {
   const transport = server.transport ?? 'stdio'
-  const authPresent = server.id
-    ? hasMcpAuthToken(server.id) || hasMcpOAuthState(server.id)
-    : false
+  // Auth secrets only apply to remote transports; skip for stdio (also keeps unit tests
+  // that don't mock Electron from touching safeStorage).
+  const authPresent =
+    server.id && (transport === 'http' || transport === 'sse')
+      ? hasMcpAuthToken(server.id) || hasMcpOAuthState(server.id)
+      : false
   return JSON.stringify({
     transport,
     command: server.command ?? '',

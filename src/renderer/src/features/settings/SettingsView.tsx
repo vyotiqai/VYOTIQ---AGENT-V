@@ -7,7 +7,6 @@ import { SettingsSectionHeader } from './components/SettingsSectionHeader'
 import { GeneralSection } from './sections/GeneralSection'
 import { ProvidersSection } from './sections/ProvidersSection'
 import { AgentSection } from './sections/AgentSection'
-import { AdvancedSection } from './sections/AdvancedSection'
 import { MarketplaceSection } from './sections/MarketplaceSection'
 
 export function SettingsView(props: SettingsViewProps) {
@@ -63,8 +62,6 @@ export function SettingsView(props: SettingsViewProps) {
             onSetSettingsOverride={onSetSettingsOverride}
           />
         )
-      case 'advanced':
-        return <AdvancedSection settings={settings} form={form} />
       default: {
         const _exhaustive: never = form.section
         return _exhaustive

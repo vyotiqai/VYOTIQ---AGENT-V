@@ -1,6 +1,21 @@
-import { describe, expect, it, afterEach } from 'vitest'
+import { describe, expect, it, afterEach, vi } from 'vitest'
 import { join } from 'path'
+import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
+
+vi.mock('electron', () => ({
+  app: {
+    getPath: () => tmpdir(),
+    getAppPath: () => process.cwd(),
+    isPackaged: false
+  },
+  safeStorage: {
+    isEncryptionAvailable: () => false,
+    encryptString: (s: string) => Buffer.from(s, 'utf8'),
+    decryptString: (b: Buffer) => b.toString('utf8')
+  }
+}))
+
 import {
   connectMcpServer,
   disconnectMcpServer,

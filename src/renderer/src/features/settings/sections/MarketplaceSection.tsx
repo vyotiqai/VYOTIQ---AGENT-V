@@ -4,19 +4,19 @@ import type {
   MarketplaceIndex,
   MarketplaceInstalledItem,
   MarketplaceKind,
+  McpServer,
   Settings,
   WorkspaceSettingsOverride
 } from '@shared/ipc'
-import { Button, Input, Textarea } from '@renderer/lib/ui'
+import { Button, Input } from '@renderer/lib/ui'
 import type { SettingsFormState } from '../hooks/useSettingsForm'
 import { SettingsRow } from '../components/SettingsRow'
-import { mcpStatusClass, mcpStatusLabel } from '../utils/settingsHelpers'
-import {
-  formatMcpToolNameList,
-  parseMcpToolNameList
-} from '@shared/utils/mcpToolPolicy'
+import { McpServerCard } from '../components/McpServerCard'
+import { isValidHttpUrl, mcpStatusClass, mcpStatusLabel } from '../utils/settingsHelpers'
 
 type Tab = 'browse' | 'installed' | 'add'
+
+type Feedback = { kind: 'success' | 'error'; text: string }
 
 type PackageContents = {
   id: string
@@ -71,97 +71,6 @@ function aggregateMcpStatuses(
     ...(errors[0] ? { error: errors[0] } : {})
   }
   return { labelStatus, toolCount, errors }
-}
-
-function MarketplaceRemoteAuth({
-  serverId,
-  hasStoredToken,
-  disabled
-}: {
-  serverId: string
-  hasStoredToken: boolean
-  disabled?: boolean
-}) {
-  const [token, setToken] = useState('')
-  const [dirty, setDirty] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [oauthBusy, setOauthBusy] = useState(false)
-
-  const commit = (): void => {
-    if (!dirty) return
-    const trimmed = token.trim()
-    void (async () => {
-      setError(null)
-      if (!trimmed) {
-        if (hasStoredToken) {
-          const res = await window.vyotiq.mcpClearAuthToken?.(serverId)
-          if (!res?.ok) {
-            setError(res?.error ?? 'Could not clear auth token')
-            return
-          }
-        }
-        setDirty(false)
-        return
-      }
-      const res = await window.vyotiq.mcpSetAuthToken?.(serverId, trimmed)
-      if (!res?.ok) {
-        setError(res?.error ?? 'Could not store auth token securely')
-        return
-      }
-      setToken('')
-      setDirty(false)
-    })()
-  }
-
-  return (
-    <div className="mt-2 flex flex-col gap-1">
-      <Input
-        className="w-full font-mono text-xs"
-        type="password"
-        autoComplete="off"
-        aria-label={`Bearer token for ${serverId}`}
-        placeholder={
-          hasStoredToken
-            ? 'Bearer stored securely — enter new value to replace'
-            : 'Bearer token (optional)'
-        }
-        disabled={disabled}
-        value={token}
-        onChange={(e) => {
-          setToken(e.target.value)
-          setDirty(true)
-        }}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') e.currentTarget.blur()
-        }}
-      />
-      <Button
-        variant="subtle"
-        disabled={disabled || oauthBusy}
-        onClick={() => {
-          void (async () => {
-            setOauthBusy(true)
-            setError(null)
-            try {
-              const res = await window.vyotiq.mcpStartOAuth?.(serverId)
-              if (!res?.ok) setError(res?.error ?? 'OAuth sign-in failed')
-            } finally {
-              setOauthBusy(false)
-            }
-          })()
-        }}
-      >
-        {oauthBusy ? 'Waiting for browser…' : 'Sign in with OAuth'}
-      </Button>
-      {hasStoredToken ? (
-        <p className="m-0 text-[11px] text-secondary">Token in OS secure storage.</p>
-      ) : null}
-      {error ? (
-        <p className="m-0 text-[11px] text-danger [overflow-wrap:anywhere]">{error}</p>
-      ) : null}
-    </div>
-  )
 }
 
 function InstalledPackageContents({
@@ -227,7 +136,7 @@ function InstalledMarketplaceItem({
   settings: Settings
   busy: boolean
   ws: boolean | undefined
-  linked: Settings['mcpServers'][number] | undefined
+  linked: McpServer | undefined
   activeWorkspacePath?: string | null
   onSetSettingsOverride: boolean
   setEnabled: (item: MarketplaceInstalledItem, enabled: boolean) => Promise<void>
@@ -260,11 +169,6 @@ function InstalledMarketplaceItem({
   const showMcpStatus =
     item.kind === 'mcp' || (item.kind === 'plugin' && (pluginContents?.mcp.length ?? 0) > 0)
 
-  const remoteAuthServerId =
-    item.kind === 'mcp' && linked && (linked.transport === 'http' || linked.transport === 'sse')
-      ? linked.id
-      : null
-
   const overrideKind =
     item.kind === 'mcp' ? 'mcp' : item.kind === 'skill' ? 'skills' : 'plugins'
 
@@ -287,63 +191,57 @@ function InstalledMarketplaceItem({
         </label>
       </div>
       <p className="m-0 mt-1 text-secondary">{item.description || '—'}</p>
-      {linked ? (
-        <p className="m-0 mt-1 font-mono text-muted">
-          {(linked.transport ?? 'stdio') === 'stdio'
-            ? `stdio · ${linked.command ?? ''}`
-            : `${linked.transport} · ${linked.url ?? ''}`}
-        </p>
+      {showMcpStatus && !linked ? (
+        <p className={`m-0 mt-1 ${mcpStatusClass(status)}`}>{mcpStatusLabel(status)}</p>
       ) : null}
-      {showMcpStatus ? (
-        <p className={`m-0 mt-1 ${mcpStatusClass(status)}`}>
-          {mcpStatusLabel(status)}
-          {status?.toolCount != null && status.connected ? ` · ${status.toolCount} tools` : ''}
-        </p>
-      ) : null}
-      {status?.error ? (
+      {status?.error && !linked ? (
         <p className="m-0 mt-1 text-danger [overflow-wrap:anywhere]">{status.error}</p>
       ) : null}
       <InstalledPackageContents
         itemId={item.id}
         onContents={item.kind === 'plugin' ? setPluginContents : undefined}
       />
-      {remoteAuthServerId ? (
-        <MarketplaceRemoteAuth
-          serverId={remoteAuthServerId}
-          hasStoredToken={status?.hasAuthToken === true}
-          disabled={busy || form.formLocked}
-        />
-      ) : null}
       {linked && item.kind === 'mcp' ? (
-        <MarketplaceToolPolicy
-          server={linked}
-          disabled={busy || form.formLocked}
-          onUpdate={async (next) => {
-            const updated = settings.mcpServers.map((s) => (s.id === linked.id ? next : s))
-            return form.runUpdate({ mcpServers: updated })
-          }}
-        />
+        <div className="mt-2">
+          <McpServerCard
+            server={linked}
+            status={status}
+            disabled={busy || form.formLocked}
+            hideEnable
+            hideRemove
+            onUpdate={async (next) => {
+              const updated = settings.mcpServers.map((s) => (s.id === linked.id ? next : s))
+              return form.runUpdate({ mcpServers: updated })
+            }}
+            onRemove={() => undefined}
+            onAuthChanged={() => {
+              void form.loadMcpStatus(true)
+            }}
+          />
+        </div>
       ) : null}
       {activeWorkspacePath && onSetSettingsOverride ? (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <span className="text-muted">This workspace:</span>
           <Button
             variant="subtle"
-            disabled={busy}
+            disabled={busy || form.formLocked}
+            aria-pressed={ws === true}
             onClick={() => void setWorkspaceEnable(overrideKind, item.id, true)}
           >
             Force on{ws === true ? ' ✓' : ''}
           </Button>
           <Button
             variant="subtle"
-            disabled={busy}
+            disabled={busy || form.formLocked}
+            aria-pressed={ws === false}
             onClick={() => void setWorkspaceEnable(overrideKind, item.id, false)}
           >
             Force off{ws === false ? ' ✓' : ''}
           </Button>
           <Button
             variant="subtle"
-            disabled={busy || ws === undefined}
+            disabled={busy || form.formLocked || ws === undefined}
             onClick={() => void clearWorkspaceEnable(overrideKind, item.id)}
           >
             Use global
@@ -362,60 +260,82 @@ function InstalledMarketplaceItem({
   )
 }
 
-function MarketplaceToolPolicy({
+function ManualMcpInstalledItem({
   server,
-  disabled,
-  onUpdate
+  form,
+  settings,
+  busy,
+  ws,
+  activeWorkspacePath,
+  onSetSettingsOverride,
+  setWorkspaceEnable,
+  clearWorkspaceEnable
 }: {
-  server: Settings['mcpServers'][number]
-  disabled?: boolean
-  onUpdate: (next: Settings['mcpServers'][number]) => Promise<boolean>
+  server: McpServer
+  form: SettingsFormState
+  settings: Settings
+  busy: boolean
+  ws: boolean | undefined
+  activeWorkspacePath?: string | null
+  onSetSettingsOverride: boolean
+  setWorkspaceEnable: (
+    kind: 'mcp' | 'skills' | 'plugins',
+    id: string,
+    enabled: boolean
+  ) => Promise<void>
+  clearWorkspaceEnable: (kind: 'mcp' | 'skills' | 'plugins', id: string) => Promise<void>
 }) {
-  const [allowedText, setAllowedText] = useState(() =>
-    formatMcpToolNameList(server.allowedTools)
-  )
-  const [deniedText, setDeniedText] = useState(() => formatMcpToolNameList(server.deniedTools))
-
-  useEffect(() => {
-    setAllowedText(formatMcpToolNameList(server.allowedTools))
-    setDeniedText(formatMcpToolNameList(server.deniedTools))
-  }, [server.id, server.allowedTools, server.deniedTools])
-
   return (
-    <div className="mt-2 flex flex-col gap-1">
-      <Textarea
-        className="min-h-[36px] font-mono text-xs"
-        aria-label={`Allowed tools for ${server.id}`}
-        placeholder="Allow tools only (bare names). Empty = all."
-        disabled={disabled}
-        rows={2}
-        value={allowedText}
-        onChange={(e) => setAllowedText(e.target.value)}
-        onBlur={() => {
-          const next = parseMcpToolNameList(allowedText)
-          const prevKey = (server.allowedTools ?? []).join('\n')
-          const nextKey = (next ?? []).join('\n')
-          if (prevKey === nextKey) return
-          void onUpdate({ ...server, allowedTools: next })
+    <>
+      <McpServerCard
+        server={server}
+        status={form.mcpStatusById.get(server.id)}
+        disabled={busy || form.formLocked}
+        onUpdate={async (next) => {
+          const updated = settings.mcpServers.map((s) => (s.id === server.id ? next : s))
+          return form.runUpdate({ mcpServers: updated })
+        }}
+        onRemove={() => {
+          void (async () => {
+            await window.vyotiq.mcpClearAuthToken?.(server.id)
+            await form.runUpdate({
+              mcpServers: settings.mcpServers.filter((s) => s.id !== server.id)
+            })
+          })()
+        }}
+        onAuthChanged={() => {
+          void form.loadMcpStatus(true)
         }}
       />
-      <Textarea
-        className="min-h-[36px] font-mono text-xs"
-        aria-label={`Denied tools for ${server.id}`}
-        placeholder="Deny tools (bare names)"
-        disabled={disabled}
-        rows={2}
-        value={deniedText}
-        onChange={(e) => setDeniedText(e.target.value)}
-        onBlur={() => {
-          const next = parseMcpToolNameList(deniedText)
-          const prevKey = (server.deniedTools ?? []).join('\n')
-          const nextKey = (next ?? []).join('\n')
-          if (prevKey === nextKey) return
-          void onUpdate({ ...server, deniedTools: next })
-        }}
-      />
-    </div>
+      {activeWorkspacePath && onSetSettingsOverride ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 px-0.5">
+          <span className="text-muted text-xs">This workspace:</span>
+          <Button
+            variant="subtle"
+            disabled={busy || form.formLocked}
+            aria-pressed={ws === true}
+            onClick={() => void setWorkspaceEnable('mcp', server.id, true)}
+          >
+            Force on{ws === true ? ' ✓' : ''}
+          </Button>
+          <Button
+            variant="subtle"
+            disabled={busy || form.formLocked}
+            aria-pressed={ws === false}
+            onClick={() => void setWorkspaceEnable('mcp', server.id, false)}
+          >
+            Force off{ws === false ? ' ✓' : ''}
+          </Button>
+          <Button
+            variant="subtle"
+            disabled={busy || form.formLocked || ws === undefined}
+            onClick={() => void clearWorkspaceEnable('mcp', server.id)}
+          >
+            Use global
+          </Button>
+        </div>
+      ) : null}
+    </>
   )
 }
 
@@ -441,7 +361,7 @@ export function MarketplaceSection({
   const [catalog, setCatalog] = useState<MarketplaceCatalogEntry[]>([])
   const [installed, setInstalled] = useState<MarketplaceIndex>({ schemaVersion: 1, items: [] })
   const [busy, setBusy] = useState(false)
-  const [message, setMessage] = useState<string | null>(null)
+  const [feedback, setFeedback] = useState<Feedback | null>(null)
   const [gitUrl, setGitUrl] = useState('')
   const [npmName, setNpmName] = useState('')
   const [registryUrl, setRegistryUrl] = useState(settings.marketplace?.registryUrl ?? '')
@@ -449,6 +369,11 @@ export function MarketplaceSection({
   const [remoteName, setRemoteName] = useState('')
   const [remoteTransport, setRemoteTransport] = useState<'http' | 'sse'>('http')
   const [remoteBearer, setRemoteBearer] = useState('')
+  const [stdioName, setStdioName] = useState('New MCP server')
+  const [stdioCommand, setStdioCommand] = useState('npx')
+  const [stdioArgs, setStdioArgs] = useState('-y\n@modelcontextprotocol/server-filesystem\n.')
+
+  const manualServers = settings.mcpServers.filter((s) => s.source !== 'marketplace')
 
   const reload = useCallback(async () => {
     const [browseRes, installedRes] = await Promise.all([
@@ -471,9 +396,8 @@ export function MarketplaceSection({
 
   useEffect(() => {
     void form.loadMcpStatus()
-    // Refresh connection labels when installed set changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadMcpStatus is stable enough via form identity
-  }, [installed.items.length])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- load when marketplace MCP set changes
+  }, [installed.items.length, settings.mcpServers])
 
   const installedIds = new Set(installed.items.map((i) => i.id))
 
@@ -493,22 +417,32 @@ export function MarketplaceSection({
     return true
   }
 
-  const runInstall = async (payload: Parameters<typeof window.vyotiq.marketplaceInstall>[0]) => {
+  const runInstall = async (
+    payload: Parameters<typeof window.vyotiq.marketplaceInstall>[0]
+  ): Promise<boolean> => {
     setBusy(true)
-    setMessage(null)
+    setFeedback(null)
     try {
       if (REMOTE_INSTALL_SOURCES.has(payload.source)) {
         const acked = await ensureRemoteAck()
-        if (!acked) return
+        if (!acked) return false
       }
       const res = await window.vyotiq.marketplaceInstall(payload)
       if (!res.ok) {
-        setMessage(res.error)
-        return
+        setFeedback({ kind: 'error', text: res.error })
+        return false
       }
-      setMessage(`Installed ${res.data.name} (${res.data.kind}) — enable it to load tools into the agent.`)
+      const tokenHint =
+        payload.source === 'remote' && 'bearerToken' in payload && payload.bearerToken?.trim()
+          ? ' Bearer token stored in OS secure storage.'
+          : ''
+      setFeedback({
+        kind: 'success',
+        text: `Installed ${res.data.name} (${res.data.kind}) — enabled by default; tools load into the agent when connected.${tokenHint}`
+      })
       await reload()
       await form.loadMcpStatus(true)
+      return true
     } finally {
       setBusy(false)
     }
@@ -519,17 +453,23 @@ export function MarketplaceSection({
     try {
       const res = await window.vyotiq.marketplaceSetEnabled(item.id, enabled)
       if (!res.ok) {
-        setMessage(res.error)
+        setFeedback({ kind: 'error', text: res.error })
         return
       }
       setInstalled(res.data)
       if (item.kind === 'mcp' || item.kind === 'plugin') {
         await form.loadMcpStatus(true)
-        setMessage(
-          enabled
+        setFeedback({
+          kind: 'success',
+          text: enabled
             ? `${item.name} enabled — connecting and loading tools for the agent.`
             : `${item.name} disabled.`
-        )
+        })
+      } else {
+        setFeedback({
+          kind: 'success',
+          text: enabled ? `${item.name} enabled.` : `${item.name} disabled.`
+        })
       }
     } finally {
       setBusy(false)
@@ -541,11 +481,11 @@ export function MarketplaceSection({
     try {
       const res = await window.vyotiq.marketplaceUninstall(id)
       if (!res.ok) {
-        setMessage(res.error)
+        setFeedback({ kind: 'error', text: res.error })
         return
       }
       setInstalled(res.data)
-      setMessage('Uninstalled')
+      setFeedback({ kind: 'success', text: 'Uninstalled' })
       await form.loadMcpStatus(true)
     } finally {
       setBusy(false)
@@ -597,18 +537,19 @@ export function MarketplaceSection({
     })
   }
 
+  const workspaceEnabledForId = (kind: 'mcp' | 'skills' | 'plugins', id: string): boolean | undefined => {
+    if (!workspaceOverride?.useOverride) return undefined
+    const map = workspaceOverride.marketplaceOverrides?.[kind]
+    if (map && Object.prototype.hasOwnProperty.call(map, id)) return map[id]
+    return undefined
+  }
+
   const workspaceEnabled = (
     item: MarketplaceInstalledItem
   ): boolean | undefined => {
-    if (!workspaceOverride?.useOverride) return undefined
-    const map =
-      item.kind === 'mcp'
-        ? workspaceOverride.marketplaceOverrides?.mcp
-        : item.kind === 'skill'
-          ? workspaceOverride.marketplaceOverrides?.skills
-          : workspaceOverride.marketplaceOverrides?.plugins
-    if (map && Object.prototype.hasOwnProperty.call(map, item.id)) return map[item.id]
-    return undefined
+    const kind =
+      item.kind === 'mcp' ? 'mcp' : item.kind === 'skill' ? 'skills' : 'plugins'
+    return workspaceEnabledForId(kind, item.id)
   }
 
   const mcpServerForPackage = (item: MarketplaceInstalledItem) => {
@@ -617,12 +558,50 @@ export function MarketplaceSection({
     )
   }
 
+  const addStdioMcp = async (): Promise<void> => {
+    const id = crypto.randomUUID()
+    const args = stdioArgs
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    const next: McpServer = {
+      id,
+      name: stdioName.trim() || 'New MCP server',
+      transport: 'stdio',
+      command: stdioCommand.trim() || 'npx',
+      args: args.length > 0 ? args : undefined,
+      enabled: true,
+      source: 'manual'
+    }
+    setBusy(true)
+    try {
+      const ok = await form.runUpdate({ mcpServers: [...settings.mcpServers, next] })
+      if (ok) {
+        setFeedback({ kind: 'success', text: `Added MCP server "${next.name}"` })
+        setTab('installed')
+        setStdioName('New MCP server')
+        setStdioCommand('npx')
+        setStdioArgs('-y\n@modelcontextprotocol/server-filesystem\n.')
+        await form.loadMcpStatus(true)
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <>
+      {activeWorkspacePath && onSetSettingsOverride ? (
+        <p className="m-0 mb-3 rounded-md border border-border bg-surface px-2.5 py-2 text-xs text-secondary">
+          Workspace overrides are available below. Force on/off applies only while this workspace’s
+          override is active (General → Workspaces).
+        </p>
+      ) : null}
+
       <SettingsRow
         stacked
-        title="Marketplace"
-        description="Browse and install Vyotiq MCP servers (stdio or remote HTTP/SSE), skills, and plugins. Enabled MCP servers connect automatically and their tools load into the agent. Unsigned packages — install only from sources you trust."
+        title="Packages & MCP"
+        description="Browse, install, and configure MCP servers (stdio / HTTP / SSE), skills, and plugins. Enabled servers connect automatically and their tools load into the agent. Unsigned packages — install only from sources you trust."
       >
         <div className="flex w-full flex-col gap-3">
           <div className="flex flex-wrap gap-1">
@@ -638,54 +617,71 @@ export function MarketplaceSection({
             ))}
           </div>
 
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs text-secondary">Registry URL (optional)</label>
-            <div className="flex gap-2">
-              <Input
-                className="w-full font-mono text-xs"
-                value={registryUrl}
-                disabled={form.formLocked || busy}
-                placeholder="https://registry.example.com"
-                onChange={(e) => setRegistryUrl(e.target.value)}
-                onBlur={() => {
-                  void form.runUpdate({
-                    marketplace: {
-                      registryUrl: registryUrl.trim(),
-                      remoteInstallAcked: settings.marketplace?.remoteInstallAcked ?? false
-                    }
-                  })
-                }}
-              />
-              <Button
-                variant="subtle"
-                disabled={form.formLocked || busy}
-                onClick={() => {
-                  void (async () => {
-                    setBusy(true)
-                    try {
-                      await form.runUpdate({
-                        marketplace: {
-                          registryUrl: registryUrl.trim(),
-                          remoteInstallAcked: settings.marketplace?.remoteInstallAcked ?? false
-                        }
-                      })
-                      const res = await window.vyotiq.marketplaceRefreshCatalog()
-                      if (res.ok) {
-                        setCatalog(res.data.packages)
-                        setMessage(`Catalog refreshed (${res.data.packages.length} packages)`)
-                      } else setMessage(res.error)
-                    } finally {
-                      setBusy(false)
-                    }
-                  })()
-                }}
-              >
-                Refresh
-              </Button>
+          {tab === 'browse' ? (
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="marketplace-registry-url" className="text-xs text-secondary">
+                Registry URL (optional)
+              </label>
+              <div className="flex gap-2">
+                <Input
+                  id="marketplace-registry-url"
+                  className="w-full font-mono text-xs"
+                  value={registryUrl}
+                  disabled={form.formLocked || busy}
+                  placeholder="https://registry.example.com"
+                  onChange={(e) => setRegistryUrl(e.target.value)}
+                  onBlur={() => {
+                    void form.runUpdate({
+                      marketplace: {
+                        registryUrl: registryUrl.trim(),
+                        remoteInstallAcked: settings.marketplace?.remoteInstallAcked ?? false
+                      }
+                    })
+                  }}
+                />
+                <Button
+                  variant="subtle"
+                  disabled={form.formLocked || busy}
+                  onClick={() => {
+                    void (async () => {
+                      setBusy(true)
+                      try {
+                        await form.runUpdate({
+                          marketplace: {
+                            registryUrl: registryUrl.trim(),
+                            remoteInstallAcked: settings.marketplace?.remoteInstallAcked ?? false
+                          }
+                        })
+                        const res = await window.vyotiq.marketplaceRefreshCatalog()
+                        if (res.ok) {
+                          setCatalog(res.data.packages)
+                          setFeedback({
+                            kind: 'success',
+                            text: `Catalog refreshed (${res.data.packages.length} packages)`
+                          })
+                        } else setFeedback({ kind: 'error', text: res.error })
+                      } finally {
+                        setBusy(false)
+                      }
+                    })()
+                  }}
+                >
+                  Refresh
+                </Button>
+              </div>
             </div>
-          </div>
+          ) : null}
 
-          {message ? <p className="m-0 text-xs text-secondary [overflow-wrap:anywhere]">{message}</p> : null}
+          {feedback ? (
+            <p
+              className={`m-0 text-xs [overflow-wrap:anywhere] ${
+                feedback.kind === 'error' ? 'text-danger' : 'text-secondary'
+              }`}
+              role={feedback.kind === 'error' ? 'alert' : 'status'}
+            >
+              {feedback.text}
+            </p>
+          ) : null}
 
           {tab === 'browse' ? (
             <div className="flex flex-col gap-2">
@@ -771,26 +767,45 @@ export function MarketplaceSection({
                   {form.mcpStatusLoading ? 'Refreshing…' : 'Refresh MCP connections'}
                 </Button>
               </div>
-              {installed.items.length === 0 ? (
-                <p className="m-0 text-xs text-muted">Nothing installed yet.</p>
+              {manualServers.length === 0 && installed.items.length === 0 ? (
+                <p className="m-0 text-xs text-muted">
+                  Nothing installed yet. Use Add to configure a stdio or remote MCP, or Browse
+                  for packages.
+                </p>
               ) : (
-                installed.items.map((item) => (
-                  <InstalledMarketplaceItem
-                    key={item.id}
-                    item={item}
-                    form={form}
-                    settings={settings}
-                    busy={busy}
-                    ws={workspaceEnabled(item)}
-                    linked={item.kind === 'mcp' ? mcpServerForPackage(item) : undefined}
-                    activeWorkspacePath={activeWorkspacePath}
-                    onSetSettingsOverride={!!onSetSettingsOverride}
-                    setEnabled={setEnabled}
-                    setWorkspaceEnable={setWorkspaceEnable}
-                    clearWorkspaceEnable={clearWorkspaceEnable}
-                    uninstall={uninstall}
-                  />
-                ))
+                <>
+                  {manualServers.map((server) => (
+                    <ManualMcpInstalledItem
+                      key={server.id}
+                      server={server}
+                      form={form}
+                      settings={settings}
+                      busy={busy}
+                      ws={workspaceEnabledForId('mcp', server.id)}
+                      activeWorkspacePath={activeWorkspacePath}
+                      onSetSettingsOverride={!!onSetSettingsOverride}
+                      setWorkspaceEnable={setWorkspaceEnable}
+                      clearWorkspaceEnable={clearWorkspaceEnable}
+                    />
+                  ))}
+                  {installed.items.map((item) => (
+                    <InstalledMarketplaceItem
+                      key={item.id}
+                      item={item}
+                      form={form}
+                      settings={settings}
+                      busy={busy}
+                      ws={workspaceEnabled(item)}
+                      linked={item.kind === 'mcp' ? mcpServerForPackage(item) : undefined}
+                      activeWorkspacePath={activeWorkspacePath}
+                      onSetSettingsOverride={!!onSetSettingsOverride}
+                      setEnabled={setEnabled}
+                      setWorkspaceEnable={setWorkspaceEnable}
+                      clearWorkspaceEnable={clearWorkspaceEnable}
+                      uninstall={uninstall}
+                    />
+                  ))}
+                </>
               )}
             </div>
           ) : null}
@@ -798,13 +813,54 @@ export function MarketplaceSection({
           {tab === 'add' ? (
             <div className="flex flex-col gap-3">
               <div className="flex flex-col gap-2 rounded-md border border-border bg-surface px-2.5 py-2">
+                <p className="m-0 text-xs font-medium text-fg">Stdio MCP</p>
+                <p className="m-0 text-[11px] text-secondary">
+                  Run a local MCP server via command (e.g. npx). Added enabled by default — disable
+                  under Installed to stop loading tools.
+                </p>
+                <Input
+                  className="w-full text-xs"
+                  aria-label="Stdio MCP display name"
+                  placeholder="Display name"
+                  value={stdioName}
+                  disabled={busy}
+                  onChange={(e) => setStdioName(e.target.value)}
+                />
+                <Input
+                  className="w-full font-mono text-xs"
+                  aria-label="Stdio MCP command"
+                  placeholder="Command (e.g. npx)"
+                  value={stdioCommand}
+                  disabled={busy}
+                  onChange={(e) => setStdioCommand(e.target.value)}
+                />
+                <textarea
+                  className="min-h-[52px] w-full rounded-md border border-border bg-bg px-2 py-1.5 font-mono text-xs text-fg"
+                  aria-label="Stdio MCP arguments"
+                  placeholder="Arguments (one per line)"
+                  rows={3}
+                  value={stdioArgs}
+                  disabled={busy}
+                  onChange={(e) => setStdioArgs(e.target.value)}
+                />
+                <Button
+                  variant="subtle"
+                  disabled={busy || form.formLocked || !stdioCommand.trim()}
+                  onClick={() => void addStdioMcp()}
+                >
+                  Add stdio MCP
+                </Button>
+              </div>
+
+              <div className="flex flex-col gap-2 rounded-md border border-border bg-surface px-2.5 py-2">
                 <p className="m-0 text-xs font-medium text-fg">Remote MCP (HTTP / SSE)</p>
                 <p className="m-0 text-[11px] text-secondary">
-                  Paste a streamable HTTP or SSE MCP endpoint. When enabled, Vyotiq connects
-                  locally and loads its tools into the agent automatically.
+                  Paste a streamable HTTP or SSE MCP endpoint. Installed enabled by default; connect
+                  and auth (Bearer / OAuth) under Installed.
                 </p>
                 <Input
                   className="w-full font-mono text-xs"
+                  aria-label="Remote MCP URL"
                   placeholder="https://mcp.example.com/mcp"
                   value={remoteUrl}
                   disabled={busy}
@@ -812,6 +868,7 @@ export function MarketplaceSection({
                 />
                 <Input
                   className="w-full text-xs"
+                  aria-label="Remote MCP display name"
                   placeholder="Display name (optional)"
                   value={remoteName}
                   disabled={busy}
@@ -831,7 +888,8 @@ export function MarketplaceSection({
                   className="w-full font-mono text-xs"
                   type="password"
                   autoComplete="off"
-                  placeholder="Bearer token (optional)"
+                  aria-label="Remote MCP Bearer token"
+                  placeholder="Bearer token (optional, OS secure storage)"
                   value={remoteBearer}
                   disabled={busy}
                   onChange={(e) => setRemoteBearer(e.target.value)}
@@ -840,18 +898,28 @@ export function MarketplaceSection({
                   variant="subtle"
                   disabled={busy || form.formLocked || !remoteUrl.trim()}
                   onClick={() => {
-                    void runInstall({
-                      source: 'remote',
-                      target: remoteUrl.trim(),
-                      kind: 'mcp',
-                      name: remoteName.trim() || undefined,
-                      transport: remoteTransport,
-                      bearerToken: remoteBearer.trim() || undefined
-                    }).then(() => {
-                      setRemoteUrl('')
-                      setRemoteName('')
-                      setRemoteBearer('')
-                    })
+                    void (async () => {
+                      if (!isValidHttpUrl(remoteUrl.trim())) {
+                        setFeedback({
+                          kind: 'error',
+                          text: 'Enter a valid http(s) MCP URL.'
+                        })
+                        return
+                      }
+                      const ok = await runInstall({
+                        source: 'remote',
+                        target: remoteUrl.trim(),
+                        kind: 'mcp',
+                        name: remoteName.trim() || undefined,
+                        transport: remoteTransport,
+                        bearerToken: remoteBearer.trim() || undefined
+                      })
+                      if (ok) {
+                        setRemoteUrl('')
+                        setRemoteName('')
+                        setRemoteBearer('')
+                      }
+                    })()
                   }}
                 >
                   Install remote MCP
@@ -865,7 +933,11 @@ export function MarketplaceSection({
                 onClick={() => {
                   void (async () => {
                     const pick = await window.vyotiq.marketplacePickLocal()
-                    if (!pick.ok || !pick.data) return
+                    if (!pick.ok) {
+                      setFeedback({ kind: 'error', text: pick.error })
+                      return
+                    }
+                    if (!pick.data) return
                     const path = pick.data
                     const isZip = /\.(zip|tgz)$/i.test(path)
                     await runInstall({
@@ -880,6 +952,7 @@ export function MarketplaceSection({
               <div className="flex gap-2">
                 <Input
                   className="flex-1 font-mono text-xs"
+                  aria-label="Git clone URL"
                   placeholder="git clone URL"
                   value={gitUrl}
                   disabled={busy}
@@ -887,7 +960,7 @@ export function MarketplaceSection({
                 />
                 <Button
                   variant="subtle"
-                  disabled={busy || !gitUrl.trim()}
+                  disabled={busy || form.formLocked || !gitUrl.trim()}
                   onClick={() => void runInstall({ source: 'git', target: gitUrl.trim() })}
                 >
                   Install git
@@ -896,6 +969,7 @@ export function MarketplaceSection({
               <div className="flex gap-2">
                 <Input
                   className="flex-1 font-mono text-xs"
+                  aria-label="npm package name"
                   placeholder="npm package name"
                   value={npmName}
                   disabled={busy}
@@ -903,7 +977,7 @@ export function MarketplaceSection({
                 />
                 <Button
                   variant="subtle"
-                  disabled={busy || !npmName.trim()}
+                  disabled={busy || form.formLocked || !npmName.trim()}
                   onClick={() => void runInstall({ source: 'npm', target: npmName.trim() })}
                 >
                   Install npm

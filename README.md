@@ -86,9 +86,9 @@ Run state (chat sessions) lives under AppData, not in the project folder:
           events.jsonl
 ```
 
-Project-local agent memory stays at `{workspace}/.vyotiq/memory/` only. The system harness lives only in `resources/harness/default.md` (bundled with the app). Per-tool usage guidance is in the built-in tool definitions (`src/main/agent/schemas/toolGuidance.ts`), not duplicated as a harness catalog.
+Project-local agent memory stays at `{workspace}/.vyotiq/memory/` only. The system harness lives only in `resources/harness/default.md` (bundled with the app). Built-in tools use short capability descriptions in `src/main/agent/schemas/tools.ts`, not a duplicated harness catalog.
 
-When adding or changing a built-in tool, update its argument schema, handler, runtime limits/classification, and `TOOL_GUIDANCE` entry together. Keep guidance structured as `WHEN TO USE`, `WORKFLOW`, `AVOID`, `LIMITS`, `RESULT`, and `EXECUTION POLICY`; the guidance tests enforce registry/handler parity and the harness boundary.
+When adding or changing a built-in tool, update its argument schema, handler, and runtime limits/classification together. Keep the tool description as a short capability blurb; `tests/main/unit/toolsSchema.test.ts` checks registry/handler parity and the harness boundary.
 
 **Run file contract:** `messages.jsonl` is the canonical chat transcript (one JSON object per line: user/assistant/tool messages). `events.jsonl` is an append-only ops log (`status`, `step_usage`, `context_usage`, etc. with ISO `at` timestamps); full tool output is stored only in `messages.jsonl`. The UI rebuilds the chat timeline from `messages.jsonl` on reload and shows run telemetry in the Activity panel. Legacy session-only runs under `{userData}/sessions/` are migrated into the workspace AppData sessions folder on first startup.
 

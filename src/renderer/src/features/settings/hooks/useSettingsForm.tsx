@@ -97,7 +97,7 @@ export function useSettingsForm({
   }
 
   useEffect(() => {
-    if (section !== 'advanced') return
+    if (section !== 'marketplace') return
     void loadMcpStatus()
   }, [section, settings.mcpServers])
 
