@@ -1,7 +1,6 @@
 import { z } from 'zod'
 import { TERMINAL_MAX_TIMEOUT_MS } from '../tools/terminal'
 import type { ToolDefinition } from '../providers/types'
-import { TOOL_GUIDANCE } from './toolGuidance'
 import { zodToJsonSchema } from './zodToJsonSchema'
 
 const readArgs = z
@@ -234,63 +233,74 @@ const memoryWriteArgs = z.object({
 
 const TOOL_REGISTRY = {
   read: {
-    description: TOOL_GUIDANCE.read,
+    description:
+      'Read a file under the workspace root (text only). Directories return a shallow listing.',
     schema: readArgs
   },
   edit: {
-    description: TOOL_GUIDANCE.edit,
+    description:
+      'Create or overwrite a workspace file with full contents, or apply a unified diff.',
     schema: editArgs
   },
   search: {
-    description: TOOL_GUIDANCE.search,
+    description:
+      'Quick combined filename-or-content lookup. Default: case-insensitive substring; set regex=true for case-insensitive regex. First hit per file.',
     schema: searchArgs
   },
   glob: {
-    description: TOOL_GUIDANCE.glob,
+    description:
+      'List workspace-relative paths matching a glob (**, *, ?, {a,b}). Gitignore-aware.',
     schema: globArgs
   },
   grep: {
-    description: TOOL_GUIDANCE.grep,
+    description:
+      'Regex search across text file contents; every matching line with optional context. Default: case-insensitive.',
     schema: grepArgs
   },
   list_dir: {
-    description: TOOL_GUIDANCE.list_dir,
+    description: 'List one directory level with sizes. Gitignore- and build-dir-aware.',
     schema: listDirArgs
   },
   multi_edit: {
-    description: TOOL_GUIDANCE.multi_edit,
+    description:
+      'Apply several file edits atomically: if any edit fails to validate or match, no file is written.',
     schema: multiEditArgs
   },
   delete: {
-    description: TOOL_GUIDANCE.delete,
+    description: 'Delete a workspace file, or a directory when recursive=true.',
     schema: deleteArgs
   },
   todo_write: {
-    description: TOOL_GUIDANCE.todo_write,
+    description: "Record and update this run's visible task list.",
     schema: todoWriteArgs
   },
   web_fetch: {
-    description: TOOL_GUIDANCE.web_fetch,
+    description:
+      'Fetch a public http(s) URL as text. HTML responses are converted to markdown; other text types are returned as trimmed text.',
     schema: webFetchArgs
   },
   subagent: {
-    description: TOOL_GUIDANCE.subagent,
+    description:
+      'Delegate a read-only investigation to a nested agent that returns one written report.',
     schema: subagentArgs
   },
   terminal: {
-    description: TOOL_GUIDANCE.terminal,
+    description: 'Run a shell command with cwd at the workspace root. Output is capped.',
     schema: terminalArgs
   },
   memory_list: {
-    description: TOOL_GUIDANCE.memory_list,
+    description:
+      'List long-term memory under .vyotiq/memory/: index excerpt, note names, whether state.md exists.',
     schema: memoryListArgs
   },
   memory_read: {
-    description: TOOL_GUIDANCE.memory_read,
+    description:
+      'Read a memory file: index.md, state.md, or notes/<name>.md under .vyotiq/memory/.',
     schema: memoryReadArgs
   },
   memory_write: {
-    description: TOOL_GUIDANCE.memory_write,
+    description:
+      'Create or update a memory file (index.md, state.md, or notes/<name>.md).',
     schema: memoryWriteArgs
   }
 } as const

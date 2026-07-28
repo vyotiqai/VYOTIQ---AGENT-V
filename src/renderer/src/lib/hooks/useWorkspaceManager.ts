@@ -28,8 +28,18 @@ const ACTIVE_RUNS_POLL_MS = 5_000
 const ACTIVE_RUNS_WARN_INTERVAL_MS = 60_000
 const ORPHAN_SYNC_DEBOUNCE_MS = 600
 const OPEN_RUN_TAB_LIMIT = 10
+/** Cap orphan IPC buffers for runIds not yet mapped to a controller. */
+const ORPHAN_EVENT_BUFFER_MAX = 64
+const ORPHAN_APPROVAL_BUFFER_MAX = 16
 const UI_PERSIST_DEBOUNCE_MS = 300
 const LIST_RUNS_DEBOUNCE_MS = 300
+
+/** @internal Exported for tests. */
+export const WORKSPACE_MANAGER_LIMITS = {
+  OPEN_RUN_TAB_LIMIT,
+  ORPHAN_EVENT_BUFFER_MAX,
+  ORPHAN_APPROVAL_BUFFER_MAX
+} as const
 
 export type WorkspaceUiSlice = {
   scrollTop: number
@@ -132,6 +142,8 @@ export function useWorkspaceManager() {
   const approvalBufferRef = useRef(new Map<string, ToolApprovalRequest[]>())
   const switchReqIdRef = useRef(0)
   const runIdToWorkspaceRef = useRef(new Map<string, string>())
+  /** Runs whose controller/routing was disposed; drop late events until reopened. */
+  const forgottenRunIdsRef = useRef(new Set<string>())
   const controllerLruRef = useRef<string[]>([])
   const backgroundRunIdsRef = useRef(new Set<string>())
   const refreshRunsRef = useRef<(path: string) => Promise<void>>(async () => {})
@@ -247,6 +259,37 @@ export function useWorkspaceManager() {
     []
   )
 
+  const bufferOrphanEvent = useCallback((runId: string, event: AgentEvent): void => {
+    if (forgottenRunIdsRef.current.has(runId)) return
+    const buffered = eventBufferRef.current.get(runId) ?? []
+    if (buffered.length >= ORPHAN_EVENT_BUFFER_MAX) {
+      buffered.shift()
+    }
+    buffered.push(event)
+    eventBufferRef.current.set(runId, buffered)
+  }, [])
+
+  const bufferOrphanApproval = useCallback((runId: string, request: ToolApprovalRequest): void => {
+    if (forgottenRunIdsRef.current.has(runId)) return
+    const buffered = approvalBufferRef.current.get(runId) ?? []
+    if (buffered.length >= ORPHAN_APPROVAL_BUFFER_MAX) {
+      buffered.shift()
+    }
+    buffered.push(request)
+    approvalBufferRef.current.set(runId, buffered)
+  }, [])
+
+  const forgetRunRouting = useCallback((runId: string): void => {
+    forgottenRunIdsRef.current.add(runId)
+    eventBufferRef.current.delete(runId)
+    approvalBufferRef.current.delete(runId)
+    runIdToWorkspaceRef.current.delete(runId)
+    controllersRef.current.get(runId)?.dispose()
+    controllersRef.current.delete(runId)
+    const lruIdx = controllerLruRef.current.indexOf(runId)
+    if (lruIdx >= 0) controllerLruRef.current.splice(lruIdx, 1)
+  }, [])
+
   const touchLru = useCallback((runId: string) => {
     const lru = controllerLruRef.current
     const idx = lru.indexOf(runId)
@@ -256,6 +299,7 @@ export function useWorkspaceManager() {
 
   const registerRunId = useCallback(
     (runId: string, workspacePath: string) => {
+      forgottenRunIdsRef.current.delete(runId)
       runIdToWorkspaceRef.current.set(runId, workspacePath)
       touchLru(runId)
       const ctrl = controllersRef.current.get(runId)
@@ -280,14 +324,10 @@ export function useWorkspaceManager() {
         return true
       })
       for (let i = 0; i < excess && i < candidates.length; i++) {
-        const runId = candidates[i]
-        controllersRef.current.get(runId)?.dispose()
-        controllersRef.current.delete(runId)
-        const lruIdx = controllerLruRef.current.indexOf(runId)
-        if (lruIdx >= 0) controllerLruRef.current.splice(lruIdx, 1)
+        forgetRunRouting(candidates[i]!)
       }
     },
-    []
+    [forgetRunRouting]
   )
 
   const ensureController = useCallback(
@@ -677,14 +717,12 @@ export function useWorkspaceManager() {
         ctrl = ensureController(workspacePath, event.runId)
       }
       if (!ctrl) {
-        const buffered = eventBufferRef.current.get(event.runId) ?? []
-        buffered.push(event)
-        eventBufferRef.current.set(event.runId, buffered)
+        bufferOrphanEvent(event.runId, event)
         return
       }
       ctrl.handleEvent(event)
     })
-  }, [ensureController])
+  }, [bufferOrphanEvent, ensureController])
 
   useEffect(() => {
     if (!window.vyotiq?.onToolApprovalRequest) return
@@ -694,14 +732,12 @@ export function useWorkspaceManager() {
         controllersRef.current.get(request.runId) ??
         (workspacePath ? ensureController(workspacePath, request.runId) : undefined)
       if (!ctrl) {
-        const buffered = approvalBufferRef.current.get(request.runId) ?? []
-        buffered.push(request)
-        approvalBufferRef.current.set(request.runId, buffered)
+        bufferOrphanApproval(request.runId, request)
         return
       }
       ctrl.handleApprovalRequest(request)
     })
-  }, [ensureController])
+  }, [bufferOrphanApproval, ensureController])
 
   useEffect(() => {
     void pollActiveRuns()
@@ -870,10 +906,7 @@ export function useWorkspaceManager() {
       if (ctrl?.running || ctrl?.pendingRun) {
         backgroundRunIdsRef.current.add(runId)
       } else {
-        controllersRef.current.get(runId)?.dispose()
-        controllersRef.current.delete(runId)
-        const lruIdx = controllerLruRef.current.indexOf(runId)
-        if (lruIdx >= 0) controllerLruRef.current.splice(lruIdx, 1)
+        forgetRunRouting(runId)
       }
       const openRunIds = ctx.openRunIds.filter((id) => id !== runId)
       const activeRunId =
@@ -891,7 +924,7 @@ export function useWorkspaceManager() {
       }
       bump()
     },
-    [activeWorkspace, bump, schedulePersistUiState]
+    [activeWorkspace, bump, forgetRunRouting, schedulePersistUiState]
   )
 
   const setComposerDraft = useCallback(

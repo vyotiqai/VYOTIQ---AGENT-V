@@ -7,10 +7,16 @@ import {
   MarkdownContent,
   balanceIncompleteMarkdown,
   prepareStreamingMarkdown,
-  trailingOpenFenceBody
+  trailingOpenFenceBody,
+  HIGHLIGHT_CACHE_MAX_ENTRIES,
+  setHighlightCacheEntry,
+  getHighlightCacheEntry,
+  clearHighlightCacheForTests,
+  highlightCacheSizeForTests
 } from '@renderer/lib/ui/MarkdownContent'
 
 beforeEach(() => {
+  clearHighlightCacheForTests()
   vi.stubGlobal(
     'navigator',
     Object.assign({}, navigator, {
@@ -20,6 +26,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  clearHighlightCacheForTests()
   cleanup()
   vi.unstubAllGlobals()
 })
@@ -237,5 +244,22 @@ describe('MarkdownContent streaming', () => {
     const code = container.querySelector('code')
     expect(code).toBeTruthy()
     expect(code?.getAttribute('node')).toBeNull()
+  })
+})
+
+describe('highlightCache bounds', () => {
+  it('evicts oldest entries when the cache exceeds the max', () => {
+    for (let i = 0; i < HIGHLIGHT_CACHE_MAX_ENTRIES + 3; i++) {
+      setHighlightCacheEntry(`key-${i}`, `<pre>html-${i}</pre>`)
+    }
+
+    expect(highlightCacheSizeForTests()).toBe(HIGHLIGHT_CACHE_MAX_ENTRIES)
+    expect(getHighlightCacheEntry('key-0')).toBeUndefined()
+    expect(getHighlightCacheEntry('key-1')).toBeUndefined()
+    expect(getHighlightCacheEntry('key-2')).toBeUndefined()
+    expect(getHighlightCacheEntry('key-3')).toBe(`<pre>html-3</pre>`)
+    expect(
+      getHighlightCacheEntry(`key-${HIGHLIGHT_CACHE_MAX_ENTRIES + 2}`)
+    ).toBe(`<pre>html-${HIGHLIGHT_CACHE_MAX_ENTRIES + 2}</pre>`)
   })
 })

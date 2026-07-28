@@ -33,10 +33,40 @@ export function balanceIncompleteMarkdown(content: string): string {
   return balanceOutsideFences(content)
 }
 
+/** Max highlighted fence entries retained across the renderer session. */
+export const HIGHLIGHT_CACHE_MAX_ENTRIES = 200
+
 const highlightCache = new Map<string, string>()
 
 function highlightCacheKey(text: string, lang: string, theme: string): string {
   return `${theme}\0${lang}\0${text}`
+}
+
+/** FIFO-bounded set; exported helpers used by FencedCodeBlock and tests. */
+export function setHighlightCacheEntry(key: string, html: string): void {
+  if (highlightCache.has(key)) {
+    highlightCache.delete(key)
+  }
+  highlightCache.set(key, html)
+  while (highlightCache.size > HIGHLIGHT_CACHE_MAX_ENTRIES) {
+    const oldest = highlightCache.keys().next().value
+    if (oldest === undefined) break
+    highlightCache.delete(oldest)
+  }
+}
+
+export function getHighlightCacheEntry(key: string): string | undefined {
+  return highlightCache.get(key)
+}
+
+/** @internal Reset cache between tests. */
+export function clearHighlightCacheForTests(): void {
+  highlightCache.clear()
+}
+
+/** @internal */
+export function highlightCacheSizeForTests(): number {
+  return highlightCache.size
 }
 
 function FencedCodeBlock({
@@ -53,7 +83,7 @@ function FencedCodeBlock({
   const theme = useDocumentTheme()
   const cacheKey = highlightCacheKey(text, lang, theme)
   const [html, setHtml] = useState<string | null>(() =>
-    unstable ? null : (highlightCache.get(cacheKey) ?? null)
+    unstable ? null : (getHighlightCacheEntry(cacheKey) ?? null)
   )
 
   useEffect(() => {
@@ -61,7 +91,7 @@ function FencedCodeBlock({
       setHtml(null)
       return
     }
-    const cached = highlightCache.get(cacheKey)
+    const cached = getHighlightCacheEntry(cacheKey)
     if (cached) {
       setHtml(cached)
       return
@@ -71,7 +101,7 @@ function FencedCodeBlock({
     void highlightCode(text, lang).then((result) => {
       if (cancelled) return
       const next = result ? sanitizeHighlightedHtml(result) : null
-      if (next) highlightCache.set(cacheKey, next)
+      if (next) setHighlightCacheEntry(cacheKey, next)
       setHtml(next)
     })
     return () => {

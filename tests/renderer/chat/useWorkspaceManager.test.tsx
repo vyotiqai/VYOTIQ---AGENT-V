@@ -3,7 +3,7 @@
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
-import { useWorkspaceManager } from '@renderer/lib/hooks/useWorkspaceManager'
+import { useWorkspaceManager, WORKSPACE_MANAGER_LIMITS } from '@renderer/lib/hooks/useWorkspaceManager'
 import type { AgentEvent, WorkspacesState } from '@shared/ipc'
 
 type Handler = (event: AgentEvent) => void
@@ -671,5 +671,125 @@ describe('useWorkspaceManager', () => {
       expect(result.current.workspaceError).toBe('disk read failed')
     })
     expect(result.current.activeWorkspace).toBeNull()
+  })
+
+  it('caps orphan event buffers for never-registered run ids', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    const { ORPHAN_EVENT_BUFFER_MAX } = WORKSPACE_MANAGER_LIMITS
+    const overflow = 5
+
+    await act(async () => {
+      for (let i = 0; i < ORPHAN_EVENT_BUFFER_MAX + overflow; i++) {
+        handler?.({ type: 'text_delta', runId: 'ghost-run', text: `[${i}]` })
+      }
+    })
+
+    await act(async () => {
+      result.current.openRunTab('ghost-run')
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    })
+
+    const ctrl = result.current.getRunController('ghost-run')
+    const assistant = ctrl?.items.find((i) => i.kind === 'message' && i.role === 'assistant')
+    expect(assistant?.kind).toBe('message')
+    if (assistant?.kind !== 'message') return
+
+    expect(assistant.content).not.toContain('[0]')
+    expect(assistant.content).toContain(`[${overflow}]`)
+    expect(assistant.content).toContain(`[${ORPHAN_EVENT_BUFFER_MAX + overflow - 1}]`)
+    expect(assistant.content.startsWith(`[${overflow}]`)).toBe(true)
+  })
+
+  it('does not resurrect an empty transcript from late events after closing a idle run tab', async () => {
+    loadRun.mockResolvedValue({
+      ok: true,
+      data: {
+        runId: 'run-closed',
+        messages: [{ role: 'user', content: 'persisted' }]
+      }
+    })
+
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    await act(async () => {
+      result.current.openRunTab('run-closed')
+      await result.current.loadRunIntoTab('/ws-a', 'run-closed')
+    })
+
+    await waitFor(() => {
+      expect(
+        result.current.chat.items.some((i) => i.kind === 'message' && i.content === 'persisted')
+      ).toBe(true)
+    })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-closed', status: 'done' })
+    })
+
+    await act(async () => {
+      result.current.closeRunTab('run-closed')
+    })
+
+    await act(async () => {
+      handler?.({ type: 'text_delta', runId: 'run-closed', text: 'LATE_LEAK' })
+      handler?.({ type: 'assistant_message', runId: 'run-closed', content: 'LATE_LEAK' })
+    })
+
+    await act(async () => {
+      result.current.openRunTab('run-closed')
+      await result.current.loadRunIntoTab('/ws-a', 'run-closed')
+    })
+
+    await waitFor(() => {
+      expect(
+        result.current.chat.items.some((i) => i.kind === 'message' && i.content === 'persisted')
+      ).toBe(true)
+    })
+
+    expect(
+      result.current.chat.items.some((i) => i.kind === 'message' && i.content.includes('LATE_LEAK'))
+    ).toBe(false)
+  })
+
+  it('does not apply late events to an LRU-evicted idle controller', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    const { OPEN_RUN_TAB_LIMIT } = WORKSPACE_MANAGER_LIMITS
+    const keptId = `run-keep`
+
+    await act(async () => {
+      for (let i = 0; i < OPEN_RUN_TAB_LIMIT; i++) {
+        result.current.openRunTab(`run-idle-${i}`)
+      }
+      result.current.openRunTab(keptId)
+    })
+
+    expect(result.current.activeContext?.openRunIds.length).toBe(OPEN_RUN_TAB_LIMIT + 1)
+
+    await act(async () => {
+      handler?.({ type: 'text_delta', runId: 'run-idle-0', text: 'EVICT_LEAK' })
+      handler?.({ type: 'assistant_message', runId: 'run-idle-0', content: 'EVICT_LEAK' })
+    })
+
+    await act(async () => {
+      result.current.openRunTab('run-idle-0')
+    })
+
+    expect(
+      result.current.chat.items.some((i) => i.kind === 'message' && i.content.includes('EVICT_LEAK'))
+    ).toBe(false)
   })
 })
