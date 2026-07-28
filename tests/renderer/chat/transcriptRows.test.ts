@@ -617,7 +617,7 @@ describe('buildTranscriptRows', () => {
     expect(rows.map((row) => row.kind)).toEqual(['user', 'text'])
   })
 
-  it('does not emit thinking rows or thinking activity when showThinking is false', () => {
+  it('shows Thinking on the timeline when showThinking is false but reasoning is streaming', () => {
     const items: UiItem[] = [
       { kind: 'message', id: 'u1', role: 'user', content: 'go' },
       {
@@ -633,7 +633,7 @@ describe('buildTranscriptRows', () => {
     expect(rows.some((row) => row.kind === 'thinking')).toBe(false)
     const summary = rows.find((row) => row.kind === 'turn')
     if (summary?.kind === 'turn') {
-      expect(summary.span.activity?.kind).not.toBe('thinking')
+      expect(summary.span.activity?.kind).toBe('thinking')
     }
   })
 
@@ -658,7 +658,7 @@ describe('buildTranscriptRows', () => {
     ).toBe(false)
   })
 
-  it('keeps running tool cards visible when a turn is collapsed', () => {
+  it('hides running tool cards when a turn is collapsed (timeline owns live phase)', () => {
     expect(
       isTurnWorkRow({
         kind: 'card',
@@ -670,7 +670,7 @@ describe('buildTranscriptRows', () => {
           tool: { id: 't-run', name: 'terminal', summary: 'npm test', status: 'running' }
         }
       })
-    ).toBe(false)
+    ).toBe(true)
     expect(
       isTurnWorkRow({
         kind: 'card',

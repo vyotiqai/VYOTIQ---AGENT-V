@@ -22,7 +22,7 @@ import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
 import { resolveServiceTier } from '../../shared/domain/modelSelection'
 import { createApprovalGate } from './toolApproval'
 import { persistAlwaysAllow } from './toolApprovalStore'
-import { getSecret, secretStatus } from '@main/settings/secrets'
+import { getSecret, hasStoredSecretBlob, secretStatus } from '@main/settings/secrets'
 import { getSettings } from '@main/settings/settings'
 import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/workspace/workspaces'
 import {
@@ -333,10 +333,17 @@ export async function* runAgent(input: {
       apiKey = getSecret(providerId)
       if (!apiKey) {
         const status = secretStatus()
+        const storedBlob = hasStoredSecretBlob(providerId)
         const message = !status.encryptionAvailable
           ? 'OS secure storage is unavailable. API keys cannot be decrypted on this system.'
-          : `API key for ${providerId} is not set. Add it in Settings.`
-        const code = !status.encryptionAvailable ? 'PROVIDER_KEYCHAIN' : 'PROVIDER_AUTH'
+          : storedBlob
+            ? `API key for ${providerId} is stored but cannot be decrypted. Re-enter it in Settings or restore OS keychain access.`
+            : `API key for ${providerId} is not set. Add it in Settings.`
+        const code = !status.encryptionAvailable
+          ? 'PROVIDER_KEYCHAIN'
+          : storedBlob
+            ? 'PROVIDER_KEY_DECRYPT'
+            : 'PROVIDER_AUTH'
         logger.warn(message, {
           scope: 'agent',
           code,
@@ -576,6 +583,7 @@ export async function* runAgent(input: {
         contentWindow: effectiveContentWindow,
         compactionTrigger,
         source: 'estimate',
+        ...(assembled.overflow ? { overflow: true } : {}),
         layers: assembled.layers
       }
       appendEvent(runDir, contextUsageEv)
@@ -696,6 +704,7 @@ export async function* runAgent(input: {
                 contentWindow: effectiveContentWindow,
                 compactionTrigger,
                 source: 'provider',
+                ...(assembled.overflow ? { overflow: true } : {}),
                 layers: assembled.layers
               }
               appendEvent(runDir, providerContextEv)

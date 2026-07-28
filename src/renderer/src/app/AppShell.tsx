@@ -30,6 +30,7 @@ function AppShellInner({
   sessionQuery,
   onSessionQuery,
   onOpenSettings,
+  onOpenMarketplace,
   onOpenChat,
   onNewChat,
   onSelectRun,
@@ -45,7 +46,7 @@ function AppShellInner({
   children,
   loading
 }: {
-  view: 'chat' | 'settings'
+  view: 'chat' | 'settings' | 'marketplace'
   workspacePath: string | null
   openWorkspaces?: string[]
   runsByWorkspacePath?: Record<string, WorkspaceSidebarRuns>
@@ -58,6 +59,7 @@ function AppShellInner({
   sessionQuery: string
   onSessionQuery: (q: string) => void
   onOpenSettings: () => void
+  onOpenMarketplace: () => void
   onOpenChat: () => void
   onNewChat: () => void
   onSelectRun: (runId: string) => void
@@ -250,6 +252,7 @@ function AppShellInner({
     workspaceHasBackgroundRun,
     onSessionQuery,
     onOpenSettings,
+    onOpenMarketplace,
     onOpenChat,
     onNewChat,
     onSelectRun,

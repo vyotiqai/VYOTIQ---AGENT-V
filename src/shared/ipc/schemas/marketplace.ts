@@ -83,6 +83,45 @@ export const VyotiqPluginManifestSchema = z.object({
 })
 export type VyotiqPluginManifest = z.infer<typeof VyotiqPluginManifestSchema>
 
+export const MarketplaceCatalogSectionSchema = z.enum(['discover', 'featured'])
+export type MarketplaceCatalogSection = z.infer<typeof MarketplaceCatalogSectionSchema>
+
+export const MarketplaceContentsPreviewSchema = z.object({
+  mcp: z
+    .array(z.object({ id: z.string().min(1), name: z.string().min(1) }))
+    .optional(),
+  skills: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        description: z.string().default('')
+      })
+    )
+    .optional(),
+  rules: z.array(z.object({ path: z.string().min(1) })).optional()
+})
+export type MarketplaceContentsPreview = z.infer<typeof MarketplaceContentsPreviewSchema>
+
+export const PackageContentsSchema = z.object({
+  id: z.string().min(1),
+  kind: MarketplaceKindSchema,
+  mcp: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      path: z.string(),
+      transport: McpTransportSchema.optional(),
+      url: z.string().optional(),
+      command: z.string().optional()
+    })
+  ),
+  skills: z.array(
+    z.object({ name: z.string(), description: z.string(), path: z.string() })
+  ),
+  rules: z.array(z.object({ path: z.string() }))
+})
+export type PackageContents = z.infer<typeof PackageContentsSchema>
+
 export const MarketplaceCatalogEntrySchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -91,7 +130,19 @@ export const MarketplaceCatalogEntrySchema = z.object({
   kind: MarketplaceKindSchema,
   downloadUrl: z.string().optional(),
   bundledPath: z.string().optional(),
-  source: z.enum(['bundled', 'remote']).default('remote')
+  source: z.enum(['bundled', 'remote']).default('remote'),
+  publisher: z.string().optional(),
+  verified: z.boolean().optional(),
+  sections: z.array(MarketplaceCatalogSectionSchema).optional(),
+  /** Drives home category headings (e.g. infrastructure, skills, tools). */
+  category: z.string().optional(),
+  featuredRank: z.number().int().optional(),
+  /** Relative path under resources/marketplace/ (e.g. icons/filesystem.svg). */
+  iconPath: z.string().optional(),
+  iconUrl: z.string().optional(),
+  /** When false, UI shows Coming soon instead of Install. Default true. */
+  installable: z.boolean().optional(),
+  contentsPreview: MarketplaceContentsPreviewSchema.optional()
 })
 export type MarketplaceCatalogEntry = z.infer<typeof MarketplaceCatalogEntrySchema>
 
@@ -114,6 +165,13 @@ export const MarketplaceInstalledItemSchema = z.object({
   packagePath: z.string().min(1)
 })
 export type MarketplaceInstalledItem = z.infer<typeof MarketplaceInstalledItemSchema>
+
+export const MarketplaceInstallResultSchema = z.object({
+  item: MarketplaceInstalledItemSchema,
+  /** Present when a Bearer token was requested; false if secure storage failed. */
+  authTokenStored: z.boolean().optional()
+})
+export type MarketplaceInstallResult = z.infer<typeof MarketplaceInstallResultSchema>
 
 export const MarketplaceIndexSchema = z.object({
   schemaVersion: z.literal(1),

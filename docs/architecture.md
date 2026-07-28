@@ -75,6 +75,7 @@ settings/      # App settings + secrets
 storage/       # Paths, atomic write, migrations/
 ipc/           # register.ts
 agent/         # Agent loop, tools, providers
+marketplace/   # Catalog, install, resolve effective MCP/skills/plugins
 logging/
 ```
 
@@ -144,7 +145,7 @@ Built-in tool descriptions are short capability blurbs in `TOOL_REGISTRY` (`src/
 
 User-configured MCP servers expose namespaced tools: `mcp__{serverId}__{toolName}`. Transports: **stdio**, **HTTP (streamable)**, and **SSE**. Main process connects servers; tools merge with the **15** built-ins at runtime. Server ids must not contain `__`.
 
-**Marketplace** (Settings → Marketplace): sole UI for MCP servers (stdio / HTTP / SSE), skills, and plugins. Browse a bundled catalog (and optional remote registry), install unsigned packages into `{userData}/marketplace/`, add stdio/remote MCP directly, and enable globally or per-workspace (`marketplaceOverrides`). Marketplace MCP packages use `vyotiq.mcp.json`. Remote MCP supports Bearer tokens in OS secure storage and **Sign in with OAuth** (Authorization Code + PKCE). Per-server `allowedTools` / `deniedTools` filter which tools are exposed and invokable. When enabled, the local MCP client connects and tools load into the agent. Skills use `skill.md` (eager system-prompt injection). Plugins (`vyotiq.plugin.json`) atomically expand nested MCP + skills + rules when enabled.
+**Marketplace** (sidebar sparkles → top-level Marketplace view): sole UI for MCP servers (stdio / HTTP / SSE), skills, and plugins. Home shows Discover / Featured / category sections from the curated catalog; package detail lists nested MCP/skills; Manage installs, enables, and configures MCP (including stdio/remote add). Settings → **Registry** holds only the optional registry URL and remote-install acknowledgement. Packages install into `{userData}/marketplace/`. Marketplace MCP packages use `vyotiq.mcp.json`. Remote MCP supports Bearer tokens in OS secure storage and **Sign in with OAuth** (Authorization Code + PKCE). Per-server `allowedTools` / `deniedTools` filter which tools are exposed and invokable. When enabled, the local MCP client connects and tools load into the agent. Skills use `skill.md` (eager system-prompt injection). Plugins (`vyotiq.plugin.json`) atomically expand nested MCP + skills + rules when enabled.
 
 Effective MCP set for a run = configured (manual) entries + marketplace MCP packages + plugin-nested MCP, after workspace enable overrides (`src/main/marketplace/resolve.ts`).
 

@@ -232,6 +232,8 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     contentWindow: z.number().int().min(1).optional(),
     compactionTrigger: z.number().int().min(0),
     source: z.enum(['estimate', 'provider']),
+    /** True when estimated tokens still exceed the model window after compaction/trim. */
+    overflow: z.boolean().optional(),
     layers: z.object({
       system: z.number().int().min(0),
       history: z.number().int().min(0),

@@ -86,6 +86,8 @@ export type AssembleResult = {
   estimatedTokens: number
   layers: ContextLayerBreakdown
   contextShrunk: boolean
+  /** True when estimated tokens still exceed the content window after compaction/trim. */
+  overflow: boolean
   anthropicNative: {
     enableContextManagement: boolean
     clearToolUsesKeep: number

@@ -11,7 +11,7 @@ const SECTIONS: {
   { id: 'general', label: 'General', icon: 'home' },
   { id: 'providers', label: 'Providers', icon: 'cpu' },
   { id: 'agent', label: 'Agent', icon: 'bot' },
-  { id: 'marketplace', label: 'Marketplace', icon: 'sparkles' }
+  { id: 'marketplace', label: 'Registry', icon: 'sparkles' }
 ]
 
 export function SettingsNav({

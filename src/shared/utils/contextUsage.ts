@@ -32,6 +32,8 @@ export type ContextUsageState = {
   layers: ContextLayerBreakdown
   stepUsage: StepUsageTotals
   updatedAt: string
+  /** True when context still exceeds the model window after compaction. */
+  overflow?: boolean
 }
 
 export function contextUsageFromEvent(
@@ -51,7 +53,8 @@ export function contextUsageFromEvent(
     source: event.source,
     layers: event.layers,
     stepUsage,
-    updatedAt: new Date().toISOString()
+    updatedAt: new Date().toISOString(),
+    ...(event.overflow ? { overflow: true } : {})
   }
 }
 

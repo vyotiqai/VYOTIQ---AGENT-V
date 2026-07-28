@@ -495,9 +495,6 @@ export function MessageList({
         data-transcript-scroll
         className={cn('flex min-h-0 flex-1 flex-col overflow-auto pt-4', CHAT_GUTTER)}
         style={dockReserveStyle}
-        aria-live="polite"
-        aria-relevant="additions text"
-        aria-atomic="false"
         onScroll={(e) => handleScroll(e.currentTarget.scrollTop)}
       >
         <div className={columnClass} data-chat-column>

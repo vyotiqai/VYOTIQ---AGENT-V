@@ -3,7 +3,7 @@ import { ollamaOpenAiBaseUrl } from '../../shared/domain/providers'
 import { DEFAULT_SETTINGS } from '../../shared/ipc'
 import { logger } from '../../shared/logger'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
-import { getSecret } from '@main/settings/secrets'
+import { getSecret, hasStoredSecretBlob, secretStatus } from '@main/settings/secrets'
 import { getSettings } from '@main/settings/settings'
 import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/workspace/workspaces'
 import { allocateBudget, contentWindow } from './context/budget'
@@ -48,7 +48,14 @@ export async function compactRunNow(input: {
   const providerId: ProviderId = settings.provider
   const apiKey = providerId === 'ollama' ? null : getSecret(providerId)
   if (providerId !== 'ollama' && !apiKey) {
-    throw new CompactionUnavailableError(`API key for ${providerId} is not set.`)
+    const status = secretStatus()
+    const storedBlob = hasStoredSecretBlob(providerId)
+    const message = !status.encryptionAvailable
+      ? 'OS secure storage is unavailable. API keys cannot be decrypted on this system.'
+      : storedBlob
+        ? `API key for ${providerId} is stored but cannot be decrypted. Re-enter it in Settings or restore OS keychain access.`
+        : `API key for ${providerId} is not set.`
+    throw new CompactionUnavailableError(message)
   }
 
   const existing = loadCompaction(runDir)

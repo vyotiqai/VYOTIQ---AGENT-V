@@ -101,7 +101,8 @@ function lastActiveRow(
  */
 export function deriveRunActivity(
   turnRows: TranscriptRow[],
-  pendingRun?: boolean
+  pendingRun?: boolean,
+  opts?: { hiddenThinkingStreaming?: boolean }
 ): RunActivityPhase {
   const runningCard = lastActiveRow(
     turnRows,
@@ -125,7 +126,7 @@ export function deriveRunActivity(
     turnRows,
     (row) => row.kind === 'thinking' && row.item.thinkingStreaming === true
   )
-  if (streamingThinking) return { kind: 'thinking' }
+  if (streamingThinking || opts?.hiddenThinkingStreaming) return { kind: 'thinking' }
 
   if (pendingRun) {
     return { kind: 'planning' }

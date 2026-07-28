@@ -37,3 +37,8 @@ export function bundledCatalogPath(): string {
 export function bundledPackagePath(relativePath: string): string {
   return join(bundledMarketplaceRoot(), 'packages', relativePath)
 }
+
+/** Resolve a path under resources/marketplace/ (icons, etc.). */
+export function bundledMarketplaceAssetPath(relativePath: string): string {
+  return join(bundledMarketplaceRoot(), relativePath)
+}

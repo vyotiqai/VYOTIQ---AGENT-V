@@ -6,7 +6,7 @@ import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
 import { formatError, isAbortError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
 import { summarizeToolArgs } from '../../shared/toolSummary'
-import { getSecret } from '@main/settings/secrets'
+import { getSecret, hasStoredSecretBlob, secretStatus } from '@main/settings/secrets'
 import { getSettings } from '@main/settings/settings'
 import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/workspace/workspaces'
 import { getProvider } from './providers'
@@ -137,10 +137,17 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
   const provider = getProvider(providerId)
   const apiKey = providerId === 'ollama' ? null : getSecret(providerId)
   if (providerId !== 'ollama' && !apiKey) {
+    const status = secretStatus()
+    const storedBlob = hasStoredSecretBlob(providerId)
+    const message = !status.encryptionAvailable
+      ? 'OS secure storage is unavailable. API keys cannot be decrypted on this system.'
+      : storedBlob
+        ? `API key for ${providerId} is stored but cannot be decrypted. Re-enter it in Settings or restore OS keychain access.`
+        : `API key for ${providerId} is not set. Add it in Settings.`
     return {
       ok: false,
       steps: 0,
-      report: `API key for ${providerId} is not set. Add it in Settings.`
+      report: message
     }
   }
   const baseUrl =

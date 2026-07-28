@@ -8,7 +8,14 @@
       "description": "MCP filesystem server via npx (stdio). Scopes tools to the workspace when configured.",
       "kind": "mcp",
       "bundledPath": "filesystem",
-      "source": "bundled"
+      "source": "bundled",
+      "publisher": "Vyotiq",
+      "verified": true,
+      "sections": ["discover", "featured"],
+      "category": "infrastructure",
+      "featuredRank": 1,
+      "iconPath": "icons/filesystem.svg",
+      "installable": true
     },
     {
       "id": "code-review",
@@ -17,7 +24,14 @@
       "description": "Skill with structured code-review instructions for the agent.",
       "kind": "skill",
       "bundledPath": "code-review",
-      "source": "bundled"
+      "source": "bundled",
+      "publisher": "Vyotiq",
+      "verified": true,
+      "sections": ["discover", "featured"],
+      "category": "skills",
+      "featuredRank": 2,
+      "iconPath": "icons/code-review.svg",
+      "installable": true
     },
     {
       "id": "devtools",
@@ -26,7 +40,96 @@
       "description": "Plugin bundling a sample skill and workspace conventions rule.",
       "kind": "plugin",
       "bundledPath": "devtools",
-      "source": "bundled"
+      "source": "bundled",
+      "publisher": "Vyotiq",
+      "verified": true,
+      "sections": ["discover", "featured"],
+      "category": "infrastructure",
+      "featuredRank": 3,
+      "iconPath": "icons/devtools.svg",
+      "installable": true
+    },
+    {
+      "id": "terminal",
+      "name": "Terminal",
+      "version": "0.1.0",
+      "description": "Run shell commands and inspect output through a scoped MCP bridge.",
+      "kind": "mcp",
+      "source": "bundled",
+      "publisher": "Vyotiq",
+      "verified": true,
+      "sections": ["discover", "featured"],
+      "category": "infrastructure",
+      "featuredRank": 4,
+      "iconPath": "icons/terminal.svg",
+      "installable": false,
+      "contentsPreview": {
+        "mcp": [{ "id": "terminal", "name": "Terminal" }]
+      }
+    },
+    {
+      "id": "memory",
+      "name": "Memory",
+      "version": "0.1.0",
+      "description": "Persistent agent memory helpers for long-running projects.",
+      "kind": "plugin",
+      "source": "bundled",
+      "publisher": "Vyotiq",
+      "verified": true,
+      "sections": ["discover", "featured"],
+      "category": "infrastructure",
+      "featuredRank": 5,
+      "iconPath": "icons/memory.svg",
+      "installable": false,
+      "contentsPreview": {
+        "skills": [
+          {
+            "name": "remember",
+            "description": "Capture durable facts about the workspace."
+          }
+        ],
+        "rules": [{ "path": "rules/memory.md" }]
+      }
+    },
+    {
+      "id": "git",
+      "name": "Git",
+      "version": "0.1.0",
+      "description": "Repository status, diffs, and commit workflow tools for the agent.",
+      "kind": "mcp",
+      "source": "bundled",
+      "publisher": "Vyotiq",
+      "verified": true,
+      "sections": ["discover"],
+      "category": "infrastructure",
+      "iconPath": "icons/git.svg",
+      "installable": false,
+      "contentsPreview": {
+        "mcp": [{ "id": "git", "name": "Git" }]
+      }
+    },
+    {
+      "id": "docs",
+      "name": "Docs",
+      "version": "0.1.0",
+      "description": "Skills for writing and updating project documentation.",
+      "kind": "skill",
+      "source": "bundled",
+      "publisher": "Vyotiq",
+      "verified": true,
+      "sections": ["discover", "featured"],
+      "category": "skills",
+      "featuredRank": 6,
+      "iconPath": "icons/docs.svg",
+      "installable": false,
+      "contentsPreview": {
+        "skills": [
+          {
+            "name": "write-docs",
+            "description": "Draft clear docs from code and conversation context."
+          }
+        ]
+      }
     }
   ]
 }

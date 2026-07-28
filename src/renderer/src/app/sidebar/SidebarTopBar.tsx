@@ -16,7 +16,8 @@ export function SidebarTopBar({
   onToggleSidebar,
   onSessionQuery,
   onNewChat,
-  onOpenSettings
+  onOpenSettings,
+  onOpenMarketplace
 }: {
   isDrawer: boolean
   isDarwin: boolean
@@ -29,6 +30,7 @@ export function SidebarTopBar({
   onSessionQuery: (q: string) => void
   onNewChat: () => void
   onOpenSettings: () => void
+  onOpenMarketplace: () => void
 }) {
   const toggleLabel = isDrawer ? 'Close menu' : 'Collapse sidebar'
   const headerStyle = isDarwin ? { paddingLeft: MACOS_TITLEBAR_INSET_PX } : undefined
@@ -63,6 +65,7 @@ export function SidebarTopBar({
           onSessionQuery={onSessionQuery}
           onNewChat={onNewChat}
           onOpenSettings={onOpenSettings}
+          onOpenMarketplace={onOpenMarketplace}
         />
       </div>
     </header>

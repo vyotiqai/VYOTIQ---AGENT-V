@@ -609,8 +609,7 @@ export function createChatStreamController(
     patch({
       items: replaceAt(state.items, index, {
         ...item,
-        thinkingStreaming: false,
-        thinkingExpanded: false
+        thinkingStreaming: false
       })
     })
   }

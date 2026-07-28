@@ -31,5 +31,9 @@ describe('mcpAuth', () => {
     const id = remoteMcpIdFromUrl('https://mcp.example.com/v1/sse')
     expect(id.startsWith('remote-')).toBe(true)
     expect(id.includes('__')).toBe(false)
+    const other = remoteMcpIdFromUrl(
+      'https://mcp.example.com/v1/sse-extra-path-that-shares-prefix'
+    )
+    expect(other).not.toBe(id)
   })
 })

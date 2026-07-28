@@ -2,7 +2,7 @@ import type { RefObject } from 'react'
 import type { RunSummary } from '@shared/ipc'
 import type { RunRecencyGroup } from '@renderer/lib/utils/groupRunsByRecency'
 
-export type SidebarView = 'chat' | 'settings'
+export type SidebarView = 'chat' | 'settings' | 'marketplace'
 
 export type SidebarProps = {
   view: SidebarView
@@ -20,6 +20,7 @@ export type SidebarProps = {
   workspaceHasBackgroundRun?: (path: string) => boolean
   onSessionQuery: (q: string) => void
   onOpenSettings: () => void
+  onOpenMarketplace: () => void
   onOpenChat: () => void
   onNewChat: () => void
   onSelectRun: (runId: string) => void

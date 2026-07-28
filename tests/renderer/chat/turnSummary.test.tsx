@@ -25,8 +25,25 @@ describe('TurnSummary', () => {
       />
     )
 
-    expect(screen.getByRole('button', { name: /Thinking · 3s/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^3s$/i })).toBeTruthy()
     expect(document.querySelector('.vy-text-shimmer--active')).toBeTruthy()
+  })
+
+  it('shows phase label when collapsed and active', () => {
+    render(
+      <TurnSummary
+        span={{
+          startedAt: Date.now() - 3_000,
+          endedAt: null,
+          active: true,
+          activity: { kind: 'thinking' }
+        }}
+        collapsed={true}
+        onToggle={() => {}}
+      />
+    )
+
+    expect(screen.getByRole('button', { name: /Thinking · 3s/i })).toBeTruthy()
   })
 
   it('shows worked label without shimmer when finished', () => {

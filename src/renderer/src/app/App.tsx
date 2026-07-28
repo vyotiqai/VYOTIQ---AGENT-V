@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { AppShell } from './AppShell'
 import { ChatView } from '../features/chat/ChatView'
 import { SettingsView, type SettingsSection } from '../features/settings'
+import { MarketplaceView } from '../features/marketplace'
 import { useTheme } from '@renderer/lib/hooks/useTheme'
 import { useSettings } from '@renderer/lib/hooks/useSettings'
 import { useWorkspaceManager } from '@renderer/lib/hooks/useWorkspaceManager'
@@ -78,7 +79,7 @@ export function App() {
     chatSurfaceEpoch
   } = workspace
 
-  const [view, setView] = useState<'chat' | 'settings'>('chat')
+  const [view, setView] = useState<'chat' | 'settings' | 'marketplace'>('chat')
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
   const [modelsRefreshNonce, setModelsRefreshNonce] = useState(0)
   const chatHeadingRef = useRef<HTMLHeadingElement>(null)
@@ -87,7 +88,9 @@ export function App() {
   useEffect(() => {
     if (view === 'settings') {
       window.setTimeout(() => settingsBackRef.current?.focus(), 0)
-    } else {
+    } else if (view === 'marketplace') {
+      // MarketplaceView focuses its Close control on mount.
+    } else if (view === 'chat') {
       window.setTimeout(() => chatHeadingRef.current?.focus(), 0)
     }
   }, [view])
@@ -390,6 +393,7 @@ export function App() {
         sessionQuery=""
         onSessionQuery={() => {}}
         onOpenSettings={() => {}}
+        onOpenMarketplace={() => {}}
         onOpenChat={() => {}}
         onNewChat={() => {}}
         onSelectRun={() => {}}
@@ -419,6 +423,7 @@ export function App() {
       sessionQuery=""
       onSessionQuery={setSessionQuery}
       onOpenSettings={() => setView('settings')}
+      onOpenMarketplace={() => setView('marketplace')}
       onOpenChat={() => setView('chat')}
       onNewChat={onNewChat}
       onSelectRun={(runId) => void onSelectRun(runId)}
@@ -458,6 +463,15 @@ export function App() {
           effectiveChatSettings={effectiveChatSettings}
           onSetSettingsOverride={setSettingsOverride}
           onModelsRefreshed={() => setModelsRefreshNonce((n) => n + 1)}
+        />
+      ) : view === 'marketplace' ? (
+        <MarketplaceView
+          settings={settings}
+          onUpdate={update}
+          activeWorkspacePath={activeWorkspace}
+          settingsOverridesByPath={registry?.settingsOverridesByPath ?? {}}
+          onSetSettingsOverride={setSettingsOverride}
+          onClose={() => setView('chat')}
         />
       ) : (
         <ErrorBoundary title="Chat couldn't render" resetKey={chatSurfaceEpoch}>

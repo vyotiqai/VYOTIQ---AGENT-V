@@ -66,7 +66,7 @@ import {
   setInstalledEnabled,
   syncMarketplaceMcpIntoSettings,
   resolveEffectiveMcpServers,
-  getInstalledPackageContents
+  getPackageContents
 } from '@main/marketplace'
 import {
   setSecret,
@@ -795,9 +795,9 @@ export function registerIpc(): void {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
       const req = MarketplaceInstallRequestSchema.parse(raw)
-      const item = await installMarketplacePackage(req)
+      const result = await installMarketplacePackage(req)
       await syncMcpServers(resolveEffectiveMcpServers())
-      return ok(item)
+      return ok(result)
     } catch (err) {
       return failFrom(err, IPC.marketplaceInstall)
     }
@@ -823,7 +823,7 @@ export function registerIpc(): void {
       const index = setInstalledEnabled(id, enabled)
       const item = index.items.find((i) => i.id === id)
       if (item?.kind === 'mcp' || item?.kind === 'plugin') {
-        syncMarketplaceMcpIntoSettings()
+        if (item.kind === 'mcp') syncMarketplaceMcpIntoSettings()
         await syncMcpServers(resolveEffectiveMcpServers())
       }
       return ok(index)
@@ -858,7 +858,7 @@ export function registerIpc(): void {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
       const id = z.string().min(1).parse((raw as { id?: string })?.id)
-      const contents = getInstalledPackageContents(id)
+      const contents = getPackageContents(id)
       if (!contents) return fail('Package not found')
       return ok(contents)
     } catch (err) {

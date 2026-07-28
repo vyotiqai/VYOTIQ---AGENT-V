@@ -73,24 +73,28 @@ export function ThinkingControls({
   )
 
   if (!modelSupportsThinking(model, provider)) return null
-  if (running) return null
 
+  const locked = Boolean(disabled || running)
   const index = modeIndex(chatSettings.thinkingEnabled, chatSettings.thinkingEffort)
   const current = THINKING_MODES[index]!
   const upcoming = nextMode(index, false)
   const on = current.enabled
 
-  const ariaLabel = on
-    ? `Thinking ${current.label}. Click for ${upcoming.label}.`
-    : `Thinking off. Click for ${upcoming.label}.`
+  const ariaLabel = running
+    ? on
+      ? `Thinking ${current.label} (locked while running)`
+      : 'Thinking off (locked while running)'
+    : on
+      ? `Thinking ${current.label}. Click for ${upcoming.label}.`
+      : `Thinking off. Click for ${upcoming.label}.`
 
   return (
     <div className={cn('relative flex h-7 shrink-0 items-center', className)}>
       <button
         type="button"
-        disabled={disabled}
+        disabled={locked}
         aria-label={ariaLabel}
-        title={`${ariaLabel} Shift-click for previous.`}
+        title={running ? ariaLabel : `${ariaLabel} Shift-click for previous.`}
         className={cn(
           'inline-flex h-7 items-center rounded-xl px-1.5 text-[11px] leading-none tracking-[var(--vy-tracking)]',
           'vy-transition hover:bg-surface hover:text-fg active:bg-surface',
@@ -99,6 +103,7 @@ export function ThinkingControls({
         )}
         onClick={(e) => {
           e.preventDefault()
+          if (locked) return
           advance(e.shiftKey)
         }}
       >

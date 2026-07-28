@@ -24,9 +24,10 @@ import type {
   McpStatusResult,
   MarketplaceIndex,
   MarketplaceCatalogEntry,
-  MarketplaceInstalledItem,
+  MarketplaceInstallResult,
   MarketplaceInstallRequest,
   MarketplaceBrowseRequest,
+  PackageContents,
   WorkspaceSettingsOverride,
   WorkspacesState,
   WorkspaceUiState
@@ -125,22 +126,14 @@ export interface VyotiqApi {
   >
   marketplaceInstall: (
     payload: MarketplaceInstallRequest
-  ) => Promise<IpcResult<MarketplaceInstalledItem>>
+  ) => Promise<IpcResult<MarketplaceInstallResult>>
   marketplaceUninstall: (id: string) => Promise<IpcResult<MarketplaceIndex>>
   marketplaceSetEnabled: (
     id: string,
     enabled: boolean
   ) => Promise<IpcResult<MarketplaceIndex>>
   marketplacePickLocal: () => Promise<IpcResult<string | null>>
-  marketplaceGetContents: (id: string) => Promise<
-    IpcResult<{
-      id: string
-      kind: 'mcp' | 'skill' | 'plugin'
-      mcp: Array<{ id: string; name: string; path: string }>
-      skills: Array<{ name: string; description: string; path: string }>
-      rules: Array<{ path: string }>
-    }>
-  >
+  marketplaceGetContents: (id: string) => Promise<IpcResult<PackageContents>>
   getSystemTheme: () => Promise<IpcResult<boolean>>
   onSystemThemeChanged: (handler: (prefersDark: boolean) => void) => () => void
 }

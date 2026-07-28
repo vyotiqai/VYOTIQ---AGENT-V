@@ -34,7 +34,7 @@ export const SECTION_LABELS: Record<
     description: 'Compaction, memory, approval, and sub-agent settings.'
   },
   marketplace: {
-    title: 'Marketplace',
-    description: 'MCP servers, skills, and plugins — install, configure, and enable.'
+    title: 'Registry',
+    description: 'Optional package registry URL and remote-install acknowledgement.'
   }
 }

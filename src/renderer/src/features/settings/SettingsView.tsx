@@ -7,7 +7,7 @@ import { SettingsSectionHeader } from './components/SettingsSectionHeader'
 import { GeneralSection } from './sections/GeneralSection'
 import { ProvidersSection } from './sections/ProvidersSection'
 import { AgentSection } from './sections/AgentSection'
-import { MarketplaceSection } from './sections/MarketplaceSection'
+import { MarketplaceRegistrySection } from './sections/MarketplaceRegistrySection'
 
 export function SettingsView(props: SettingsViewProps) {
   const {
@@ -53,15 +53,7 @@ export function SettingsView(props: SettingsViewProps) {
       case 'agent':
         return <AgentSection form={form} />
       case 'marketplace':
-        return (
-          <MarketplaceSection
-            settings={settings}
-            form={form}
-            activeWorkspacePath={activeWorkspacePath}
-            settingsOverridesByPath={settingsOverridesByPath}
-            onSetSettingsOverride={onSetSettingsOverride}
-          />
-        )
+        return <MarketplaceRegistrySection settings={settings} form={form} />
       default: {
         const _exhaustive: never = form.section
         return _exhaustive

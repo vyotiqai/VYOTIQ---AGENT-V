@@ -36,7 +36,12 @@ export const TurnSummary = memo(function TurnSummary({
 
   const duration = elapsedMs != null && elapsedMs >= MIN_REPORTABLE_MS ? formatElapsed(elapsedMs) : ''
   const phaseLabel = activity ? formatRunActivityLabel(activity) : 'Working'
-  const activeLabel = duration ? `${phaseLabel} · ${duration}` : phaseLabel
+  // When expanded, work rows already show verbs — keep the timeline to duration only.
+  const activeLabel = collapsed
+    ? duration
+      ? `${phaseLabel} · ${duration}`
+      : phaseLabel
+    : duration || phaseLabel
   const doneLabel = duration ? `Worked for ${duration}` : 'Worked'
 
   return (

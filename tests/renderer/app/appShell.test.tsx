@@ -37,6 +37,7 @@ const baseProps = {
   sessionQuery: '',
   onSessionQuery: vi.fn(),
   onOpenSettings: vi.fn(),
+  onOpenMarketplace: vi.fn(),
   onOpenChat: vi.fn(),
   onNewChat: vi.fn(),
   onSelectRun: vi.fn(),

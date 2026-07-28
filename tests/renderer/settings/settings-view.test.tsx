@@ -376,11 +376,12 @@ describe('settings', () => {
     expect(onSetTheme).toHaveBeenCalledWith('dark')
   })
 
-  it('edits MCP server fields in Marketplace settings', async () => {
+  it('edits MCP server fields in Marketplace manage view', async () => {
     const serverId = 'mcp-test-id'
     const onUpdate = vi.fn(async () => ({ ok: true as const }))
+    const { MarketplaceView } = await import('@renderer/features/marketplace')
     render(
-      <SettingsView
+      <MarketplaceView
         settings={{
           ...baseSettings,
           mcpServers: [
@@ -394,16 +395,12 @@ describe('settings', () => {
             }
           ]
         }}
-        secrets={emptySecrets}
-        onClose={vi.fn()}
         onUpdate={onUpdate}
-        onSaveSecret={vi.fn(async () => ({ ok: true as const }))}
-        onClearSecret={vi.fn(async () => ({ ok: true as const }))}
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /^Marketplace$/i }))
-    fireEvent.click(screen.getByRole('button', { name: /^Installed$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Manage$/i }))
+    expect(await screen.findByRole('tab', { name: /^Installed$/i })).toBeTruthy()
     await waitFor(() => expect(window.vyotiq.mcpStatus).toHaveBeenCalled())
 
     const nameInput = screen.getByLabelText(`MCP server name for ${serverId}`)
@@ -463,7 +460,7 @@ describe('settings', () => {
     )
   })
 
-  it('shows MCP connection status in Marketplace settings', async () => {
+  it('shows MCP connection status in Marketplace manage view', async () => {
     // @ts-expect-error test bridge
     window.vyotiq.mcpStatus = vi.fn(async () => ({
       ok: true as const,
@@ -480,8 +477,9 @@ describe('settings', () => {
       }
     }))
 
+    const { MarketplaceView } = await import('@renderer/features/marketplace')
     render(
-      <SettingsView
+      <MarketplaceView
         settings={{
           ...baseSettings,
           mcpServers: [
@@ -496,20 +494,16 @@ describe('settings', () => {
             }
           ]
         }}
-        secrets={emptySecrets}
-        onClose={vi.fn()}
         onUpdate={vi.fn(async () => ({ ok: true as const }))}
-        onSaveSecret={vi.fn(async () => ({ ok: true as const }))}
-        onClearSecret={vi.fn(async () => ({ ok: true as const }))}
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /^Marketplace$/i }))
-    fireEvent.click(screen.getByRole('button', { name: /^Installed$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Manage$/i }))
+    expect(await screen.findByRole('tab', { name: /^Installed$/i })).toBeTruthy()
     expect(await screen.findByText(/Connected · 2 tools/i)).toBeTruthy()
   })
 
-  it('opens Marketplace section and lists bundled catalog entries', async () => {
+  it('opens Registry settings section for marketplace registry URL', async () => {
     render(
       <SettingsView
         settings={baseSettings}
@@ -521,11 +515,10 @@ describe('settings', () => {
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /^Marketplace$/i }))
-    expect(await screen.findAllByText(/Filesystem/i)).toHaveLength(2)
-    expect(screen.getByRole('button', { name: /^Install$/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^Browse$/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^Installed$/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^Add$/i })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^Registry$/i }))
+    expect(await screen.findByLabelText(/Registry URL/i)).toBeTruthy()
+    expect(screen.getByLabelText(/Acknowledge remote install risk/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Browse$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Installed$/i })).toBeNull()
   })
 })

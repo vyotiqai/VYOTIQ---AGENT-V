@@ -41,7 +41,9 @@ vi.mock('@main/settings/settings', () => ({
 }))
 
 vi.mock('@main/settings/secrets', () => ({
-  getSecret: (provider: string) => getSecret(provider)
+  getSecret: (provider: string) => getSecret(provider),
+  hasStoredSecretBlob: () => false,
+  secretStatus: () => ({ encryptionAvailable: true, keys: {} })
 }))
 
 vi.mock('@main/workspace/workspaces', () => ({

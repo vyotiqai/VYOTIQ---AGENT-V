@@ -3,26 +3,65 @@ import { join } from 'path'
 import {
   VyotiqMcpManifestSchema,
   VyotiqPluginManifestSchema,
+  type MarketplaceCatalogEntry,
   type MarketplaceInstalledItem,
-  type MarketplaceKind
+  type PackageContents
 } from '../../shared/ipc'
 import { parseSkillFrontmatter } from '../agent/skills/parse'
+import { loadBundledCatalog, loadCachedRemoteCatalog, mergeCatalogs } from './catalog'
 import { getInstalledItem } from './indexStore'
-import { marketplacePackagesRoot } from './paths'
+import { bundledPackagePath, marketplacePackagesRoot } from './paths'
 
-export type PackageContents = {
-  id: string
-  kind: MarketplaceKind
-  mcp: Array<{ id: string; name: string; path: string }>
-  skills: Array<{ name: string; description: string; path: string }>
-  rules: Array<{ path: string }>
-}
+export type { PackageContents }
 
 /** Describe nested contents of an installed package (for Marketplace UI detail). */
 export function getInstalledPackageContents(id: string): PackageContents | null {
   const item = getInstalledItem(id)
   if (!item) return null
   return describePackageAt(join(marketplacePackagesRoot(), item.packagePath), item)
+}
+
+/**
+ * Resolve package contents for Marketplace detail:
+ * installed → bundled on-disk → contentsPreview from catalog.
+ */
+export function getPackageContents(id: string): PackageContents | null {
+  const installed = getInstalledPackageContents(id)
+  if (installed) return installed
+
+  const entries = mergeCatalogs(loadBundledCatalog(), loadCachedRemoteCatalog())
+  const entry = entries.find((e) => e.id === id)
+  if (!entry) return null
+
+  if (entry.bundledPath) {
+    try {
+      return describePackageAt(bundledPackagePath(entry.bundledPath), {
+        id: entry.id,
+        kind: entry.kind
+      })
+    } catch {
+      // fall through to preview
+    }
+  }
+
+  const preview = entry.contentsPreview
+  if (!preview) return null
+  return {
+    id: entry.id,
+    kind: entry.kind,
+    mcp: (preview.mcp ?? []).map((m) => ({ id: m.id, name: m.name, path: '' })),
+    skills: (preview.skills ?? []).map((s) => ({
+      name: s.name,
+      description: s.description ?? '',
+      path: ''
+    })),
+    rules: (preview.rules ?? []).map((r) => ({ path: r.path }))
+  }
+}
+
+/** Find a catalog entry by id from bundled + cached remote. */
+export function findCatalogEntry(id: string): MarketplaceCatalogEntry | undefined {
+  return mergeCatalogs(loadBundledCatalog(), loadCachedRemoteCatalog()).find((e) => e.id === id)
 }
 
 export function describePackageAt(
@@ -41,7 +80,14 @@ export function describePackageAt(
     const manifestPath = join(root, 'vyotiq.mcp.json')
     if (existsSync(manifestPath)) {
       const m = VyotiqMcpManifestSchema.parse(JSON.parse(readFileSync(manifestPath, 'utf8')))
-      out.mcp.push({ id: m.id, name: m.name, path: 'vyotiq.mcp.json' })
+      out.mcp.push({
+        id: m.id,
+        name: m.name,
+        path: 'vyotiq.mcp.json',
+        transport: m.transport,
+        ...(m.url ? { url: m.url } : {}),
+        ...(m.command ? { command: m.command } : {})
+      })
     }
     return out
   }
@@ -67,7 +113,14 @@ export function describePackageAt(
     if (!existsSync(mcpManifest)) continue
     try {
       const m = VyotiqMcpManifestSchema.parse(JSON.parse(readFileSync(mcpManifest, 'utf8')))
-      out.mcp.push({ id: m.id, name: m.name, path: rel })
+      out.mcp.push({
+        id: m.id,
+        name: m.name,
+        path: rel,
+        transport: m.transport,
+        ...(m.url ? { url: m.url } : {}),
+        ...(m.command ? { command: m.command } : {})
+      })
     } catch {
       // skip
     }

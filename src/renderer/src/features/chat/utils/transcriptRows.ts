@@ -54,9 +54,8 @@ export type TurnSpan = {
  */
 export function isTurnWorkRow(row: TranscriptRow): boolean {
   if (row.kind === 'approval') return false
-  // Keep live prominent tool cards visible while collapsed — otherwise the run
-  // looks stuck with no live command/edit chrome.
-  if (row.kind === 'card' && row.item.tool.status === 'running') return false
+  // Collapsed turns rely on TurnSummary for live phase; hide cards/activity so
+  // running tools are not duplicated beside the timeline label.
   if (
     row.kind === 'thinking' ||
     row.kind === 'activity' ||
@@ -92,6 +91,7 @@ export function buildTranscriptRows(
   let turnIndex = -1
   let pending: ToolItem[] = []
   const includeThinking = options?.showThinking !== false
+  const hiddenThinkingStreamingTurns = new Set<number>()
 
   const flush = (): void => {
     const run = pending
@@ -154,6 +154,9 @@ export function buildTranscriptRows(
     const showContent = Boolean(
       cleanedContent && !duplicatesReasoning({ ...assistant, content: cleanedContent })
     )
+    if (!includeThinking && assistant.thinkingStreaming) {
+      hiddenThinkingStreamingTurns.add(Math.max(turnIndex, 0))
+    }
     // A row with nothing to show must not split the stretch around it, or the
     // transcript stacks identical group headers with no separator between them.
     if (!showThinking && !showContent) continue
@@ -202,7 +205,8 @@ export function buildTranscriptRows(
         coalesceProminentCards(markFinalText(rows)),
         {
           pendingRun: options?.pendingRun,
-          running: options?.running
+          running: options?.running,
+          hiddenThinkingStreamingTurns
         }
       )
     )
@@ -388,10 +392,15 @@ function isRowActive(row: TranscriptRow): boolean {
  */
 function withTurnSummaries(
   rows: TranscriptRow[],
-  options?: { pendingRun?: boolean; running?: boolean }
+  options?: {
+    pendingRun?: boolean
+    running?: boolean
+    hiddenThinkingStreamingTurns?: ReadonlySet<number>
+  }
 ): TranscriptRow[] {
   const pendingRun = options?.pendingRun
   const running = options?.running
+  const hiddenThinkingStreamingTurns = options?.hiddenThinkingStreamingTurns
   let maxTurnIndex = -1
   for (const row of rows) {
     if (row.kind === 'user') maxTurnIndex = Math.max(maxTurnIndex, row.turnIndex)
@@ -442,7 +451,9 @@ function withTurnSummaries(
       const rowActive = turnRows.some(isRowActive)
       const active = rowActive || isLiveTurn
       const activity = active
-        ? deriveRunActivity(turnRows, isLiveTurn && !rowActive)
+        ? deriveRunActivity(turnRows, isLiveTurn && !rowActive, {
+            hiddenThinkingStreaming: hiddenThinkingStreamingTurns?.has(turnIndex) === true
+          })
         : null
 
       out.push({

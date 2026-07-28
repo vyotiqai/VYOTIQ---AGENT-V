@@ -6,6 +6,7 @@ import {
   type MarketplaceCatalogEntry,
   type MarketplaceKind
 } from '../../shared/ipc'
+import { enrichCatalogEntryIcons } from './catalogIcons'
 import { getSettings } from '../settings/settings'
 import { bundledCatalogPath, marketplaceCatalogCachePath } from './paths'
 import { logger } from '../../shared/logger'
@@ -108,5 +109,5 @@ export async function browseCatalog(opts?: {
         e.description.toLowerCase().includes(q)
     )
   }
-  return entries
+  return enrichCatalogEntryIcons(entries)
 }

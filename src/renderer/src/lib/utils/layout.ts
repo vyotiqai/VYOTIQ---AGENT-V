@@ -25,6 +25,12 @@ export const SETTINGS_COLUMN_MAX = 'max-w-[520px]'
 /** Centered settings column. */
 export const SETTINGS_COLUMN = `mx-auto w-full ${SETTINGS_COLUMN_MAX}`
 
+/** Shared max width for marketplace content column. */
+export const MARKETPLACE_COLUMN_MAX = 'max-w-[1040px]'
+
+/** Centered marketplace column. */
+export const MARKETPLACE_COLUMN = `mx-auto w-full ${MARKETPLACE_COLUMN_MAX}`
+
 /**
  * Vertical rhythm. Applied as padding on each row rather than flex gap so
  * spacing stays consistent across the transcript.

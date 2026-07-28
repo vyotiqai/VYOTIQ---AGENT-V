@@ -25,7 +25,17 @@ export function defaultKeyProvider(
   return missing ?? SECRET_PROVIDERS[0]
 }
 
-export function mcpStatusLabel(status: McpServerStatus | undefined): string {
+export function mcpStatusLabel(
+  status: McpServerStatus | undefined,
+  opts?: { workspaceEnabled?: boolean }
+): string {
+  if (opts?.workspaceEnabled === false) {
+    if (status?.connected) {
+      const n = status.toolCount
+      return `Force off here · connected globally · ${n} tool${n === 1 ? '' : 's'}`
+    }
+    return 'Force off in this workspace'
+  }
   if (!status || !status.enabled) return 'Disabled'
   if (status.connected) {
     const n = status.toolCount
@@ -35,7 +45,11 @@ export function mcpStatusLabel(status: McpServerStatus | undefined): string {
   return 'Not connected'
 }
 
-export function mcpStatusClass(status: McpServerStatus | undefined): string {
+export function mcpStatusClass(
+  status: McpServerStatus | undefined,
+  opts?: { workspaceEnabled?: boolean }
+): string {
+  if (opts?.workspaceEnabled === false) return 'text-secondary'
   if (!status || !status.enabled) return 'text-secondary'
   if (status.connected) return 'text-success'
   if (status.error) return 'text-danger'

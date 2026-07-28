@@ -49,7 +49,7 @@ OpenAI · Anthropic · Gemini · Ollama · DeepSeek · Groq · OpenRouter · xAI
 
 - Universal client context pipeline: budget layers, tool-result trimming, structured compaction, workspace snapshot, always-on memory index + state injection, live context-window meter in the composer.
 - Read-only built-in tools may run in parallel when the model requests multiple calls in one step. MCP tools always run serially and are not auto-exempt from approval via `readOnlyHint` (session/workspace allowlists can still skip prompts).
-- **Marketplace** (Settings → Marketplace): install MCP servers (stdio / HTTP / SSE), skills, and plugins from the bundled catalog, a remote registry URL, or local folder/zip/git/npm. Enabled skills inject into the system prompt; plugins expand nested MCP + skills + rules.
+- **Marketplace** (sidebar): Discover / Featured catalog for MCP servers, skills, and plugins; Manage installs and configures them (stdio / HTTP / SSE). Settings → Registry holds the optional remote catalog URL. Enabled skills inject into the system prompt; plugins expand nested MCP + skills + rules.
 - Anthropic also sends server `cache_control` + `context_management` (`clear_tool_uses` / `compact`) when available.
 - Long-term memory lives at `{workspace}/.vyotiq/memory/` (`index.md`, `notes/*.md`, optional `state.md`) with tools `memory_list` / `memory_read` / `memory_write`.
 

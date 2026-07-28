@@ -38,8 +38,8 @@ describe('ThinkingControls', () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it('is hidden while the agent is running', () => {
-    const { container } = render(
+  it('stays visible but locked while the agent is running', () => {
+    render(
       <ThinkingControls
         provider="openai"
         model="gpt-5.6"
@@ -48,7 +48,9 @@ describe('ThinkingControls', () => {
         running
       />
     )
-    expect(container.firstChild).toBeNull()
+    const button = screen.getByRole('button', { name: /locked while running/i })
+    expect(button).toBeTruthy()
+    expect(button).toHaveProperty('disabled', true)
   })
 
   it('cycles effort forward on click', () => {

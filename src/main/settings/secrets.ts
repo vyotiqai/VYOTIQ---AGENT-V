@@ -107,6 +107,12 @@ export function clearSecret(provider: SecretProvider): void {
   logger.info('Secret cleared', { scope: 'secrets', provider })
 }
 
+/** True when an encrypted blob exists for the provider (may still fail to decrypt). */
+export function hasStoredSecretBlob(provider: SecretProvider): boolean {
+  const encrypted = readFile()[provider]
+  return typeof encrypted === 'string' && encrypted.length > 0
+}
+
 export function getSecret(provider: SecretProvider): string | null {
   const data = readFile()
   const encrypted = data[provider]

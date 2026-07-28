@@ -10,12 +10,13 @@ import {
   writeFileSync
 } from 'fs'
 import { tmpdir } from 'os'
-import { basename, dirname, extname, join } from 'path'
+import { basename, dirname, extname, join, resolve } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import {
   MarketplaceInstallRequestSchema,
   type MarketplaceInstallRequest,
+  type MarketplaceInstallResult,
   type MarketplaceInstallSource,
   type MarketplaceInstalledItem,
   type MarketplaceKind,
@@ -28,7 +29,7 @@ import { getSettings, setSettings } from '../settings/settings'
 import { formatError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
 import { browseCatalog, refreshRemoteCatalog } from './catalog'
-import { readMarketplaceIndex, upsertInstalledItem } from './indexStore'
+import { getInstalledItem, readMarketplaceIndex, upsertInstalledItem } from './indexStore'
 import {
   bundledPackagePath,
   marketplacePackageDir,
@@ -140,6 +141,13 @@ async function downloadToFile(url: string, destPath: string): Promise<void> {
 
 function copyPackageIntoStore(srcRoot: string, id: string, version: string): string {
   const dest = marketplacePackageDir(id, version)
+  const srcResolved = resolve(srcRoot)
+  const destResolved = resolve(dest)
+  // Path installs can point at an already-installed package dir; deleting dest
+  // first would destroy the source before cpSync.
+  if (srcResolved === destResolved) {
+    return dest
+  }
   if (existsSync(dest)) {
     rmSync(dest, { recursive: true, force: true })
   }
@@ -218,13 +226,15 @@ function registerInstalled(
   installSource: MarketplaceInstallSource,
   packageRelPath: string
 ): MarketplaceInstalledItem {
+  const prior = getInstalledItem(detected.id)
   const item: MarketplaceInstalledItem = {
     id: detected.id,
     kind: detected.kind,
     name: detected.name,
     version: detected.version,
     description: detected.description,
-    enabled: true,
+    // Preserve enablement across reinstall/upgrade of the same package id.
+    enabled: prior?.enabled ?? true,
     installSource,
     installedAt: new Date().toISOString(),
     packagePath: packageRelPath
@@ -385,13 +395,13 @@ async function materializeToTemp(req: MarketplaceInstallRequest): Promise<{
 
 export async function installMarketplacePackage(
   raw: unknown
-): Promise<MarketplaceInstalledItem> {
+): Promise<MarketplaceInstallResult> {
   const req = MarketplaceInstallRequestSchema.parse(raw)
   const settings = getSettings()
   const remoteSources = new Set(['registry', 'git', 'npm', 'zip', 'remote'])
   if (remoteSources.has(req.source) && !settings.marketplace?.remoteInstallAcked) {
     throw new Error(
-      'Acknowledge remote marketplace installs in Settings → Marketplace before installing from registry, git, npm, zip, or remote MCP URLs.'
+      'Acknowledge remote marketplace installs in Settings → Registry before installing from registry, git, npm, zip, or remote MCP URLs.'
     )
   }
   const { root, cleanup, source } = await materializeToTemp(req)
@@ -409,14 +419,38 @@ export async function installMarketplacePackage(
           `MCP id "${detected.id}" already exists as a configured server. Remove it in Settings → Marketplace first.`
         )
       }
+      // Reject remote URL installs that would overwrite a different remote package id collision.
+      const prior = getInstalledItem(detected.id)
+      if (prior && prior.kind === 'mcp' && req.source === 'remote') {
+        const priorRoot = join(marketplacePackagesRoot(), prior.packagePath)
+        const priorManifest = join(priorRoot, 'vyotiq.mcp.json')
+        if (existsSync(priorManifest)) {
+          try {
+            const prev = VyotiqMcpManifestSchema.parse(
+              JSON.parse(readFileSync(priorManifest, 'utf8'))
+            )
+            if (prev.url && prev.url.trim() !== req.target.trim()) {
+              throw new Error(
+                `MCP id "${detected.id}" is already used by a different remote URL. Uninstall it first or choose a different name.`
+              )
+            }
+          } catch (err) {
+            if (err instanceof Error && err.message.includes('already used')) throw err
+            // ignore unreadable prior manifest
+          }
+        }
+      }
     }
     const dest = copyPackageIntoStore(detected.root, detected.id, detected.version)
     const rel = join(detected.id, detected.version).replace(/\\/g, '/')
     const item = registerInstalled(detected, source, rel)
+    let authTokenStored: boolean | undefined
     if (req.source === 'remote' && req.bearerToken?.trim()) {
       try {
         setMcpAuthToken(detected.id, req.bearerToken.trim())
+        authTokenStored = true
       } catch (err) {
+        authTokenStored = false
         logger.warn('Remote MCP installed but auth token could not be stored securely', {
           scope: 'marketplace',
           id: detected.id,
@@ -431,7 +465,7 @@ export async function installMarketplacePackage(
       source
     })
     void dest
-    return item
+    return authTokenStored === undefined ? { item } : { item, authTokenStored }
   } finally {
     cleanup()
   }

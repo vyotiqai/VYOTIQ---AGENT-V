@@ -269,6 +269,12 @@ function ContextMeterPanel({
               {compactMessage}
             </p>
           ) : null}
+          {usage.overflow ? (
+            <p className="mt-2 text-[10px] leading-snug text-danger" role="alert">
+              Context still exceeds the model window after compaction. Older turns may need manual
+              compacting, or start a new chat.
+            </p>
+          ) : null}
         </PanelSection>
 
         <PanelSection title="Layers" className="border-t border-border pt-2.5">

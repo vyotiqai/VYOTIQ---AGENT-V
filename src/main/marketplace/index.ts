@@ -21,7 +21,13 @@ export {
 } from './install'
 export { parseSkillFrontmatter } from '../agent/skills/parse'
 export { resolveEffectiveMcpServers, listEffectivelyEnabledSkills } from './resolve'
-export { getInstalledPackageContents, describePackageAt } from './packageContents'
+export {
+  getInstalledPackageContents,
+  getPackageContents,
+  describePackageAt,
+  findCatalogEntry
+} from './packageContents'
+export { enrichCatalogEntryIcons } from './catalogIcons'
 export {
   marketplaceRoot,
   marketplacePackageDir,

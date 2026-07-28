@@ -63,10 +63,21 @@ export function withBearerToken(
   return { ...base, [AUTH_HEADER]: `${BEARER_PREFIX}${trimmed}` }
 }
 
+/** Short FNV-1a hex digest so distinct URLs that share a host/path prefix do not collide. */
+function shortUrlHash(input: string): string {
+  let h = 2166136261
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return (h >>> 0).toString(16).padStart(8, '0')
+}
+
 /** Stable id for a remote MCP URL (marketplace package id). */
 export function remoteMcpIdFromUrl(url: string, fallbackName?: string): string {
+  const trimmed = url.trim()
   try {
-    const u = new URL(url.trim())
+    const u = new URL(trimmed)
     const host = u.hostname.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase()
     const path = u.pathname
       .replace(/^\//, '')
@@ -74,17 +85,19 @@ export function remoteMcpIdFromUrl(url: string, fallbackName?: string): string {
       .replace(/[^a-zA-Z0-9-]+/g, '-')
       .replace(/-+/g, '-')
       .replace(/^-|-$/g, '')
-      .slice(0, 32)
+      .slice(0, 24)
     const base = path ? `${host}-${path}` : host
-    const id = `remote-${base}`.replace(/-+/g, '-').slice(0, 64)
-    if (id.includes('__')) return `remote-${host}`.slice(0, 64)
-    return id || 'remote-mcp'
+    const hash = shortUrlHash(`${u.origin}${u.pathname}${u.search}`)
+    const id = `remote-${base}-${hash}`.replace(/-+/g, '-').slice(0, 64)
+    if (id.includes('__')) return `remote-${host}-${hash}`.slice(0, 64)
+    return id || `remote-mcp-${hash}`
   } catch {
     const slug = (fallbackName ?? 'mcp')
       .toLowerCase()
       .replace(/[^a-z0-9-]+/g, '-')
       .replace(/-+/g, '-')
-      .slice(0, 40)
-    return `remote-${slug || 'mcp'}`
+      .slice(0, 32)
+    const hash = shortUrlHash(trimmed || slug)
+    return `remote-${slug || 'mcp'}-${hash}`.slice(0, 64)
   }
 }

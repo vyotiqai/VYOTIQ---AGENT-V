@@ -391,6 +391,7 @@ export async function assembleContext(
     estimatedTokens: estimated,
     layers,
     contextShrunk,
+    overflow: estimated > window,
     anthropicNative: anthropicNativeOptions(
       input.providerId,
       input.model,

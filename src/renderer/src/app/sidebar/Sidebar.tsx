@@ -29,6 +29,7 @@ export function Sidebar({
   workspaceHasBackgroundRun,
   onSessionQuery,
   onOpenSettings,
+  onOpenMarketplace,
   onOpenChat,
   onNewChat,
   onSelectRun,
@@ -140,6 +141,11 @@ export function Sidebar({
         onOpenSettings={() => {
           clearSearch()
           onOpenSettings()
+          afterNav()
+        }}
+        onOpenMarketplace={() => {
+          clearSearch()
+          onOpenMarketplace()
           afterNav()
         }}
       />
