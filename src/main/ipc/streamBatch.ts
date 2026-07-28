@@ -2,26 +2,29 @@ import type { AgentEvent } from '../../shared/ipc'
 
 const BATCH_MS = 16
 
+type PendingSegment =
+  | { kind: 'text'; text: string; invokeId?: number }
+  | { kind: 'thinking'; text: string; step?: number; invokeId?: number }
+
 export class ChatEventBatcher {
-  private pendingText = new Map<string, string>()
-  private pendingThinking = new Map<string, { text: string; step?: number }>()
+  private pendingSegments = new Map<string, PendingSegment[]>()
   private timer: ReturnType<typeof setTimeout> | null = null
 
   constructor(private readonly send: (ev: AgentEvent) => void) {}
 
   push(ev: AgentEvent): void {
     if (ev.type === 'text_delta') {
-      const prev = this.pendingText.get(ev.runId) ?? ''
-      this.pendingText.set(ev.runId, prev + ev.text)
+      this.appendSegment(ev.runId, { kind: 'text', text: ev.text, invokeId: ev.invokeId })
       this.schedule()
       return
     }
 
     if (ev.type === 'thinking_delta') {
-      const prev = this.pendingThinking.get(ev.runId)
-      this.pendingThinking.set(ev.runId, {
-        text: (prev?.text ?? '') + ev.text,
-        step: ev.step ?? prev?.step
+      this.appendSegment(ev.runId, {
+        kind: 'thinking',
+        text: ev.text,
+        step: ev.step,
+        invokeId: ev.invokeId
       })
       this.schedule()
       return
@@ -31,28 +34,58 @@ export class ChatEventBatcher {
     this.send(ev)
   }
 
+  private appendSegment(runId: string, segment: PendingSegment): void {
+    const queue = this.pendingSegments.get(runId) ?? []
+    const last = queue[queue.length - 1]
+    if (
+      last &&
+      last.kind === segment.kind &&
+      last.invokeId === segment.invokeId &&
+      (segment.kind !== 'thinking' || (last.kind === 'thinking' && last.step === segment.step))
+    ) {
+      if (segment.kind === 'thinking' && last.kind === 'thinking') {
+        queue[queue.length - 1] = {
+          kind: 'thinking',
+          text: last.text + segment.text,
+          step: segment.step,
+          invokeId: segment.invokeId
+        }
+      } else if (segment.kind === 'text' && last.kind === 'text') {
+        queue[queue.length - 1] = {
+          kind: 'text',
+          text: last.text + segment.text,
+          invokeId: segment.invokeId
+        }
+      }
+    } else {
+      queue.push(segment)
+    }
+    this.pendingSegments.set(runId, queue)
+  }
+
   flush(): void {
     if (this.timer) {
       clearTimeout(this.timer)
       this.timer = null
     }
 
-    for (const [runId, text] of this.pendingText) {
-      if (text) this.send({ type: 'text_delta', runId, text })
-    }
-    this.pendingText.clear()
-
-    for (const [runId, entry] of this.pendingThinking) {
-      if (entry.text) {
-        this.send({
-          type: 'thinking_delta',
-          runId,
-          text: entry.text,
-          step: entry.step
-        })
+    for (const [runId, segments] of this.pendingSegments) {
+      for (const segment of segments) {
+        if (!segment.text) continue
+        if (segment.kind === 'text') {
+          this.send({ type: 'text_delta', runId, text: segment.text, invokeId: segment.invokeId })
+        } else {
+          this.send({
+            type: 'thinking_delta',
+            runId,
+            text: segment.text,
+            step: segment.step,
+            invokeId: segment.invokeId
+          })
+        }
       }
     }
-    this.pendingThinking.clear()
+    this.pendingSegments.clear()
   }
 
   private schedule(): void {
@@ -64,21 +97,23 @@ export class ChatEventBatcher {
   }
 
   private flushDeltas(): void {
-    for (const [runId, text] of this.pendingText) {
-      if (!text) continue
-      this.send({ type: 'text_delta', runId, text })
-      this.pendingText.set(runId, '')
-    }
-
-    for (const [runId, entry] of this.pendingThinking) {
-      if (!entry.text) continue
-      this.send({
-        type: 'thinking_delta',
-        runId,
-        text: entry.text,
-        step: entry.step
-      })
-      this.pendingThinking.set(runId, { text: '', step: entry.step })
+    for (const [runId, segments] of this.pendingSegments) {
+      if (!segments.length) continue
+      for (const segment of segments) {
+        if (!segment.text) continue
+        if (segment.kind === 'text') {
+          this.send({ type: 'text_delta', runId, text: segment.text, invokeId: segment.invokeId })
+        } else {
+          this.send({
+            type: 'thinking_delta',
+            runId,
+            text: segment.text,
+            step: segment.step,
+            invokeId: segment.invokeId
+          })
+        }
+      }
+      this.pendingSegments.set(runId, [])
     }
   }
 }

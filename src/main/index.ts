@@ -5,6 +5,7 @@ import { createWindow, applyTitleBarTheme, getMainWindow } from '@main/app/windo
 import { applyCsp } from '@main/app/security'
 import { registerIpc } from './ipc/register'
 import { shutdownMcpServers, syncMcpServers } from '@main/agent/mcp'
+import { resolveEffectiveMcpServers, syncMarketplaceMcpIntoSettings } from '@main/marketplace'
 import { getSettings } from '@main/settings/settings'
 import { migrateLegacySessions } from '@main/storage/migrations/migrateSessions'
 import { migrateWorkspaceRuns } from './storage/migrateWorkspaceRuns'
@@ -69,7 +70,12 @@ if (!gotLock) {
       logger.warn('Failed startup workspace maintenance', { scope: 'main', err })
     }
     registerIpc()
-    void syncMcpServers(getSettings().mcpServers).catch((err) => {
+    try {
+      syncMarketplaceMcpIntoSettings()
+    } catch (err) {
+      logger.warn('Marketplace MCP settings sync failed', { scope: 'main', err })
+    }
+    void syncMcpServers(resolveEffectiveMcpServers()).catch((err) => {
       logger.warn('Initial MCP sync failed', { scope: 'main', err })
     })
 

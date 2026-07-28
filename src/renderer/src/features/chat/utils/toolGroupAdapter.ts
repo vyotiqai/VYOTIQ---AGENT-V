@@ -137,7 +137,25 @@ function toolSubtitle(tool: UiToolRow): string {
 }
 
 function nestedRowTitle(tool: UiToolRow, subtitle: string, inGroup: boolean): string {
-  if (inGroup && subtitle && subtitle !== '…') return subtitle
+  if (inGroup) {
+    if (subtitle && subtitle !== '…') return subtitle
+    const preview = tool.argsPreview?.trim()
+    if (preview) {
+      const fromArgs = toolSubtitle({ ...tool, argsPreview: preview })
+      if (fromArgs && fromArgs !== '…') return fromArgs
+    }
+    if (tool.name && tool.name !== 'tool') {
+      const summary = tool.summary?.trim()
+      if (summary) return summary.length > 80 ? `${summary.slice(0, 77)}...` : summary
+    }
+  }
+  if (
+    tool.status === 'running' &&
+    (!tool.name || tool.name === 'tool') &&
+    (!subtitle || subtitle === '…')
+  ) {
+    return 'Preparing…'
+  }
   return toolLabel(tool.name, tool.status)
 }
 

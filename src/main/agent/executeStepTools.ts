@@ -24,6 +24,13 @@ export type ToolStepContext = {
   approval?: ToolApprovalGate
   /** Streams events while a tool is still running (sub-agent progress). */
   emitLiveEvent?: (ev: AgentEvent) => void
+  /**
+   * MCP servers enabled for this run (workspace overrides applied).
+   * Enforced at invoke time so Force-off cannot be bypassed via stale tool names.
+   */
+  runEnabledMcpIds?: ReadonlySet<string>
+  /** Per-server allow/deny for bare MCP tool names. */
+  mcpToolPolicies?: ReadonlyMap<string, { allowedTools?: string[]; deniedTools?: string[] }>
 }
 
 /**
@@ -107,6 +114,11 @@ function emitToolStart(ctx: ToolStepContext, event: AgentEvent): void {
   ctx.emitLiveEvent?.(event)
 }
 
+function emitToolResult(ctx: ToolStepContext, event: AgentEvent): void {
+  if (event.type !== 'tool_result') return
+  ctx.emitLiveEvent?.(event)
+}
+
 async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<ToolOutcome> {
   const events: AgentEvent[] = []
   const call = withRepairedArguments(rawCall, ctx)
@@ -144,6 +156,7 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
       }
     )
     emitToolStart(ctx, events[0]!)
+    emitToolResult(ctx, events[1]!)
     return { ok: false, events, message: toolMsg }
   }
 
@@ -179,6 +192,7 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
           ok: false,
           content: verdict.reason
         })
+        emitToolResult(ctx, events[events.length - 1]!)
         return { ok: false, events, message: toolMsg }
       }
     }
@@ -186,6 +200,8 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
     const result = await executeTool(call.name, call.arguments, ctx.workspace, ctx.signal, {
       runDir: ctx.runDir,
       depth: 0,
+      runEnabledMcpIds: ctx.runEnabledMcpIds,
+      mcpToolPolicies: ctx.mcpToolPolicies,
       onProgress: ctx.emitLiveEvent
         ? (update) =>
             ctx.emitLiveEvent?.({
@@ -228,6 +244,7 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
       ok: result.ok,
       content
     })
+    emitToolResult(ctx, events[events.length - 1]!)
     if (!result.ok && !result.failureLogged) {
       logger.warn('Tool returned failure', {
         scope: 'agent',
@@ -261,6 +278,7 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
         ok: false,
         content: 'Cancelled'
       })
+      emitToolResult(ctx, events[events.length - 1]!)
       return { ok: false, events, message: toolMsg }
     }
     throw err
@@ -299,6 +317,7 @@ function cancelledToolResult(call: ToolCall, ctx: ToolStepContext): ToolOutcome 
     content: 'Cancelled'
   }
   emitToolStart(ctx, startEv)
+  emitToolResult(ctx, ev)
   return { ok: false, events: [startEv, ev], message: toolMsg }
 }
 

@@ -22,6 +22,11 @@ import type {
   ExtractAttachmentRequest,
   ExtractAttachmentResult,
   McpStatusResult,
+  MarketplaceIndex,
+  MarketplaceCatalogEntry,
+  MarketplaceInstalledItem,
+  MarketplaceInstallRequest,
+  MarketplaceBrowseRequest,
   WorkspaceSettingsOverride,
   WorkspacesState,
   WorkspaceUiState
@@ -108,6 +113,34 @@ export interface VyotiqApi {
   telemetryStatus: () => Promise<IpcResult<TelemetryStatus>>
   mcpStatus: () => Promise<IpcResult<McpStatusResult>>
   mcpRefresh: () => Promise<IpcResult<McpStatusResult>>
+  mcpSetAuthToken: (serverId: string, token: string) => Promise<IpcResult<true>>
+  mcpClearAuthToken: (serverId: string) => Promise<IpcResult<true>>
+  mcpStartOAuth: (serverId: string) => Promise<IpcResult<true>>
+  marketplaceListInstalled: () => Promise<IpcResult<MarketplaceIndex>>
+  marketplaceBrowse: (
+    payload?: MarketplaceBrowseRequest
+  ) => Promise<IpcResult<{ packages: MarketplaceCatalogEntry[] }>>
+  marketplaceRefreshCatalog: () => Promise<
+    IpcResult<{ packages: MarketplaceCatalogEntry[]; remoteCount: number }>
+  >
+  marketplaceInstall: (
+    payload: MarketplaceInstallRequest
+  ) => Promise<IpcResult<MarketplaceInstalledItem>>
+  marketplaceUninstall: (id: string) => Promise<IpcResult<MarketplaceIndex>>
+  marketplaceSetEnabled: (
+    id: string,
+    enabled: boolean
+  ) => Promise<IpcResult<MarketplaceIndex>>
+  marketplacePickLocal: () => Promise<IpcResult<string | null>>
+  marketplaceGetContents: (id: string) => Promise<
+    IpcResult<{
+      id: string
+      kind: 'mcp' | 'skill' | 'plugin'
+      mcp: Array<{ id: string; name: string; path: string }>
+      skills: Array<{ name: string; description: string; path: string }>
+      rules: Array<{ path: string }>
+    }>
+  >
   getSystemTheme: () => Promise<IpcResult<boolean>>
   onSystemThemeChanged: (handler: (prefersDark: boolean) => void) => () => void
 }

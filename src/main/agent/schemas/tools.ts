@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { TERMINAL_MAX_TIMEOUT_MS } from '../tools/terminal'
 import type { ToolDefinition } from '../providers/types'
 import { TOOL_GUIDANCE } from './toolGuidance'
 import { zodToJsonSchema } from './zodToJsonSchema'
@@ -76,7 +77,8 @@ const terminalArgs = z.object({
     .number()
     .int()
     .min(1)
-    .describe('Timeout in ms (default 60000)')
+    .max(TERMINAL_MAX_TIMEOUT_MS)
+    .describe(`Timeout in ms (default 60000, max ${TERMINAL_MAX_TIMEOUT_MS})`)
     .optional()
 })
 

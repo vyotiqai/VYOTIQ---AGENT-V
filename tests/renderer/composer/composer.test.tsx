@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, fireEvent, within, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, fireEvent, within, waitFor, act } from '@testing-library/react'
 import { Composer } from '@renderer/features/chat/components/composer'
 import { DEFAULT_SETTINGS } from '@shared/ipc'
 import type { EffectiveChatSettings } from '@shared/effectiveSettings'
@@ -61,11 +61,15 @@ describe('Composer', () => {
 
     expect(document.querySelector('select')).toBeNull()
     const modelBtn = screen.getByRole('button', { name: /Select model/i })
-    fireEvent.click(modelBtn)
+    act(() => {
+      fireEvent.click(modelBtn)
+    })
     const listbox = screen.getByRole('listbox')
-    fireEvent.click(within(listbox).getByText('llama3.2'))
+    act(() => {
+      fireEvent.click(within(listbox).getByText('llama3.2'))
+    })
     expect(onProviderModel).toHaveBeenCalledWith('ollama', 'llama3.2')
-    expect(screen.getByRole('listbox')).toBeTruthy()
+    expect(screen.queryByRole('listbox')).toBeNull()
   })
 
   it('restores composer draft when send reports failure', async () => {

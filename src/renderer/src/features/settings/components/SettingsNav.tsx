@@ -3,10 +3,15 @@ import { Icon } from '@renderer/lib/icons'
 import { NavItem } from '@renderer/lib/ui'
 import type { SettingsSection } from '../types'
 
-const SECTIONS: { id: SettingsSection; label: string; icon: 'home' | 'cpu' | 'bot' | 'plug' }[] = [
+const SECTIONS: {
+  id: SettingsSection
+  label: string
+  icon: 'home' | 'cpu' | 'bot' | 'sparkles' | 'plug'
+}[] = [
   { id: 'general', label: 'General', icon: 'home' },
   { id: 'providers', label: 'Providers', icon: 'cpu' },
   { id: 'agent', label: 'Agent', icon: 'bot' },
+  { id: 'marketplace', label: 'Marketplace', icon: 'sparkles' },
   { id: 'advanced', label: 'Advanced', icon: 'plug' }
 ]
 

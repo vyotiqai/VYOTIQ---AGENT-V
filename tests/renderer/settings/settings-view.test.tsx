@@ -34,7 +34,48 @@ beforeEach(() => {
       data: { dsnConfigured: false, telemetryEnabled: false }
     })),
     mcpStatus: vi.fn(async () => ({ ok: true as const, data: { servers: [] } })),
-    mcpRefresh: vi.fn(async () => ({ ok: true as const, data: { servers: [] } }))
+    mcpRefresh: vi.fn(async () => ({ ok: true as const, data: { servers: [] } })),
+    marketplaceBrowse: vi.fn(async () => ({
+      ok: true as const,
+      data: {
+        packages: [
+          {
+            id: 'filesystem',
+            name: 'Filesystem',
+            version: '1.0.0',
+            description: 'Bundled MCP',
+            kind: 'mcp' as const,
+            source: 'bundled' as const,
+            bundledPath: 'filesystem'
+          }
+        ]
+      }
+    })),
+    marketplaceListInstalled: vi.fn(async () => ({
+      ok: true as const,
+      data: { schemaVersion: 1 as const, items: [] }
+    })),
+    marketplaceRefreshCatalog: vi.fn(async () => ({
+      ok: true as const,
+      data: { packages: [], remoteCount: 0 }
+    })),
+    marketplaceInstall: vi.fn(async () => ({
+      ok: false as const,
+      error: 'not used'
+    })),
+    marketplaceUninstall: vi.fn(async () => ({
+      ok: true as const,
+      data: { schemaVersion: 1 as const, items: [] }
+    })),
+    marketplaceSetEnabled: vi.fn(async () => ({
+      ok: true as const,
+      data: { schemaVersion: 1 as const, items: [] }
+    })),
+    marketplacePickLocal: vi.fn(async () => ({ ok: true as const, data: null })),
+    marketplaceGetContents: vi.fn(async () => ({
+      ok: false as const,
+      error: 'not found'
+    }))
   }
 })
 
@@ -445,6 +486,7 @@ describe('settings', () => {
             {
               id: 'srv-1',
               name: 'Echo',
+              transport: 'stdio',
               command: 'node',
               args: ['echo.mjs'],
               enabled: true
@@ -461,5 +503,25 @@ describe('settings', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /^Advanced$/i }))
     expect(await screen.findByText(/Connected · 2 tools/i)).toBeTruthy()
+  })
+
+  it('opens Marketplace section and lists bundled catalog entries', async () => {
+    render(
+      <SettingsView
+        settings={baseSettings}
+        secrets={emptySecrets}
+        onClose={vi.fn()}
+        onUpdate={vi.fn(async () => ({ ok: true as const }))}
+        onSaveSecret={vi.fn(async () => ({ ok: true as const }))}
+        onClearSecret={vi.fn(async () => ({ ok: true as const }))}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /^Marketplace$/i }))
+    expect(await screen.findAllByText(/Filesystem/i)).toHaveLength(2)
+    expect(screen.getByRole('button', { name: /^Install$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Browse$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Installed$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Add$/i })).toBeTruthy()
   })
 })

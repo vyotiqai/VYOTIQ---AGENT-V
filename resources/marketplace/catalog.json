@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "packages": [
+    {
+      "id": "filesystem",
+      "name": "Filesystem",
+      "version": "1.0.0",
+      "description": "MCP filesystem server via npx (stdio). Scopes tools to the workspace when configured.",
+      "kind": "mcp",
+      "bundledPath": "filesystem",
+      "source": "bundled"
+    },
+    {
+      "id": "code-review",
+      "name": "Code review",
+      "version": "1.0.0",
+      "description": "Skill with structured code-review instructions for the agent.",
+      "kind": "skill",
+      "bundledPath": "code-review",
+      "source": "bundled"
+    },
+    {
+      "id": "devtools",
+      "name": "Devtools",
+      "version": "1.0.0",
+      "description": "Plugin bundling a sample skill and workspace conventions rule.",
+      "kind": "plugin",
+      "bundledPath": "devtools",
+      "source": "bundled"
+    }
+  ]
+}

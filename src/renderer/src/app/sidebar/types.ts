@@ -30,8 +30,6 @@ export type SidebarProps = {
   onDeleteRunInWorkspace?: (path: string, runId: string) => void
   onCloseDrawer: () => void
   onToggleSidebar: () => void
-  /** Expand sidebar (if collapsed) and focus chat search. */
-  onFocusSearch?: () => void
   collapsed?: boolean
   variant?: 'desktop' | 'drawer'
 }

@@ -2,13 +2,16 @@ import type { UiItem, UiToolApproval } from '@shared/transcript'
 import {
   duplicatesReasoning,
   mergeThinkingContent,
+  MIN_VISIBLE_FINISHED_THINKING_CHARS,
   shouldRenderThinking,
   stripToolShapedAssistantText,
   stripToolShapedAssistantTextForStream
 } from '@shared/transcript'
 import { isProminentTool } from '../toolUi'
 import { collectWritingChanges } from '../toolUi/parsers/edit'
+import { parseDeleteData } from '../toolUi/parsers/delete'
 import { deriveRunActivity, type RunActivityPhase } from './runActivity'
+import { mapToolGroupProps } from './toolGroupAdapter'
 
 export type { RunActivityPhase } from './runActivity'
 
@@ -46,13 +49,18 @@ export type TurnSpan = {
 /**
  * Rows a turn summary stands for, and therefore hides when it is collapsed.
  * Mid-turn narration is part of the work; only the closing answer survives.
+ * Approval prompts must stay visible — collapsing them deadlocks a running turn
+ * (composer locked, no Allow/Deny).
  */
 export function isTurnWorkRow(row: TranscriptRow): boolean {
+  if (row.kind === 'approval') return false
+  // Keep live prominent tool cards visible while collapsed — otherwise the run
+  // looks stuck with no live command/edit chrome.
+  if (row.kind === 'card' && row.item.tool.status === 'running') return false
   if (
     row.kind === 'thinking' ||
     row.kind === 'activity' ||
-    row.kind === 'card' ||
-    row.kind === 'approval'
+    row.kind === 'card'
   ) {
     return true
   }
@@ -202,10 +210,15 @@ export function buildTranscriptRows(
 }
 
 /** Tools that write files, and so contribute to a turn's change summary. */
-const WRITING_TOOLS = new Set(['edit', 'multi_edit'])
+const WRITING_TOOLS = new Set(['edit', 'multi_edit', 'delete'])
 
 function writingToolChanges(item: ToolItem): ChangedFile[] {
   if (!WRITING_TOOLS.has(item.tool.name) || item.tool.status !== 'done') return []
+  if (item.tool.name === 'delete') {
+    const { path } = parseDeleteData(item.tool)
+    if (!path) return []
+    return [{ path, added: 0, removed: 1 }]
+  }
   return collectWritingChanges(item.tool)
 }
 
@@ -452,10 +465,29 @@ export function rowLeadingGap(row: TranscriptRow): number {
 }
 
 /**
- * Within a turn, fold consecutive activity batches into one group.
- * Stop at thinking (or anything else) so reasoning stays between tool batches
- * instead of being hoisted into one pile above the work.
+ * Stable merge key from tool counts — ignore running vs done tense so a card
+ * sandwiched between two identical lookup batches can fold into one header.
  */
+function activityGroupKey(tools: ToolItem[]): string {
+  const props = mapToolGroupProps(
+    tools.map((item) => item.tool),
+    {}
+  )
+  return props.summary || props.runningLabel
+}
+
+function isShallowWorkSeparator(row: TranscriptRow): boolean {
+  if (row.kind === 'thinking') {
+    const text = row.item.thinking?.trim() ?? ''
+    if (!text) return true
+    return text.length < MIN_VISIBLE_FINISHED_THINKING_CHARS
+  }
+  if (row.kind === 'text') {
+    return !row.item.content?.trim()
+  }
+  return false
+}
+
 function coalesceTurnWork(rows: TranscriptRow[]): TranscriptRow[] {
   const out: TranscriptRow[] = []
   let index = 0
@@ -469,25 +501,43 @@ function coalesceTurnWork(rows: TranscriptRow[]): TranscriptRow[] {
     }
 
     const turnIndex = row.turnIndex
-    const activities: Extract<TranscriptRow, { kind: 'activity' }>[] = []
-    while (index < rows.length) {
-      const next = rows[index]!
-      if (next.turnIndex !== turnIndex || next.kind !== 'activity') break
-      activities.push(next)
-      index += 1
-    }
+    const groupKey = activityGroupKey(row.tools)
+    let mergedTools = [...row.tools]
+    const anchorId = row.id
+    const sandwichedCards: TranscriptRow[] = []
+    index += 1
 
-    if (activities.length === 1) {
-      out.push(activities[0]!)
-      continue
+    while (index < rows.length && rows[index]!.turnIndex === turnIndex) {
+      while (
+        index < rows.length &&
+        rows[index]!.turnIndex === turnIndex &&
+        isShallowWorkSeparator(rows[index]!)
+      ) {
+        index += 1
+      }
+      if (index >= rows.length || rows[index]!.turnIndex !== turnIndex) break
+
+      const next = rows[index]!
+      if (next.kind === 'card') {
+        sandwichedCards.push(next)
+        index += 1
+        continue
+      }
+      if (next.kind === 'activity' && activityGroupKey(next.tools) === groupKey) {
+        mergedTools.push(...next.tools)
+        index += 1
+        continue
+      }
+      break
     }
 
     out.push({
       kind: 'activity',
-      id: activities[0]!.id,
-      tools: activities.flatMap((entry) => entry.tools),
+      id: anchorId,
+      tools: mergedTools,
       turnIndex
     })
+    for (const card of sandwichedCards) out.push(card)
   }
 
   return out

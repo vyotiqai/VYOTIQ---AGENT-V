@@ -63,6 +63,11 @@ function activityRow(
 }
 
 describe('deriveRunActivity', () => {
+  it('prefers writing over thinking when both are streaming', () => {
+    const phase = deriveRunActivity([thinkingRow(true), textRow(true)])
+    expect(phase).toEqual({ kind: 'writing' })
+  })
+
   it('prefers running tools over thinking and writing when all are active', () => {
     const phase = deriveRunActivity([
       activityRow([{ id: 't1', name: 'grep', summary: 'foo', status: 'running' }]),

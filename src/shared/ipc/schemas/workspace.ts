@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { ProviderIdSchema } from './providers'
+import { MarketplaceOverridesSchema } from './marketplace'
 import { ThinkingEffortSchema, ToolApprovalSettingsSchema } from './settings'
 
 export const WorkspaceUiStateSchema = z.object({
@@ -23,6 +24,8 @@ export const WorkspaceSettingsOverrideSchema = z.object({
   toolApproval: ToolApprovalSettingsSchema.optional(),
   subagentProvider: ProviderIdSchema.optional(),
   subagentModel: z.string().min(1).optional(),
+  /** Per-id enable overrides for marketplace MCP / skills / plugins. */
+  marketplaceOverrides: MarketplaceOverridesSchema.optional(),
   useOverride: z.boolean()
 })
 export type WorkspaceSettingsOverride = z.infer<typeof WorkspaceSettingsOverrideSchema>

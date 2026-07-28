@@ -1196,9 +1196,11 @@ export function createChatStreamController(
       patch({ error: 'Pick a workspace before starting a chat.' })
       return false
     }
-    patch({ error: null, runNotice: null, incomplete: null, contextUsage: null })
+    patch({ error: null, runNotice: null, incomplete: null })
     lastRunErrorMessage = null
     usageTotals = emptyStepUsageTotals()
+    // Keep last contextUsage so the meter does not flicker away between turns;
+    // stepUsage resets via usageTotals and is overwritten on the next event.
     pendingCancel = false
     ignoreStreamEvents = false
     // Anything still arriving from the turn we are replacing is now stale, including a
@@ -1525,9 +1527,10 @@ export function createChatStreamController(
     if (idx < 0 || state.items[idx]?.kind !== 'tool') {
       // The row should already exist, but the loop is parked either way: show
       // the prompt on a row of its own rather than stalling with no way out.
+      // Insert beside other tools for this turn — not at the transcript tail.
       patch({
-        items: [
-          ...state.items,
+        items: appendTool(
+          state.items,
           {
             kind: 'tool' as const,
             id: request.toolCallId,
@@ -1535,11 +1538,13 @@ export function createChatStreamController(
               id: request.toolCallId,
               name: request.name,
               summary: request.summary,
-              status: 'running' as const
+              status: 'running' as const,
+              ...(request.argsPreview ? { argsPreview: request.argsPreview } : {})
             },
             approval
-          }
-        ]
+          },
+          state.runStartedAt
+        )
       })
       return
     }

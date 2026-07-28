@@ -578,6 +578,7 @@ export const anthropicProvider: LlmProvider = {
       if (type === 'content_block_stop') {
         if (currentBlockType === 'thinking' && currentThinkingText) {
           thinkingBlocks.push({ type: 'thinking', thinking: currentThinkingText })
+          yield { type: 'thinking_done', text: currentThinkingText }
           currentThinkingText = ''
           currentBlockType = null
         }
@@ -586,13 +587,11 @@ export const anthropicProvider: LlmProvider = {
 
     if (currentBlockType === 'thinking' && currentThinkingText) {
       thinkingBlocks.push({ type: 'thinking', thinking: currentThinkingText })
+      yield { type: 'thinking_done', text: currentThinkingText }
     }
 
     for (const call of toolCalls.values()) {
       yield { type: 'tool_call', toolCall: call }
-    }
-    if (thinkingBlocks.length) {
-      yield { type: 'thinking_done', text: thinkingBlocks.map((b) => b.thinking).filter(Boolean).join('\n') }
     }
     yield {
       type: 'done',

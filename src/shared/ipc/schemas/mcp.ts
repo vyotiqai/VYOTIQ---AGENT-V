@@ -6,6 +6,8 @@ export const McpServerStatusSchema = z.object({
   enabled: z.boolean(),
   connected: z.boolean(),
   toolCount: z.number().int().min(0),
+  /** True when a Bearer token is stored in OS secure storage for this server. */
+  hasAuthToken: z.boolean().optional(),
   error: z.string().optional()
 })
 export type McpServerStatus = z.infer<typeof McpServerStatusSchema>

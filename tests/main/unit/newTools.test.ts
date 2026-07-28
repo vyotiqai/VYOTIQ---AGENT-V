@@ -165,6 +165,13 @@ describe('tool arg bounds', () => {
       validateToolArgs('terminal', JSON.stringify({ command: 'echo hi', timeoutMs: -1 })).ok
     ).toBe(false)
   })
+
+  it('rejects terminal timeoutMs above the configured maximum', () => {
+    expect(
+      validateToolArgs('terminal', JSON.stringify({ command: 'echo hi', timeoutMs: 999_999_999 }))
+        .ok
+    ).toBe(false)
+  })
 })
 
 describe('toolDelete', () => {

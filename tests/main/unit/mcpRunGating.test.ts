@@ -1,0 +1,72 @@
+import { describe, expect, it, vi, beforeEach } from 'vitest'
+
+const invokeMcpTool = vi.hoisted(() => vi.fn())
+const getMcpToolDefinition = vi.hoisted(() =>
+  vi.fn(() => ({
+    name: 'mcp__fs__read_file',
+    description: 'read',
+    parameters: { type: 'object', properties: {} }
+  }))
+)
+
+vi.mock('@main/agent/mcp', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@main/agent/mcp')>()
+  return {
+    ...actual,
+    invokeMcpTool: (...args: unknown[]) => invokeMcpTool(...args),
+    getMcpToolDefinition: (...args: unknown[]) => getMcpToolDefinition(...args)
+  }
+})
+
+import { executeTool } from '@main/agent/tools'
+
+describe('executeTool MCP run gating', () => {
+  beforeEach(() => {
+    invokeMcpTool.mockReset()
+    invokeMcpTool.mockResolvedValue({ ok: true, summary: 'ok', content: 'ok' })
+    getMcpToolDefinition.mockClear()
+  })
+
+  it('rejects MCP tools for servers not in runEnabledMcpIds', async () => {
+    const result = await executeTool(
+      'mcp__fs__read_file',
+      '{}',
+      '/tmp/ws',
+      new AbortController().signal,
+      { runEnabledMcpIds: new Set(['other']) }
+    )
+    expect(result.ok).toBe(false)
+    expect(result.content).toMatch(/not enabled for this workspace run/)
+    expect(invokeMcpTool).not.toHaveBeenCalled()
+  })
+
+  it('rejects MCP tools blocked by deny list', async () => {
+    const result = await executeTool(
+      'mcp__fs__write_file',
+      '{}',
+      '/tmp/ws',
+      new AbortController().signal,
+      {
+        runEnabledMcpIds: new Set(['fs']),
+        mcpToolPolicies: new Map([['fs', { deniedTools: ['write_file'] }]])
+      }
+    )
+    expect(result.ok).toBe(false)
+    expect(result.content).toMatch(/allow\/deny list/)
+    expect(invokeMcpTool).not.toHaveBeenCalled()
+  })
+
+  it('invokes when server enabled and tool permitted', async () => {
+    await executeTool(
+      'mcp__fs__read_file',
+      '{}',
+      '/tmp/ws',
+      new AbortController().signal,
+      {
+        runEnabledMcpIds: new Set(['fs']),
+        mcpToolPolicies: new Map([['fs', { allowedTools: ['read_file'] }]])
+      }
+    )
+    expect(invokeMcpTool).toHaveBeenCalled()
+  })
+})

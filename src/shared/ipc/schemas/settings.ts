@@ -1,5 +1,10 @@
 import { z } from 'zod'
 import { ProviderIdSchema, ServiceTierSchema } from './providers'
+import {
+  DEFAULT_MARKETPLACE_SETTINGS,
+  MarketplaceSettingsSchema,
+  McpTransportSchema
+} from './marketplace'
 
 export const ThinkingEffortSchema = z.enum([
   'minimal',
@@ -14,19 +19,65 @@ export type ThinkingEffort = z.infer<typeof ThinkingEffortSchema>
 export const ThemeIdSchema = z.enum(['system', 'light', 'dark'])
 export type ThemeId = z.infer<typeof ThemeIdSchema>
 
-export const McpServerSchema = z.object({
-  id: z
-    .string()
-    .min(1)
-    .refine((id) => !id.includes('__'), {
-      message: 'MCP server id must not contain "__"'
-    }),
-  name: z.string().min(1),
-  command: z.string().min(1),
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string(), z.string()).optional(),
-  enabled: z.boolean().default(true)
-})
+const McpServerIdSchema = z
+  .string()
+  .min(1)
+  .refine((id) => !id.includes('__'), {
+    message: 'MCP server id must not contain "__"'
+  })
+
+/**
+ * MCP server config. Legacy entries without `transport` default to stdio.
+ * stdio requires `command`; http/sse require `url`.
+ */
+export const McpServerSchema = z.preprocess(
+  (raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
+    const obj = { ...(raw as Record<string, unknown>) }
+    if (obj.transport === undefined || obj.transport === null || obj.transport === '') {
+      obj.transport = 'stdio'
+    }
+    return obj
+  },
+  z
+    .object({
+      id: McpServerIdSchema,
+      name: z.string().min(1),
+      transport: McpTransportSchema.default('stdio'),
+      command: z.string().optional(),
+      args: z.array(z.string()).optional(),
+      env: z.record(z.string(), z.string()).optional(),
+      url: z.string().optional(),
+      headers: z.record(z.string(), z.string()).optional(),
+      /**
+       * When non-empty, only these bare MCP tool names are exposed/invokable.
+       * Empty / omitted = all tools (minus deniedTools).
+       */
+      allowedTools: z.array(z.string().min(1)).optional(),
+      /** Bare MCP tool names that are never exposed or invokable. */
+      deniedTools: z.array(z.string().min(1)).optional(),
+      enabled: z.boolean().default(true),
+      source: z.enum(['manual', 'marketplace']).optional(),
+      packageId: z.string().optional(),
+      packageVersion: z.string().optional()
+    })
+    .superRefine((val, ctx) => {
+      if (val.transport === 'stdio' && !(val.command ?? '').trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'command is required for stdio transport',
+          path: ['command']
+        })
+      }
+      if ((val.transport === 'http' || val.transport === 'sse') && !(val.url ?? '').trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'url is required for http/sse transport',
+          path: ['url']
+        })
+      }
+    })
+)
 export type McpServer = z.infer<typeof McpServerSchema>
 
 const ThinkingPrefsSchema = z.object({
@@ -72,7 +123,8 @@ export const SettingsSchema = z.object({
   /** When set, sub-agents use this provider instead of `provider`. */
   subagentProvider: ProviderIdSchema.optional(),
   /** When set, sub-agents use this model instead of `model`. */
-  subagentModel: z.string().min(1).optional()
+  subagentModel: z.string().min(1).optional(),
+  marketplace: MarketplaceSettingsSchema.default(DEFAULT_MARKETPLACE_SETTINGS)
 })
 export type Settings = z.infer<typeof SettingsSchema>
 
@@ -94,7 +146,8 @@ export const DEFAULT_SETTINGS: Settings = {
   thinkingPrefsByProvider: {},
   serviceTierByModel: {},
   serviceTier: 'default',
-  toolApproval: DEFAULT_TOOL_APPROVAL
+  toolApproval: DEFAULT_TOOL_APPROVAL,
+  marketplace: DEFAULT_MARKETPLACE_SETTINGS
 }
 
 export const SetSettingsRequestSchema = SettingsSchema.partial()

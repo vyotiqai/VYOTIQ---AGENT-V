@@ -11,8 +11,19 @@ import { logger } from '../../shared/logger'
 
 type SecretsFile = Record<string, string>
 
+const MCP_AUTH_PREFIX = 'mcp-auth:'
+const MCP_OAUTH_PREFIX = 'mcp-oauth:'
+
 function secretsPath(): string {
   return join(app.getPath('userData'), 'secrets.json')
+}
+
+function mcpAuthKey(serverId: string): string {
+  return `${MCP_AUTH_PREFIX}${serverId}`
+}
+
+function mcpOauthKey(serverId: string): string {
+  return `${MCP_OAUTH_PREFIX}${serverId}`
 }
 
 function readFile(): SecretsFile {
@@ -48,17 +59,31 @@ function writeFile(data: SecretsFile): void {
   }
 }
 
-export function setSecret(provider: SecretProvider, key: string): void {
+function encryptBlob(value: string): string {
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error('OS secure storage is unavailable')
   }
+  return safeStorage.encryptString(value).toString('base64')
+}
+
+function decryptBlob(encrypted: string): string | null {
+  if (!safeStorage.isEncryptionAvailable()) return null
+  try {
+    return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
+  } catch (err) {
+    logger.warn('Failed to decrypt secret', { scope: 'secrets', code: 'SECRETS', err })
+    return null
+  }
+}
+
+export function setSecret(provider: SecretProvider, key: string): void {
   const trimmed = key.trim()
   if (!trimmed) {
     throw new Error('API key cannot be empty')
   }
   let encrypted: string
   try {
-    encrypted = safeStorage.encryptString(trimmed).toString('base64')
+    encrypted = encryptBlob(trimmed)
   } catch (err) {
     logger.error('Failed to encrypt secret', {
       scope: 'secrets',
@@ -86,13 +111,7 @@ export function getSecret(provider: SecretProvider): string | null {
   const data = readFile()
   const encrypted = data[provider]
   if (!encrypted) return null
-  if (!safeStorage.isEncryptionAvailable()) return null
-  try {
-    return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
-  } catch (err) {
-    logger.warn('Failed to decrypt secret', { scope: 'secrets', code: 'SECRETS', provider, err })
-    return null
-  }
+  return decryptBlob(encrypted)
 }
 
 /** True only when a stored blob decrypts successfully with the current OS keychain. */
@@ -114,4 +133,118 @@ export function secretStatus(): SecretsStatus {
     }
   }
   return { encryptionAvailable, keys }
+}
+
+/** Store a Bearer token for an MCP server id (OS encrypted). */
+export function setMcpAuthToken(serverId: string, token: string): void {
+  const id = serverId.trim()
+  if (!id) throw new Error('MCP server id is required')
+  const trimmed = token.trim()
+  if (!trimmed) throw new Error('MCP auth token cannot be empty')
+  const data = readFile()
+  data[mcpAuthKey(id)] = encryptBlob(trimmed)
+  writeFile(data)
+  logger.info('MCP auth token saved', { scope: 'secrets', serverId: id })
+}
+
+export function clearMcpAuthToken(serverId: string): void {
+  const id = serverId.trim()
+  if (!id) return
+  const data = readFile()
+  const key = mcpAuthKey(id)
+  if (!(key in data)) return
+  delete data[key]
+  writeFile(data)
+  logger.info('MCP auth token cleared', { scope: 'secrets', serverId: id })
+}
+
+export function getMcpAuthToken(serverId: string): string | null {
+  const id = serverId.trim()
+  if (!id) return null
+  const encrypted = readFile()[mcpAuthKey(id)]
+  if (!encrypted) return null
+  return decryptBlob(encrypted)
+}
+
+export function hasMcpAuthToken(serverId: string): boolean {
+  return getMcpAuthToken(serverId) != null
+}
+
+/** Rename stored MCP auth when a server id changes. */
+export function moveMcpAuthToken(fromId: string, toId: string): void {
+  const from = fromId.trim()
+  const to = toId.trim()
+  if (!from || !to || from === to) return
+  const token = getMcpAuthToken(from)
+  if (!token) return
+  setMcpAuthToken(to, token)
+  clearMcpAuthToken(from)
+  const oauth = getMcpOAuthState(from)
+  if (oauth) {
+    setMcpOAuthState(to, oauth)
+    clearMcpOAuthState(from)
+  }
+}
+
+/** Persisted OAuth session for a remote MCP server (tokens + PKCE + client info). */
+export type McpOAuthStoredState = {
+  tokens?: {
+    access_token: string
+    token_type?: string
+    expires_in?: number
+    scope?: string
+    refresh_token?: string
+  }
+  codeVerifier?: string
+  clientInformation?: Record<string, unknown>
+  discoveryState?: Record<string, unknown>
+}
+
+export function setMcpOAuthState(serverId: string, state: McpOAuthStoredState): void {
+  const id = serverId.trim()
+  if (!id) throw new Error('MCP server id is required')
+  const data = readFile()
+  data[mcpOauthKey(id)] = encryptBlob(JSON.stringify(state))
+  writeFile(data)
+  logger.info('MCP OAuth state saved', { scope: 'secrets', serverId: id })
+}
+
+export function getMcpOAuthState(serverId: string): McpOAuthStoredState | null {
+  const id = serverId.trim()
+  if (!id) return null
+  const encrypted = readFile()[mcpOauthKey(id)]
+  if (!encrypted) return null
+  const raw = decryptBlob(encrypted)
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as McpOAuthStoredState
+  } catch {
+    return null
+  }
+}
+
+export function hasMcpOAuthState(serverId: string): boolean {
+  const state = getMcpOAuthState(serverId)
+  return Boolean(state?.tokens?.access_token)
+}
+
+export function clearMcpOAuthState(serverId: string): void {
+  const id = serverId.trim()
+  if (!id) return
+  const data = readFile()
+  const key = mcpOauthKey(id)
+  if (!(key in data)) return
+  delete data[key]
+  writeFile(data)
+  logger.info('MCP OAuth state cleared', { scope: 'secrets', serverId: id })
+}
+
+export function patchMcpOAuthState(
+  serverId: string,
+  patch: Partial<McpOAuthStoredState>
+): McpOAuthStoredState {
+  const prev = getMcpOAuthState(serverId) ?? {}
+  const next: McpOAuthStoredState = { ...prev, ...patch }
+  setMcpOAuthState(serverId, next)
+  return next
 }

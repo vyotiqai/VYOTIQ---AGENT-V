@@ -37,6 +37,7 @@ import {
   trimToolsToBudget,
   type CompactionRecord
 } from './context'
+import { CONTEXT_TRIM_WATERMARK_SUMMARY, isTrimWatermarkCompaction } from './context/types'
 import { executeStepToolCalls } from './executeStepTools'
 import { loadHarness } from './harness'
 import {
@@ -74,7 +75,10 @@ import {
 } from './state'
 import { toolResultEventForIpc, toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
 import { AGENT_TOOLS } from './types'
-import { listMcpToolDefinitions, syncMcpServers } from './mcp'
+import { listMcpToolDefinitions, parseMcpToolName, syncMcpServers } from './mcp'
+import { resolveEffectiveMcpServers } from '../marketplace/resolve'
+import { buildSkillsSection, loadEnabledSkills, loadPluginRules } from './skills'
+import { isMcpToolPermitted } from '../../shared/utils/mcpToolPolicy'
 
 export { cancelRun, clearRunAbort, registerRunAbort, resetActiveRunsForTests }
 
@@ -368,12 +372,18 @@ export async function* runAgent(input: {
 
     const emitCompaction = (record: CompactionRecord | null): AgentEvent | null => {
       if (!record || !runDir) return null
-      if (compaction?.summary === record.summary && compaction?.createdAt === record.createdAt) {
+      if (
+        compaction?.summary === record.summary &&
+        compaction?.createdAt === record.createdAt &&
+        (compaction?.foldedMessages ?? 0) === (record.foldedMessages ?? 0)
+      ) {
         return null
       }
+      const summaryChanged =
+        compaction?.summary !== record.summary || compaction?.createdAt !== record.createdAt
       compaction = record
       saveCompaction(runDir, record)
-      if (workspace && settings.memoryAutoPromote) {
+      if (workspace && settings.memoryAutoPromote && summaryChanged) {
         try {
           promoteCompactionToMemory(workspace, record)
         } catch (err) {
@@ -383,6 +393,10 @@ export async function* runAgent(input: {
             err
           })
         }
+      }
+      // UI notice only when a real summary changed, not trim watermarks / folded bumps
+      if (!summaryChanged || isTrimWatermarkCompaction(record)) {
+        return null
       }
       const ev: AgentEvent = {
         type: 'compaction',
@@ -412,12 +426,46 @@ export async function* runAgent(input: {
       return
     }
 
-    await syncMcpServers(settings.mcpServers)
+    // Workspace marketplace overrides apply only when the workspace override
+    // toggle is on (same gate as resolveEffectiveSettings).
+    const marketplaceOverrides = override?.useOverride
+      ? override.marketplaceOverrides
+      : undefined
+    // Keep the global MCP session map on globally-enabled servers so a workspace
+    // Force-off cannot disconnect MCP for every other workspace / concurrent run.
+    await syncMcpServers(resolveEffectiveMcpServers())
+    const runMcpServers = resolveEffectiveMcpServers(marketplaceOverrides)
+    const runEnabledMcpIds = new Set(
+      runMcpServers.filter((s) => s.enabled).map((s) => s.id)
+    )
+    const mcpToolPolicies = new Map(
+      runMcpServers
+        .filter((s) => s.enabled)
+        .map((s) => [
+          s.id,
+          {
+            ...(s.allowedTools?.length ? { allowedTools: s.allowedTools } : {}),
+            ...(s.deniedTools?.length ? { deniedTools: s.deniedTools } : {})
+          }
+        ])
+    )
 
+    const enabledSkills = loadEnabledSkills(marketplaceOverrides)
+    const skillsSection = buildSkillsSection(
+      enabledSkills,
+      Math.floor(allocateBudget(modelInfo).system * 4 * 0.35)
+    )
+    const pluginRulesSection = loadPluginRules(marketplaceOverrides)
+
+    const mcpToolDefs = listMcpToolDefinitions().filter((t) => {
+      const parsed = parseMcpToolName(t.name)
+      if (parsed == null || !runEnabledMcpIds.has(parsed.serverId)) return false
+      const policy = mcpToolPolicies.get(parsed.serverId)
+      if (policy && !isMcpToolPermitted(parsed.toolName, policy)) return false
+      return true
+    })
     const allToolDefs =
-      modelInfo.supportsTools !== false
-        ? [...AGENT_TOOLS, ...listMcpToolDefinitions()]
-        : []
+      modelInfo.supportsTools !== false ? [...AGENT_TOOLS, ...mcpToolDefs] : []
     const toolBudget = allocateBudget(modelInfo).tools
     const trimmedTools = trimToolsToBudget(allToolDefs, toolBudget)
     let toolDefs = trimmedTools.tools.map((t) => ({
@@ -459,6 +507,8 @@ export async function* runAgent(input: {
         priorCompaction: compaction,
         keepRecentTurns: settings.keepRecentTurns,
         compactionTriggerRatio: settings.compactionTriggerRatio,
+        skillsSection,
+        pluginRulesSection,
         loopHint: combineLoopHints(
           omittedMcpHint,
           loopHintForConsecutiveFailures(consecutiveToolFailureSteps)
@@ -472,9 +522,27 @@ export async function* runAgent(input: {
       const droppedThisStep = assembled.contextShrunk
         ? Math.max(0, messages.length - assembled.messages.length)
         : 0
-      const compactionWithWatermark = assembled.compaction
-        ? { ...assembled.compaction, foldedMessages: foldedMessages + droppedThisStep }
-        : null
+      const nextFolded = foldedMessages + droppedThisStep
+      let compactionWithWatermark: CompactionRecord | null = null
+      if (assembled.compaction) {
+        compactionWithWatermark = {
+          ...assembled.compaction,
+          foldedMessages: nextFolded
+        }
+      } else if (assembled.contextShrunk && droppedThisStep > 0) {
+        // Emergency trim (or fold without a new summary) still needs a durable
+        // watermark so resume does not reload the full transcript.
+        if (compaction) {
+          compactionWithWatermark = { ...compaction, foldedMessages: nextFolded }
+        } else {
+          compactionWithWatermark = {
+            summary: CONTEXT_TRIM_WATERMARK_SUMMARY,
+            createdAt: new Date().toISOString(),
+            tokenEstimate: assembled.estimatedTokens,
+            foldedMessages: nextFolded
+          }
+        }
+      }
       const compactionEv = emitCompaction(compactionWithWatermark)
       if (compactionEv) yield compactionEv
       // Keep the watermark on in-memory state so Anthropic server compaction
@@ -865,6 +933,7 @@ export async function* runAgent(input: {
       // step is a single await, so queue those events and drain them between
       // wakeups instead of holding them until the batch settles.
       const liveEvents: AgentEvent[] = []
+      const liveToolResultsEmitted = new Set<string>()
       let wakeLiveEvents: (() => void) | null = null
       const toolCtx = {
         runId,
@@ -879,10 +948,15 @@ export async function* runAgent(input: {
         appendMessage: (msg: ChatMessage) => appendMessage(runDir!, msg),
         appendEvent: (ev: AgentEvent) => appendEvent(runDir!, ev),
         approval: approvalGate,
+        runEnabledMcpIds,
+        mcpToolPolicies,
         emitLiveEvent: (ev: AgentEvent) => {
           liveEvents.push(ev)
           if (ev.type === 'subagent_update' || ev.type === 'subagent_context_usage') {
             appendEvent(runDir!, ev)
+          }
+          if (ev.type === 'tool_result') {
+            liveToolResultsEmitted.add(ev.toolCallId)
           }
           wakeLiveEvents?.()
         }
@@ -902,7 +976,10 @@ export async function* runAgent(input: {
         }
       )
       for (;;) {
-        while (liveEvents.length) yield liveEvents.shift()!
+        while (liveEvents.length) {
+          const ev = liveEvents.shift()!
+          yield ev.type === 'tool_result' ? toolResultEventForIpc(ev) : ev
+        }
         if (toolsSettled) break
         await Promise.race([
           settledWork.catch(() => undefined),
@@ -914,7 +991,10 @@ export async function* runAgent(input: {
       }
       const toolOutcome = await settledWork
       for (const ev of toolOutcome.events) {
-        if (ev.type === 'tool_result') yield toolResultEventForIpc(ev)
+        if (ev.type === 'tool_result') {
+          if (liveToolResultsEmitted.has(ev.toolCallId)) continue
+          yield toolResultEventForIpc(ev)
+        }
       }
       for (const toolMsg of toolOutcome.messages) {
         messages.push(toolMsg)

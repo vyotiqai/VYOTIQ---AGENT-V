@@ -40,6 +40,17 @@ export const IPC = {
   telemetryStatus: 'telemetry:status',
   mcpStatus: 'mcp:status',
   mcpRefresh: 'mcp:refresh',
+  mcpSetAuthToken: 'mcp:setAuthToken',
+  mcpClearAuthToken: 'mcp:clearAuthToken',
+  mcpStartOAuth: 'mcp:startOAuth',
+  marketplaceListInstalled: 'marketplace:listInstalled',
+  marketplaceBrowse: 'marketplace:browse',
+  marketplaceRefreshCatalog: 'marketplace:refreshCatalog',
+  marketplaceInstall: 'marketplace:install',
+  marketplaceUninstall: 'marketplace:uninstall',
+  marketplaceSetEnabled: 'marketplace:setEnabled',
+  marketplacePickLocal: 'marketplace:pickLocal',
+  marketplaceGetContents: 'marketplace:getContents',
   themeChanged: 'theme:changed',
   getSystemTheme: 'theme:get-system'
 } as const

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { anthropicProvider } from '@main/agent/providers/anthropic'
+import { openrouterProvider } from '@main/agent/providers/openai'
 import { streamOpenAiResponses } from '@main/agent/providers/openaiResponses'
 import { iterateSseData, iterateSseJson } from '@main/agent/providers/sse'
 import type { ProviderChatRequest, StreamChunk } from '@main/agent/providers/types'
@@ -200,5 +201,79 @@ describe('openai responses stream', () => {
     expect(deltas.map((d) => d.toolCallDelta?.arguments).join('')).toBe('{"path":"a.ts"}')
     expect(deltas.every((d) => d.toolCallDelta?.id === 'call_1')).toBe(true)
     expect(chunks.filter((c) => c.type === 'tool_call')).toHaveLength(1)
+  })
+
+  it('emits thinking_done before answer text when reasoning precedes content', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseBody([
+          'data: {"choices":[{"delta":{"reasoning_content":"Let me greet."}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+          'data: {"choices":[{"finish_reason":"stop"}]}\n\n'
+        ])
+      )
+    )
+
+    const chunks = await collect(
+      openrouterProvider.streamChat(baseReq({ model: 'deepseek/deepseek-v3' }))
+    )
+    const types = chunks.map((c) => c.type)
+
+    expect(types.indexOf('thinking_done')).toBeLessThan(types.indexOf('text'))
+    expect(chunks.filter((c) => c.type === 'thinking_done')).toHaveLength(1)
+  })
+})
+
+describe('anthropic thinking block boundaries', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('emits thinking_done when a thinking block closes', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseBody([
+          'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}\n\n',
+          'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Plan first."}}\n\n',
+          'data: {"type":"content_block_stop","index":0}\n\n',
+          'data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}\n\n',
+          'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hi"}}\n\n',
+          'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n'
+        ])
+      )
+    )
+
+    const chunks = await collect(anthropicProvider.streamChat(baseReq()))
+    const types = chunks.map((c) => c.type)
+
+    expect(types.indexOf('thinking_done')).toBeLessThan(types.indexOf('text'))
+    expect(chunks.find((c) => c.type === 'thinking_done')?.text).toBe('Plan first.')
+  })
+})
+
+describe('openai responses thinking boundaries', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('emits thinking_done before output text when reasoning streams first', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseBody([
+          'data: {"type":"response.reasoning_summary_text.delta","delta":"Reasoning."}\n\n',
+          'data: {"type":"response.output_text.delta","delta":"Answer."}\n\n',
+          'data: {"type":"response.completed","response":{"id":"resp_1"}}\n\n'
+        ])
+      )
+    )
+
+    const chunks = await collect(streamOpenAiResponses(baseReq({ model: 'gpt-5' })))
+    const types = chunks.map((c) => c.type)
+
+    expect(types.indexOf('thinking_done')).toBeLessThan(types.indexOf('text'))
+    expect(chunks.filter((c) => c.type === 'thinking_done')).toHaveLength(1)
   })
 })

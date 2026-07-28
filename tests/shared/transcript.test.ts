@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from '@shared/ipc'
-import { inferToolStatus, messagesToUiItems, applyEventTimestamps, isMeaningfulThinking, shouldRenderThinking, duplicatesReasoning, mergeThinkingContent, stripToolShapedAssistantText, stripToolShapedAssistantTextForStream, stripIncompleteToolPrefix, isToolShapedTextLeak, scrubStreamingAssistantToolLeak } from '@shared/transcript'
+import { inferToolStatus, messagesToUiItems, applyEventTimestamps, finalizeHydratedTranscript, isMeaningfulThinking, shouldRenderThinking, duplicatesReasoning, mergeThinkingContent, stripToolShapedAssistantText, stripToolShapedAssistantTextForStream, stripIncompleteToolPrefix, isToolShapedTextLeak, scrubStreamingAssistantToolLeak } from '@shared/transcript'
 
 describe('messagesToUiItems', () => {
   it('rebuilds user, assistant, and tool rows in order', () => {
@@ -803,6 +803,91 @@ describe('applyEventTimestamps', () => {
         updatedAt: '2026-07-24T12:00:02.000Z'
       })
     }
+  })
+})
+
+describe('finalizeHydratedTranscript', () => {
+  it('marks orphan running tools failed when the run was cancelled', () => {
+    const events = [
+      {
+        at: '2026-07-24T12:00:00.000Z',
+        event: { type: 'status', runId: 'r1', status: 'running' as const }
+      },
+      {
+        at: '2026-07-24T12:00:01.000Z',
+        event: { type: 'tool_start', runId: 'r1', toolCallId: 'c1', name: 'subagent' }
+      },
+      {
+        at: '2026-07-24T12:00:03.000Z',
+        event: { type: 'status', runId: 'r1', status: 'cancelled' as const }
+      }
+    ]
+    const items = applyEventTimestamps(
+      messagesToUiItems([
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'c1', name: 'subagent', arguments: '{}' }]
+        }
+      ]),
+      events
+    )
+    const finalized = finalizeHydratedTranscript(items, events)
+    const tool = finalized.find((item) => item.kind === 'tool')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind === 'tool') {
+      expect(tool.tool.status).toBe('fail')
+      expect(tool.tool.content).toBe('Cancelled')
+    }
+  })
+
+  it('cancels in-progress todo items when the run was interrupted', () => {
+    const events = [
+      {
+        at: '2026-07-24T12:00:03.000Z',
+        event: { type: 'status', runId: 'r1', status: 'cancelled' as const }
+      }
+    ]
+    const items = messagesToUiItems([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'todo1', name: 'todo_write', arguments: '{}' }]
+      },
+      {
+        role: 'tool',
+        toolCallId: 'todo1',
+        toolName: 'todo_write',
+        content: '0/5 complete\n[~] Audit core library files\n[ ] Audit API routes'
+      }
+    ])
+    const finalized = finalizeHydratedTranscript(items, events)
+    const tool = finalized.find((item) => item.kind === 'tool')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind === 'tool') {
+      expect(tool.tool.content).toContain('[-] Audit core library files')
+      expect(tool.tool.content).not.toContain('[~]')
+    }
+  })
+
+  it('leaves running tools alone while the run is still active', () => {
+    const events = [
+      {
+        at: '2026-07-24T12:00:00.000Z',
+        event: { type: 'status', runId: 'r1', status: 'running' as const }
+      }
+    ]
+    const items = messagesToUiItems([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'read', arguments: '{}' }]
+      }
+    ])
+    const finalized = finalizeHydratedTranscript(items, events)
+    const tool = finalized.find((item) => item.kind === 'tool')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind === 'tool') expect(tool.tool.status).toBe('running')
   })
 })
 

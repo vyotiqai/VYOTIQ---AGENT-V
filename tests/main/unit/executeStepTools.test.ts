@@ -151,6 +151,7 @@ describe('executeStepToolCalls', () => {
     )
 
     expect(live.some((ev) => ev.type === 'tool_start' && ev.toolCallId === 'c1')).toBe(true)
+    expect(live.some((ev) => ev.type === 'tool_result' && ev.toolCallId === 'c1')).toBe(true)
     expect(events.some((ev) => ev.type === 'tool_start' && ev.toolCallId === 'c1')).toBe(true)
     expect(outcome.messages[0]?.ok).toBe(false)
   })
@@ -261,5 +262,34 @@ describe('executeStepToolCalls', () => {
 
     expect(authorizeCalls).toBe(3)
     expect(maxConcurrent).toBe(1)
+  })
+
+  it('emits tool_result live for each parallel tool as it finishes', async () => {
+    const live: AgentEvent[] = []
+    const finished: string[] = []
+
+    executeTool.mockImplementation(async (_name: string, args: string) => {
+      const path = JSON.parse(args).path as string
+      if (path === 'b.ts') await new Promise((r) => setTimeout(r, 40))
+      else await new Promise((r) => setTimeout(r, 5))
+      finished.push(path)
+      return { ok: true, summary: path, content: `body:${path}` }
+    })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    ctx.emitLiveEvent = (ev) => {
+      if (ev.type === 'tool_result') live.push(ev)
+    }
+
+    await executeStepToolCalls(
+      [
+        { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' },
+        { id: 'c2', name: 'read', arguments: '{"path":"b.ts"}' }
+      ],
+      ctx
+    )
+
+    expect(live.map((ev) => (ev.type === 'tool_result' ? ev.toolCallId : ''))).toEqual(['c1', 'c2'])
+    expect(finished.indexOf('a.ts')).toBeLessThan(finished.indexOf('b.ts'))
   })
 })

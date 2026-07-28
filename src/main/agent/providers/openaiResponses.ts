@@ -177,6 +177,8 @@ export async function* streamOpenAiResponses(
   const outputItems: unknown[] = []
   let responseId: string | undefined
   let thinkingText = ''
+  let thinkingDoneEmitted = false
+  let answerStarted = false
   let lastUsage: TokenUsage | undefined
   let stopReason: StopReason | undefined
   let toolCallIndex = 0
@@ -190,6 +192,13 @@ export async function* streamOpenAiResponses(
     return next
   }
 
+  const emitThinkingDoneIfNeeded = function* (): Generator<StreamChunk, void, unknown> {
+    if (thinkingText && !thinkingDoneEmitted) {
+      thinkingDoneEmitted = true
+      yield { type: 'thinking_done', text: thinkingText }
+    }
+  }
+
   const drops = { dropped: 0 }
 
   for await (const event of iterateSseJson(res, req.signal, drops)) {
@@ -199,7 +208,11 @@ export async function* streamOpenAiResponses(
 
     if (type === 'response.output_text.delta') {
       const delta = event.delta as string | undefined
-      if (delta) yield { type: 'text', text: delta }
+      if (delta) {
+        answerStarted = true
+        yield* emitThinkingDoneIfNeeded()
+        yield { type: 'text', text: delta }
+      }
     }
 
     if (type === 'response.reasoning_summary_text.delta') {
@@ -230,6 +243,7 @@ export async function* streamOpenAiResponses(
       if (item) {
         outputItems.push(item)
         if (item.type === 'function_call') {
+          yield* emitThinkingDoneIfNeeded()
           const callId = String(item.call_id ?? item.id ?? `call_${pending.size}`)
           const call: ToolCall = {
             id: callId,
@@ -244,7 +258,7 @@ export async function* streamOpenAiResponses(
           const summary = item.summary as Array<{ text?: string }> | undefined
           if (summary?.length) {
             const text = summary.map((s) => s.text ?? '').join('')
-            if (text && !thinkingText) {
+            if (text && !thinkingText && !answerStarted && !thinkingDoneEmitted) {
               thinkingText = text
               yield { type: 'thinking_delta', text }
             }
@@ -259,6 +273,7 @@ export async function* streamOpenAiResponses(
       )
       const delta = event.delta as string | undefined
       if (callId && delta) {
+        yield* emitThinkingDoneIfNeeded()
         const existing = pending.get(callId) ?? { id: callId, name: '', arguments: '' }
         existing.arguments += delta
         pending.set(callId, existing)
@@ -309,7 +324,7 @@ export async function* streamOpenAiResponses(
     }
   }
 
-  if (thinkingText) yield { type: 'thinking_done', text: thinkingText }
+  if (thinkingText && !thinkingDoneEmitted) yield { type: 'thinking_done', text: thinkingText }
 
   // Flush tool calls that only received argument deltas (no output_item.done).
   for (const [callId, call] of pending) {

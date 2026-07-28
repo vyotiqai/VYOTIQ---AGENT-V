@@ -22,15 +22,17 @@ describe('MCP tool naming', () => {
 describe('validateMcpServers', () => {
   it('rejects server ids that contain __', () => {
     expect(
-      validateMcpServers([{ id: 'my__server', name: 'Bad', command: 'echo', enabled: true }])
+      validateMcpServers([
+        { id: 'my__server', name: 'Bad', transport: 'stdio', command: 'echo', enabled: true }
+      ])
     ).toMatch(/must not contain "__"/)
   })
 
   it('rejects duplicate ids', () => {
     expect(
       validateMcpServers([
-        { id: 'fs', name: 'A', command: 'a', enabled: true },
-        { id: 'fs', name: 'B', command: 'b', enabled: true }
+        { id: 'fs', name: 'A', transport: 'stdio', command: 'a', enabled: true },
+        { id: 'fs', name: 'B', transport: 'stdio', command: 'b', enabled: true }
       ])
     ).toMatch(/Duplicate/)
   })
@@ -41,6 +43,7 @@ describe('McpServerSchema', () => {
     const result = McpServerSchema.safeParse({
       id: 'bad__id',
       name: 'Bad',
+      transport: 'stdio',
       command: 'echo'
     })
     expect(result.success).toBe(false)

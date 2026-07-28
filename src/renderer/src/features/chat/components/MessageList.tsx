@@ -291,6 +291,7 @@ export function MessageList({
   const onImageClick = useCallback((url: string, label: string) => {
     setLightbox({ url, label })
   }, [])
+  const closeLightbox = useCallback(() => setLightbox(null), [])
 
   const handleTurnToggle = useCallback(
     (turnIndex: number) => {
@@ -519,7 +520,7 @@ export function MessageList({
         <ImageLightbox
           url={lightbox.url}
           label={lightbox.label}
-          onClose={() => setLightbox(null)}
+          onClose={closeLightbox}
         />
       ) : null}
     </>

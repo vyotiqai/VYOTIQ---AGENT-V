@@ -1,5 +1,5 @@
-import { ipcMain, BrowserWindow, shell, nativeTheme } from 'electron'
-import { ZodError } from 'zod'
+import { ipcMain, BrowserWindow, shell, nativeTheme, dialog } from 'electron'
+import { ZodError, z } from 'zod'
 import { IPC } from '../../shared/channels'
 import {
   ChatStartRequestSchema,
@@ -24,6 +24,10 @@ import {
   GitCommitRequestSchema,
   ToolApprovalResponseSchema,
   ExtractAttachmentRequestSchema,
+  MarketplaceBrowseRequestSchema,
+  MarketplaceInstallRequestSchema,
+  MarketplaceSetEnabledRequestSchema,
+  MarketplaceUninstallRequestSchema,
   ok,
   fail,
   type ExtractAttachmentResult,
@@ -51,8 +55,20 @@ import { formatError, AppError, isAbortError } from '../../shared/errors'
 import { logger, logErrorSummary } from '../../shared/logger'
 import { pickWorkspace } from '@main/workspace/workspace'
 import { getSettings, setSettings } from '@main/settings/settings'
-import { syncMcpServers, getMcpServerStatus, refreshMcpServers } from '@main/agent/mcp'
-import { setSecret, clearSecret, getSecret, secretStatus } from '@main/settings/secrets'
+import { syncMcpServers, getMcpServerStatus, refreshMcpServers, startMcpOAuth } from '@main/agent/mcp'
+import { headersWithoutAuthorization } from '../../shared/utils/mcpAuth'
+import {
+  browseCatalog,
+  refreshRemoteCatalog,
+  readMarketplaceIndex,
+  installMarketplacePackage,
+  removeInstalledItem,
+  setInstalledEnabled,
+  syncMarketplaceMcpIntoSettings,
+  resolveEffectiveMcpServers,
+  getInstalledPackageContents
+} from '@main/marketplace'
+import { setSecret, clearSecret, getSecret, secretStatus, setMcpAuthToken, clearMcpAuthToken } from '@main/settings/secrets'
 import { ChatEventBatcher } from './streamBatch'
 import { runAgent, createRunId } from '../agent/loop'
 import { compactRunNow, CompactionUnavailableError } from '../agent/compactRun'
@@ -272,8 +288,8 @@ export function registerIpc(): void {
       if (partial.telemetryEnabled !== undefined) {
         applySentryTelemetry(next.telemetryEnabled)
       }
-      if (partial.mcpServers !== undefined) {
-        await syncMcpServers(next.mcpServers)
+      if (partial.mcpServers !== undefined || partial.marketplace !== undefined) {
+        await syncMcpServers(resolveEffectiveMcpServers())
       }
       return ok(next)
     } catch (err) {
@@ -667,7 +683,8 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.mcpStatus, async (event): Promise<IpcResult<McpStatusResult>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
-      return ok({ servers: getMcpServerStatus(getSettings().mcpServers) })
+      const servers = resolveEffectiveMcpServers()
+      return ok({ servers: getMcpServerStatus(servers) })
     } catch (err) {
       return failFrom(err, IPC.mcpStatus)
     }
@@ -676,10 +693,167 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.mcpRefresh, async (event): Promise<IpcResult<McpStatusResult>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
-      const servers = await refreshMcpServers(getSettings().mcpServers)
+      const servers = await refreshMcpServers(resolveEffectiveMcpServers())
       return ok({ servers })
     } catch (err) {
       return failFrom(err, IPC.mcpRefresh)
+    }
+  })
+
+  ipcMain.handle(IPC.mcpSetAuthToken, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const { serverId, token } = z
+        .object({ serverId: z.string().min(1), token: z.string().min(1) })
+        .parse(raw)
+      setMcpAuthToken(serverId, token)
+      const settings = getSettings()
+      const nextServers = (settings.mcpServers ?? []).map((s) =>
+        s.id === serverId
+          ? { ...s, headers: headersWithoutAuthorization(s.headers) }
+          : s
+      )
+      setSettings({ mcpServers: nextServers })
+      await syncMcpServers(resolveEffectiveMcpServers())
+      return ok(true)
+    } catch (err) {
+      return failFrom(err, IPC.mcpSetAuthToken)
+    }
+  })
+
+  ipcMain.handle(IPC.mcpClearAuthToken, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const { serverId } = z.object({ serverId: z.string().min(1) }).parse(raw)
+      clearMcpAuthToken(serverId)
+      const settings = getSettings()
+      const nextServers = (settings.mcpServers ?? []).map((s) =>
+        s.id === serverId
+          ? { ...s, headers: headersWithoutAuthorization(s.headers) }
+          : s
+      )
+      setSettings({ mcpServers: nextServers })
+      await syncMcpServers(resolveEffectiveMcpServers())
+      return ok(true)
+    } catch (err) {
+      return failFrom(err, IPC.mcpClearAuthToken)
+    }
+  })
+
+  ipcMain.handle(IPC.mcpStartOAuth, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const { serverId } = z.object({ serverId: z.string().min(1) }).parse(raw)
+      await startMcpOAuth(serverId)
+      return ok(true)
+    } catch (err) {
+      return failFrom(err, IPC.mcpStartOAuth)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceListInstalled, async (event) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      return ok(readMarketplaceIndex())
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceListInstalled)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceBrowse, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = MarketplaceBrowseRequestSchema.parse(raw ?? {})
+      const packages = await browseCatalog(req)
+      return ok({ packages })
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceBrowse)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceRefreshCatalog, async (event) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const remote = await refreshRemoteCatalog()
+      const packages = await browseCatalog()
+      return ok({ packages, remoteCount: remote.packages.length })
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceRefreshCatalog)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceInstall, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = MarketplaceInstallRequestSchema.parse(raw)
+      const item = await installMarketplacePackage(req)
+      await syncMcpServers(resolveEffectiveMcpServers())
+      return ok(item)
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceInstall)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceUninstall, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const { id } = MarketplaceUninstallRequestSchema.parse(raw)
+      const index = removeInstalledItem(id)
+      syncMarketplaceMcpIntoSettings()
+      await syncMcpServers(resolveEffectiveMcpServers())
+      return ok(index)
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceUninstall)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceSetEnabled, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const { id, enabled } = MarketplaceSetEnabledRequestSchema.parse(raw)
+      const index = setInstalledEnabled(id, enabled)
+      const item = index.items.find((i) => i.id === id)
+      if (item?.kind === 'mcp' || item?.kind === 'plugin') {
+        syncMarketplaceMcpIntoSettings()
+        await syncMcpServers(resolveEffectiveMcpServers())
+      }
+      return ok(index)
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceSetEnabled)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplacePickLocal, async (event) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const options: Electron.OpenDialogOptions = {
+        title: 'Add marketplace package',
+        properties: ['openFile', 'openDirectory'],
+        filters: [
+          { name: 'Packages', extensions: ['zip', 'tgz', 'json', 'md'] },
+          { name: 'All', extensions: ['*'] }
+        ]
+      }
+      const result = win
+        ? await dialog.showOpenDialog(win, options)
+        : await dialog.showOpenDialog(options)
+      if (result.canceled || !result.filePaths[0]) return ok(null)
+      return ok(result.filePaths[0])
+    } catch (err) {
+      return failFrom(err, IPC.marketplacePickLocal)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceGetContents, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const id = z.string().min(1).parse((raw as { id?: string })?.id)
+      const contents = getInstalledPackageContents(id)
+      if (!contents) return fail('Package not found')
+      return ok(contents)
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceGetContents)
     }
   })
 

@@ -9,7 +9,6 @@ import {
   SIDEBAR_WIDTH_DESKTOP
 } from '@renderer/lib/utils/layout'
 import { ChatList } from './ChatList'
-import { SidebarCollapsed } from './SidebarCollapsed'
 import { SidebarCollapsedHeader, SidebarTopBar } from './SidebarTopBar'
 import type { SidebarProps } from './types'
 import { useSidebarChats } from './useSidebarChats'
@@ -40,7 +39,6 @@ export function Sidebar({
   onDeleteRunInWorkspace,
   onCloseDrawer,
   onToggleSidebar,
-  onFocusSearch,
   collapsed = false,
   variant = 'desktop'
 }: SidebarProps) {
@@ -148,21 +146,12 @@ export function Sidebar({
       )}
 
       {isCollapsed ? (
-        <SidebarCollapsed
-          view={view}
-          workspaceReady={workspaceReady}
-          workspaceProps={workspaceProps}
-          needsWorkspaceLabel={needsWorkspaceLabel}
-          onNewChat={onNewChat}
-          onOpenSettings={onOpenSettings}
-          onFocusSearch={onFocusSearch}
-          clearSearch={clearSearch}
-        />
+        <div className="min-h-0 flex-1" />
       ) : (
         <div
-        className="app-region-no-drag sidebar-scroll min-h-0 flex-1 overflow-x-hidden"
-        data-sidebar-scroll
-      >
+          className="app-region-no-drag sidebar-scroll min-h-0 flex-1 overflow-x-hidden"
+          data-sidebar-scroll
+        >
             <ChatList
               workspaceReady={workspaceReady}
               sessionQuery={sessionQuery}

@@ -149,7 +149,7 @@ describe('AppShell', () => {
     expect(screen.queryByRole('button', { name: /open menu/i })).toBeNull()
   })
 
-  it('collapses the desktop sidebar to an icon rail', () => {
+  it('collapses the desktop sidebar to a top corner icon', () => {
     render(
       <AppShell {...baseProps}>
         <p>Main content</p>
@@ -159,14 +159,11 @@ describe('AppShell', () => {
     fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }))
     expect(screen.getByRole('button', { name: /expand sidebar/i })).toBeTruthy()
     expect(screen.queryByRole('textbox', { name: /search chats/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^new chat$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^search chats$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^settings$/i })).toBeNull()
+    expect(screen.queryByRole('tablist', { name: /workspaces/i })).toBeNull()
     expect(localStorage.getItem('vyotiq.sidebarCollapsed')).toBe('1')
-
-    // Collapsed rail: essentials only
-    expect(screen.getByRole('button', { name: /^new chat$/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^search chats$/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^settings$/i })).toBeTruthy()
-    expect(screen.getByRole('tablist', { name: /workspaces/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /add workspace/i })).toBeTruthy()
   })
 
   it('disables workspace-dependent sidebar actions when no workspace is open', () => {
@@ -212,21 +209,6 @@ describe('AppShell', () => {
     expect(screen.queryByRole('textbox', { name: /search chats/i })).toBeNull()
 
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
-    const search = await screen.findByRole('textbox', { name: /search chats/i })
-    await waitFor(() => {
-      expect(document.activeElement).toBe(search)
-    })
-  })
-
-  it('opens search from the collapsed rail icon', async () => {
-    render(
-      <AppShell {...baseProps}>
-        <p>Main content</p>
-      </AppShell>
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }))
-    fireEvent.click(screen.getByRole('button', { name: /^search chats$/i }))
     const search = await screen.findByRole('textbox', { name: /search chats/i })
     await waitFor(() => {
       expect(document.activeElement).toBe(search)

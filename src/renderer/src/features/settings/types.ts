@@ -7,7 +7,7 @@ import type {
   WorkspaceSettingsOverride
 } from '@shared/ipc'
 
-export type SettingsSection = 'general' | 'providers' | 'agent' | 'advanced'
+export type SettingsSection = 'general' | 'providers' | 'agent' | 'marketplace' | 'advanced'
 
 export type SettingsErrorField =
   | 'ollama'

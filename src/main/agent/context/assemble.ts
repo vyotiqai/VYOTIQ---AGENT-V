@@ -15,6 +15,7 @@ import { trimHistoryToBudget } from './historyTrim'
 import { trimToolResults } from './toolTrim'
 import {
   KEEP_RECENT_TURNS,
+  isTrimWatermarkCompaction,
   type AssembleInput,
   type AssembleResult,
   type CompactionRecord,
@@ -97,6 +98,8 @@ function buildSystem(parts: {
   harness: string
   workspace: string
   rules: string
+  skillsSection?: string
+  pluginRulesSection?: string
   memoryIndex: string
   memoryState: string
   contract?: string
@@ -106,6 +109,16 @@ function buildSystem(parts: {
 }): string {
   const sections: string[] = []
   sections.push(capHarness(parts.harness, parts.budgets.system))
+  if (parts.skillsSection?.trim()) {
+    sections.push(
+      capText(parts.skillsSection.trim(), Math.floor(parts.budgets.system * 0.35))
+    )
+  }
+  if (parts.pluginRulesSection?.trim()) {
+    sections.push(
+      capText(parts.pluginRulesSection.trim(), Math.floor(parts.budgets.system * 0.25))
+    )
+  }
   if (parts.rules.trim()) {
     // Between the harness and the run contract: project conventions outrank the
     // generic harness but yield to what the user asked for in this run.
@@ -125,7 +138,7 @@ function buildSystem(parts: {
   if (parts.memoryState.trim()) {
     sections.push(`## Memory state\n${capText(parts.memoryState, mw)}`)
   }
-  if (parts.compaction?.summary) {
+  if (parts.compaction?.summary && !isTrimWatermarkCompaction(parts.compaction)) {
     sections.push(
       [
         '## Prior session summary',
@@ -181,10 +194,14 @@ function resolveUsedTokens(
   trigger: number
 ): number {
   const providerHint = lastUsage?.inputTokens
+  // Prefer local estimate only when the provider hint looks inflated *and*
+  // is still below the compaction trigger. If the provider already reports
+  // at/over trigger, trust it so we do not defer compaction.
   if (
     providerHint !== undefined &&
     providerHint > estimated &&
-    estimated < trigger * 0.5
+    estimated < trigger * 0.5 &&
+    providerHint < trigger
   ) {
     return estimated
   }
@@ -235,6 +252,8 @@ export async function assembleContext(
     harness: input.harness,
     workspace,
     rules,
+    skillsSection: input.skillsSection,
+    pluginRulesSection: input.pluginRulesSection,
     memoryIndex,
     memoryState,
     contract: input.contract,
@@ -261,7 +280,9 @@ export async function assembleContext(
         messages: stripThinkingForCompaction(toSummarize),
         supportsStructuredOutput: input.model.supportsStructuredOutput,
         contextWindow: window,
-        priorSummary: input.priorCompaction?.summary
+        priorSummary: isTrimWatermarkCompaction(input.priorCompaction)
+          ? undefined
+          : input.priorCompaction?.summary
       })
       if (record) {
         messages = preserveRecentMessages(messages, keepRecent, budgets.history, input.model)
@@ -277,6 +298,8 @@ export async function assembleContext(
     harness: input.harness,
     workspace,
     rules,
+    skillsSection: input.skillsSection,
+    pluginRulesSection: input.pluginRulesSection,
     memoryIndex,
     memoryState,
     contract: input.contract,
@@ -297,6 +320,8 @@ export async function assembleContext(
       harness: input.harness,
       workspace,
       rules,
+      skillsSection: input.skillsSection,
+      pluginRulesSection: input.pluginRulesSection,
       memoryIndex,
       memoryState,
       contract: input.contract,
@@ -319,7 +344,12 @@ export async function assembleContext(
           messages: stripThinkingForCompaction(toSummarize),
           supportsStructuredOutput: input.model.supportsStructuredOutput,
           contextWindow: window,
-          priorSummary: compaction?.summary ?? input.priorCompaction?.summary
+          priorSummary: isTrimWatermarkCompaction(compaction)
+            ? undefined
+            : (compaction?.summary ??
+              (isTrimWatermarkCompaction(input.priorCompaction)
+                ? undefined
+                : input.priorCompaction?.summary))
         })
         if (record) {
           messages = preserveRecentMessages(messages, Math.max(2, Math.floor(keepRecent / 2)), budgets.history, input.model)
@@ -329,6 +359,8 @@ export async function assembleContext(
             harness: input.harness,
             workspace,
             rules,
+            skillsSection: input.skillsSection,
+            pluginRulesSection: input.pluginRulesSection,
             memoryIndex,
             memoryState,
             contract: input.contract,

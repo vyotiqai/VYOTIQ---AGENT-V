@@ -26,6 +26,7 @@ const echoServer = {
   id: 'echo',
   name: 'Echo Fixture',
   enabled: true,
+  transport: 'stdio' as const,
   command: process.execPath,
   args: [fixturePath],
   env: {}

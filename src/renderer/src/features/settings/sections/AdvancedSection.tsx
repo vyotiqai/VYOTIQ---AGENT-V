@@ -11,15 +11,17 @@ export function AdvancedSection({
   settings: Settings
   form: SettingsFormState
 }) {
+  const manualServers = settings.mcpServers.filter((server) => server.source !== 'marketplace')
+
   return (
     <>
       <SettingsRow
         stacked
         title="MCP servers"
-        description="External tool servers (stdio). Tools are namespaced as mcp__serverId__toolName. Agent behavior settings are in Settings → Agent."
+        description="Manual MCP servers (stdio / HTTP / SSE). Prefer Settings → Marketplace for installable packages and remote MCP URLs. Tools are namespaced as mcp__serverId__toolName. Enabled servers connect automatically and their tools load into the agent."
       >
         <div className="flex w-full flex-col gap-2">
-          <div className="flex items-center justify-end gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <Button
               variant="subtle"
               disabled={form.formLocked || form.mcpStatusLoading}
@@ -30,7 +32,7 @@ export function AdvancedSection({
               {form.mcpStatusLoading ? 'Refreshing…' : 'Refresh connections'}
             </Button>
           </div>
-          {settings.mcpServers.map((server) => (
+          {manualServers.map((server) => (
             <McpServerCard
               key={server.id}
               server={server}
@@ -43,29 +45,60 @@ export function AdvancedSection({
                 return form.runUpdate({ mcpServers: updated })
               }}
               onRemove={() => {
-                void form.runUpdate({
-                  mcpServers: settings.mcpServers.filter((s) => s.id !== server.id)
-                })
+                void (async () => {
+                  await window.vyotiq.mcpClearAuthToken?.(server.id)
+                  await form.runUpdate({
+                    mcpServers: settings.mcpServers.filter((s) => s.id !== server.id)
+                  })
+                })()
               }}
             />
           ))}
-          <Button
-            variant="subtle"
-            disabled={form.formLocked}
-            onClick={() => {
-              const id = crypto.randomUUID()
-              const next: McpServer = {
-                id,
-                name: 'New MCP server',
-                command: 'npx',
-                args: ['-y', '@modelcontextprotocol/server-filesystem', '.'],
-                enabled: false
-              }
-              void form.runUpdate({ mcpServers: [...settings.mcpServers, next] })
-            }}
-          >
-            Add MCP server
-          </Button>
+          {settings.mcpServers.some((s) => s.source === 'marketplace') ? (
+            <p className="m-0 text-[11px] text-secondary">
+              Marketplace MCP servers are managed under Settings → Marketplace (enable /
+              disable / uninstall). Plugin-bundled MCP appears there under the plugin.
+            </p>
+          ) : null}
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="subtle"
+              disabled={form.formLocked}
+              onClick={() => {
+                const id = crypto.randomUUID()
+                const next: McpServer = {
+                  id,
+                  name: 'New MCP server',
+                  transport: 'stdio',
+                  command: 'npx',
+                  args: ['-y', '@modelcontextprotocol/server-filesystem', '.'],
+                  enabled: false,
+                  source: 'manual'
+                }
+                void form.runUpdate({ mcpServers: [...settings.mcpServers, next] })
+              }}
+            >
+              Add stdio MCP
+            </Button>
+            <Button
+              variant="subtle"
+              disabled={form.formLocked}
+              onClick={() => {
+                const id = crypto.randomUUID()
+                const next: McpServer = {
+                  id,
+                  name: 'Remote MCP',
+                  transport: 'http',
+                  url: 'https://',
+                  enabled: false,
+                  source: 'manual'
+                }
+                void form.runUpdate({ mcpServers: [...settings.mcpServers, next] })
+              }}
+            >
+              Add remote MCP (HTTP/SSE)
+            </Button>
+          </div>
         </div>
       </SettingsRow>
     </>

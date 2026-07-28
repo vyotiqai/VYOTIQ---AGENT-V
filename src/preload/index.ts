@@ -97,6 +97,19 @@ const api: VyotiqApi = {
   telemetryStatus: () => ipcRenderer.invoke(IPC.telemetryStatus),
   mcpStatus: () => ipcRenderer.invoke(IPC.mcpStatus),
   mcpRefresh: () => ipcRenderer.invoke(IPC.mcpRefresh),
+  mcpSetAuthToken: (serverId, token) =>
+    ipcRenderer.invoke(IPC.mcpSetAuthToken, { serverId, token }),
+  mcpClearAuthToken: (serverId) => ipcRenderer.invoke(IPC.mcpClearAuthToken, { serverId }),
+  mcpStartOAuth: (serverId) => ipcRenderer.invoke(IPC.mcpStartOAuth, { serverId }),
+  marketplaceListInstalled: () => ipcRenderer.invoke(IPC.marketplaceListInstalled),
+  marketplaceBrowse: (payload) => ipcRenderer.invoke(IPC.marketplaceBrowse, payload ?? {}),
+  marketplaceRefreshCatalog: () => ipcRenderer.invoke(IPC.marketplaceRefreshCatalog),
+  marketplaceInstall: (payload) => ipcRenderer.invoke(IPC.marketplaceInstall, payload),
+  marketplaceUninstall: (id) => ipcRenderer.invoke(IPC.marketplaceUninstall, { id }),
+  marketplaceSetEnabled: (id, enabled) =>
+    ipcRenderer.invoke(IPC.marketplaceSetEnabled, { id, enabled }),
+  marketplacePickLocal: () => ipcRenderer.invoke(IPC.marketplacePickLocal),
+  marketplaceGetContents: (id) => ipcRenderer.invoke(IPC.marketplaceGetContents, { id }),
   getSystemTheme: () => ipcRenderer.invoke(IPC.getSystemTheme),
   onSystemThemeChanged: (handler) => {
     const listener = (_: IpcRendererEvent, prefersDark: boolean): void => handler(prefersDark)

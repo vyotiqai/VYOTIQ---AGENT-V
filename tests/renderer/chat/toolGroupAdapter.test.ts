@@ -216,5 +216,14 @@ describe('mapToolGroupProps', () => {
     expect(result.summary).toBe('1 file and 2 directories')
   })
 
+  it('shows a preparing label for unresolved streaming tool rows in a group', () => {
+    const result = mapToolGroupProps(
+      [tool('t1', 'tool', '', 'running')],
+      { groupTiming: { startedAt: 1_000 } }
+    )
+
+    expect(result.nestedTools[0]?.title).toBe('Preparing…')
+  })
+
 })
 

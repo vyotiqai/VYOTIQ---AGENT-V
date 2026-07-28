@@ -1,8 +1,9 @@
 import { logger, logErrorSummary } from '../../../shared/logger'
 import { formatError, isAbortError, isExpectedToolError } from '../../../shared/errors'
 import { summarizeToolArgsFromRecord } from '../../../shared/toolSummary'
-import { validateToolArgs } from '../schemas/tools'
+import { validateToolArgs, type AgentToolName } from '../schemas/tools'
 import { invokeMcpTool, parseMcpToolName, getMcpToolDefinition } from '../mcp'
+import { isMcpToolPermitted } from '../../../shared/utils/mcpToolPolicy'
 import { validateAgainstJsonSchema } from '../schemas/jsonSchemaValidate'
 import { toolRead, READ_CONTENT_CAP } from './read'
 import { toolEdit } from './edit'
@@ -14,7 +15,7 @@ import { toolMultiEdit, type MultiEditEntry } from './multiEdit'
 import { toolDelete } from './deletePath'
 import { toolTodoWrite, type TodoItem } from './todo'
 import { toolWebFetch } from './webFetch'
-import { isFindstrNoMatchContent, isDirMissingPathContent, toolTerminal } from './terminal'
+import { isFindstrNoMatchContent, isDirMissingPathContent, toolTerminal, TERMINAL_MAX_TIMEOUT_MS } from './terminal'
 import { runSubagent, SubagentDepthError, type SubagentContextUsage } from '../subagent'
 import { toolMemoryList, toolMemoryRead, toolMemoryWrite } from './memory'
 
@@ -36,6 +37,13 @@ export type ToolExecutionContext = {
   onProgress?: (update: { kind: 'text' | 'thinking' | 'tool' | 'done'; text: string }) => void
   /** Per-step context fill for nested sub-agents. */
   onSubagentContextUsage?: (usage: SubagentContextUsage) => void
+  /**
+   * MCP servers enabled for this run (workspace overrides applied).
+   * When set, MCP invokes outside this set are rejected even if globally connected.
+   */
+  runEnabledMcpIds?: ReadonlySet<string>
+  /** Per-server allow/deny policy for bare MCP tool names. */
+  mcpToolPolicies?: ReadonlyMap<string, { allowedTools?: string[]; deniedTools?: string[] }>
 }
 
 type ToolHandler = (
@@ -94,7 +102,7 @@ export function terminalResultOk(command: string, content: string): boolean {
   return isDirMissingPathContent(command, content)
 }
 
-const BUILTIN_HANDLERS: Record<string, ToolHandler> = {
+const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
   read: (workspace, args, signal) => {
     throwIfAborted(signal)
     const path = String(args.path ?? '')
@@ -211,7 +219,9 @@ const BUILTIN_HANDLERS: Record<string, ToolHandler> = {
   },
   terminal: async (workspace, args, signal) => {
     const command = String(args.command ?? '')
-    const timeoutMs = typeof args.timeoutMs === 'number' ? args.timeoutMs : 60_000
+    const requested =
+      typeof args.timeoutMs === 'number' ? args.timeoutMs : 60_000
+    const timeoutMs = Math.min(TERMINAL_MAX_TIMEOUT_MS, Math.max(1, requested))
     const content = await toolTerminal(workspace, command, signal, timeoutMs)
     const summary = command.slice(0, 80)
     const ok = terminalResultOk(command, content)
@@ -237,6 +247,8 @@ const BUILTIN_HANDLERS: Record<string, ToolHandler> = {
   }
 }
 
+export const BUILTIN_TOOL_NAMES = Object.keys(BUILTIN_HANDLERS) as AgentToolName[]
+
 export async function executeTool(
   name: string,
   argsJson: string,
@@ -253,6 +265,21 @@ export async function executeTool(
       parsed = JSON.parse(argsJson || '{}') as Record<string, unknown>
     } catch {
       return toolFail(name, name, 'Failed to parse tool arguments JSON')
+    }
+    if (context.runEnabledMcpIds && !context.runEnabledMcpIds.has(mcp.serverId)) {
+      return toolFail(
+        name,
+        name,
+        `MCP server "${mcp.serverId}" is not enabled for this workspace run`
+      )
+    }
+    const policy = context.mcpToolPolicies?.get(mcp.serverId)
+    if (policy && !isMcpToolPermitted(mcp.toolName, policy)) {
+      return toolFail(
+        name,
+        name,
+        `MCP tool "${mcp.toolName}" is blocked by this server's allow/deny list`
+      )
     }
     const def = getMcpToolDefinition(name)
     if (!def) {
@@ -284,10 +311,10 @@ export async function executeTool(
   }
   const args = validated.data
   const summary = summarizeToolArgsFromRecord(name, args)
-  const handler = BUILTIN_HANDLERS[name]
-  if (!handler) {
+  if (!Object.prototype.hasOwnProperty.call(BUILTIN_HANDLERS, name)) {
     return toolFail(name, name, `Unknown tool: ${name}`)
   }
+  const handler = BUILTIN_HANDLERS[name as AgentToolName]
 
   try {
     return await handler(workspace, args, signal, context)

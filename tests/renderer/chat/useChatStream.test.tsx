@@ -1449,6 +1449,75 @@ describe('useChatStream', () => {
     expect(result.current.items.some((i) => i.kind === 'message' && i.content === 'done')).toBe(true)
   })
 
+  it('closes thinking when answer text starts streaming', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('hi')
+    })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({ type: 'thinking_delta', runId: 'run-1', text: 'Greeting the user.' })
+    })
+
+    await waitFor(() => {
+      const assistant = result.current.items.find(
+        (i) => i.kind === 'message' && i.role === 'assistant'
+      )
+      expect(assistant?.kind === 'message' && assistant.thinkingStreaming).toBe(true)
+    })
+
+    await act(async () => {
+      handler?.({ type: 'text_delta', runId: 'run-1', text: 'Hello' })
+    })
+
+    await waitFor(() => {
+      const assistant = result.current.items.find(
+        (i) => i.kind === 'message' && i.role === 'assistant'
+      )
+      expect(assistant?.kind === 'message' && assistant.thinkingStreaming).toBe(false)
+      expect(assistant?.kind === 'message' && assistant.streaming).toBe(true)
+    })
+  })
+
+  it('closes thinking when tool calls start streaming', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('read file')
+    })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({ type: 'thinking_delta', runId: 'run-1', text: 'I will read the file next.' })
+    })
+
+    await waitFor(() => {
+      const assistant = result.current.items.find(
+        (i) => i.kind === 'message' && i.role === 'assistant'
+      )
+      expect(assistant?.kind === 'message' && assistant.thinkingStreaming).toBe(true)
+    })
+
+    await act(async () => {
+      handler?.({
+        type: 'tool_call_delta',
+        runId: 'run-1',
+        toolCallId: 'pending_0',
+        name: 'read',
+        argumentsDelta: '{"path":"a.ts"}'
+      })
+    })
+
+    await waitFor(() => {
+      const assistant = result.current.items.find(
+        (i) => i.kind === 'message' && i.role === 'assistant'
+      )
+      expect(assistant?.kind === 'message' && assistant.thinkingStreaming).toBe(false)
+    })
+  })
+
   it('drops live tool rows and streamed text on stream_reset', async () => {
     const { result } = renderHook(() => useChatStream('/ws'))
 

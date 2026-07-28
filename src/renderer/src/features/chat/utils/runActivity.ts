@@ -115,17 +115,17 @@ export function deriveRunActivity(
   )
   if (runningActivity?.kind === 'activity') return toolPhaseFromActivity(runningActivity)
 
-  const streamingThinking = lastActiveRow(
-    turnRows,
-    (row) => row.kind === 'thinking' && row.item.thinkingStreaming === true
-  )
-  if (streamingThinking) return { kind: 'thinking' }
-
   const streamingText = lastActiveRow(
     turnRows,
     (row) => row.kind === 'text' && row.item.streaming === true
   )
   if (streamingText) return { kind: 'writing' }
+
+  const streamingThinking = lastActiveRow(
+    turnRows,
+    (row) => row.kind === 'thinking' && row.item.thinkingStreaming === true
+  )
+  if (streamingThinking) return { kind: 'thinking' }
 
   if (pendingRun) {
     return { kind: 'planning' }

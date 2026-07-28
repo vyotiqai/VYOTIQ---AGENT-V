@@ -8,6 +8,7 @@ import { GeneralSection } from './sections/GeneralSection'
 import { ProvidersSection } from './sections/ProvidersSection'
 import { AgentSection } from './sections/AgentSection'
 import { AdvancedSection } from './sections/AdvancedSection'
+import { MarketplaceSection } from './sections/MarketplaceSection'
 
 export function SettingsView(props: SettingsViewProps) {
   const {
@@ -52,6 +53,16 @@ export function SettingsView(props: SettingsViewProps) {
         )
       case 'agent':
         return <AgentSection form={form} />
+      case 'marketplace':
+        return (
+          <MarketplaceSection
+            settings={settings}
+            form={form}
+            activeWorkspacePath={activeWorkspacePath}
+            settingsOverridesByPath={settingsOverridesByPath}
+            onSetSettingsOverride={onSetSettingsOverride}
+          />
+        )
       case 'advanced':
         return <AdvancedSection settings={settings} form={form} />
       default: {

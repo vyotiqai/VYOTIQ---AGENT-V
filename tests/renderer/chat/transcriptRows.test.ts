@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildTranscriptRows,
+  isTurnWorkRow,
   rowLeadingGap,
   TURN_GAP_PX
 } from '@renderer/features/chat/utils/transcriptRows'
@@ -53,7 +54,11 @@ describe('buildTranscriptRows', () => {
       tool('r2', 'read'),
       tool('e1', 'edit')
     ])
-    expect(rows.map((row) => row.kind)).toEqual(['activity', 'card', 'activity', 'card'])
+    expect(rows.map((row) => row.kind)).toEqual(['activity', 'card', 'card'])
+    const activity = rows.find((row) => row.kind === 'activity')
+    if (activity?.kind === 'activity') {
+      expect(activity.tools.map((item) => item.id)).toEqual(['r1', 'r2'])
+    }
   })
 
   it('gives a lone terminal or edit call its own card', () => {
@@ -391,6 +396,44 @@ describe('buildTranscriptRows', () => {
     }
   })
 
+  it('merges duplicate activity groups across shallow thinking separators', () => {
+    const items: UiItem[] = [
+      tool('r1', 'read'),
+      tool('g1', 'grep'),
+      {
+        kind: 'message',
+        id: 'm1',
+        role: 'assistant',
+        thinking: 'ok',
+        content: ''
+      },
+      tool('r2', 'read'),
+      tool('g2', 'grep')
+    ]
+    const rows = buildTranscriptRows(items)
+    const activities = rows.filter((row) => row.kind === 'activity')
+    expect(activities).toHaveLength(1)
+    if (activities[0]?.kind === 'activity') {
+      expect(activities[0].tools).toHaveLength(4)
+    }
+  })
+
+  it('merges duplicate activity groups across prominent tool cards', () => {
+    const items: UiItem[] = [
+      tool('r1', 'read'),
+      tool('d1', 'list_dir'),
+      tool('t1', 'terminal'),
+      tool('r2', 'read'),
+      tool('d2', 'list_dir')
+    ]
+    const rows = buildTranscriptRows(items)
+    expect(rows.map((row) => row.kind)).toEqual(['activity', 'card'])
+    const activity = rows[0]
+    if (activity?.kind === 'activity') {
+      expect(activity.tools.map((item) => item.id)).toEqual(['r1', 'd1', 'r2', 'd2'])
+    }
+  })
+
   it('keeps step reasoning inline between tool batches', () => {
     const items: UiItem[] = [
       { kind: 'message', id: 'u1', role: 'user', content: 'audit' },
@@ -592,5 +635,53 @@ describe('buildTranscriptRows', () => {
     if (summary?.kind === 'turn') {
       expect(summary.span.activity?.kind).not.toBe('thinking')
     }
+  })
+
+  it('keeps approval rows visible when a turn is collapsed', () => {
+    expect(
+      isTurnWorkRow({
+        kind: 'approval',
+        id: 'a1',
+        turnIndex: 0,
+        item: {
+          kind: 'tool',
+          id: 't1',
+          tool: { id: 't1', name: 'edit', summary: 'edit', status: 'running' },
+          approval: {
+            requestId: 'r1',
+            toolName: 'edit',
+            summary: 'edit',
+            mutating: true
+          }
+        }
+      })
+    ).toBe(false)
+  })
+
+  it('keeps running tool cards visible when a turn is collapsed', () => {
+    expect(
+      isTurnWorkRow({
+        kind: 'card',
+        id: 'c-run',
+        turnIndex: 0,
+        item: {
+          kind: 'tool',
+          id: 't-run',
+          tool: { id: 't-run', name: 'terminal', summary: 'npm test', status: 'running' }
+        }
+      })
+    ).toBe(false)
+    expect(
+      isTurnWorkRow({
+        kind: 'card',
+        id: 'c-done',
+        turnIndex: 0,
+        item: {
+          kind: 'tool',
+          id: 't-done',
+          tool: { id: 't-done', name: 'terminal', summary: 'npm test', status: 'done' }
+        }
+      })
+    ).toBe(true)
   })
 })

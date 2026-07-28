@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { AppShell } from './AppShell'
 import { ChatView } from '../features/chat/ChatView'
 import { SettingsView, type SettingsSection } from '../features/settings'
@@ -259,12 +259,31 @@ export function App() {
 
   const operationalError = settingsError ?? workspaceError
 
-  const mcpServerNames = useMemo(() => {
+  const [mcpServerNames, setMcpServerNames] = useState(() => new Map<string, string>())
+
+  useEffect(() => {
     const map = new Map<string, string>()
     for (const server of settings.mcpServers) {
       map.set(server.id, server.name.trim() || server.id)
     }
-    return map
+    setMcpServerNames(map)
+    let cancelled = false
+    void (async () => {
+      const res = await window.vyotiq?.mcpStatus?.()
+      if (cancelled || !res?.ok) return
+      setMcpServerNames((prev) => {
+        const next = new Map(prev)
+        for (const server of res.data.servers) {
+          if (!next.has(server.id)) {
+            next.set(server.id, server.name.trim() || server.id)
+          }
+        }
+        return next
+      })
+    })()
+    return () => {
+      cancelled = true
+    }
   }, [settings.mcpServers])
 
   const onDismissChatBanner = (): void => {

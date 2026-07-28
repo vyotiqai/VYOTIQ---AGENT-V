@@ -18,7 +18,7 @@ export const ACTIVE_PROVIDER_OPTIONS = PROVIDER_DEFAULTS.map((p) => ({
 }))
 
 export const SECTION_LABELS: Record<
-  'general' | 'providers' | 'agent' | 'advanced',
+  'general' | 'providers' | 'agent' | 'marketplace' | 'advanced',
   { title: string; description?: string }
 > = {
   general: {
@@ -33,8 +33,12 @@ export const SECTION_LABELS: Record<
     title: 'Agent',
     description: 'Compaction, memory, approval, and sub-agent settings.'
   },
+  marketplace: {
+    title: 'Marketplace',
+    description: 'Install and enable MCP servers, skills, and plugins.'
+  },
   advanced: {
     title: 'Advanced',
-    description: 'MCP server configuration and connection status.'
+    description: 'Manual MCP server configuration and connection status.'
   }
 }

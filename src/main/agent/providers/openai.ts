@@ -541,7 +541,15 @@ export function createOpenAiCompatibleProvider(
       let reasoningContent = ''
       let reasoningDetails: unknown
       let stopReason: StopReason | undefined
+      let thinkingDoneEmitted = false
       const drops = { dropped: 0 }
+
+      const emitThinkingDoneIfNeeded = function* (): Generator<StreamChunk, void, unknown> {
+        if (reasoningContent && !thinkingDoneEmitted) {
+          thinkingDoneEmitted = true
+          yield { type: 'thinking_done', text: reasoningContent }
+        }
+      }
 
       for await (const chunk of iterateSseJson(res, req.signal, drops)) {
         const usage = parseOpenAiCompatUsage(chunk.usage)
@@ -557,6 +565,7 @@ export function createOpenAiCompatibleProvider(
           (message?.tool_calls as Array<Record<string, unknown>> | undefined)
 
         if (typeof delta?.content === 'string' && delta.content) {
+          yield* emitThinkingDoneIfNeeded()
           yield { type: 'text', text: delta.content }
         }
 
@@ -586,6 +595,7 @@ export function createOpenAiCompatibleProvider(
         }
 
         if (wholeCalls) {
+          yield* emitThinkingDoneIfNeeded()
           for (const tc of wholeCalls) {
             const index = typeof tc.index === 'number' ? tc.index : pending.size
             const fn = tc.function as { name?: string; arguments?: string } | undefined
@@ -641,7 +651,7 @@ export function createOpenAiCompatibleProvider(
       for (const call of pending.values()) {
         yield { type: 'tool_call', toolCall: call }
       }
-      if (reasoningContent) {
+      if (reasoningContent && !thinkingDoneEmitted) {
         yield { type: 'thinking_done', text: reasoningContent }
       }
       yield {

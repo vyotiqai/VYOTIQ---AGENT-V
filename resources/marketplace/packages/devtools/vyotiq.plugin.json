@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "kind": "plugin",
+  "id": "devtools",
+  "name": "Devtools",
+  "version": "1.0.0",
+  "description": "Sample plugin with a skill and a rule.",
+  "mcp": [],
+  "skills": ["skills/debug-checklist"],
+  "rules": ["rules/conventions.md"]
+}

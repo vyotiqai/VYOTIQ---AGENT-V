@@ -12,6 +12,8 @@ files:
 extraResources:
   - from: resources/harness
     to: harness
+  - from: resources/marketplace
+    to: marketplace
 asarUnpack:
   - resources/**
 win:

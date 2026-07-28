@@ -3,6 +3,7 @@ import { contentDisplayText, contentFiles, contentImages, contentToText } from '
 import { isAgentEvent } from '../utils/eventUtils'
 import { subagentContextUsageFromEvent } from '../utils/contextUsage'
 import { summarizeToolArgs } from '../utils/toolSummary'
+import { finalizeInterruptedTodoContent } from '../utils/todoContent'
 
 export type ToolPresentation = 'prominent' | 'compact'
 
@@ -658,4 +659,111 @@ function messageTimestampsFromEvents(
   }
 
   return out
+}
+
+type TerminalRunStatus = 'done' | 'cancelled' | 'error'
+
+/** Last persisted run status event, if any. */
+export function lastPersistedRunStatus(
+  events: PersistedEvent[]
+): 'running' | TerminalRunStatus | null {
+  let lastAt = ''
+  let status: 'running' | TerminalRunStatus | null = null
+  for (const row of events) {
+    if (!isAgentEvent(row.event)) continue
+    if (row.event.type !== 'status') continue
+    if (row.at < lastAt) continue
+    lastAt = row.at
+    status = row.event.status
+  }
+  return status
+}
+
+function interruptedToolContent(status: TerminalRunStatus): string {
+  switch (status) {
+    case 'cancelled':
+      return 'Cancelled'
+    case 'error':
+      return 'Interrupted'
+    case 'done':
+      return 'Stopped'
+    default: {
+      const _exhaustive: never = status
+      return _exhaustive
+    }
+  }
+}
+
+function closeOpenGroupTimingsOnHydrate(items: UiItem[], endedAt: number): UiItem[] {
+  const out = [...items]
+  let index = 0
+  while (index < out.length) {
+    if (out[index]?.kind !== 'tool') {
+      index += 1
+      continue
+    }
+    const groupStart = index
+    while (index < out.length && out[index]?.kind === 'tool') index += 1
+    const first = out[groupStart]
+    if (first?.kind !== 'tool') continue
+    if (!first.groupTiming || first.groupTiming.endedAt != null) continue
+    out[groupStart] = {
+      ...first,
+      groupTiming: { startedAt: first.groupTiming.startedAt, endedAt }
+    }
+  }
+  return out
+}
+
+/**
+ * After a terminal run is reloaded from disk, close any tool rows still marked
+ * `running` because crash interrupt never wrote matching tool_result rows.
+ */
+export function finalizeHydratedTranscript(items: UiItem[], events: PersistedEvent[]): UiItem[] {
+  const lastStatus = lastPersistedRunStatus(events)
+  if (!lastStatus || lastStatus === 'running') return items
+
+  const stub = interruptedToolContent(lastStatus)
+  let endedAt = Date.now()
+  for (const row of events) {
+    if (!isAgentEvent(row.event)) continue
+    if (row.event.type !== 'status') continue
+    if (row.event.status !== lastStatus) continue
+    const ms = new Date(row.at).getTime()
+    if (!Number.isNaN(ms)) endedAt = ms
+  }
+
+  const finalized = items.map((item) => {
+    if (item.kind === 'message') {
+      if (!item.streaming && !item.thinkingStreaming) return item
+      return {
+        ...item,
+        streaming: false,
+        thinkingStreaming: false,
+        thinkingExpanded: false
+      }
+    }
+    if (item.kind !== 'tool') return item
+
+    let tool = item.tool
+    if (tool.status === 'running') {
+      tool = {
+        ...tool,
+        status: 'fail' as const,
+        content: tool.content ?? stub
+      }
+    }
+    if (
+      tool.name === 'todo_write' &&
+      tool.content &&
+      (lastStatus === 'cancelled' || lastStatus === 'error')
+    ) {
+      const content = finalizeInterruptedTodoContent(tool.content)
+      if (content !== tool.content) tool = { ...tool, content }
+    }
+    if (tool === item.tool) return item
+    return { ...item, tool }
+  })
+
+  return closeOpenGroupTimingsOnHydrate(finalized, endedAt)
 }

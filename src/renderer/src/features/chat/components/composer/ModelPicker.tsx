@@ -302,8 +302,9 @@ export function ModelPicker({
       const parsed = parseModelSelectionKey(value)
       if (!parsed) return
       onModelChange(parsed.provider, parsed.model)
+      close()
     },
-    [onModelChange]
+    [onModelChange, close]
   )
 
   const onListKeyDown = (e: React.KeyboardEvent): void => {

@@ -4,6 +4,8 @@ import { assertInsideWorkspace } from '../../../shared/workspacePath'
 
 /** stdout/stderr cap returned to the model (each stream). */
 export const TERMINAL_MAX_OUTPUT = 64 * 1024
+/** Upper bound for model-requested command timeouts (5 minutes). */
+export const TERMINAL_MAX_TIMEOUT_MS = 300_000
 const MAX_OUTPUT = TERMINAL_MAX_OUTPUT
 
 /** Unix tools that typically fail or mislead under Windows cmd.exe. */

@@ -17,6 +17,9 @@ import {
   type RunSummary
 } from '../../shared/ipc'
 import { logger } from '../../shared/logger'
+import { toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
+import { finalizeInterruptedTodoContent } from '../../shared/utils/todoContent'
+import { finalizeInterruptedTodos } from './tools/todo'
 import { ensureWorkspaceStorage, resolveRunDir, workspaceSessionsRoot } from '../storage/paths'
 import { isActive } from './runRegistry'
 import { CompactionRecordSchema, type CompactionRecord } from './context/types'
@@ -346,6 +349,61 @@ export async function listRuns(workspacePath: string): Promise<ListRunsResult> {
   })
 }
 
+/** Persist failure stubs for tool calls that never received a result before interrupt. */
+function appendOrphanToolStubs(dir: string, runId: string): void {
+  const messagesPath = join(dir, 'messages.jsonl')
+  if (!existsSync(messagesPath)) return
+  const messages = parseMessagesJsonl(readFileSync(messagesPath, 'utf8'))
+  const completedIds = new Set<string>()
+  for (const message of messages) {
+    if (message.role === 'tool' && message.toolCallId) completedIds.add(message.toolCallId)
+  }
+  const stub = 'Cancelled'
+  for (const message of messages) {
+    if (message.role !== 'assistant' || !message.toolCalls?.length) continue
+    for (const call of message.toolCalls) {
+      if (completedIds.has(call.id)) continue
+      completedIds.add(call.id)
+      appendMessage(dir, {
+        role: 'tool',
+        toolCallId: call.id,
+        toolName: call.name,
+        content: stub,
+        ok: false
+      })
+      appendEvent(
+        dir,
+        toolResultEventForPersistence({
+          type: 'tool_result',
+          runId,
+          toolCallId: call.id,
+          name: call.name,
+          summary: 'cancelled',
+          ok: false,
+          content: stub
+        })
+      )
+    }
+  }
+}
+
+/** Patch the latest todo_write tool message when interrupt leaves tasks in progress. */
+function patchInterruptedTodoMessage(dir: string): void {
+  const messagesPath = join(dir, 'messages.jsonl')
+  if (!existsSync(messagesPath)) return
+  const messages = parseMessagesJsonl(readFileSync(messagesPath, 'utf8'))
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message?.role !== 'tool' || message.toolName !== 'todo_write') continue
+    const current = toolMessageText(message.content)
+    const next = finalizeInterruptedTodoContent(current)
+    if (next === current) return
+    messages[index] = { ...message, content: next }
+    syncMessages(dir, messages)
+    return
+  }
+}
+
 /**
  * Mark runs left as `running` after a crash/restart as cancelled.
  * Scans workspace run directories under each provided path.
@@ -368,6 +426,9 @@ export function interruptOrphanRuns(workspacePaths: string[]): number {
         // Skip runs still live in memory (re-adding an open workspace must not
         // treat an in-flight agent as a crash orphan).
         if (isActive(name)) continue
+        appendOrphanToolStubs(dir, name)
+        finalizeInterruptedTodos(dir)
+        patchInterruptedTodoMessage(dir)
         updateStatus(dir, {
           status: 'cancelled',
           error: 'Interrupted: app exited while run was active'
