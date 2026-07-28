@@ -25,6 +25,7 @@ import { logger } from '@shared/logger'
 import {
   messagesToUiItems,
   applyEventTimestamps,
+  finalizeHydratedTranscript,
   mergeThinking,
   messageUiId,
   isToolShapedTextLeak,
@@ -434,12 +435,13 @@ function incompleteFromPersisted(events: PersistedEvent[]): IncompleteTurnState 
 }
 
 function hydrateFromDisk(kept: ChatMessage[], events: PersistedEvent[]) {
+  const items = applyEventTimestamps(messagesToUiItems(kept), events)
   return {
     messages: kept,
     error: errorFromPersisted(events),
     incomplete: incompleteFromPersisted(events),
     contextUsage: summarizeContextUsageFromEvents(events),
-    items: applyEventTimestamps(messagesToUiItems(kept), events)
+    items: finalizeHydratedTranscript(items, events)
   }
 }
 
@@ -596,12 +598,30 @@ export function createChatStreamController(
     )
   }
 
+  /** Close the open reasoning block once answer text or tool calls begin. */
+  const closeOpenThinkingStep = (): void => {
+    if (!reasoningId) return
+    const id = reasoningId
+    const index = findMessageIndex(state.items, id)
+    if (index < 0) return
+    const item = state.items[index]
+    if (item?.kind !== 'message' || !item.thinkingStreaming) return
+    patch({
+      items: replaceAt(state.items, index, {
+        ...item,
+        thinkingStreaming: false,
+        thinkingExpanded: false
+      })
+    })
+  }
+
   const applyToolCallDeltaEvent = (
     event: Extract<AgentEvent, { type: 'tool_call_delta' }>
   ): void => {
     if (isToolShapedTextLeak(pendingTextDelta)) {
       pendingTextDelta = ''
     }
+    closeOpenThinkingStep()
     let items = applyToolCallDelta(state.items, event, state.runStartedAt)
     items = scrubStreamingAssistantToolLeak(items)
     patch({ items })
@@ -803,6 +823,8 @@ export function createChatStreamController(
 
     if (event.type === 'text_delta') {
       if (!assistantId) assistantId = messageUiId('assistant', state.messages.length)
+      flushStreamingPatches()
+      closeOpenThinkingStep()
       scheduleTextDelta(event.text)
       return
     } else if (event.type === 'thinking_delta') {

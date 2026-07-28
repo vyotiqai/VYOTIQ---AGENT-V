@@ -1,4 +1,5 @@
 import type { ModelInfo, ProviderId } from '../ipc/schemas/providers'
+import { knownContextWindow } from './modelContextWindows'
 
 export type ProviderDefault = {
   id: ProviderId
@@ -11,7 +12,7 @@ const SEED_MODEL_IDS: Record<ProviderId, string[]> = {
   anthropic: ['claude-sonnet-4', 'claude-haiku-4-5'],
   gemini: ['gemini-2.0-flash', 'gemini-2.5-pro-preview'],
   ollama: ['qwen2.5', 'llama3.2', 'deepseek-r1'],
-  deepseek: ['deepseek-v3', 'deepseek-reasoner'],
+  deepseek: ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-reasoner'],
   groq: ['llama-3.3-70b-versatile'],
   openrouter: ['openrouter/auto'],
   xai: ['grok-2-latest'],
@@ -20,7 +21,8 @@ const SEED_MODEL_IDS: Record<ProviderId, string[]> = {
 
 function seedModelInfo(id: string, providerId: ProviderId): ModelInfo {
   const supportsVision = /gpt-4o|gpt-5|claude|gemini|grok|llava|vision|pixtral/i.test(id)
-  const supportsThinking = /reasoner|r1|o3|thinking/i.test(id)
+  const supportsThinking = /reasoner|r1|o3|thinking|v4-pro/i.test(id)
+  const known = knownContextWindow(id, providerId)
   return {
     id,
     displayName: id,
@@ -31,7 +33,7 @@ function seedModelInfo(id: string, providerId: ProviderId): ModelInfo {
     supportsStructuredOutput:
       providerId === 'ollama' ? /json|qwen|llama|deepseek/i.test(id) : true,
     supportsThinking,
-    contextWindow: providerId === 'ollama' ? 32_768 : 128_000
+    contextWindow: known ?? (providerId === 'ollama' ? 32_768 : 128_000)
   }
 }
 

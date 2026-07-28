@@ -2,6 +2,7 @@ import { Icon } from '@renderer/lib/icons'
 import { IconButton, cn } from '@renderer/lib/ui'
 import type { ProviderId, ServiceTier } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
+import { knownContextWindow } from '@shared/domain/modelContextWindows'
 import { MAX_IMAGES } from './useComposerImages'
 import { MAX_FILES } from './useComposerFiles'
 import { ContextMeter, type ContextUsageState } from './ContextMeter'
@@ -10,14 +11,23 @@ import { ThinkingControls } from './ThinkingControls'
 import type { ModelPickerOption } from './composerModelUtils'
 import type { ModelInfo } from '@shared/ipc'
 
+/** Shared compact control height for the toolbar row. */
 const iconCtl =
-  'inline-grid size-8 place-items-center rounded-full text-muted vy-transition hover:bg-surface hover:text-fg disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)] disabled:hover:bg-transparent disabled:hover:text-muted'
+  'inline-grid size-7 shrink-0 place-items-center rounded-xl text-muted vy-transition hover:bg-surface hover:text-fg disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)] disabled:hover:bg-transparent disabled:hover:text-muted'
 
+/** Size to content; truncate only when the middle zone is constrained. */
 const modelPillTrigger = cn(
-  'inline-flex max-w-none min-h-8 items-center gap-1 rounded-full border-0 bg-transparent px-2.5 text-xs tracking-[var(--vy-tracking)] text-muted',
+  'inline-flex h-7 max-w-full min-w-0 items-center gap-1 rounded-xl border-0 bg-transparent px-1.5 text-[11px] leading-none tracking-[var(--vy-tracking)] text-muted',
   'hover:bg-surface hover:text-fg active:bg-surface',
   'vy-transition disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
 )
+
+const sendCtl = cn(
+  'inline-grid size-7 shrink-0 place-items-center rounded-xl vy-transition',
+  'disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
+)
+
+const zone = 'flex h-7 min-w-0 items-center gap-0.5'
 
 export type ComposerVariant = 'hero' | 'dock'
 
@@ -82,10 +92,8 @@ export function ComposerToolbar({
   contextUsage?: ContextUsageState | null
   onCompactContext?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
 }) {
-  const modelMenuClass =
-    variant === 'hero'
-      ? 'min-w-0 max-w-full sm:max-w-[320px]'
-      : 'min-w-0 max-w-[min(100%,20rem)] sm:max-w-[320px]'
+  void variant
+  void disabled
 
   const imagesFull = imageCount >= MAX_IMAGES
   const filesFull = fileCount >= MAX_FILES
@@ -98,12 +106,42 @@ export function ComposerToolbar({
         ? `Attach files (file limit ${MAX_FILES}; images still available)`
         : 'Attach files'
 
+  const modelKey = `${provider}:${model}`
+  const modelMeta = modelMetaByValue[modelKey] ?? modelMetaByValue[model]
+  const modelWindow =
+    knownContextWindow(model, provider) ??
+    (modelMeta?.contextWindow && modelMeta.contextWindow > 0 ? modelMeta.contextWindow : null)
+
+  const sendOrStop = running ? (
+    <IconButton
+      icon="stop"
+      label="Stop"
+      size="sm"
+      variant="primary"
+      className="size-7 shrink-0 rounded-xl"
+      onClick={onStop}
+    />
+  ) : (
+    <button
+      type="submit"
+      className={cn(
+        sendCtl,
+        canSend ? 'bg-accent text-accent-fg hover:bg-fg-strong' : 'bg-surface-2 text-muted'
+      )}
+      aria-label="Send"
+      disabled={!canSend}
+    >
+      <Icon name="send" size={14} weight="fill" />
+    </button>
+  )
+
   return (
     <div
-      className="col-span-full flex items-center justify-between gap-2"
+      className="col-span-full grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-1 gap-y-1"
       data-composer-toolbar
     >
-      <div className="flex min-w-0 flex-1 items-center gap-0.5">
+      {/* Left */}
+      <div className={zone}>
         <button
           type="button"
           className={iconCtl}
@@ -112,10 +150,14 @@ export function ComposerToolbar({
           disabled={locked || attachFull}
           onClick={onAttachClick}
         >
-          <Icon name="paperclip" size={18} />
+          <Icon name="paperclip" size={15} />
         </button>
+      </div>
+
+      {/* Middle: model + thinking, truncates into the flexible column */}
+      <div className={zone}>
         <ModelPicker
-          className={cn('min-w-0 flex-shrink', modelMenuClass)}
+          className="min-w-0 max-w-[10rem] shrink @max-[420px]:max-w-[min(100%,12rem)]"
           triggerClassName={modelPillTrigger}
           providers={providers}
           optionsByProvider={optionsByProvider}
@@ -145,36 +187,15 @@ export function ComposerToolbar({
         />
       </div>
 
-      <div className="flex shrink-0 items-center gap-2">
+      {/* Right: context + send, always trailing */}
+      <div className={cn(zone, 'justify-end')}>
         <ContextMeter
           usage={contextUsage ?? null}
+          modelWindow={modelWindow}
           onCompact={onCompactContext}
           compactDisabled={running}
         />
-        {running ? (
-          <IconButton
-            icon="stop"
-            label="Stop"
-            size="sm"
-            variant="primary"
-            className="size-8 rounded-full"
-            onClick={onStop}
-          />
-        ) : (
-          <button
-            type="submit"
-            className={cn(
-              'inline-grid size-8 place-items-center rounded-full vy-transition disabled:cursor-not-allowed',
-              canSend
-                ? 'bg-accent text-accent-fg hover:bg-fg-strong'
-                : 'bg-surface-2 text-muted'
-            )}
-            aria-label="Send"
-            disabled={!canSend}
-          >
-            <Icon name="send" size={16} weight="fill" />
-          </button>
-        )}
+        {sendOrStop}
       </div>
     </div>
   )

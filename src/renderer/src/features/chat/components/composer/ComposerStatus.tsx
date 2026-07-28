@@ -29,7 +29,7 @@ export function ComposerStatus({
         <button
           type="button"
           onClick={onContinue}
-          className="shrink-0 rounded-md border border-border px-1.5 py-0.5 font-medium text-fg transition-colors hover:bg-surface"
+          className="shrink-0 rounded-xl border border-border px-1.5 py-0.5 font-medium text-fg transition-colors hover:bg-surface"
         >
           Continue
         </button>

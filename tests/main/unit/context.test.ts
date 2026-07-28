@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { allocateBudget, contextWindowFor } from '@main/agent/context/budget'
+import { allocateBudget, contentWindow, contextWindowFor, effectiveWindow } from '@main/agent/context/budget'
 import { estimateTextTokens, estimateMessagesTokens } from '@main/agent/context/estimate'
 import { trimToolResults } from '@main/agent/context/toolTrim'
 import { preserveRecentMessages } from '@main/agent/context/compact'
@@ -20,6 +20,19 @@ describe('context budget + trim', () => {
     expect(contextWindowFor(model)).toBe(100_000)
     const b = allocateBudget(model)
     expect(b.system + b.tools + b.memoryWorkspace + b.history + b.buffer).toBe(100_000)
+  })
+
+  it('contentWindow equals non-buffer shares (does not double-subtract buffer)', () => {
+    const model = {
+      id: 'x',
+      inputModalities: ['text'] as const,
+      outputModalities: ['text'] as const,
+      supportsTools: true,
+      supportsVision: false,
+      contextWindow: 100_000
+    }
+    expect(contentWindow(model)).toBe(effectiveWindow(model))
+    expect(contentWindow(model)).toBe(85_000)
   })
 
   it('estimates tokens heuristically', () => {

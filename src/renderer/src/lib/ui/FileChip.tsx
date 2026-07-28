@@ -21,7 +21,7 @@ export function FileChip({
   const title = chars === undefined ? name : `${name} · ${shortSize(chars)}`
   return (
     <span
-      className="inline-flex max-w-56 items-center gap-1 rounded-md border border-border bg-surface px-1.5 py-0.5 text-xs text-muted"
+      className="inline-flex max-w-56 items-center gap-1 rounded-xl border border-border bg-surface px-1.5 py-0.5 text-xs text-muted"
       title={title}
     >
       <Icon name="file" size={14} />

@@ -1,5 +1,9 @@
 import type { ChatMessage, ModelInfo } from '../../../shared/ipc'
 import type { TokenUsage } from '../providers/types'
+import {
+  BUDGET_SHARES as SHARED_BUDGET_SHARES,
+  DEFAULT_CONTEXT_WINDOW as SHARED_DEFAULT_CONTEXT_WINDOW
+} from '../../../shared/domain/contextBudget'
 
 export type BudgetLayers = {
   system: number
@@ -9,21 +13,15 @@ export type BudgetLayers = {
   buffer: number
 }
 
-/** Fixed budget shares of model context window. */
-export const BUDGET_SHARES: BudgetLayers = {
-  system: 0.12,
-  tools: 0.18,
-  memoryWorkspace: 0.15,
-  history: 0.4,
-  buffer: 0.15
-}
+/** Fixed budget shares of model context window — kept in sync via shared/domain/contextBudget. */
+export const BUDGET_SHARES: BudgetLayers = SHARED_BUDGET_SHARES
 
 export const COMPACTION_TRIGGER_RATIO = 0.7
 export const KEEP_RECENT_TURNS = 12
 export const KEEP_LAST_TOOL_RESULTS = 3
 export const MEMORY_INDEX_CAP = 3000
 export const MEMORY_STATE_CAP = 3000
-export const DEFAULT_CONTEXT_WINDOW = 128_000
+export const DEFAULT_CONTEXT_WINDOW = SHARED_DEFAULT_CONTEXT_WINDOW
 
 import { z } from 'zod'
 

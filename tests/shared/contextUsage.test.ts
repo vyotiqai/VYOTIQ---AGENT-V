@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   contextUsageFromEvent,
-  summarizeContextUsageFromEvents
+  summarizeContextUsageFromEvents,
+  alignContextUsageToModelWindow
 } from '@shared/utils/contextUsage'
 
 describe('contextUsage', () => {
@@ -74,5 +75,27 @@ describe('contextUsage', () => {
     expect(state?.updatedAt).toBe('2026-01-01T00:00:20.000Z')
     expect(state?.stepUsage.outputTokens).toBe(40)
     expect(state?.stepUsage.cachedInputTokens).toBe(300)
+  })
+
+  it('realigns stale 128k events to the real model window', () => {
+    const stale = contextUsageFromEvent({
+      type: 'context_usage',
+      runId: 'r1',
+      step: 1,
+      estimatedTokens: 9000,
+      inputTokens: 9000,
+      contextWindow: 128000,
+      contentWindow: 89600,
+      compactionTrigger: 62720,
+      source: 'estimate',
+      layers: { system: 2000, history: 3000, tools: 4000, buffer: 19200 }
+    })
+    expect(stale).toBeTruthy()
+    const aligned = alignContextUsageToModelWindow(stale!, 1_000_000)
+    expect(aligned.window).toBe(1_000_000)
+    expect(aligned.contentWindow).toBe(850_000)
+    expect(aligned.layers.buffer).toBe(150_000)
+    expect(aligned.used).toBe(9000)
+    expect(aligned.layers.system).toBe(2000)
   })
 })

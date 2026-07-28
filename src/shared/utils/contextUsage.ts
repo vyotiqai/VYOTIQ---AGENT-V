@@ -1,6 +1,12 @@
 import type { AgentEvent, PersistedEvent } from '../ipc'
 import { isAgentEvent } from './eventUtils'
 import {
+  allocateBudgetShares,
+  compactionTriggerFromRaw,
+  contentWindowFromRaw,
+  DEFAULT_COMPACTION_TRIGGER_RATIO
+} from '../domain/contextBudget'
+import {
   emptyStepUsageTotals,
   mergeStepUsageTotals,
   stepUsageFromEvent,
@@ -87,4 +93,31 @@ export function summarizeContextUsageFromEvents(
   }
 
   return latest
+}
+
+/**
+ * Re-align window / content budget / buffer / compaction trigger to the real
+ * model window while keeping measured usage layers. Fixes meters that hydrated
+ * from older runs that stored the 128k fallback.
+ */
+export function alignContextUsageToModelWindow(
+  usage: ContextUsageState,
+  modelWindow: number,
+  triggerRatio = DEFAULT_COMPACTION_TRIGGER_RATIO
+): ContextUsageState {
+  if (!Number.isFinite(modelWindow) || modelWindow <= 0 || modelWindow === usage.window) {
+    return usage
+  }
+  const shares = allocateBudgetShares(modelWindow)
+  const contentWindow = contentWindowFromRaw(modelWindow)
+  return {
+    ...usage,
+    window: modelWindow,
+    contentWindow,
+    compactionTrigger: compactionTriggerFromRaw(modelWindow, triggerRatio),
+    layers: {
+      ...usage.layers,
+      buffer: shares.buffer
+    }
+  }
 }

@@ -1,9 +1,12 @@
-import { useId, useRef, useState } from 'react'
+import { useId, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { cn } from '@renderer/lib/ui/cn'
 import { useDropdownMenu } from '@renderer/lib/hooks/useDropdownMenu'
 import { formatTokens } from '@renderer/lib/utils/formatTokens'
-import type { ContextUsageState } from '@shared/utils/contextUsage'
+import {
+  alignContextUsageToModelWindow,
+  type ContextUsageState
+} from '@shared/utils/contextUsage'
 import type { StepUsageTotals } from '@shared/utils/runTelemetry'
 
 export type { ContextUsageState }
@@ -11,6 +14,70 @@ export type { ContextUsageState }
 function formatPct(n: number, total: number): string {
   if (total <= 0) return '0%'
   return `${Math.round((n / total) * 100)}%`
+}
+
+function usageTone(ratio: number): string {
+  if (ratio >= 0.9) return 'text-danger'
+  if (ratio >= 0.7) return 'text-warning'
+  return 'text-fg'
+}
+
+function usageFill(ratio: number): string {
+  if (ratio >= 0.9) return 'bg-danger'
+  if (ratio >= 0.7) return 'bg-warning'
+  return 'bg-fg'
+}
+
+function PanelSection({
+  title,
+  children,
+  className
+}: {
+  title?: string
+  children: ReactNode
+  className?: string
+}) {
+  return (
+    <section className={cn('px-3 py-2.5', className)}>
+      {title ? (
+        <h3 className="mb-2 text-[10px] font-medium uppercase tracking-[var(--vy-tracking)] text-muted">
+          {title}
+        </h3>
+      ) : null}
+      {children}
+    </section>
+  )
+}
+
+function StatCard({
+  label,
+  value,
+  detail,
+  tone
+}: {
+  label: string
+  value: string
+  detail?: string
+  tone?: string
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5 rounded-xl bg-surface/50 px-2.5 py-2">
+      <span className="text-[10px] text-muted">{label}</span>
+      <span className={cn('truncate text-sm font-semibold tabular-nums leading-tight', tone ?? 'text-fg')}>
+        {value}
+      </span>
+      {detail ? <span className="truncate text-[10px] text-tertiary">{detail}</span> : null}
+    </div>
+  )
+}
+
+function MetricRow({ label, value, tone }: { label: string; value: string; tone?: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 text-[11px]">
+      <span className="shrink-0 text-muted">{label}</span>
+      <span className={cn('min-w-0 truncate text-right tabular-nums', tone ?? 'text-fg')}>{value}</span>
+    </div>
+  )
 }
 
 function LayerRow({
@@ -26,20 +93,21 @@ function LayerRow({
 }) {
   const ratio = total > 0 ? Math.min(1, tokens / total) : 0
   return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-baseline justify-between gap-2 text-[11px]">
-        <span className="text-muted">
-          {label}
-          {hint ? <span className="text-[10px] opacity-70"> {hint}</span> : null}
-        </span>
-        <span className="tabular-nums text-fg">
-          {formatTokens(tokens)}{' '}
-          <span className="text-muted">({formatPct(tokens, total)})</span>
-        </span>
-      </div>
+    <div className="grid grid-cols-[4.5rem_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1">
+      <span className="truncate text-[11px] text-muted">
+        {label}
+        {hint ? <span className="sr-only"> {hint}</span> : null}
+      </span>
       <div className="h-1 overflow-hidden rounded-full bg-surface-2">
-        <div className="h-full rounded-full bg-accent/70" style={{ width: `${ratio * 100}%` }} />
+        <div
+          className="h-full rounded-full bg-fg/50 vy-transition"
+          style={{ width: `${ratio * 100}%` }}
+        />
       </div>
+      <span className="shrink-0 text-right text-[11px] tabular-nums text-fg">
+        {formatTokens(tokens)}
+        <span className="text-muted"> · {formatPct(tokens, total)}</span>
+      </span>
     </div>
   )
 }
@@ -63,45 +131,28 @@ function StepUsageSection({ totals }: { totals: StepUsageTotals }) {
       : null
 
   return (
-    <div className="border-t border-border pt-2">
-      <p className="mb-2 text-[10px] font-medium uppercase tracking-[var(--vy-tracking)] text-muted">
-        Step usage
-      </p>
-      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
+    <PanelSection title="Step usage" className="border-t border-border">
+      <div className="flex flex-col gap-1.5">
         {totals.steps > 0 ? (
-          <>
-            <dt className="text-muted">Steps reported</dt>
-            <dd className="tabular-nums text-fg">{totals.steps}</dd>
-          </>
+          <MetricRow label="Steps" value={String(totals.steps)} />
         ) : null}
         {totals.outputTokens > 0 ? (
-          <>
-            <dt className="text-muted">Output tokens</dt>
-            <dd className="tabular-nums text-fg">{formatTokens(totals.outputTokens)}</dd>
-          </>
+          <MetricRow label="Output" value={formatTokens(totals.outputTokens)} />
         ) : null}
         {totals.reasoningTokens > 0 ? (
-          <>
-            <dt className="text-muted">Reasoning</dt>
-            <dd className="tabular-nums text-fg">
-              {formatTokens(totals.reasoningTokens)}
-              {reasoningPct != null ? (
-                <span className="text-muted"> ({reasoningPct}% of output)</span>
-              ) : null}
-            </dd>
-          </>
+          <MetricRow
+            label="Reasoning"
+            value={`${formatTokens(totals.reasoningTokens)}${reasoningPct != null ? ` · ${reasoningPct}%` : ''}`}
+          />
         ) : null}
         {cachePct != null ? (
-          <>
-            <dt className="text-muted">Prompt cache</dt>
-            <dd className="tabular-nums text-fg">
-              {cachePct}% ({formatTokens(totals.cachedInputTokens)} /{' '}
-              {formatTokens(totals.inputTokens)})
-            </dd>
-          </>
+          <MetricRow
+            label="Prompt cache"
+            value={`${cachePct}% · ${formatTokens(totals.cachedInputTokens)} / ${formatTokens(totals.inputTokens)}`}
+          />
         ) : null}
-      </dl>
-    </div>
+      </div>
+    </PanelSection>
   )
 }
 
@@ -120,8 +171,6 @@ function ContextMeterPanel({
   compactMessage?: string | null
   compactFailed?: boolean
 }) {
-  // The bar and the compaction marker must share a denominator, and the trigger
-  // is defined as a fraction of the content window, not the raw context window.
   const denominator = usage.contentWindow > 0 ? usage.contentWindow : usage.window
   const ratio = Math.min(1, usage.used / denominator)
   const pct = Math.round(ratio * 100)
@@ -134,15 +183,22 @@ function ContextMeterPanel({
       ? usage.inputTokens - usage.estimatedTokens
       : null
   const consumedLayers = usage.layers.system + usage.layers.history + usage.layers.tools
+  const fill = usageFill(ratio)
+  const tone = usageTone(ratio)
 
   return (
-    <div className="flex flex-col gap-3 p-3 text-left">
-      <div>
-        <div className="mb-1 flex items-center justify-between gap-2">
-          <span className="text-xs font-medium text-fg">Context window</span>
+    <>
+      <header className="shrink-0 border-b border-border px-3 py-2.5">
+        <div className="mb-2 flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-fg">Context window</p>
+            <p className="mt-0.5 text-[10px] text-muted">
+              Step {usage.step} · {formatTokens(usage.window)} model · {formatTokens(usage.layers.buffer)} buffer
+            </p>
+          </div>
           <span
             className={cn(
-              'rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide',
+              'shrink-0 rounded-lg px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide',
               usage.source === 'provider'
                 ? 'bg-success/15 text-success'
                 : 'bg-warning/15 text-warning'
@@ -151,125 +207,125 @@ function ContextMeterPanel({
             {usage.source === 'provider' ? 'Provider' : 'Estimated'}
           </span>
         </div>
-        <p className="text-lg font-semibold tabular-nums text-fg">
-          {pct}%
-          <span className="ml-1 text-sm font-normal text-muted">
-            · {formatTokens(usage.used)} / {formatTokens(denominator)}
-          </span>
-        </p>
-        <p className="mt-0.5 text-[11px] text-muted">
-          Step {usage.step} · {formatTokens(usage.window)} model window, {formatTokens(usage.layers.buffer)} held
-          back as buffer
-        </p>
-      </div>
 
-      <div className="relative h-2 overflow-hidden rounded-full bg-surface-2">
-        <div
-          className={cn(
-            'absolute inset-y-0 left-0 rounded-full',
-            ratio >= 0.9 ? 'bg-danger' : ratio >= 0.7 ? 'bg-warning' : 'bg-success'
-          )}
-          style={{ width: `${pct}%` }}
-        />
-        {compactionPct > 0 ? (
-          <div
-            className="absolute inset-y-0 w-px bg-fg/40"
-            style={{ left: `${compactionPct}%` }}
-            title={`Compaction at ${formatTokens(usage.compactionTrigger)}`}
+        <div className="grid grid-cols-2 gap-2 @max-[17rem]/panel:grid-cols-1">
+          <StatCard
+            label="Used"
+            value={`${pct}%`}
+            detail={`${formatTokens(usage.used)} of ${formatTokens(denominator)}`}
+            tone={tone}
           />
-        ) : null}
-      </div>
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-[10px] text-muted">
-          Compaction triggers at {formatTokens(usage.compactionTrigger)} (
-          {formatPct(usage.compactionTrigger, denominator)} of content budget)
-        </p>
-        {onCompact ? (
-          <button
-            type="button"
-            onClick={onCompact}
-            disabled={compacting || compactDisabled}
-            title={
-              compactDisabled
-                ? 'Unavailable while the agent is running'
-                : compacting
-                  ? 'Compacting…'
-                  : 'Compact older history now'
-            }
-            className="shrink-0 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-medium text-fg vy-transition hover:bg-surface disabled:opacity-[var(--vy-disabled-opacity)]"
-          >
-            {compacting ? 'Compacting…' : 'Compact now'}
-          </button>
-        ) : null}
-      </div>
-      {compactMessage ? (
-        <p
-          className={cn('text-[10px]', compactFailed ? 'text-danger' : 'text-secondary')}
-          role={compactFailed ? 'alert' : 'status'}
-        >
-          {compactMessage}
-        </p>
-      ) : null}
+          <StatCard
+            label="Content budget"
+            value={formatTokens(denominator)}
+            detail={`${formatTokens(usage.window)} total window`}
+          />
+        </div>
+      </header>
 
-      <div className="flex flex-col gap-2">
-        <p className="text-[10px] font-medium uppercase tracking-[var(--vy-tracking)] text-muted">
-          Layer breakdown
-        </p>
-        <LayerRow label="System" tokens={usage.layers.system} total={denominator} />
-        <LayerRow label="History" tokens={usage.layers.history} total={denominator} />
-        <LayerRow label="Tools" tokens={usage.layers.tools} total={denominator} />
-        <LayerRow
-          label="Buffer"
-          tokens={usage.layers.buffer}
-          total={usage.window}
-          hint="(reserved, outside the bar above)"
-        />
-        <p className="text-[10px] text-muted">
-          Consumed layers: {formatTokens(consumedLayers)} · buffer is allocation, not usage
-        </p>
-      </div>
-
-      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-border pt-2 text-[11px]">
-        <dt className="text-muted">Estimate</dt>
-        <dd className="tabular-nums text-fg">{formatTokens(usage.estimatedTokens)}</dd>
-        {usage.inputTokens != null ? (
-          <>
-            <dt className="text-muted">Provider input</dt>
-            <dd className="tabular-nums text-fg">{formatTokens(usage.inputTokens)}</dd>
-          </>
-        ) : null}
-        {estimateDelta != null ? (
-          <>
-            <dt className="text-muted">Delta</dt>
-            <dd
-              className={cn(
-                'tabular-nums',
-                estimateDelta > 0 ? 'text-warning' : 'text-success'
-              )}
+      <div className="min-h-0 flex-1 overflow-y-auto @container/panel">
+        <PanelSection>
+          <div className="relative h-1.5 overflow-hidden rounded-full bg-surface-2">
+            <div
+              className={cn('absolute inset-y-0 left-0 rounded-full vy-transition', fill)}
+              style={{ width: `${pct}%` }}
+            />
+            {compactionPct > 0 ? (
+              <div
+                className="absolute inset-y-0 w-px bg-fg/35"
+                style={{ left: `${compactionPct}%` }}
+                title={`Compaction at ${formatTokens(usage.compactionTrigger)}`}
+              />
+            ) : null}
+          </div>
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
+            <p className="min-w-0 flex-1 text-[10px] leading-snug text-muted">
+              Compaction at {formatTokens(usage.compactionTrigger)} ·{' '}
+              {formatPct(usage.compactionTrigger, denominator)} of budget
+            </p>
+            {onCompact ? (
+              <button
+                type="button"
+                onClick={onCompact}
+                disabled={compacting || compactDisabled}
+                title={
+                  compactDisabled
+                    ? 'Unavailable while the agent is running'
+                    : compacting
+                      ? 'Compacting…'
+                      : 'Compact older history now'
+                }
+                className="shrink-0 rounded-xl border border-border px-2 py-1 text-[10px] font-medium text-fg vy-transition hover:bg-surface disabled:opacity-[var(--vy-disabled-opacity)]"
+              >
+                {compacting ? 'Compacting…' : 'Compact now'}
+              </button>
+            ) : null}
+          </div>
+          {compactMessage ? (
+            <p
+              className={cn('mt-2 text-[10px] leading-snug', compactFailed ? 'text-danger' : 'text-secondary')}
+              role={compactFailed ? 'alert' : 'status'}
             >
-              {estimateDelta > 0 ? '+' : ''}
-              {formatTokens(estimateDelta)}
-            </dd>
-          </>
-        ) : null}
-      </dl>
+              {compactMessage}
+            </p>
+          ) : null}
+        </PanelSection>
 
-      <StepUsageSection totals={usage.stepUsage} />
+        <PanelSection title="Layers" className="border-t border-border pt-2.5">
+          <div className="flex flex-col gap-2">
+            <LayerRow label="System" tokens={usage.layers.system} total={denominator} />
+            <LayerRow label="History" tokens={usage.layers.history} total={denominator} />
+            <LayerRow label="Tools" tokens={usage.layers.tools} total={denominator} />
+            <LayerRow
+              label="Buffer"
+              tokens={usage.layers.buffer}
+              total={usage.window}
+              hint="reserved allocation, not counted in usage bar"
+            />
+          </div>
+          <p className="mt-2 text-[10px] leading-snug text-muted">
+            Consumed {formatTokens(consumedLayers)} · buffer is reserved, not usage
+          </p>
+        </PanelSection>
 
-      <p className="text-[10px] text-muted">
-        Updated {new Date(usage.updatedAt).toLocaleTimeString()}
-      </p>
-    </div>
+        <PanelSection title="Telemetry" className="border-t border-border">
+          <div className="flex flex-col gap-1.5">
+            <MetricRow label="Estimate" value={formatTokens(usage.estimatedTokens)} />
+            {usage.inputTokens != null ? (
+              <MetricRow label="Provider input" value={formatTokens(usage.inputTokens)} />
+            ) : null}
+            {estimateDelta != null ? (
+              <MetricRow
+                label="Delta"
+                value={`${estimateDelta > 0 ? '+' : ''}${formatTokens(estimateDelta)}`}
+                tone={estimateDelta > 0 ? 'text-warning' : 'text-success'}
+              />
+            ) : null}
+          </div>
+        </PanelSection>
+
+        <StepUsageSection totals={usage.stepUsage} />
+      </div>
+
+      <footer className="shrink-0 border-t border-border px-3 py-1.5">
+        <p className="text-[10px] text-muted">
+          Updated {new Date(usage.updatedAt).toLocaleTimeString()}
+        </p>
+      </footer>
+    </>
   )
 }
 
 export function ContextMeter({
   usage,
+  modelWindow,
   onCompact,
   compactDisabled = false,
   className
 }: {
   usage: ContextUsageState | null
+  /** Current model context window — realigns stale hydrated events (e.g. 128k fallback). */
+  modelWindow?: number | null
   /** Summarize the run's older history on demand; omitted when no run exists. */
   onCompact?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
   /** When true, Compact stays visible but disabled (e.g. agent is running). */
@@ -283,6 +339,10 @@ export function ContextMeter({
   const triggerRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const panelId = useId()
+  const alignedUsage =
+    usage && modelWindow && modelWindow > 0
+      ? alignContextUsageToModelWindow(usage, modelWindow)
+      : usage
   const { position } = useDropdownMenu({
     open,
     onOpenChange: setOpen,
@@ -290,7 +350,7 @@ export function ContextMeter({
     panelRef,
     placement: 'up',
     align: 'end',
-    disabled: !usage
+    disabled: !alignedUsage
   })
 
   const runCompaction = async (): Promise<void> => {
@@ -307,40 +367,50 @@ export function ContextMeter({
     }
   }
 
-  if (!usage || usage.window <= 0) return null
+  if (!alignedUsage || alignedUsage.window <= 0) return null
 
-  const denominator = usage.contentWindow > 0 ? usage.contentWindow : usage.window
-  const ratio = Math.min(1, usage.used / denominator)
+  const denominator =
+    alignedUsage.contentWindow > 0 ? alignedUsage.contentWindow : alignedUsage.window
+  const ratio = Math.min(1, alignedUsage.used / denominator)
   const pct = Math.round(ratio * 100)
-  const barColor =
-    ratio >= 0.9 ? 'bg-danger' : ratio >= 0.7 ? 'bg-warning' : 'bg-success'
+  const estimate = alignedUsage.source === 'estimate'
+  const usedLabel = formatTokens(alignedUsage.used)
+  const windowLabel = formatTokens(denominator)
+  const fillTone = usageFill(ratio)
+  const usedTone = usageTone(ratio)
 
   return (
-    <>
+    <div className={cn('relative flex h-7 shrink-0 items-center', className)}>
       <button
         ref={triggerRef}
         type="button"
         className={cn(
-          'flex min-w-[7rem] max-w-[10rem] flex-col gap-0.5 rounded-md px-1 py-0.5 text-left vy-transition hover:bg-surface',
-          className
+          'group relative inline-flex h-7 max-w-[7rem] min-w-0 items-center overflow-hidden rounded-xl px-1.5 text-[11px] leading-none tracking-[var(--vy-tracking)]',
+          'vy-transition hover:bg-surface active:bg-surface',
+          open && 'bg-surface'
         )}
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-controls={open ? panelId : undefined}
-        aria-label={`Context window ${pct}% full. Open breakdown.`}
+        aria-label={`Context window ${pct}% full${estimate ? ' (estimated)' : ''}: ${usedLabel} of ${windowLabel}. Open breakdown.`}
+        title={`Context ${usedLabel} · ${windowLabel}${estimate ? ' (estimated)' : ''}`}
         onClick={() => setOpen((v) => !v)}
       >
-        <div
-          className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2"
-          role="presentation"
-        >
-          <div
-            className={cn('h-full rounded-full transition-all duration-300', barColor)}
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-        <span className="text-[10px] leading-none tracking-[var(--vy-tracking)] text-muted">
-          {pct}% ctx{usage.source === 'estimate' ? ' ~' : ''}
+        <span
+          className={cn(
+            'absolute inset-y-0 left-0 opacity-[0.08] vy-transition group-hover:opacity-[0.12]',
+            fillTone
+          )}
+          style={{ width: `${ratio * 100}%` }}
+          aria-hidden
+        />
+        <span className="relative flex min-w-0 items-center gap-0.5 tabular-nums">
+          <span className={cn('shrink-0', usedTone)}>
+            {estimate ? '~' : ''}
+            {usedLabel}
+          </span>
+          <span className="shrink-0 text-tertiary">·</span>
+          <span className="min-w-0 truncate text-muted">{windowLabel}</span>
         </span>
       </button>
 
@@ -351,21 +421,25 @@ export function ContextMeter({
               id={panelId}
               role="dialog"
               aria-label="Context window breakdown"
-              className="z-dropdown max-h-[min(70vh,28rem)] overflow-y-auto rounded-lg border border-border bg-surface shadow-lg"
+              className={cn(
+                '@container/panel fixed z-dropdown flex max-h-[min(70vh,32rem)] w-[min(calc(100vw-1.5rem),20rem)] flex-col overflow-hidden',
+                'rounded-xl border border-border bg-card shadow-menu animate-fade-in'
+              )}
               style={{
-                position: 'fixed',
                 top: position.placement === 'up' ? undefined : position.top,
                 bottom:
                   position.placement === 'up'
                     ? window.innerHeight - position.top
                     : undefined,
-                right: window.innerWidth - position.left,
-                width: Math.max(position.minWidth, 280),
-                maxWidth: 320
+                right: Math.max(
+                  12,
+                  window.innerWidth - position.left
+                ),
+                maxWidth: 'min(calc(100vw - 1.5rem), 20rem)'
               }}
             >
               <ContextMeterPanel
-                usage={usage}
+                usage={alignedUsage}
                 onCompact={onCompact ? () => void runCompaction() : undefined}
                 compacting={compacting}
                 compactDisabled={compactDisabled}
@@ -376,6 +450,6 @@ export function ContextMeter({
             document.body
           )
         : null}
-    </>
+    </div>
   )
 }

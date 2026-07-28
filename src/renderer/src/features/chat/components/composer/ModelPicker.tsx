@@ -35,7 +35,7 @@ function readSessionTab(fallback: ProviderId, providers: ProviderId[]): Provider
 }
 
 const optionClass = cn(
-  'flex w-full cursor-pointer items-center gap-2 rounded-md bg-transparent px-2.5 py-1.5 text-left text-sm text-fg',
+  'flex w-full cursor-pointer items-center gap-2 rounded-xl bg-transparent px-2.5 py-1.5 text-left text-sm text-fg',
   'hover:bg-surface active:bg-surface-2',
   'vy-transition'
 )
@@ -332,7 +332,7 @@ export function ModelPicker({
             id={panelId}
             role="listbox"
             aria-label="Select model"
-            className="fixed z-dropdown flex max-h-[min(70vh,36rem)] w-[min(calc(100vw-1.5rem),24rem)] flex-col overflow-hidden rounded-lg border border-border bg-card shadow-menu animate-fade-in"
+            className="fixed z-dropdown flex max-h-[min(70vh,36rem)] w-[min(calc(100vw-1.5rem),24rem)] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-menu animate-fade-in"
             style={{
               top: position.placement === 'up' ? undefined : position.top,
               bottom:
@@ -358,7 +358,7 @@ export function ModelPicker({
               </div>
               <button
                 type="button"
-                className="inline-grid size-7 shrink-0 place-items-center rounded-md text-muted vy-transition hover:bg-surface hover:text-fg disabled:opacity-50"
+                className="inline-grid size-7 shrink-0 place-items-center rounded-xl text-muted vy-transition hover:bg-surface hover:text-fg disabled:opacity-50"
                 aria-label="Refresh model catalog"
                 disabled={catalogLoading}
                 onClick={() => onRefreshCatalog()}
@@ -382,7 +382,7 @@ export function ModelPicker({
                     key={p}
                     type="button"
                     className={cn(
-                      'inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[10px] vy-transition',
+                      'inline-flex shrink-0 items-center gap-1 rounded-xl px-2 py-1 text-[10px] vy-transition',
                       active
                         ? 'bg-surface-2 text-fg-strong'
                         : 'text-muted hover:bg-surface hover:text-fg'
@@ -472,7 +472,7 @@ export function ModelPicker({
                       key={tier}
                       type="button"
                       className={cn(
-                        'rounded-md px-2 py-1 text-xs vy-transition',
+                        'rounded-xl px-2 py-1 text-xs vy-transition',
                         serviceTier === tier
                           ? 'bg-surface-2 text-fg-strong'
                           : 'text-muted hover:bg-surface hover:text-fg'
@@ -492,7 +492,7 @@ export function ModelPicker({
       : null
 
   return (
-    <div className={cn('relative min-w-0', className)}>
+    <div className={cn('relative flex h-7 min-w-0 items-center', className)}>
       <button
         ref={triggerRef}
         type="button"
@@ -505,13 +505,11 @@ export function ModelPicker({
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
       >
-        <ProviderLogo id={provider} size="sm" className="text-muted" />
-        <span className="truncate">
-          {providerMeta?.label ?? provider} · {displayName}
-        </span>
+        <ProviderLogo id={provider} size="sm" className="shrink-0 text-muted" />
+        <span className="min-w-0 flex-1 truncate">{displayName}</span>
         <Icon
           name="chevron"
-          size={14}
+          size={12}
           className={cn('shrink-0 text-muted vy-transition', open && 'rotate-180')}
         />
       </button>

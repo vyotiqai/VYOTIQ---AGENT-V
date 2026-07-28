@@ -1,8 +1,6 @@
-import type { ChatMessage, CompactRunResult, ModelInfo, ProviderId } from '../../shared/ipc'
+import type { ChatMessage, CompactRunResult, ProviderId } from '../../shared/ipc'
 import { ollamaOpenAiBaseUrl } from '../../shared/domain/providers'
 import { DEFAULT_SETTINGS } from '../../shared/ipc'
-import { seedModelsFor } from '../../shared/providers'
-import { idSuggestsVision } from './providers/normalize'
 import { logger } from '../../shared/logger'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
 import { getSecret } from '@main/settings/secrets'
@@ -12,7 +10,8 @@ import { allocateBudget, contentWindow } from './context/budget'
 import { compactMessages, preserveRecentMessages } from './context/compact'
 import { promoteCompactionToMemory } from './context/memoryPromote'
 import { KEEP_RECENT_TURNS } from './context/types'
-import { getProvider, listProviderModels } from './providers'
+import { resolveModelInfo } from './modelResolve'
+import { getProvider } from './providers'
 import { loadCompaction, loadMessages, runExists, saveCompaction } from './state'
 import { resolveRunDir } from '@main/storage/paths'
 
@@ -23,34 +22,6 @@ const COMPACT_TIMEOUT_MS = 120_000
 const MIN_MESSAGES_TO_COMPACT = 4
 
 export class CompactionUnavailableError extends Error {}
-
-async function resolveModel(
-  providerId: ProviderId,
-  modelId: string,
-  apiKey: string | null,
-  baseUrl: string | undefined,
-  signal: AbortSignal
-): Promise<ModelInfo> {
-  try {
-    const listed = await listProviderModels({ provider: providerId, apiKey, baseUrl, signal })
-    const found = listed.models.find((m) => m.id === modelId)
-    if (found) return found
-  } catch {
-    // Falling back to the seed catalog is better than failing the compaction.
-  }
-  const seed = seedModelsFor(providerId).find((m) => m.id === modelId)
-  if (seed) return seed
-  return {
-    id: modelId,
-    displayName: modelId,
-    contextWindow: 128_000,
-    inputModalities: ['text'],
-    outputModalities: ['text'],
-    supportsTools: true,
-    supportsVision: idSuggestsVision(modelId),
-    supportsStructuredOutput: providerId !== 'ollama'
-  }
-}
 
 /**
  * Summarize a run's history on demand. Unlike automatic compaction this ignores
@@ -93,7 +64,7 @@ export async function compactRunNow(input: {
   const signal = AbortSignal.timeout(COMPACT_TIMEOUT_MS)
   const provider = getProvider(providerId)
   const baseUrl = providerId === 'ollama' ? ollamaOpenAiBaseUrl(settings.ollamaBaseUrl) : undefined
-  const model = await resolveModel(providerId, settings.model, apiKey, baseUrl, signal)
+  const model = await resolveModelInfo(providerId, settings.model, apiKey, baseUrl, signal)
 
   const kept = preserveRecentMessages(
     working,

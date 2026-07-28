@@ -210,7 +210,7 @@ export function Composer({
         <form
           onSubmit={submit}
           className={cn(
-            '@container grid gap-2.5 p-2.5',
+            '@container grid gap-2 p-2.5',
             FLOATING_CHROME,
             FLOATING_CHROME_SHADOW_BOTTOM,
             isDock && 'pointer-events-auto'
