@@ -37,6 +37,7 @@ import {
 } from './paths'
 import { remoteMcpIdFromUrl, headersWithoutAuthorization } from '../../shared/utils/mcpAuth'
 import { setMcpAuthToken } from '../settings/secrets'
+import { synthesizeVyotiqMcpManifest } from './mcpImport'
 
 const execFileAsync = promisify(execFile)
 
@@ -406,7 +407,20 @@ export async function installMarketplacePackage(
   }
   const { root, cleanup, source } = await materializeToTemp(req)
   try {
-    const detected = detectPackageAt(root)
+    let detected: DetectedPackage
+    try {
+      detected = detectPackageAt(root)
+    } catch (err) {
+      if (source === 'git' || source === 'npm' || source === 'zip' || source === 'path') {
+        if (synthesizeVyotiqMcpManifest(root)) {
+          detected = detectPackageAt(root)
+        } else {
+          throw err
+        }
+      } else {
+        throw err
+      }
+    }
     if (req.kind && req.kind !== detected.kind) {
       throw new Error(`Expected kind ${req.kind} but package is ${detected.kind}`)
     }

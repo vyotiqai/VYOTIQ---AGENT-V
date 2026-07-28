@@ -5,6 +5,10 @@ import type {
   MarketplaceInstalledItem,
   MarketplaceInstallRequest,
   MarketplaceKind,
+  McpApplyDetectedRequest,
+  McpDetectResult,
+  McpImportExternalRequest,
+  McpImportExternalResult,
   McpServerStatus,
   Settings
 } from '@shared/ipc'
@@ -16,10 +20,13 @@ const QUERY_DEBOUNCE_MS = 250
 
 export function useMarketplaceController({
   settings,
-  onUpdate
+  onUpdate,
+  onReloadSettings
 }: {
   settings: Settings
   onUpdate: (partial: Partial<Settings>) => Promise<{ ok: true } | { ok: false; error: string }>
+  /** Reload settings from main after marketplace mutations that write mcpServers on disk. */
+  onReloadSettings?: () => Promise<void>
 }) {
   const [kindFilter, setKindFilter] = useState<MarketplaceKind | 'all'>('all')
   const [query, setQuery] = useState('')
@@ -156,13 +163,14 @@ export function useMarketplaceController({
           text: `Installed ${item.name} (${item.kind}) — enabled by default; tools load into the agent when connected.${tokenHint}`
         })
         await reload()
+        await onReloadSettings?.()
         await loadMcpStatus(true)
         return true
       } finally {
         setBusy(false)
       }
     },
-    [ensureRemoteAck, loadMcpStatus, reload]
+    [ensureRemoteAck, loadMcpStatus, onReloadSettings, reload]
   )
 
   const installFromCatalog = useCallback(
@@ -195,6 +203,7 @@ export function useMarketplaceController({
         }
         setInstalled(res.data)
         if (item.kind === 'mcp' || item.kind === 'plugin') {
+          await onReloadSettings?.()
           await loadMcpStatus(true)
           setFeedback({
             kind: 'success',
@@ -212,7 +221,7 @@ export function useMarketplaceController({
         setBusy(false)
       }
     },
-    [loadMcpStatus]
+    [loadMcpStatus, onReloadSettings]
   )
 
   const uninstall = useCallback(
@@ -229,12 +238,139 @@ export function useMarketplaceController({
         }
         setInstalled(res.data)
         setFeedback({ kind: 'success', text: 'Uninstalled' })
+        await onReloadSettings?.()
         await loadMcpStatus(true)
       } finally {
         setBusy(false)
       }
     },
-    [loadMcpStatus]
+    [loadMcpStatus, onReloadSettings]
+  )
+
+  const detectMcp = useCallback(
+    async (input: string): Promise<McpDetectResult | null> => {
+      setBusy(true)
+      setFeedback(null)
+      try {
+        const trimmed = input.trim()
+        const looksLikeNpm =
+          !trimmed.startsWith('{') &&
+          !/\s/.test(trimmed) &&
+          /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/i.test(trimmed)
+        const needsAck =
+          /^https?:\/\//i.test(trimmed) ||
+          /^git@/i.test(trimmed) ||
+          looksLikeNpm ||
+          trimmed.startsWith('{')
+        if (needsAck) {
+          const acked = await ensureRemoteAck()
+          if (!acked) return null
+        }
+        const res = await window.vyotiq.marketplaceDetectMcp({ input: trimmed })
+        if (!res.ok) {
+          setFeedback({ kind: 'error', text: res.error })
+          return null
+        }
+        return res.data
+      } finally {
+        setBusy(false)
+      }
+    },
+    [ensureRemoteAck]
+  )
+
+  const applyDetectedMcp = useCallback(
+    async (payload: McpApplyDetectedRequest): Promise<boolean> => {
+      setBusy(true)
+      setFeedback(null)
+      try {
+        const needsAck =
+          Boolean(payload.install) || Boolean(payload.server?.url?.trim())
+        if (needsAck) {
+          const acked = await ensureRemoteAck()
+          if (!acked) return false
+        }
+        const res = await window.vyotiq.marketplaceApplyDetectedMcp(payload)
+        if (!res.ok) {
+          setFeedback({ kind: 'error', text: res.error })
+          return false
+        }
+        setFeedback({
+          kind: 'success',
+          text:
+            res.data.applied === 'marketplace'
+              ? 'Installed package — tools load into the agent when connected.'
+              : 'MCP added — connecting and loading tools for the agent.'
+        })
+        await reload()
+        await onReloadSettings?.()
+        await loadMcpStatus(true)
+        return true
+      } finally {
+        setBusy(false)
+      }
+    },
+    [ensureRemoteAck, loadMcpStatus, onReloadSettings, reload]
+  )
+
+  const scanExternalMcp = useCallback(
+    async (paths?: string[]): Promise<McpImportExternalResult | null> => {
+      setBusy(true)
+      setFeedback(null)
+      try {
+        const res = await window.vyotiq.marketplaceScanExternalMcp(
+          paths?.length ? { paths } : {}
+        )
+        if (!res.ok) {
+          setFeedback({ kind: 'error', text: res.error })
+          return null
+        }
+        if (res.data.warnings.length > 0) {
+          setFeedback({
+            kind: 'error',
+            text: res.data.warnings.slice(0, 3).join(' ')
+          })
+        }
+        return res.data
+      } finally {
+        setBusy(false)
+      }
+    },
+    []
+  )
+
+  const importExternalMcp = useCallback(
+    async (payload: McpImportExternalRequest): Promise<boolean> => {
+      setBusy(true)
+      setFeedback(null)
+      try {
+        const remotes = (payload.servers ?? []).some((s) => Boolean(s.url?.trim()))
+        if (remotes || payload.json?.includes('"url"')) {
+          const acked = await ensureRemoteAck()
+          if (!acked) return false
+        }
+        const res = await window.vyotiq.marketplaceImportExternalMcp(payload)
+        if (!res.ok) {
+          setFeedback({ kind: 'error', text: res.error })
+          return false
+        }
+        const warnSuffix =
+          res.data.warnings.length > 0
+            ? ` Warnings: ${res.data.warnings.slice(0, 2).join(' ')}`
+            : ''
+        setFeedback({
+          kind: res.data.warnings.length > 0 ? 'error' : 'success',
+          text: `Imported ${res.data.applied} MCP server${res.data.applied === 1 ? '' : 's'} (${res.data.skipped} skipped).${warnSuffix}`
+        })
+        await reload()
+        await onReloadSettings?.()
+        await loadMcpStatus(true)
+        return true
+      } finally {
+        setBusy(false)
+      }
+    },
+    [ensureRemoteAck, loadMcpStatus, onReloadSettings, reload]
   )
 
   return {
@@ -259,7 +395,11 @@ export function useMarketplaceController({
     runInstall,
     installFromCatalog,
     setEnabled,
-    uninstall
+    uninstall,
+    detectMcp,
+    applyDetectedMcp,
+    scanExternalMcp,
+    importExternalMcp
   }
 }
 

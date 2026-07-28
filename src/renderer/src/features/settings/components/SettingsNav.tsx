@@ -6,12 +6,12 @@ import type { SettingsSection } from '../types'
 const SECTIONS: {
   id: SettingsSection
   label: string
-  icon: 'home' | 'cpu' | 'bot' | 'sparkles'
+  icon: 'home' | 'cpu' | 'bot' | 'marketplace'
 }[] = [
   { id: 'general', label: 'General', icon: 'home' },
   { id: 'providers', label: 'Providers', icon: 'cpu' },
   { id: 'agent', label: 'Agent', icon: 'bot' },
-  { id: 'marketplace', label: 'Registry', icon: 'sparkles' }
+  { id: 'marketplace', label: 'Registry', icon: 'marketplace' }
 ]
 
 export function SettingsNav({

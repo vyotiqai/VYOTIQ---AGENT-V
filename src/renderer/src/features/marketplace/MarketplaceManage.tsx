@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import type {
+  DetectedMcpServer,
   MarketplaceInstalledItem,
+  McpDetectResult,
   McpServer,
   PackageContents,
   Settings,
@@ -410,6 +412,15 @@ export function MarketplaceManage({
   onBack: () => void
 }) {
   const [tab, setTab] = useState<ManageTab>('installed')
+  const [pasteInput, setPasteInput] = useState('')
+  const [detectResult, setDetectResult] = useState<McpDetectResult | null>(null)
+  const [editServer, setEditServer] = useState<DetectedMcpServer | null>(null)
+  const [serverDirty, setServerDirty] = useState(false)
+  const [overwriteDup, setOverwriteDup] = useState(false)
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [importPreview, setImportPreview] = useState<DetectedMcpServer[] | null>(null)
+  const [importSelected, setImportSelected] = useState<Set<string>>(new Set())
+  const [importWarnings, setImportWarnings] = useState<string[]>([])
   const [gitUrl, setGitUrl] = useState('')
   const [npmName, setNpmName] = useState('')
   const [remoteUrl, setRemoteUrl] = useState('')
@@ -428,8 +439,17 @@ export function MarketplaceManage({
     runInstall,
     runUpdate,
     loadMcpStatus,
-    mcpStatusLoading
+    mcpStatusLoading,
+    detectMcp,
+    applyDetectedMcp,
+    scanExternalMcp,
+    importExternalMcp
   } = controller
+
+  const patchEditServer = (next: DetectedMcpServer): void => {
+    setServerDirty(true)
+    setEditServer(next)
+  }
 
   const manualServers = settings.mcpServers.filter((s) => s.source !== 'marketplace')
 
@@ -629,6 +649,309 @@ export function MarketplaceManage({
       {tab === 'add' ? (
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-2 rounded-md border border-border bg-surface px-2.5 py-2">
+            <p className="m-0 text-xs font-medium text-fg">Add any MCP</p>
+            <p className="m-0 text-[11px] text-secondary">
+              Paste a GitHub URL, npm package, npx/uvx command, remote MCP URL, or Cursor/Claude
+              mcpServers JSON. Vyotiq detects how to run it and connects tools to the agent.
+            </p>
+            <textarea
+              className="min-h-[72px] w-full rounded-md border border-border bg-bg px-2 py-1.5 font-mono text-xs text-fg"
+              aria-label="Paste MCP URL, command, or JSON"
+              placeholder="https://github.com/…  ·  uvx code-review-graph serve  ·  @modelcontextprotocol/server-memory"
+              rows={3}
+              value={pasteInput}
+              disabled={formLocked}
+              onChange={(e) => {
+                setPasteInput(e.target.value)
+                setDetectResult(null)
+                setEditServer(null)
+              }}
+            />
+            <Button
+              variant="subtle"
+              pending={formLocked}
+              disabled={formLocked || !pasteInput.trim()}
+              onClick={() => {
+                void (async () => {
+                  const result = await detectMcp(pasteInput.trim())
+                  if (!result) return
+                  setDetectResult(result)
+                  setEditServer(result.server ?? null)
+                  setServerDirty(false)
+                  setOverwriteDup(false)
+                })()
+              }}
+            >
+              Detect
+            </Button>
+
+            {detectResult ? (
+              <div className="flex flex-col gap-2 rounded-md border border-border/60 bg-bg px-2 py-2">
+                <p className="m-0 text-[11px] text-secondary">
+                  Kind: {detectResult.kind} · confidence: {detectResult.confidence}
+                  {detectResult.duplicate ? ' · already configured' : ''}
+                </p>
+                {detectResult.warnings.map((w) => (
+                  <p key={w} className="m-0 text-[11px] text-warning">
+                    {w}
+                  </p>
+                ))}
+                {detectResult.install && (!editServer || (detectResult.kind === 'vyotiq-package' && !serverDirty)) ? (
+                  <p className="m-0 text-xs text-fg">
+                    Vyotiq package detected — will install via marketplace.
+                  </p>
+                ) : null}
+                {editServer ? (
+                  <>
+                    <Input
+                      className="w-full text-xs"
+                      aria-label="Detected MCP name"
+                      placeholder="Display name"
+                      value={editServer.name}
+                      disabled={formLocked}
+                      onChange={(e) =>
+                        patchEditServer({ ...editServer, name: e.target.value })
+                      }
+                    />
+                    {(editServer.transport === 'http' || editServer.transport === 'sse') ? (
+                      <Input
+                        className="w-full font-mono text-xs"
+                        aria-label="Detected MCP URL"
+                        placeholder="URL"
+                        value={editServer.url ?? ''}
+                        disabled={formLocked}
+                        onChange={(e) =>
+                          patchEditServer({ ...editServer, url: e.target.value })
+                        }
+                      />
+                    ) : (
+                      <>
+                        <Input
+                          className="w-full font-mono text-xs"
+                          aria-label="Detected MCP command"
+                          placeholder="Command"
+                          value={editServer.command ?? ''}
+                          disabled={formLocked}
+                          onChange={(e) =>
+                            patchEditServer({ ...editServer, command: e.target.value })
+                          }
+                        />
+                        <textarea
+                          className="min-h-[40px] w-full rounded-md border border-border bg-surface px-2 py-1.5 font-mono text-xs text-fg"
+                          aria-label="Detected MCP arguments"
+                          placeholder="Arguments (one per line)"
+                          rows={2}
+                          value={(editServer.args ?? []).join('\n')}
+                          disabled={formLocked}
+                          onChange={(e) =>
+                            patchEditServer({
+                              ...editServer,
+                              args: e.target.value
+                                .split('\n')
+                                .map((s) => s.trim())
+                                .filter(Boolean)
+                            })
+                          }
+                        />
+                      </>
+                    )}
+                  </>
+                ) : null}
+                {detectResult.duplicate && !(detectResult.install && !serverDirty) ? (
+                  <label className="flex items-center gap-2 text-[11px] text-secondary">
+                    <input
+                      type="checkbox"
+                      checked={overwriteDup}
+                      disabled={formLocked}
+                      onChange={(e) => setOverwriteDup(e.target.checked)}
+                    />
+                    Overwrite existing server
+                  </label>
+                ) : null}
+                <Button
+                  variant="subtle"
+                  pending={formLocked}
+                  disabled={
+                    formLocked ||
+                    (!editServer && !detectResult.install) ||
+                    (detectResult.duplicate &&
+                      !overwriteDup &&
+                      !(detectResult.install && detectResult.kind === 'vyotiq-package' && !serverDirty)) ||
+                    (Boolean(editServer) &&
+                      !(editServer?.command ?? '').trim() &&
+                      !(editServer?.url ?? '').trim() &&
+                      !(
+                        detectResult.install &&
+                        detectResult.kind === 'vyotiq-package' &&
+                        !serverDirty
+                      ))
+                  }
+                  onClick={() => {
+                    void (async () => {
+                      const preferInstall =
+                        Boolean(detectResult.install) &&
+                        (detectResult.kind === 'vyotiq-package'
+                          ? !serverDirty
+                          : !editServer)
+                      const ok = await applyDetectedMcp(
+                        preferInstall && detectResult.install
+                          ? { install: detectResult.install, overwrite: false }
+                          : {
+                              server: editServer ?? undefined,
+                              overwrite: overwriteDup
+                            }
+                      )
+                      if (ok) {
+                        setPasteInput('')
+                        setDetectResult(null)
+                        setEditServer(null)
+                        setServerDirty(false)
+                        setTab('installed')
+                      }
+                    })()
+                  }}
+                >
+                  Add & connect
+                </Button>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex flex-col gap-2 rounded-md border border-border bg-surface px-2.5 py-2">
+            <p className="m-0 text-xs font-medium text-fg">Import from Cursor / Claude</p>
+            <p className="m-0 text-[11px] text-secondary">
+              Scan local mcp.json / Claude Desktop configs and import selected servers.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="subtle"
+                pending={formLocked}
+                disabled={formLocked}
+                onClick={() => {
+                  void (async () => {
+                    const scanned = await scanExternalMcp()
+                    if (!scanned) return
+                    setImportPreview(scanned.preview)
+                    setImportSelected(new Set(scanned.preview.map((s) => s.id)))
+                    setImportWarnings(scanned.warnings)
+                    if (scanned.preview.length === 0) {
+                      setFeedback({
+                        kind: 'error',
+                        text:
+                          scanned.warnings[0] ??
+                          'No MCP servers found in default Cursor/Claude config paths.'
+                      })
+                    }
+                  })()
+                }}
+              >
+                Scan defaults
+              </Button>
+              <Button
+                variant="subtle"
+                pending={formLocked}
+                disabled={formLocked}
+                onClick={() => {
+                  void (async () => {
+                    const pick = await window.vyotiq.marketplacePickLocal()
+                    if (!pick.ok) {
+                      setFeedback({ kind: 'error', text: pick.error })
+                      return
+                    }
+                    if (!pick.data) return
+                    const scanned = await scanExternalMcp([pick.data])
+                    if (!scanned) return
+                    setImportPreview(scanned.preview)
+                    setImportSelected(new Set(scanned.preview.map((s) => s.id)))
+                    setImportWarnings(scanned.warnings)
+                    if (scanned.preview.length === 0) {
+                      setFeedback({
+                        kind: 'error',
+                        text: scanned.warnings[0] ?? 'No MCP servers found in that file.'
+                      })
+                    }
+                  })()
+                }}
+              >
+                Choose config file…
+              </Button>
+            </div>
+            {importWarnings.length > 0 ? (
+              <div className="flex flex-col gap-1">
+                {importWarnings.map((w) => (
+                  <p key={w} className="m-0 text-[11px] text-warning">
+                    {w}
+                  </p>
+                ))}
+              </div>
+            ) : null}
+            {importPreview && importPreview.length > 0 ? (
+              <div className="flex flex-col gap-1.5">
+                {importPreview.map((s) => (
+                  <label
+                    key={s.id}
+                    className="flex items-start gap-2 text-[11px] text-secondary"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={importSelected.has(s.id)}
+                      disabled={formLocked}
+                      onChange={(e) => {
+                        setImportSelected((prev) => {
+                          const next = new Set(prev)
+                          if (e.target.checked) next.add(s.id)
+                          else next.delete(s.id)
+                          return next
+                        })
+                      }}
+                    />
+                    <span>
+                      <span className="text-fg">{s.name}</span>
+                      {' · '}
+                      {s.transport === 'stdio'
+                        ? `${s.command ?? ''} ${(s.args ?? []).join(' ')}`.trim()
+                        : s.url}
+                    </span>
+                  </label>
+                ))}
+                <Button
+                  variant="subtle"
+                  pending={formLocked}
+                  disabled={formLocked || importSelected.size === 0}
+                  onClick={() => {
+                    void (async () => {
+                      const selected = importPreview.filter((s) => importSelected.has(s.id))
+                      const ok = await importExternalMcp({
+                        mode: 'merge',
+                        selectedIds: [...importSelected],
+                        servers: selected
+                      })
+                      if (ok) {
+                        setImportPreview(null)
+                        setImportSelected(new Set())
+                        setImportWarnings([])
+                        setTab('installed')
+                      }
+                    })()
+                  }}
+                >
+                  Import selected
+                </Button>
+              </div>
+            ) : null}
+          </div>
+
+          <button
+            type="button"
+            className="m-0 self-start text-xs text-secondary underline-offset-2 hover:text-fg hover:underline"
+            onClick={() => setShowAdvanced((v) => !v)}
+          >
+            {showAdvanced ? 'Hide advanced' : 'Show advanced'}
+          </button>
+
+          {showAdvanced ? (
+            <>
+          <div className="flex flex-col gap-2 rounded-md border border-border bg-surface px-2.5 py-2">
             <p className="m-0 text-xs font-medium text-fg">Stdio MCP</p>
             <p className="m-0 text-[11px] text-secondary">
               Run a local MCP server via command (e.g. npx). Added enabled by default.
@@ -817,6 +1140,8 @@ export function MarketplaceManage({
               Install npm
             </Button>
           </div>
+            </>
+          ) : null}
         </div>
       ) : null}
     </div>

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "kind": "mcp",
+  "id": "code-review-graph",
+  "name": "Code review graph",
+  "version": "1.0.0",
+  "description": "Local-first code intelligence graph MCP (stdio via uvx). Requires uv on PATH. Run `code-review-graph build` in the workspace after first connect.",
+  "transport": "stdio",
+  "command": "uvx",
+  "args": ["code-review-graph", "serve"],
+  "env": {}
+}

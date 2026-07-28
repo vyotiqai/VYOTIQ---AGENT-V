@@ -151,8 +151,9 @@ export const ToolGroup = memo(function ToolGroup({
     const toggleSingle = (): void => {
       if (!hasBody) return
       const next = !isToolExpanded
-      if (onGroupToggle) onGroupToggle(next)
-      else if (onToolToggle) onToolToggle(item.id, next)
+      // Prefer per-tool expand so controller toolExpanded survives live updates.
+      if (onToolToggle) onToolToggle(item.id, next)
+      else if (onGroupToggle) onGroupToggle(next)
       else setLocalOverride(next)
     }
     return (

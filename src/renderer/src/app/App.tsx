@@ -31,6 +31,7 @@ export function App() {
     secrets,
     encryptionAvailable,
     loading,
+    refresh,
     update,
     saveSecret,
     removeSecret,
@@ -468,6 +469,7 @@ export function App() {
         <MarketplaceView
           settings={settings}
           onUpdate={update}
+          onReloadSettings={refresh}
           activeWorkspacePath={activeWorkspace}
           settingsOverridesByPath={registry?.settingsOverridesByPath ?? {}}
           onSetSettingsOverride={setSettingsOverride}

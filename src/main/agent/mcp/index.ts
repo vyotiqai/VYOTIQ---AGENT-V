@@ -177,6 +177,10 @@ export function getMcpServerStatus(servers: McpServer[]): McpServerStatus[] {
 }
 
 export async function refreshMcpServers(servers: McpServer[]): Promise<McpServerStatus[]> {
+  // Force reconnect so dead stdio/HTTP sessions are recovered (sync alone skips existing entries).
+  for (const id of [...sessions.keys()]) {
+    await disconnectMcpServer(id)
+  }
   await syncMcpServers(servers)
   return getMcpServerStatus(servers)
 }

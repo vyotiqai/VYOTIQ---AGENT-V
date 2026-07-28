@@ -105,6 +105,13 @@ const api: VyotiqApi = {
   marketplaceBrowse: (payload) => ipcRenderer.invoke(IPC.marketplaceBrowse, payload ?? {}),
   marketplaceRefreshCatalog: () => ipcRenderer.invoke(IPC.marketplaceRefreshCatalog),
   marketplaceInstall: (payload) => ipcRenderer.invoke(IPC.marketplaceInstall, payload),
+  marketplaceDetectMcp: (payload) => ipcRenderer.invoke(IPC.marketplaceDetectMcp, payload),
+  marketplaceApplyDetectedMcp: (payload) =>
+    ipcRenderer.invoke(IPC.marketplaceApplyDetectedMcp, payload),
+  marketplaceScanExternalMcp: (payload) =>
+    ipcRenderer.invoke(IPC.marketplaceScanExternalMcp, payload ?? {}),
+  marketplaceImportExternalMcp: (payload) =>
+    ipcRenderer.invoke(IPC.marketplaceImportExternalMcp, payload),
   marketplaceUninstall: (id) => ipcRenderer.invoke(IPC.marketplaceUninstall, { id }),
   marketplaceSetEnabled: (id, enabled) =>
     ipcRenderer.invoke(IPC.marketplaceSetEnabled, { id, enabled }),

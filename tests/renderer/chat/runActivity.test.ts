@@ -112,6 +112,10 @@ describe('deriveRunActivity', () => {
     expect(deriveRunActivity([], true)).toEqual({ kind: 'planning' })
   })
 
+  it('reports working when pendingRun is true but turn already has work', () => {
+    expect(deriveRunActivity([textRow(false)], true)).toEqual({ kind: 'working' })
+  })
+
   it('reports working as the active-turn fallback between steps', () => {
     expect(deriveRunActivity([])).toEqual({ kind: 'working' })
   })

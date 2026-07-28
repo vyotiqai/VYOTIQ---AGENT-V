@@ -19,6 +19,17 @@ export {
   syncMarketplaceMcpIntoSettings,
   mcpServerFromManifest
 } from './install'
+export {
+  classifyMcpInput,
+  detectMcpInput,
+  detectFromGitRepo,
+  parseExternalMcpConfig,
+  applyDetectedManualMcp,
+  scanExternalMcpConfigs,
+  importExternalMcpServers,
+  defaultExternalConfigPaths,
+  synthesizeVyotiqMcpManifest
+} from './mcpImport'
 export { parseSkillFrontmatter } from '../agent/skills/parse'
 export { resolveEffectiveMcpServers, listEffectivelyEnabledSkills } from './resolve'
 export {

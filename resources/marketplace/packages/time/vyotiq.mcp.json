@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "kind": "mcp",
+  "id": "time",
+  "name": "Time",
+  "version": "1.0.0",
+  "description": "Official MCP time server (stdio via uvx). Requires uv on PATH.",
+  "transport": "stdio",
+  "command": "uvx",
+  "args": ["mcp-server-time"],
+  "env": {}
+}

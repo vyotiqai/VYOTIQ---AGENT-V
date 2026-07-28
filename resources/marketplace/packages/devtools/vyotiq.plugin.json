@@ -4,7 +4,7 @@
   "id": "devtools",
   "name": "Devtools",
   "version": "1.0.0",
-  "description": "Sample plugin with a skill and a rule.",
+  "description": "Vyotiq starter plugin with a debug-checklist skill and workspace conventions rule.",
   "mcp": [],
   "skills": ["skills/debug-checklist"],
   "rules": ["rules/conventions.md"]

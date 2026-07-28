@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "kind": "mcp",
+  "id": "fetch",
+  "name": "Fetch",
+  "version": "1.0.0",
+  "description": "Official MCP fetch server (stdio via uvx). Requires uv on PATH.",
+  "transport": "stdio",
+  "command": "uvx",
+  "args": ["mcp-server-fetch"],
+  "env": {}
+}

@@ -27,6 +27,13 @@ import type {
   MarketplaceInstallResult,
   MarketplaceInstallRequest,
   MarketplaceBrowseRequest,
+  McpDetectRequest,
+  McpDetectResult,
+  McpApplyDetectedRequest,
+  McpApplyDetectedResult,
+  McpScanExternalRequest,
+  McpImportExternalRequest,
+  McpImportExternalResult,
   PackageContents,
   WorkspaceSettingsOverride,
   WorkspacesState,
@@ -127,6 +134,18 @@ export interface VyotiqApi {
   marketplaceInstall: (
     payload: MarketplaceInstallRequest
   ) => Promise<IpcResult<MarketplaceInstallResult>>
+  marketplaceDetectMcp: (
+    payload: McpDetectRequest
+  ) => Promise<IpcResult<McpDetectResult>>
+  marketplaceApplyDetectedMcp: (
+    payload: McpApplyDetectedRequest
+  ) => Promise<IpcResult<McpApplyDetectedResult>>
+  marketplaceScanExternalMcp: (
+    payload?: McpScanExternalRequest
+  ) => Promise<IpcResult<McpImportExternalResult>>
+  marketplaceImportExternalMcp: (
+    payload: McpImportExternalRequest
+  ) => Promise<IpcResult<McpImportExternalResult>>
   marketplaceUninstall: (id: string) => Promise<IpcResult<MarketplaceIndex>>
   marketplaceSetEnabled: (
     id: string,

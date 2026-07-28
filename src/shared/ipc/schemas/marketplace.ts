@@ -230,3 +230,100 @@ export const MarketplaceBrowseRequestSchema = z.object({
   q: z.string().optional()
 })
 export type MarketplaceBrowseRequest = z.infer<typeof MarketplaceBrowseRequestSchema>
+
+/** Suggested MCP server shape for detect/import (mirrors settings McpServer; avoids circular import). */
+export const DetectedMcpServerSchema = z.object({
+  id: z
+    .string()
+    .min(1)
+    .refine((id) => !id.includes('__'), { message: 'id must not contain "__"' }),
+  name: z.string().min(1),
+  transport: McpTransportSchema.default('stdio'),
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  url: z.string().optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+  allowedTools: z.array(z.string().min(1)).optional(),
+  deniedTools: z.array(z.string().min(1)).optional(),
+  enabled: z.boolean().default(true),
+  source: z.enum(['manual', 'marketplace']).optional(),
+  packageId: z.string().optional(),
+  packageVersion: z.string().optional()
+})
+export type DetectedMcpServer = z.infer<typeof DetectedMcpServerSchema>
+
+/** Classifier kind for universal MCP paste input. */
+export const McpDetectKindSchema = z.enum([
+  'remote',
+  'git',
+  'npm',
+  'stdio',
+  'json',
+  'vyotiq-package',
+  'unknown'
+])
+export type McpDetectKind = z.infer<typeof McpDetectKindSchema>
+
+export const McpDetectRequestSchema = z.object({
+  input: z.string().min(1)
+})
+export type McpDetectRequest = z.infer<typeof McpDetectRequestSchema>
+
+export const McpDetectResultSchema = z.object({
+  kind: McpDetectKindSchema,
+  confidence: z.enum(['high', 'medium', 'low']),
+  /** Suggested manual MCP server (stdio / remote). Command may be empty when detection failed. */
+  server: DetectedMcpServerSchema.optional(),
+  /** When a Vyotiq package was found (git/npm/path), prefer marketplace install. */
+  install: MarketplaceInstallRequestSchema.optional(),
+  warnings: z.array(z.string()).default([]),
+  /** True when an existing server/package with the same id is already configured. */
+  duplicate: z.boolean().default(false)
+})
+export type McpDetectResult = z.infer<typeof McpDetectResultSchema>
+
+export const McpApplyDetectedRequestSchema = z.object({
+  /** Result from detect, or a user-edited server. */
+  server: DetectedMcpServerSchema.optional(),
+  install: MarketplaceInstallRequestSchema.optional(),
+  /** When true, replace an existing manual server with the same id. */
+  overwrite: z.boolean().default(false)
+})
+export type McpApplyDetectedRequest = z.infer<typeof McpApplyDetectedRequestSchema>
+
+export const McpApplyDetectedResultSchema = z.object({
+  applied: z.enum(['manual', 'marketplace']),
+  serverId: z.string().optional(),
+  installResult: MarketplaceInstallResultSchema.optional()
+})
+export type McpApplyDetectedResult = z.infer<typeof McpApplyDetectedResultSchema>
+
+export const McpImportExternalRequestSchema = z.object({
+  /** Absolute config file paths; empty = scan default Cursor/Claude locations. */
+  paths: z.array(z.string()).optional(),
+  /** Raw JSON with mcpServers (optional alternative to paths). */
+  json: z.string().optional(),
+  /** Prefer passing full detected servers so display names survive import. */
+  servers: z.array(DetectedMcpServerSchema).optional(),
+  mode: z.enum(['merge', 'replace']).default('merge'),
+  /** Subset of server ids to import; omit = all. */
+  selectedIds: z.array(z.string()).optional()
+})
+export type McpImportExternalRequest = z.infer<typeof McpImportExternalRequestSchema>
+
+export const McpImportExternalResultSchema = z.object({
+  /** Servers found before apply (for preview). */
+  preview: z.array(DetectedMcpServerSchema).default([]),
+  applied: z.number().int().nonnegative(),
+  skipped: z.number().int().nonnegative(),
+  warnings: z.array(z.string()).default([]),
+  /** Default paths that were scanned (may not all exist). */
+  scannedPaths: z.array(z.string()).default([])
+})
+export type McpImportExternalResult = z.infer<typeof McpImportExternalResultSchema>
+
+export const McpScanExternalRequestSchema = z.object({
+  paths: z.array(z.string()).optional()
+})
+export type McpScanExternalRequest = z.infer<typeof McpScanExternalRequestSchema>

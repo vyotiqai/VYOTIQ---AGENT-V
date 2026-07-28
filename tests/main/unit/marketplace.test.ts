@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -304,5 +304,39 @@ describe('remote MCP install request', () => {
     expect(parsed.source).toBe('remote')
     expect(parsed.transport).toBe('sse')
     expect(parsed.bearerToken).toBe('tok')
+  })
+})
+
+describe('bundled marketplace catalog', () => {
+  it('has installable packages with on-disk manifests and icons', async () => {
+    const { MarketplaceCatalogSchema } = await import('@shared/ipc')
+    const root = join(process.cwd(), 'resources', 'marketplace')
+    const catalog = MarketplaceCatalogSchema.parse(
+      JSON.parse(readFileSync(join(root, 'catalog.json'), 'utf8'))
+    )
+
+    const skills = catalog.packages.filter((p) => p.kind === 'skill')
+    const plugins = catalog.packages.filter((p) => p.kind === 'plugin')
+    expect(skills.length).toBeGreaterThanOrEqual(11)
+    expect(plugins.length).toBeGreaterThanOrEqual(4)
+
+    for (const entry of catalog.packages) {
+      expect(entry.installable).not.toBe(false)
+      expect(entry.bundledPath).toBeTruthy()
+      const pkgRoot = join(root, 'packages', entry.bundledPath!)
+      if (entry.kind === 'mcp') {
+        expect(existsSync(join(pkgRoot, 'vyotiq.mcp.json'))).toBe(true)
+      } else if (entry.kind === 'skill') {
+        expect(existsSync(join(pkgRoot, 'skill.md'))).toBe(true)
+      } else if (entry.kind === 'plugin') {
+        expect(existsSync(join(pkgRoot, 'vyotiq.plugin.json'))).toBe(true)
+      } else {
+        const _exhaustive: never = entry.kind
+        throw new Error(`unexpected kind ${_exhaustive}`)
+      }
+      if (entry.iconPath) {
+        expect(existsSync(join(root, entry.iconPath))).toBe(true)
+      }
+    }
   })
 })

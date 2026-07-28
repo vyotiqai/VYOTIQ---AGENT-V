@@ -15,6 +15,7 @@ type Pane =
 export function MarketplaceView({
   settings,
   onUpdate,
+  onReloadSettings,
   activeWorkspacePath,
   settingsOverridesByPath,
   onSetSettingsOverride,
@@ -22,6 +23,7 @@ export function MarketplaceView({
 }: {
   settings: Settings
   onUpdate: (partial: Partial<Settings>) => Promise<{ ok: true } | { ok: false; error: string }>
+  onReloadSettings?: () => Promise<void>
   activeWorkspacePath?: string | null
   settingsOverridesByPath?: Record<string, WorkspaceSettingsOverride>
   onSetSettingsOverride?: (
@@ -31,7 +33,8 @@ export function MarketplaceView({
   onClose?: () => void
 }) {
   const [pane, setPane] = useState<Pane>({ kind: 'home' })
-  const controller = useMarketplaceController({ settings, onUpdate })
+  const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null)
+  const controller = useMarketplaceController({ settings, onUpdate, onReloadSettings })
   const closeRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
@@ -42,6 +45,11 @@ export function MarketplaceView({
     pane.kind === 'detail'
       ? (controller.catalog.find((e) => e.id === pane.entryId) ?? pane.fallback)
       : null
+
+  const openDetail = (entry: MarketplaceCatalogEntry): void => {
+    setSelectedEntryId(entry.id)
+    setPane({ kind: 'detail', entryId: entry.id, fallback: entry })
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-bg animate-fade-in">
@@ -75,9 +83,8 @@ export function MarketplaceView({
           {pane.kind === 'home' ? (
             <MarketplaceHome
               controller={controller}
-              onOpenDetail={(entry) =>
-                setPane({ kind: 'detail', entryId: entry.id, fallback: entry })
-              }
+              selectedEntryId={selectedEntryId}
+              onOpenDetail={openDetail}
               onOpenManage={() => setPane({ kind: 'manage' })}
             />
           ) : null}
@@ -86,6 +93,7 @@ export function MarketplaceView({
               entry={detailEntry}
               controller={controller}
               onBack={() => setPane({ kind: 'home' })}
+              onOpenManage={() => setPane({ kind: 'manage' })}
             />
           ) : null}
           {pane.kind === 'manage' ? (

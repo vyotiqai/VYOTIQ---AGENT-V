@@ -451,7 +451,7 @@ function withTurnSummaries(
       const rowActive = turnRows.some(isRowActive)
       const active = rowActive || isLiveTurn
       const activity = active
-        ? deriveRunActivity(turnRows, isLiveTurn && !rowActive, {
+        ? deriveRunActivity(turnRows, isLiveTurn && !rowActive && turnRows.length === 0, {
             hiddenThinkingStreaming: hiddenThinkingStreamingTurns?.has(turnIndex) === true
           })
         : null

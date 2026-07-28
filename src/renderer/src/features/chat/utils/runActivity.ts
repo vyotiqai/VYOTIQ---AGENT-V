@@ -129,7 +129,8 @@ export function deriveRunActivity(
   if (streamingThinking || opts?.hiddenThinkingStreaming) return { kind: 'thinking' }
 
   if (pendingRun) {
-    return { kind: 'planning' }
+    // Between agent steps the turn already has work rows; keep "Working", not "Planning".
+    return turnRows.length === 0 ? { kind: 'planning' } : { kind: 'working' }
   }
 
   return { kind: 'working' }

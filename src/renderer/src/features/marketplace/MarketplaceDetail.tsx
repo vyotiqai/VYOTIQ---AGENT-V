@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { MarketplaceCatalogEntry, PackageContents } from '@shared/ipc'
 import { Button } from '@renderer/lib/ui'
 import { Icon } from '@renderer/lib/icons'
 import { PackageIcon } from './PackageIcon'
 import { MarketplaceFeedbackBanner } from './MarketplaceFeedbackBanner'
 import { kindLabel } from './marketplaceLabels'
+import { installedActionLabel, packageActivity } from './packageActivity'
 import type { MarketplaceController } from './useMarketplaceController'
 
 function previewAsContents(entry: MarketplaceCatalogEntry): PackageContents | null {
@@ -26,15 +27,23 @@ function previewAsContents(entry: MarketplaceCatalogEntry): PackageContents | nu
 export function MarketplaceDetail({
   entry,
   controller,
-  onBack
+  onBack,
+  onOpenManage
 }: {
   entry: MarketplaceCatalogEntry
   controller: MarketplaceController
   onBack: () => void
+  onOpenManage: () => void
 }) {
-  const { installedIds, formLocked, installFromCatalog, feedback, setFeedback } = controller
-  const installed = installedIds.has(entry.id)
-  const comingSoon = entry.installable === false
+  const { installed, mcpStatusById, formLocked, installFromCatalog, feedback, setFeedback } =
+    controller
+  const installedItem = useMemo(
+    () => installed.items.find((i) => i.id === entry.id),
+    [installed.items, entry.id]
+  )
+  const activity = packageActivity(entry, installedItem, mcpStatusById.get(entry.id))
+  const comingSoon = activity.kind === 'coming-soon'
+  const isInstalled = Boolean(installedItem)
   const [contents, setContents] = useState<PackageContents | null>(null)
   const [loadingContents, setLoadingContents] = useState(true)
   const [contentsError, setContentsError] = useState<string | null>(null)
@@ -93,16 +102,22 @@ export function MarketplaceDetail({
             {kindLabel(entry.kind)}
             {entry.publisher ? ` · ${entry.publisher}` : ''}
             {` · ${entry.id}@${entry.version}`}
+            {isInstalled ? ` · ${activity.label}` : ''}
           </p>
-          <div className="mt-3">
+          <div className="mt-3 flex flex-wrap items-center gap-2">
             {comingSoon ? (
               <Button variant="subtle" disabled>
                 Coming soon
               </Button>
-            ) : installed ? (
-              <Button variant="subtle" disabled>
-                Installed
-              </Button>
+            ) : isInstalled ? (
+              <>
+                <Button variant="subtle" disabled className={activity.className}>
+                  {installedActionLabel(activity)}
+                </Button>
+                <Button variant="subtle" onClick={onOpenManage}>
+                  Manage
+                </Button>
+              </>
             ) : (
               <Button
                 variant="primary"

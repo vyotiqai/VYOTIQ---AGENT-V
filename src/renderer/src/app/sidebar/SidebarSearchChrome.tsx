@@ -12,8 +12,7 @@ export function SidebarSearchChrome({
   view,
   onSessionQuery,
   onNewChat,
-  onOpenSettings,
-  onOpenMarketplace
+  onOpenSettings
 }: {
   searchRef: RefObject<HTMLInputElement | null>
   sessionQuery: string
@@ -23,7 +22,6 @@ export function SidebarSearchChrome({
   onSessionQuery: (q: string) => void
   onNewChat: () => void
   onOpenSettings: () => void
-  onOpenMarketplace: () => void
 }) {
   const showShortcut = workspaceReady && !sessionQuery
 
@@ -76,14 +74,6 @@ export function SidebarSearchChrome({
           disabled={!workspaceReady}
           title={!workspaceReady ? disabledTitle : 'New chat'}
           onClick={onNewChat}
-        />
-        <IconButton
-          icon="sparkles"
-          label="Marketplace"
-          size="xs"
-          variant="bare"
-          aria-current={view === 'marketplace' ? 'page' : undefined}
-          onClick={onOpenMarketplace}
         />
         <IconButton
           icon="gear"

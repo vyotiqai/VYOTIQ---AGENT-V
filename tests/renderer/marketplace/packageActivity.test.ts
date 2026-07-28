@@ -1,0 +1,66 @@
+import { describe, expect, it } from 'vitest'
+import type { MarketplaceCatalogEntry, MarketplaceInstalledItem, McpServerStatus } from '@shared/ipc'
+import { installedActionLabel, packageActivity } from '@renderer/features/marketplace/packageActivity'
+
+const entry = (partial: Partial<MarketplaceCatalogEntry> & Pick<MarketplaceCatalogEntry, 'id' | 'kind'>): MarketplaceCatalogEntry => ({
+  name: partial.name ?? partial.id,
+  version: '1.0.0',
+  description: '',
+  source: 'bundled',
+  installable: true,
+  ...partial
+})
+
+const installed = (partial: Partial<MarketplaceInstalledItem> & Pick<MarketplaceInstalledItem, 'id' | 'enabled'>): MarketplaceInstalledItem => ({
+  kind: 'mcp',
+  name: partial.id,
+  version: '1.0.0',
+  description: '',
+  installSource: 'bundled',
+  installedAt: new Date().toISOString(),
+  packagePath: `${partial.id}/1.0.0`,
+  ...partial
+})
+
+describe('packageActivity', () => {
+  it('marks coming soon when installable is false', () => {
+    const a = packageActivity(entry({ id: 'x', kind: 'mcp', installable: false }), undefined, undefined)
+    expect(a.kind).toBe('coming-soon')
+    expect(a.label).toBe('Coming soon')
+  })
+
+  it('shows connected for live MCP', () => {
+    const status: McpServerStatus = {
+      id: 'memory',
+      name: 'Memory',
+      enabled: true,
+      connected: true,
+      toolCount: 3
+    }
+    const a = packageActivity(
+      entry({ id: 'memory', kind: 'mcp' }),
+      installed({ id: 'memory', enabled: true }),
+      status
+    )
+    expect(a.kind).toBe('connected')
+    expect(a.label).toBe('Connected · 3 tools')
+    expect(installedActionLabel(a)).toBe('Connected')
+  })
+
+  it('shows enabled / disabled for skills', () => {
+    expect(
+      packageActivity(
+        entry({ id: 'docs', kind: 'skill' }),
+        installed({ id: 'docs', kind: 'skill', enabled: true }),
+        undefined
+      ).label
+    ).toBe('Enabled')
+    expect(
+      packageActivity(
+        entry({ id: 'docs', kind: 'skill' }),
+        installed({ id: 'docs', kind: 'skill', enabled: false }),
+        undefined
+      ).label
+    ).toBe('Disabled')
+  })
+})

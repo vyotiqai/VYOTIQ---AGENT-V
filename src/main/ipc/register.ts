@@ -28,6 +28,10 @@ import {
   MarketplaceInstallRequestSchema,
   MarketplaceSetEnabledRequestSchema,
   MarketplaceUninstallRequestSchema,
+  McpDetectRequestSchema,
+  McpApplyDetectedRequestSchema,
+  McpImportExternalRequestSchema,
+  McpScanExternalRequestSchema,
   ok,
   fail,
   type ExtractAttachmentResult,
@@ -66,7 +70,11 @@ import {
   setInstalledEnabled,
   syncMarketplaceMcpIntoSettings,
   resolveEffectiveMcpServers,
-  getPackageContents
+  getPackageContents,
+  detectMcpInput,
+  applyDetectedManualMcp,
+  scanExternalMcpConfigs,
+  importExternalMcpServers
 } from '@main/marketplace'
 import {
   setSecret,
@@ -800,6 +808,60 @@ export function registerIpc(): void {
       return ok(result)
     } catch (err) {
       return failFrom(err, IPC.marketplaceInstall)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceDetectMcp, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = McpDetectRequestSchema.parse(raw)
+      const result = await detectMcpInput(req)
+      return ok(result)
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceDetectMcp)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceApplyDetectedMcp, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = McpApplyDetectedRequestSchema.parse(raw)
+      if (req.install) {
+        const result = await installMarketplacePackage(req.install)
+        await syncMcpServers(resolveEffectiveMcpServers())
+        return ok({
+          applied: 'marketplace' as const,
+          serverId: result.item.id,
+          installResult: result
+        })
+      }
+      const applied = applyDetectedManualMcp(req)
+      await syncMcpServers(resolveEffectiveMcpServers())
+      return ok(applied)
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceApplyDetectedMcp)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceScanExternalMcp, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = McpScanExternalRequestSchema.parse(raw ?? {})
+      return ok(scanExternalMcpConfigs(req))
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceScanExternalMcp)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceImportExternalMcp, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = McpImportExternalRequestSchema.parse(raw)
+      const result = importExternalMcpServers(req)
+      await syncMcpServers(resolveEffectiveMcpServers())
+      return ok(result)
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceImportExternalMcp)
     }
   })
 

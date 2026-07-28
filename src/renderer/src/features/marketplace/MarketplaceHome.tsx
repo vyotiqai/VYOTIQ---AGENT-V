@@ -1,10 +1,20 @@
 import { useMemo, useState } from 'react'
-import type { MarketplaceCatalogEntry, MarketplaceKind } from '@shared/ipc'
+import type {
+  MarketplaceCatalogEntry,
+  MarketplaceInstalledItem,
+  MarketplaceKind,
+  McpServerStatus
+} from '@shared/ipc'
 import { Button, Input, cn } from '@renderer/lib/ui'
 import { Icon } from '@renderer/lib/icons'
 import { PackageIcon } from './PackageIcon'
 import { MarketplaceFeedbackBanner } from './MarketplaceFeedbackBanner'
 import { categoryTitle, kindLabel } from './marketplaceLabels'
+import {
+  installedActionLabel,
+  packageActivity,
+  type PackageActivity
+} from './packageActivity'
 import type { MarketplaceController } from './useMarketplaceController'
 
 const CATEGORY_INITIAL_VISIBLE = 4
@@ -12,22 +22,36 @@ const CATEGORY_INITIAL_VISIBLE = 4
 const CARD_BUTTON =
   'vy-transition hover:border-border-strong hover:bg-surface-2 focus-visible:vy-focus-ring'
 
+const CARD_SELECTED = 'border-border-strong bg-surface-2'
+
+function activityFor(
+  entry: MarketplaceCatalogEntry,
+  installedById: Map<string, MarketplaceInstalledItem>,
+  mcpStatusById: Map<string, McpServerStatus>
+): PackageActivity {
+  return packageActivity(entry, installedById.get(entry.id), mcpStatusById.get(entry.id))
+}
+
 function PackageCard({
   entry,
-  installed,
+  activity,
+  selected,
   onOpen
 }: {
   entry: MarketplaceCatalogEntry
-  installed: boolean
+  activity: PackageActivity
+  selected: boolean
   onOpen: () => void
 }) {
   return (
     <button
       type="button"
       onClick={onOpen}
+      aria-current={selected ? 'true' : undefined}
       className={cn(
         'flex w-full items-start gap-3 rounded-lg border border-border bg-surface px-3 py-3 text-left',
-        CARD_BUTTON
+        CARD_BUTTON,
+        selected && CARD_SELECTED
       )}
     >
       <PackageIcon name={entry.name} iconUrl={entry.iconUrl} size={40} />
@@ -41,10 +65,10 @@ function PackageCard({
         <p className="m-0 mt-0.5 line-clamp-2 text-xs text-secondary">
           {entry.description || '—'}
         </p>
-        <p className="m-0 mt-1 text-[11px] text-muted">
+        <p className={cn('m-0 mt-1 text-[11px] text-muted', activity.className)}>
           {kindLabel(entry.kind)}
           {entry.publisher ? ` · ${entry.publisher}` : ''}
-          {installed ? ' · Installed' : entry.installable === false ? ' · Coming soon' : ''}
+          {activity.kind !== 'available' ? ` · ${activity.label}` : ''}
         </p>
       </div>
     </button>
@@ -53,11 +77,15 @@ function PackageCard({
 
 function DiscoverStrip({
   entries,
-  installedIds,
+  installedById,
+  mcpStatusById,
+  selectedEntryId,
   onOpen
 }: {
   entries: MarketplaceCatalogEntry[]
-  installedIds: Set<string>
+  installedById: Map<string, MarketplaceInstalledItem>
+  mcpStatusById: Map<string, McpServerStatus>
+  selectedEntryId: string | null
   onOpen: (entry: MarketplaceCatalogEntry) => void
 }) {
   if (entries.length === 0) return null
@@ -65,32 +93,34 @@ function DiscoverStrip({
     <section className="flex flex-col gap-2">
       <h2 className="m-0 text-sm font-medium text-fg">Discover</h2>
       <div className="flex gap-2 overflow-x-auto pb-1">
-        {entries.map((entry) => (
-          <button
-            key={`${entry.source}-${entry.id}`}
-            type="button"
-            onClick={() => onOpen(entry)}
-            className={cn(
-              'flex w-[200px] shrink-0 flex-col gap-2 rounded-lg border border-border bg-surface p-3 text-left',
-              CARD_BUTTON
-            )}
-          >
-            <PackageIcon name={entry.name} iconUrl={entry.iconUrl} size={36} />
-            <div className="min-w-0">
-              <p className="m-0 truncate text-sm font-medium text-fg">{entry.name}</p>
-              <p className="m-0 mt-0.5 line-clamp-2 text-[11px] text-secondary">
-                {entry.description || '—'}
-              </p>
-              <p className="m-0 mt-1 text-[10px] text-muted">
-                {installedIds.has(entry.id)
-                  ? 'Installed'
-                  : entry.installable === false
-                    ? 'Coming soon'
-                    : kindLabel(entry.kind)}
-              </p>
-            </div>
-          </button>
-        ))}
+        {entries.map((entry) => {
+          const activity = activityFor(entry, installedById, mcpStatusById)
+          const selected = selectedEntryId === entry.id
+          return (
+            <button
+              key={`${entry.source}-${entry.id}`}
+              type="button"
+              onClick={() => onOpen(entry)}
+              aria-current={selected ? 'true' : undefined}
+              className={cn(
+                'flex w-[200px] shrink-0 flex-col gap-2 rounded-lg border border-border bg-surface p-3 text-left',
+                CARD_BUTTON,
+                selected && CARD_SELECTED
+              )}
+            >
+              <PackageIcon name={entry.name} iconUrl={entry.iconUrl} size={36} />
+              <div className="min-w-0">
+                <p className="m-0 truncate text-sm font-medium text-fg">{entry.name}</p>
+                <p className="m-0 mt-0.5 line-clamp-2 text-[11px] text-secondary">
+                  {entry.description || '—'}
+                </p>
+                <p className={cn('m-0 mt-1 text-[10px] text-muted', activity.className)}>
+                  {activity.kind === 'available' ? kindLabel(entry.kind) : activity.label}
+                </p>
+              </div>
+            </button>
+          )
+        })}
       </div>
     </section>
   )
@@ -98,23 +128,32 @@ function DiscoverStrip({
 
 function FeaturedRow({
   entry,
-  installed,
+  activity,
+  selected,
   formLocked,
   onOpen,
   onAdd
 }: {
   entry: MarketplaceCatalogEntry
-  installed: boolean
+  activity: PackageActivity
+  selected: boolean
   formLocked: boolean
   onOpen: () => void
   onAdd: () => void
 }) {
-  const comingSoon = entry.installable === false
+  const comingSoon = activity.kind === 'coming-soon'
+  const installed = activity.kind !== 'available' && activity.kind !== 'coming-soon'
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5">
+    <div
+      className={cn(
+        'flex items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5',
+        selected && CARD_SELECTED
+      )}
+    >
       <button
         type="button"
         onClick={onOpen}
+        aria-current={selected ? 'true' : undefined}
         className="flex min-w-0 flex-1 items-center gap-3 text-left vy-transition hover:opacity-90 focus-visible:vy-focus-ring"
       >
         <PackageIcon name={entry.name} iconUrl={entry.iconUrl} size={36} />
@@ -130,8 +169,8 @@ function FeaturedRow({
           Coming soon
         </Button>
       ) : installed ? (
-        <Button variant="subtle" disabled>
-          Installed
+        <Button variant="subtle" disabled className={activity.className}>
+          {installedActionLabel(activity)}
         </Button>
       ) : (
         <Button
@@ -153,12 +192,16 @@ function FeaturedRow({
 function CategorySection({
   category,
   entries,
-  installedIds,
+  installedById,
+  mcpStatusById,
+  selectedEntryId,
   onOpen
 }: {
   category: string
   entries: MarketplaceCatalogEntry[]
-  installedIds: Set<string>
+  installedById: Map<string, MarketplaceInstalledItem>
+  mcpStatusById: Map<string, McpServerStatus>
+  selectedEntryId: string | null
   onOpen: (entry: MarketplaceCatalogEntry) => void
 }) {
   const [expanded, setExpanded] = useState(false)
@@ -184,7 +227,8 @@ function CategorySection({
           <PackageCard
             key={`${entry.source}-${entry.id}`}
             entry={entry}
-            installed={installedIds.has(entry.id)}
+            activity={activityFor(entry, installedById, mcpStatusById)}
+            selected={selectedEntryId === entry.id}
             onOpen={() => onOpen(entry)}
           />
         ))}
@@ -195,17 +239,20 @@ function CategorySection({
 
 export function MarketplaceHome({
   controller,
+  selectedEntryId,
   onOpenDetail,
   onOpenManage
 }: {
   controller: MarketplaceController
+  selectedEntryId: string | null
   onOpenDetail: (entry: MarketplaceCatalogEntry) => void
   onOpenManage: () => void
 }) {
   const {
     catalog,
     catalogLoading,
-    installedIds,
+    installed,
+    mcpStatusById,
     kindFilter,
     setKindFilter,
     query,
@@ -215,6 +262,12 @@ export function MarketplaceHome({
     installFromCatalog,
     reload
   } = controller
+
+  const installedById = useMemo(() => {
+    const map = new Map<string, MarketplaceInstalledItem>()
+    for (const item of installed.items) map.set(item.id, item)
+    return map
+  }, [installed.items])
 
   const discover = useMemo(
     () => catalog.filter((e) => e.sections?.includes('discover')),
@@ -276,14 +329,35 @@ export function MarketplaceHome({
       {catalogLoading && catalog.length === 0 ? (
         <p className="m-0 text-sm text-muted">Loading catalog…</p>
       ) : catalog.length === 0 ? (
-        <p className="m-0 text-sm text-muted">
-          {filteredEmpty
-            ? 'No matching packages. Try a different search or filter.'
-            : 'No packages in catalog. Open Manage to add MCP servers, or configure a registry under Settings → Registry.'}
-        </p>
+        filteredEmpty ? (
+          <div className="flex flex-col gap-2 rounded-md border border-border bg-surface px-3 py-3">
+            <p className="m-0 text-sm text-fg">No matching packages in the curated catalog.</p>
+            <p className="m-0 text-xs text-secondary">
+              External MCPs (GitHub URLs, npm packages, npx/uvx commands, or Cursor/Claude JSON) are
+              added under Manage → Add — they won’t appear in this search until installed from the
+              catalog or added manually.
+            </p>
+            <div>
+              <Button variant="subtle" onClick={onOpenManage}>
+                Open Manage to add
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <p className="m-0 text-sm text-muted">
+            No packages in catalog. Open Manage to add MCP servers, or configure a registry under
+            Settings → Registry.
+          </p>
+        )
       ) : (
         <>
-          <DiscoverStrip entries={discover} installedIds={installedIds} onOpen={onOpenDetail} />
+          <DiscoverStrip
+            entries={discover}
+            installedById={installedById}
+            mcpStatusById={mcpStatusById}
+            selectedEntryId={selectedEntryId}
+            onOpen={onOpenDetail}
+          />
 
           {featured.length > 0 ? (
             <section className="flex flex-col gap-2">
@@ -293,7 +367,8 @@ export function MarketplaceHome({
                   <FeaturedRow
                     key={`${entry.source}-${entry.id}`}
                     entry={entry}
-                    installed={installedIds.has(entry.id)}
+                    activity={activityFor(entry, installedById, mcpStatusById)}
+                    selected={selectedEntryId === entry.id}
                     formLocked={formLocked}
                     onOpen={() => onOpenDetail(entry)}
                     onAdd={() => void installFromCatalog(entry)}
@@ -308,7 +383,9 @@ export function MarketplaceHome({
               key={category}
               category={category}
               entries={entries}
-              installedIds={installedIds}
+              installedById={installedById}
+              mcpStatusById={mcpStatusById}
+              selectedEntryId={selectedEntryId}
               onOpen={onOpenDetail}
             />
           ))}

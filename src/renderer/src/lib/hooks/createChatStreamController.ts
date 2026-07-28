@@ -929,7 +929,12 @@ export function createChatStreamController(
                   {
                     ...item,
                     at: item.at ?? toolAt,
-                    toolExpanded: event.name === 'subagent' ? true : item.toolExpanded,
+                    toolExpanded:
+                      event.name === 'subagent'
+                        ? item.toolExpanded === false
+                          ? false
+                          : true
+                        : item.toolExpanded,
                     tool: withPresentationLock(
                       {
                         ...item.tool,
@@ -1036,7 +1041,8 @@ export function createChatStreamController(
         items: replaceAt(state.items, idx, {
           ...item,
           subagent: entries,
-          toolExpanded: true
+          // Preserve explicit user collapse; otherwise keep/auto-expand.
+          toolExpanded: item.toolExpanded === false ? false : true
         })
       })
     } else if (event.type === 'subagent_context_usage') {
