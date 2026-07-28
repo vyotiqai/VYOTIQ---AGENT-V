@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from '@shared/ipc'
-import { inferToolStatus, messagesToUiItems, applyEventTimestamps, finalizeHydratedTranscript, isMeaningfulThinking, shouldRenderThinking, duplicatesReasoning, mergeThinkingContent, stripToolShapedAssistantText, stripToolShapedAssistantTextForStream, stripIncompleteToolPrefix, isToolShapedTextLeak, scrubStreamingAssistantToolLeak } from '@shared/transcript'
+import { inferToolStatus, messagesToUiItems, applyEventTimestamps, applyPersistedLiveTools, finalizeHydratedTranscript, isMeaningfulThinking, shouldRenderThinking, duplicatesReasoning, mergeThinkingContent, stripToolShapedAssistantText, stripToolShapedAssistantTextForStream, stripIncompleteToolPrefix, isToolShapedTextLeak, scrubStreamingAssistantToolLeak } from '@shared/transcript'
 
 describe('messagesToUiItems', () => {
   it('rebuilds user, assistant, and tool rows in order', () => {
@@ -356,17 +356,26 @@ describe('stripToolShapedAssistantTextForStream', () => {
   })
 })
 
-describe('stripIncompleteToolPrefix', () => {
-  it('drops a trailing partial pseudo tool line', () => {
-    expect(stripIncompleteToolPrefix('Summary so far.\ntool read src/a.ts')).toBe('Summary so far.')
-  })
-})
-
 describe('isToolShapedTextLeak', () => {
   it('detects leaked tool JSON and pseudo calls', () => {
     expect(isToolShapedTextLeak('tool {"path":"a.ts"}')).toBe(true)
     expect(isToolShapedTextLeak('tool read src/a.ts')).toBe(true)
     expect(isToolShapedTextLeak('The tool ran successfully.')).toBe(false)
+  })
+
+  it('detects a buffer that is only tool-shaped leak after stripping', () => {
+    expect(isToolShapedTextLeak('\n\ntool {"path":"a.ts"}\n')).toBe(true)
+    expect(isToolShapedTextLeak('tool {"a":1}\ntool read x.ts')).toBe(true)
+  })
+})
+
+describe('stripIncompleteToolPrefix', () => {
+  it('drops a trailing partial pseudo tool line', () => {
+    expect(stripIncompleteToolPrefix('Summary so far.\ntool read src/a.ts')).toBe('Summary so far.')
+  })
+
+  it('drops a trailing bare tool prefix', () => {
+    expect(stripIncompleteToolPrefix('Summary so far.\ntool ')).toBe('Summary so far.')
   })
 })
 
@@ -803,6 +812,71 @@ describe('applyEventTimestamps', () => {
         updatedAt: '2026-07-24T12:00:02.000Z'
       })
     }
+  })
+})
+
+describe('applyPersistedLiveTools', () => {
+  it('rebuilds running tool chrome from persisted tool_call_delta snapshots', () => {
+    const items = messagesToUiItems([{ role: 'user', content: 'go' }])
+    const events = [
+      {
+        at: '2026-07-28T12:00:00.000Z',
+        event: {
+          type: 'tool_call_delta' as const,
+          runId: 'r1',
+          toolCallId: 'c1',
+          name: 'read',
+          argumentsDelta: '{"path":"a.ts"}'
+        }
+      }
+    ]
+    const next = applyPersistedLiveTools(items, events)
+    const tool = next.find((item) => item.kind === 'tool')
+    expect(tool).toMatchObject({
+      id: 'c1',
+      tool: { name: 'read', status: 'running', argsPreview: '{"path":"a.ts"}' }
+    })
+  })
+
+  it('does not duplicate tools already present from messages', () => {
+    const items = messagesToUiItems([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }]
+      }
+    ])
+    const events = [
+      {
+        at: '2026-07-28T12:00:00.000Z',
+        event: {
+          type: 'tool_call_delta' as const,
+          runId: 'r1',
+          toolCallId: 'c1',
+          name: 'read',
+          argumentsDelta: '{"path":"a.ts"}'
+        }
+      }
+    ]
+    const next = applyPersistedLiveTools(items, events)
+    expect(next.filter((item) => item.kind === 'tool')).toHaveLength(1)
+  })
+
+  it('skips nameless tool_call_delta placeholders', () => {
+    const items = messagesToUiItems([{ role: 'user', content: 'go' }])
+    const events = [
+      {
+        at: '2026-07-28T12:00:00.000Z',
+        event: {
+          type: 'tool_call_delta' as const,
+          runId: 'r1',
+          toolCallId: 'pending_0',
+          name: 'tool',
+          argumentsDelta: '{'
+        }
+      }
+    ]
+    expect(applyPersistedLiveTools(items, events).some((item) => item.kind === 'tool')).toBe(false)
   })
 })
 

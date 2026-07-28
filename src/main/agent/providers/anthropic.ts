@@ -547,6 +547,16 @@ export const anthropicProvider: LlmProvider = {
             name: String(block.name),
             arguments: ''
           })
+          // Emit immediately so the UI can show tool chrome before argument JSON arrives.
+          yield {
+            type: 'tool_call_delta',
+            toolCallDelta: {
+              index,
+              id: String(block.id),
+              name: String(block.name),
+              arguments: ''
+            }
+          }
         } else if (block?.type === 'thinking') {
           currentIndex = index
           currentBlockType = 'thinking'

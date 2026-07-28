@@ -81,8 +81,22 @@ describe('ToolGroup', () => {
     tools[0]!.tool.content = 'Cancelled'
     render(<ToolGroup tools={tools} />)
     expect(screen.getByText('interrupted')).toBeTruthy()
-    expect(screen.getByText('1 file')).toBeTruthy()
+    expect(screen.getByText('Read')).toBeTruthy()
     expect(screen.getByText(/a\.ts/)).toBeTruthy()
+  })
+
+  it('does not duplicate list_dir path in the expanded body when shown as activity', () => {
+    const tools = [
+      toolItem('t1', 'list_dir', 'src', 'done', { startedAt: 1_000, endedAt: 2_000 })
+    ]
+    tools[0]!.tool.content = JSON.stringify({
+      path: 'src',
+      entries: [{ name: 'a.ts', type: 'file' }]
+    })
+    tools[0]!.tool.argsPreview = '{"path":"src"}'
+    render(<ToolGroup tools={tools} groupExpanded />)
+    // Path appears in the compact subtitle; body must not repeat a path header.
+    expect(screen.getAllByText(/src/).length).toBe(1)
   })
 
   it('names the group after a single kind of work', () => {
@@ -146,5 +160,20 @@ describe('ToolGroup', () => {
       />
     )
     expect(screen.getByText('8s')).toBeTruthy()
+  })
+
+  it('auto-expands nested tool bodies while a multi-tool group is pending', () => {
+    const tools = [
+      toolItem('s1', 'subagent', 'Audit core', 'running', { startedAt: Date.now() }),
+      toolItem('s2', 'subagent', 'Audit API', 'running')
+    ]
+
+    render(<ToolGroup tools={tools} />)
+
+    expect(screen.getByRole('button', { name: /Investigating/i }).getAttribute('aria-expanded')).toBe(
+      'true'
+    )
+    expect(screen.getByText('Audit core')).toBeTruthy()
+    expect(screen.getByText('Audit API')).toBeTruthy()
   })
 })

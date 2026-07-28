@@ -6,24 +6,26 @@ export function ComposerStatus({
   runNotice,
   incomplete,
   onContinue,
+  running,
   className
 }: {
   modelsWarning?: string | null
   runNotice?: string | null
   incomplete?: IncompleteTurnState | null
   onContinue?: () => void
+  /** When true, show truncation notices without a Continue button (auto-continue in flight). */
+  running?: boolean
   className?: string
 }) {
   const statusText = runNotice ?? modelsWarning
 
-  if (incomplete && onContinue) {
+  if (incomplete && onContinue && !running) {
     return (
       <div className={cn('flex flex-col gap-1', className)}>
-        <p
-          className="m-0 flex items-center justify-end gap-2 px-2.5 text-right text-[11px] leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]"
-          role="status"
-        >
-          <span>{incomplete.message}</span>
+        <div className="flex items-center justify-end gap-2 px-2.5 text-right text-[11px] leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]">
+          <p className="m-0" role="status">
+            {incomplete.message}
+          </p>
           <button
             type="button"
             onClick={onContinue}
@@ -31,7 +33,7 @@ export function ComposerStatus({
           >
             Continue
           </button>
-        </p>
+        </div>
         {statusText ? (
           <p
             className="m-0 px-2.5 text-right text-[11px] leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]"
@@ -41,6 +43,20 @@ export function ComposerStatus({
           </p>
         ) : null}
       </div>
+    )
+  }
+
+  if (incomplete && running) {
+    return (
+      <p
+        className={cn(
+          'm-0 px-2.5 text-right text-[11px] leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]',
+          className
+        )}
+        role="status"
+      >
+        {incomplete.message}
+      </p>
     )
   }
 

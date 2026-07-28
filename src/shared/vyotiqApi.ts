@@ -123,7 +123,7 @@ export interface VyotiqApi {
   mcpRefresh: () => Promise<IpcResult<McpStatusResult>>
   mcpSetAuthToken: (serverId: string, token: string) => Promise<IpcResult<true>>
   mcpClearAuthToken: (serverId: string) => Promise<IpcResult<true>>
-  mcpStartOAuth: (serverId: string) => Promise<IpcResult<true>>
+  mcpStartOAuth: (serverId: string) => Promise<IpcResult<McpStatusResult>>
   marketplaceListInstalled: () => Promise<IpcResult<MarketplaceIndex>>
   marketplaceBrowse: (
     payload?: MarketplaceBrowseRequest

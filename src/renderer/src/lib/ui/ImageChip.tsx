@@ -44,6 +44,7 @@ export function ImageChip({
         onClick && 'cursor-pointer'
       )}
       title={label}
+      aria-label={onClick ? label : undefined}
       onClick={onClick}
       onKeyDown={
         onClick

@@ -38,7 +38,7 @@ export function ProminentChrome({
           hasBody && 'hover:bg-surface/60'
         )}
         onClick={onToggle}
-        aria-expanded={expanded}
+        aria-expanded={hasBody ? expanded : undefined}
         disabled={!hasBody}
       >
         {header}
@@ -75,6 +75,7 @@ export const CompactRow = memo(function CompactRow({
   status,
   expanded,
   hasBody = true,
+  interrupted = false,
   onToggle
 }: {
   title: string
@@ -82,6 +83,7 @@ export const CompactRow = memo(function CompactRow({
   status: 'running' | 'done' | 'fail'
   expanded: boolean
   hasBody?: boolean
+  interrupted?: boolean
   onToggle: () => void
 }) {
   return (
@@ -92,7 +94,12 @@ export const CompactRow = memo(function CompactRow({
       disabled={!hasBody}
       onClick={onToggle}
     >
-      <span className={cn('flex shrink-0 items-center gap-1.5 font-medium', status === 'fail' ? 'text-danger' : 'text-fg')}>
+      <span
+        className={cn(
+          'flex shrink-0 items-center gap-1.5 font-medium',
+          interrupted || status === 'fail' ? 'text-danger' : 'text-fg'
+        )}
+      >
         {status === 'running' ? <TextShimmer>{title}</TextShimmer> : title}
       </span>
       {subtitle ? (
@@ -100,8 +107,9 @@ export const CompactRow = memo(function CompactRow({
           {subtitle}
         </span>
       ) : null}
-      <span className="ml-auto flex shrink-0 items-center gap-1">
-        {status === 'fail' ? (
+      <span className="ml-auto flex shrink-0 items-center gap-1.5">
+        {interrupted ? <span className="text-danger">interrupted</span> : null}
+        {!interrupted && status === 'fail' ? (
           <Icon name="warning" size={14} className="shrink-0 text-danger" />
         ) : null}
         {hasBody ? (

@@ -57,7 +57,7 @@ describe('MessageList markdown', () => {
     ]
 
     const { container, rerender } = render(<MessageList items={items} />)
-    expect(container.querySelector('.streaming-caret-inline')).toBeNull()
+    expect(container.querySelector('.streaming-caret-inline')).toBeTruthy()
     expect(screen.getByText('Partial **bold')).toBeTruthy()
 
     rerender(

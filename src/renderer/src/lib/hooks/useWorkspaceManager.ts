@@ -29,8 +29,15 @@ const ACTIVE_RUNS_WARN_INTERVAL_MS = 60_000
 const ORPHAN_SYNC_DEBOUNCE_MS = 600
 const OPEN_RUN_TAB_LIMIT = 10
 /** Cap orphan IPC buffers for runIds not yet mapped to a controller. */
-const ORPHAN_EVENT_BUFFER_MAX = 64
+const ORPHAN_EVENT_BUFFER_MAX = 128
 const ORPHAN_APPROVAL_BUFFER_MAX = 16
+/** Prefer dropping these when the orphan buffer is full — keep terminals and tool chrome. */
+const ORPHAN_DROPPABLE_TYPES = new Set<AgentEvent['type']>([
+  'text_delta',
+  'thinking_delta',
+  'step_usage',
+  'context_usage'
+])
 const UI_PERSIST_DEBOUNCE_MS = 300
 const LIST_RUNS_DEBOUNCE_MS = 300
 
@@ -263,7 +270,9 @@ export function useWorkspaceManager() {
     if (forgottenRunIdsRef.current.has(runId)) return
     const buffered = eventBufferRef.current.get(runId) ?? []
     if (buffered.length >= ORPHAN_EVENT_BUFFER_MAX) {
-      buffered.shift()
+      const droppableIdx = buffered.findIndex((ev) => ORPHAN_DROPPABLE_TYPES.has(ev.type))
+      if (droppableIdx >= 0) buffered.splice(droppableIdx, 1)
+      else buffered.shift()
     }
     buffered.push(event)
     eventBufferRef.current.set(runId, buffered)
@@ -396,7 +405,6 @@ export function useWorkspaceManager() {
         onRunIdAssigned,
         onTerminal
       })
-      controller.subscribe(bump)
       controllersRef.current.set(key, controller)
       if (runId) registerRunId(runId, workspacePath)
       return controller
@@ -515,6 +523,7 @@ export function useWorkspaceManager() {
 
   const pollActiveRuns = useCallback(async (): Promise<void> => {
     if (!window.vyotiq?.listActiveRuns) return
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
     const res = await window.vyotiq.listActiveRuns()
     if (!res.ok) {
       const now = Date.now()
@@ -525,11 +534,21 @@ export function useWorkspaceManager() {
       return
     }
     const prevActive = activeRunsRef.current
-    activeRunsRef.current = res.data
-    setActiveRuns(res.data)
+    const nextActive = res.data
+    const activeChanged =
+      prevActive.length !== nextActive.length ||
+      prevActive.some(
+        (entry, i) =>
+          entry.runId !== nextActive[i]?.runId ||
+          !workspacePathsEqual(entry.workspacePath, nextActive[i]!.workspacePath)
+      )
+    activeRunsRef.current = nextActive
+    if (activeChanged) {
+      setActiveRuns(nextActive)
+    }
     for (const entry of prevActive) {
       if (
-        res.data.some(
+        nextActive.some(
           (r) => r.runId === entry.runId && workspacePathsEqual(r.workspacePath, entry.workspacePath)
         )
       ) {
@@ -537,8 +556,8 @@ export function useWorkspaceManager() {
       }
       void refreshRunsRef.current(entry.workspacePath)
     }
-    const activeIds = new Set(res.data.map((entry) => entry.runId))
-    await reattachActiveRuns(res.data)
+    const activeIds = new Set(nextActive.map((entry) => entry.runId))
+    await reattachActiveRuns(nextActive)
     for (const [key, ctrl] of controllersRef.current.entries()) {
       const id = ctrl.runId
       if (!id) continue
@@ -576,7 +595,7 @@ export function useWorkspaceManager() {
       }, ORPHAN_SYNC_DEBOUNCE_MS)
       orphanSyncTimersRef.current.set(key, timerId)
     }
-    bump()
+    if (activeChanged) bump()
   }, [reattachActiveRuns, bump])
 
   const applyRegistry = useCallback((state: WorkspacesState) => {
@@ -745,10 +764,15 @@ export function useWorkspaceManager() {
     const onFocus = (): void => {
       void pollActiveRuns()
     }
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'visible') void pollActiveRuns()
+    }
     window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisibility)
     return () => {
       window.clearInterval(id)
       window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisibility)
       for (const timer of orphanSyncTimersRef.current.values()) {
         window.clearTimeout(timer)
       }
@@ -1037,12 +1061,12 @@ export function useWorkspaceManager() {
   )
 
   const subscribeActiveController = useCallback(
-    (onStoreChange: () => void) => activeController?.subscribe(onStoreChange) ?? (() => {}),
+    (onStoreChange: () => void) => activeController?.subscribeMeta(onStoreChange) ?? (() => {}),
     [activeController]
   )
 
   const getActiveControllerRevision = useCallback(
-    () => activeController?.getRevision() ?? 0,
+    () => activeController?.getMetaRevision() ?? 0,
     [activeController]
   )
 
@@ -1066,7 +1090,10 @@ export function useWorkspaceManager() {
         runTerminalTick: activeController.runTerminalTick,
         pendingRun: activeController.pendingRun,
         transcriptLoading: activeController.transcriptLoading,
-        collapsedTurnIndices: activeController.collapsedTurnIndices
+        collapsedTurnIndices: activeController.collapsedTurnIndices,
+        subscribeItems: activeController.subscribeItems.bind(activeController),
+        getItemsRevision: activeController.getItemsRevision.bind(activeController),
+        getItems: () => activeController.items
       }
     : {
         items: [] as ChatStreamController['items'],
@@ -1081,7 +1108,10 @@ export function useWorkspaceManager() {
         runTerminalTick: 0,
         pendingRun: false,
         transcriptLoading: false,
-        collapsedTurnIndices: [] as number[]
+        collapsedTurnIndices: [] as number[],
+        subscribeItems: (_listener: () => void) => () => {},
+        getItemsRevision: () => 0,
+        getItems: () => [] as ChatStreamController['items']
       }
 
   const collapsedTurns = useMemo(
@@ -1159,7 +1189,8 @@ export function useWorkspaceManager() {
             reset: activeController.reset.bind(activeController),
             loadTranscript: activeController.loadTranscript.bind(activeController),
             loadToolContent: activeController.loadToolContent.bind(activeController),
-            clearError: activeController.clearError.bind(activeController)
+            clearError: activeController.clearError.bind(activeController),
+            applyManualCompaction: activeController.applyManualCompaction.bind(activeController)
           }
         : null,
     [activeController]

@@ -1,4 +1,5 @@
 import { getToolHeaderMeta } from '../toolUi'
+import { truncateText } from '../toolUi/parsers/common'
 import { mapToolGroupProps } from './toolGroupAdapter'
 import type { TranscriptRow } from './transcriptRows'
 
@@ -7,16 +8,17 @@ export type RunActivityPhase =
   | { kind: 'working' }
   | { kind: 'thinking' }
   | { kind: 'writing' }
+  | { kind: 'awaiting_approval' }
   | { kind: 'tool'; label: string; detail?: string }
 
-const MAX_DETAIL_CHARS = 40
+/** Match tool-group subtitle truncation so timeline detail agrees with chrome. */
+const MAX_DETAIL_CHARS = 80
 
 function truncateDetail(text: string | undefined): string | undefined {
   if (!text) return undefined
   const trimmed = text.trim()
   if (!trimmed) return undefined
-  if (trimmed.length <= MAX_DETAIL_CHARS) return trimmed
-  return `${trimmed.slice(0, MAX_DETAIL_CHARS - 1)}…`
+  return truncateText(trimmed, MAX_DETAIL_CHARS)
 }
 
 function toolPhaseFromCard(row: Extract<TranscriptRow, { kind: 'card' }>): RunActivityPhase {
@@ -46,21 +48,23 @@ function toolPhaseFromActivity(row: Extract<TranscriptRow, { kind: 'activity' }>
     }
   }
 
-  const runningTool = runningTools[runningTools.length - 1]
-  let detail: string | undefined
-  if (runningTool && props.singleTool) {
+  if (props.singleTool && runningTools[0]) {
+    const runningTool = runningTools[0]
     const meta = getToolHeaderMeta(runningTool.tool, {
       subagent: runningTool.subagent,
       subagentContextUsage: runningTool.subagentContextUsage
     })
-    detail = truncateDetail(meta.target)
-  } else if (runningTool && props.summary) {
-    detail = truncateDetail(props.summary)
+    return {
+      kind: 'tool',
+      label: props.runningLabel,
+      detail: truncateDetail(meta.target)
+    }
   }
+
   return {
     kind: 'tool',
     label: props.runningLabel,
-    detail
+    detail: truncateDetail(props.summary)
   }
 }
 
@@ -74,6 +78,8 @@ export function formatRunActivityLabel(phase: RunActivityPhase): string {
       return 'Thinking'
     case 'writing':
       return 'Writing'
+    case 'awaiting_approval':
+      return 'Awaiting approval'
     case 'tool':
       return phase.detail ? `${phase.label} ${phase.detail}` : phase.label
     default: {
@@ -127,6 +133,9 @@ export function deriveRunActivity(
     (row) => row.kind === 'thinking' && row.item.thinkingStreaming === true
   )
   if (streamingThinking || opts?.hiddenThinkingStreaming) return { kind: 'thinking' }
+
+  const pendingApproval = lastActiveRow(turnRows, (row) => row.kind === 'approval')
+  if (pendingApproval) return { kind: 'awaiting_approval' }
 
   if (pendingRun) {
     // Between agent steps the turn already has work rows; keep "Working", not "Planning".

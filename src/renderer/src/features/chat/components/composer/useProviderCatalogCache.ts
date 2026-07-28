@@ -6,12 +6,23 @@ type CacheEntry = {
   models: ModelInfo[] | null
   warning: string | null
   loading: boolean
+  /** Set when listModels failed so transient errors can expire. */
+  failedAt?: number
 }
 
 const UNAVAILABLE: CacheEntry = {
   models: null,
   warning: 'Models API unavailable',
   loading: false
+}
+
+/** Allow another fetch after a failed catalog load without spinning forever. */
+const ERROR_RETRY_MS = 30_000
+
+function isRetryableFailure(entry: CacheEntry): boolean {
+  if (entry.loading || entry.models) return false
+  if (!entry.warning || entry.failedAt == null) return false
+  return Date.now() - entry.failedAt >= ERROR_RETRY_MS
 }
 
 export function useProviderCatalogCache(
@@ -29,10 +40,12 @@ export function useProviderCatalogCache(
 
   const loadProvider = useCallback(
     async (provider: ProviderId, opts?: { forceRefresh?: boolean }): Promise<CacheEntry> => {
-      // A settled entry ends the load, success or failure. Retrying a failure here would
-      // re-render, re-run the caller's effect, and spin forever.
+      // Settled successes stick. Failures stick briefly, then expire so a later
+      // provider browse / remount can recover without force-refresh loops.
       const existing = cacheRef.current[provider]
-      if (!opts?.forceRefresh && existing && !existing.loading) return existing
+      if (!opts?.forceRefresh && existing && !existing.loading && !isRetryableFailure(existing)) {
+        return existing
+      }
 
       const pending = inflight.current.get(provider)
       if (pending && !opts?.forceRefresh) return pending
@@ -60,7 +73,12 @@ export function useProviderCatalogCache(
 
         const entry: CacheEntry = res.ok
           ? { models: res.data.models, warning: res.data.warning ?? null, loading: false }
-          : { models: null, warning: res.error, loading: false }
+          : {
+              models: null,
+              warning: res.error,
+              loading: false,
+              failedAt: Date.now()
+            }
         write(provider, entry)
         return entry
       })()

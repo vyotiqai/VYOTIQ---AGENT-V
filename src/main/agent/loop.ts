@@ -34,6 +34,7 @@ import {
   estimateTextTokens,
   ensureMemoryLayout,
   promoteCompactionToMemory,
+  preserveRecentMessages,
   trimToolsToBudget,
   type CompactionRecord
 } from './context'
@@ -76,7 +77,7 @@ import {
 import { toolResultEventForIpc, toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
 import { AGENT_TOOLS } from './types'
 import { listMcpToolDefinitions, parseMcpToolName, syncMcpServers } from './mcp'
-import { resolveEffectiveMcpServers } from '../marketplace/resolve'
+import { resolveEffectiveMcpServers, resolveMcpServersForSessionMap } from '../marketplace/resolve'
 import { buildSkillsSection, loadEnabledSkills, loadPluginRules } from './skills'
 import { isMcpToolPermitted } from '../../shared/utils/mcpToolPolicy'
 
@@ -433,29 +434,9 @@ export async function* runAgent(input: {
       return
     }
 
-    // Workspace marketplace overrides apply only when the workspace override
-    // toggle is on (same gate as resolveEffectiveSettings).
-    const marketplaceOverrides = override?.useOverride
-      ? override.marketplaceOverrides
-      : undefined
-    // Keep the global MCP session map on globally-enabled servers so a workspace
-    // Force-off cannot disconnect MCP for every other workspace / concurrent run.
-    await syncMcpServers(resolveEffectiveMcpServers())
-    const runMcpServers = resolveEffectiveMcpServers(marketplaceOverrides)
-    const runEnabledMcpIds = new Set(
-      runMcpServers.filter((s) => s.enabled).map((s) => s.id)
-    )
-    const mcpToolPolicies = new Map(
-      runMcpServers
-        .filter((s) => s.enabled)
-        .map((s) => [
-          s.id,
-          {
-            ...(s.allowedTools?.length ? { allowedTools: s.allowedTools } : {}),
-            ...(s.deniedTools?.length ? { deniedTools: s.deniedTools } : {})
-          }
-        ])
-    )
+    // Marketplace Force on/off applies from marketplaceOverrides even when the
+    // provider/model workspace override toggle is off.
+    const marketplaceOverrides = override?.marketplaceOverrides
 
     const enabledSkills = loadEnabledSkills(marketplaceOverrides)
     const skillsSection = buildSkillsSection(
@@ -464,31 +445,77 @@ export async function* runAgent(input: {
     )
     const pluginRulesSection = loadPluginRules(marketplaceOverrides)
 
-    const mcpToolDefs = listMcpToolDefinitions().filter((t) => {
-      const parsed = parseMcpToolName(t.name)
-      if (parsed == null || !runEnabledMcpIds.has(parsed.serverId)) return false
-      const policy = mcpToolPolicies.get(parsed.serverId)
-      if (policy && !isMcpToolPermitted(parsed.toolName, policy)) return false
-      return true
-    })
-    const allToolDefs =
-      modelInfo.supportsTools !== false ? [...AGENT_TOOLS, ...mcpToolDefs] : []
-    const toolBudget = allocateBudget(modelInfo).tools
-    const trimmedTools = trimToolsToBudget(allToolDefs, toolBudget)
-    let toolDefs = trimmedTools.tools.map((t) => ({
-      name: t.name,
-      description: t.description,
-      parameters: t.parameters as Record<string, unknown>
-    }))
-    let toolsJsonEstimate = trimmedTools.estimate
-    const omittedMcpHint = loopHintForOmittedMcpTools(trimmedTools.omittedMcpNames)
+    let runEnabledMcpIds = new Set<string>()
+    let mcpToolPolicies = new Map<
+      string,
+      { allowedTools?: string[]; deniedTools?: string[] }
+    >()
+    let toolDefs: { name: string; description: string; parameters: Record<string, unknown> }[] = []
+    let toolsJsonEstimate = 0
+    let omittedMcpHint: string | undefined
+
+    const refreshMcpToolsForStep = async (): Promise<void> => {
+      // Session map unions every open workspace so Force-off only disconnects when
+      // no workspace still needs the server. Re-run each step so mid-run enable /
+      // reconnect is visible to the model on the next provider call.
+      await syncMcpServers(resolveMcpServersForSessionMap())
+      const runMcpServers = resolveEffectiveMcpServers(marketplaceOverrides)
+      runEnabledMcpIds = new Set(runMcpServers.filter((s) => s.enabled).map((s) => s.id))
+      mcpToolPolicies = new Map(
+        runMcpServers
+          .filter((s) => s.enabled)
+          .map((s) => [
+            s.id,
+            {
+              ...(s.allowedTools?.length ? { allowedTools: s.allowedTools } : {}),
+              ...(s.deniedTools?.length ? { deniedTools: s.deniedTools } : {})
+            }
+          ])
+      )
+      const mcpToolDefs = listMcpToolDefinitions().filter((t) => {
+        const parsed = parseMcpToolName(t.name)
+        if (parsed == null || !runEnabledMcpIds.has(parsed.serverId)) return false
+        const policy = mcpToolPolicies.get(parsed.serverId)
+        if (policy && !isMcpToolPermitted(parsed.toolName, policy)) return false
+        return true
+      })
+      const allToolDefs =
+        modelInfo.supportsTools !== false ? [...AGENT_TOOLS, ...mcpToolDefs] : []
+      const toolBudget = allocateBudget(modelInfo).tools
+      const trimmedTools = trimToolsToBudget(allToolDefs, toolBudget)
+      toolDefs = trimmedTools.tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters as Record<string, unknown>
+      }))
+      toolsJsonEstimate = trimmedTools.estimate
+      omittedMcpHint = loopHintForOmittedMcpTools(trimmedTools.omittedMcpNames)
+    }
+
+    await refreshMcpToolsForStep()
     const failedToolKeys = new Map<string, number>()
     let consecutiveToolFailureSteps = 0
+    let truncationContinues = 0
+    const MAX_TRUNCATION_CONTINUES = 2
+    const maxAgentSteps = Math.max(1, settings.maxAgentSteps ?? DEFAULT_SETTINGS.maxAgentSteps)
 
     while (true) {
       if (controller.signal.aborted) break
+      if (step >= maxAgentSteps) {
+        const msg = `Stopped after reaching the max agent step limit (${maxAgentSteps}).`
+        logger.warn(msg, { scope: 'agent', code: 'AGENT_MAX_STEPS', correlationId: runId, step })
+        const errEv: AgentEvent = { type: 'error', runId, message: msg, code: 'AGENT_MAX_STEPS' }
+        appendEvent(runDir, errEv)
+        yield errEv
+        yield { type: 'status', runId, status: 'error' }
+        writeStatus({ status: 'error' })
+        appendEvent(runDir, { type: 'status', runId, status: 'error' })
+        return
+      }
       step++
       writeStatus({ step, status: 'running' })
+      // Steps after the first pick up MCP servers enabled/reconnected mid-run.
+      if (step > 1) await refreshMcpToolsForStep()
 
       let assistantText = ''
       let thinkingText = ''
@@ -497,8 +524,29 @@ export async function* runAgent(input: {
       let stepStopReason: StopReason | undefined
       let stepMalformedChunks = 0
       const toolCalls: ToolCall[] = []
+      const liveForwardedToolIds = new Set<string>()
+      const persistedLiveToolIds = new Set<string>()
       const thinkingEnabled =
         settings.thinkingEnabled && (modelInfo.supportsThinking !== false)
+
+      const persistLiveToolChrome = (
+        toolCallId: string,
+        name: string | undefined,
+        argumentsDelta: string
+      ): void => {
+        // One snapshot per id once the name is known — enough for reattach/hydrate
+        // without writing every argument delta to events.jsonl.
+        if (!runDir || persistedLiveToolIds.has(toolCallId)) return
+        if (!name || name === 'tool') return
+        persistedLiveToolIds.add(toolCallId)
+        appendEvent(runDir, {
+          type: 'tool_call_delta',
+          runId,
+          toolCallId,
+          name,
+          argumentsDelta
+        })
+      }
 
       const priorSummary = compaction?.summary
       const contract = await readContractAsync(runDir)
@@ -608,6 +656,7 @@ export async function* runAgent(input: {
         stepStopReason = undefined
         stepMalformedChunks = 0
         toolCalls.length = 0
+        liveForwardedToolIds.clear()
 
         let retryStream = false
         try {
@@ -658,15 +707,35 @@ export async function* runAgent(input: {
             }
           } else if (chunk.type === 'tool_call_delta' && chunk.toolCallDelta) {
             const delta = chunk.toolCallDelta
+            const toolCallId = delta.id ?? `pending_${delta.index}`
+            liveForwardedToolIds.add(toolCallId)
+            const argumentsDelta = delta.arguments ?? ''
+            persistLiveToolChrome(toolCallId, delta.name, argumentsDelta)
             yield {
               type: 'tool_call_delta',
               runId,
-              toolCallId: delta.id ?? `pending_${delta.index}`,
+              toolCallId,
               name: delta.name,
-              argumentsDelta: delta.arguments ?? ''
+              argumentsDelta
             }
           } else if (chunk.type === 'tool_call' && chunk.toolCall) {
             toolCalls.push(chunk.toolCall)
+            // Providers that only emit complete tool_call chunks (e.g. Gemini)
+            // never produce tool_call_delta; live-forward so the UI can show
+            // tool chrome before assistant_message. Args go out once per id so
+            // applyToolCallDelta does not concatenate the full JSON twice.
+            const tc = chunk.toolCall
+            const already = liveForwardedToolIds.has(tc.id)
+            liveForwardedToolIds.add(tc.id)
+            const argumentsDelta = already ? '' : (tc.arguments ?? '')
+            persistLiveToolChrome(tc.id, tc.name, argumentsDelta || tc.arguments || '')
+            yield {
+              type: 'tool_call_delta',
+              runId,
+              toolCallId: tc.id,
+              name: tc.name,
+              argumentsDelta
+            }
           } else if (chunk.type === 'done') {
             if (chunk.reasoningState) stepReasoningState = chunk.reasoningState
             if (chunk.stopReason) stepStopReason = chunk.stopReason
@@ -707,7 +776,7 @@ export async function* runAgent(input: {
                 ...(assembled.overflow ? { overflow: true } : {}),
                 layers: assembled.layers
               }
-              appendEvent(runDir, providerContextEv)
+              // Live UI still needs context_usage; skip a second disk write for the same step.
               yield providerContextEv
               if (chunk.usage.cachedInputTokens && chunk.usage.cachedInputTokens > 0) {
                 logger.info('Prompt cache hit', {
@@ -722,11 +791,24 @@ export async function* runAgent(input: {
             }
             if (chunk.compaction?.trim()) {
               const summary = chunk.compaction.trim()
+              const keepRecent = settings.keepRecentTurns ?? DEFAULT_SETTINGS.keepRecentTurns
+              const historyBudget = allocateBudget(modelInfo).history
+              const beforeLen = messages.length
+              const kept = preserveRecentMessages(
+                messages,
+                keepRecent,
+                historyBudget,
+                modelInfo
+              )
+              const dropped = Math.max(0, beforeLen - kept.length)
+              if (dropped > 0) {
+                foldedMessages += dropped
+                messages = kept
+              }
               const record: CompactionRecord = {
                 summary,
                 createdAt: new Date().toISOString(),
                 tokenEstimate: estimateTextTokens(summary),
-                // Preserve the local watermark so restart does not re-fold prefix.
                 ...(foldedMessages > 0
                   ? { foldedMessages }
                   : compaction?.foldedMessages != null
@@ -873,6 +955,29 @@ export async function* runAgent(input: {
         yield assistantMsgEv
 
         const incomplete = classifyIncompleteTurn(stepStopReason, assistantText, thinkingText)
+        if (
+          incomplete === 'truncated' &&
+          truncationContinues < MAX_TRUNCATION_CONTINUES &&
+          !controller.signal.aborted
+        ) {
+          truncationContinues += 1
+          logger.info('Auto-continuing after truncation', {
+            scope: 'agent',
+            correlationId: runId,
+            step,
+            truncationContinues
+          })
+          const continueEv: AgentEvent = {
+            type: 'incomplete',
+            runId,
+            reason: 'truncated',
+            step,
+            message: `Output was truncated; continuing automatically (${truncationContinues}/${MAX_TRUNCATION_CONTINUES})…`
+          }
+          appendEvent(runDir, continueEv)
+          yield continueEv
+          continue
+        }
         if (incomplete) {
           const incompleteEv: AgentEvent = {
             type: 'incomplete',

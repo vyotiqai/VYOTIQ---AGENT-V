@@ -7,7 +7,10 @@ import type {
 } from '../../shared/ipc'
 import { VyotiqMcpManifestSchema, VyotiqPluginManifestSchema } from '../../shared/ipc'
 import { effectiveMarketplaceEnabled } from '../../shared/domain/marketplaceEnablement'
+import { formatError } from '../../shared/errors'
+import { logger } from '../../shared/logger'
 import { getSettings } from '../settings/settings'
+import { findWorkspaceSettingsOverride, readWorkspacesState } from '../workspace/workspaces'
 import { readMarketplaceIndex } from './indexStore'
 import { marketplacePackagesRoot } from './paths'
 import { mcpServerFromManifest } from './install'
@@ -16,19 +19,67 @@ function packageRoot(item: MarketplaceInstalledItem): string {
   return join(marketplacePackagesRoot(), item.packagePath)
 }
 
+type ResolveCacheEntry = {
+  fingerprint: string
+  servers: McpServer[]
+}
+
+let effectiveCache: ResolveCacheEntry | null = null
+let sessionMapCache: ResolveCacheEntry | null = null
+
+function overridesFingerprint(overrides?: MarketplaceOverrides | null): string {
+  if (!overrides) return ''
+  return JSON.stringify(overrides)
+}
+
+function marketplaceIndexFingerprint(): string {
+  const index = readMarketplaceIndex()
+  return index.items.map((i) => `${i.id}:${i.version}:${i.enabled}:${i.kind}`).join('|')
+}
+
+function settingsMcpFingerprint(): string {
+  const settings = getSettings()
+  return (settings.mcpServers ?? [])
+    .map(
+      (s) =>
+        `${s.id}:${s.enabled}:${s.source ?? ''}:${s.command ?? ''}:${(s.args ?? []).join(',')}:${s.url ?? ''}`
+    )
+    .join('|')
+}
+
+/** Invalidate MCP resolve caches after marketplace/settings mutations. */
+export function invalidateMcpResolveCache(): void {
+  effectiveCache = null
+  sessionMapCache = null
+}
+
+/** @internal */
+export function clearMcpResolveCacheForTests(): void {
+  invalidateMcpResolveCache()
+}
+
 /**
  * Build the MCP server list: manual settings entries + marketplace MCP packages +
  * MCP nested in enabled plugins. When `marketplaceOverrides` is set, it applies
  * to marketplace-sourced servers (standalone + plugin-nested) and to manual
  * entries (Marketplace is the sole MCP management UI).
  *
- * Callers that manage the global session map must pass no overrides so a
- * workspace Force-off cannot disconnect MCP for other workspaces. Per-run tool
- * filtering should call this again with that workspace's overrides.
+ * Per-run tool filtering should call this with that workspace's overrides.
+ * Global session connect/disconnect should use `resolveMcpServersForSessionMap`
+ * so Force-off disconnects only when no workspace still needs the server.
  */
 export function resolveEffectiveMcpServers(
   marketplaceOverrides?: MarketplaceOverrides | null
 ): McpServer[] {
+  const fingerprint = [
+    settingsMcpFingerprint(),
+    marketplaceIndexFingerprint(),
+    overridesFingerprint(marketplaceOverrides)
+  ].join('::')
+  if (effectiveCache?.fingerprint === fingerprint) {
+    return effectiveCache.servers.map((s) => ({ ...s }))
+  }
+
   const settings = getSettings()
   const index = readMarketplaceIndex()
   const byId = new Map<string, McpServer>()
@@ -89,8 +140,12 @@ export function resolveEffectiveMcpServers(
             }
           : {})
       })
-    } catch {
-      // skip invalid
+    } catch (err) {
+      logger.warn('Skipping invalid marketplace MCP package', {
+        scope: 'marketplace',
+        packageId: item.id,
+        err: formatError(err)
+      })
     }
   }
 
@@ -145,12 +200,62 @@ export function resolveEffectiveMcpServers(
           packageVersion: item.version
         })
       }
-    } catch {
-      // skip invalid plugin
+    } catch (err) {
+      logger.warn('Skipping invalid marketplace plugin MCP', {
+        scope: 'marketplace',
+        packageId: item.id,
+        err: formatError(err)
+      })
     }
   }
 
-  return [...byId.values()]
+  const servers = [...byId.values()]
+  effectiveCache = { fingerprint, servers }
+  return servers.map((s) => ({ ...s }))
+}
+
+/**
+ * MCP servers that should stay connected in the global session map: any server
+ * enabled for at least one open workspace (honoring Force on/off), or globally
+ * when no workspaces are registered.
+ */
+export function resolveMcpServersForSessionMap(): McpServer[] {
+  const state = readWorkspacesState()
+  const openPaths = state.openPaths ?? []
+  const overrideFp = openPaths
+    .map((path) => {
+      const override = findWorkspaceSettingsOverride(state, path)
+      return `${path}:${overridesFingerprint(override?.marketplaceOverrides ?? null)}`
+    })
+    .join('|')
+  const fingerprint = [
+    settingsMcpFingerprint(),
+    marketplaceIndexFingerprint(),
+    openPaths.join(','),
+    overrideFp
+  ].join('::')
+  if (sessionMapCache?.fingerprint === fingerprint) {
+    return sessionMapCache.servers.map((s) => ({ ...s }))
+  }
+
+  if (openPaths.length === 0) {
+    const servers = resolveEffectiveMcpServers().filter((s) => s.enabled)
+    sessionMapCache = { fingerprint, servers }
+    return servers.map((s) => ({ ...s }))
+  }
+
+  const byId = new Map<string, McpServer>()
+  for (const path of openPaths) {
+    const override = findWorkspaceSettingsOverride(state, path)
+    const marketplaceOverrides = override?.marketplaceOverrides ?? null
+    for (const server of resolveEffectiveMcpServers(marketplaceOverrides)) {
+      if (!server.enabled) continue
+      byId.set(server.id, { ...server, enabled: true })
+    }
+  }
+  const servers = [...byId.values()]
+  sessionMapCache = { fingerprint, servers }
+  return servers.map((s) => ({ ...s }))
 }
 
 /** Standalone skill packages that are effectively enabled (not plugin containers). */

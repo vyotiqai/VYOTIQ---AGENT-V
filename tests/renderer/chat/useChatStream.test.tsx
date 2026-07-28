@@ -759,6 +759,42 @@ describe('useChatStream', () => {
     expect(assistant?.kind === 'message' ? assistant.content : null).toBe('Checking routes.')
   })
 
+  it('scrubs pending leaked tool text before flush when tool_call_delta arrives', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('audit')
+    })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      // Schedule text without waiting for RAF so it stays in pendingTextDelta.
+      handler?.({
+        type: 'text_delta',
+        runId: 'run-1',
+        text: 'tool {"path":"routes.ts"}'
+      })
+      handler?.({
+        type: 'tool_call_delta',
+        runId: 'run-1',
+        toolCallId: 'c1',
+        name: 'read',
+        argumentsDelta: '{"path":"routes.ts"}'
+      })
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    })
+
+    const assistant = result.current.items.find(
+      (i) => i.kind === 'message' && i.role === 'assistant'
+    )
+    const tools = result.current.items.filter((i) => i.kind === 'tool')
+    expect(assistant?.kind === 'message' ? assistant.content : '').toBe('')
+    expect(tools).toHaveLength(1)
+    expect(tools[0]).toMatchObject({
+      tool: { name: 'read', status: 'running' }
+    })
+  })
+
   it('does not stack later assistant text before orphaned live tools', async () => {
     const { result } = renderHook(() => useChatStream('/ws'))
 
@@ -1187,6 +1223,141 @@ describe('useChatStream', () => {
     expect(tools[0]).toMatchObject({
       id: 'call-drifted',
       tool: { id: 'call-drifted', name: 'read', status: 'done', content: 'body' }
+    })
+  })
+
+  it('promotes presentation after a nameless first tool_call_delta', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('run tests')
+    })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({
+        type: 'tool_call_delta',
+        runId: 'run-1',
+        toolCallId: 'pending_0',
+        argumentsDelta: ''
+      })
+      handler?.({
+        type: 'tool_call_delta',
+        runId: 'run-1',
+        toolCallId: 'pending_0',
+        name: 'terminal',
+        argumentsDelta: '{"command":"npm test"}'
+      })
+      handler?.({
+        type: 'assistant_message',
+        runId: 'run-1',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'terminal', arguments: '{"command":"npm test"}' }]
+      })
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        toolCallId: 'c1',
+        name: 'terminal',
+        summary: 'npm test'
+      })
+    })
+
+    const tool = result.current.items.find((i) => i.kind === 'tool')
+    expect(tool?.kind === 'tool' ? tool.tool.presentation : null).toBe('prominent')
+    const rows = buildTranscriptRows(result.current.items)
+    expect(rows.some((row) => row.kind === 'card')).toBe(true)
+  })
+
+  it('does not attach a drifted tool_result to the wrong parallel same-name row', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('read both')
+    })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        toolCallId: 'r1',
+        name: 'read',
+        summary: 'a.ts'
+      })
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        toolCallId: 'r2',
+        name: 'read',
+        summary: 'b.ts'
+      })
+      handler?.({
+        type: 'tool_result',
+        runId: 'run-1',
+        toolCallId: 'unknown-id',
+        name: 'read',
+        summary: 'b.ts',
+        ok: true,
+        content: 'b-body'
+      })
+    })
+
+    const tools = result.current.items.filter((i) => i.kind === 'tool')
+    expect(tools).toHaveLength(2)
+    expect(tools[0]).toMatchObject({
+      id: 'r1',
+      tool: { name: 'read', summary: 'a.ts', status: 'running' }
+    })
+    expect(tools[1]).toMatchObject({
+      id: 'unknown-id',
+      tool: { name: 'read', summary: 'b.ts', status: 'done', content: 'b-body' }
+    })
+  })
+
+  it('FIFO-completes the oldest same-name row when tool_result id and summary are ambiguous', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('read both')
+    })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        toolCallId: 'r1',
+        name: 'read',
+        summary: 'file.ts'
+      })
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        toolCallId: 'r2',
+        name: 'read',
+        summary: 'file.ts'
+      })
+      handler?.({
+        type: 'tool_result',
+        runId: 'run-1',
+        toolCallId: 'drifted',
+        name: 'read',
+        summary: 'file.ts',
+        ok: true,
+        content: 'first-body'
+      })
+    })
+
+    const tools = result.current.items.filter((i) => i.kind === 'tool')
+    expect(tools).toHaveLength(2)
+    expect(tools[0]).toMatchObject({
+      id: 'drifted',
+      tool: { name: 'read', summary: 'file.ts', status: 'done', content: 'first-body' }
+    })
+    expect(tools[1]).toMatchObject({
+      id: 'r2',
+      tool: { name: 'read', summary: 'file.ts', status: 'running' }
     })
   })
 

@@ -563,11 +563,8 @@ export function createOpenAiCompatibleProvider(
         const wholeCalls =
           (delta?.tool_calls as Array<Record<string, unknown>> | undefined) ??
           (message?.tool_calls as Array<Record<string, unknown>> | undefined)
-
-        if (typeof delta?.content === 'string' && delta.content) {
-          yield* emitThinkingDoneIfNeeded()
-          yield { type: 'text', text: delta.content }
-        }
+        const textContent =
+          typeof delta?.content === 'string' && delta.content ? delta.content : null
 
         const reasoningDelta =
           (typeof delta?.reasoning_content === 'string' ? delta.reasoning_content : undefined) ??
@@ -594,6 +591,8 @@ export function createOpenAiCompatibleProvider(
           reasoningDetails = message.reasoning_details
         }
 
+        // Prefer tool deltas before text in the same SSE frame so the UI can
+        // paint tool chrome without a text-first flash.
         if (wholeCalls) {
           yield* emitThinkingDoneIfNeeded()
           for (const tc of wholeCalls) {
@@ -638,6 +637,11 @@ export function createOpenAiCompatibleProvider(
           }
         }
 
+        if (textContent) {
+          yield* emitThinkingDoneIfNeeded()
+          yield { type: 'text', text: textContent }
+        }
+
         const finish = choices?.[0]?.finish_reason
         if (finish) stopReason = normalizeStopReason(finish)
         if (finish === 'tool_calls' && pending.size > 0) {
@@ -679,8 +683,8 @@ export const openaiProvider: LlmProvider = {
   }),
   async *streamChat(req: ProviderChatRequest): AsyncGenerator<StreamChunk> {
     const useResponses =
-      req.modelInfo?.thinkingApi === 'responses' ||
-      (req.thinking?.enabled && /^(o[34]|gpt-5)/i.test(req.model))
+      req.thinking?.enabled === true &&
+      (req.modelInfo?.thinkingApi === 'responses' || /^(o[34]|gpt-5)/i.test(req.model))
     if (useResponses) {
       yield* streamOpenAiResponses(req)
       return

@@ -92,6 +92,9 @@ type CapturedEvent = {
   content?: string
   code?: string
   message?: string
+  toolCallId?: string
+  name?: string
+  argumentsDelta?: string
 }
 
 async function collect(runId: string, workspace: string): Promise<CapturedEvent[]> {
@@ -122,16 +125,36 @@ describe('runAgent stop-reason classification', () => {
     if (existsSync(workspace)) rmSync(workspace, { recursive: true, force: true })
   })
 
-  it('reports truncation when the provider stops on the output token limit', async () => {
+  it('auto-continues after a truncated step then finishes', async () => {
+    let call = 0
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
-      yield { type: 'text', text: 'half an ans' }
+      call += 1
+      if (call === 1) {
+        yield { type: 'text', text: 'half an ans' }
+        yield { type: 'done', stopReason: 'length' }
+      } else {
+        yield { type: 'text', text: 'wer completed' }
+        yield { type: 'done', stopReason: 'stop' }
+      }
+    })
+
+    const events = await collect('stop-truncated-continue', workspace)
+    expect(call).toBe(2)
+    expect(events.filter((e) => e.type === 'incomplete')).toHaveLength(1)
+    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
+  })
+
+  it('reports truncation when the auto-continue budget is exhausted', async () => {
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'still going' }
       yield { type: 'done', stopReason: 'length' }
     })
 
     const events = await collect('stop-truncated', workspace)
-    const incomplete = events.find((e) => e.type === 'incomplete')
+    const incomplete = events.filter((e) => e.type === 'incomplete')
 
-    expect(incomplete?.reason).toBe('truncated')
+    expect(incomplete.length).toBeGreaterThanOrEqual(1)
+    expect(incomplete[incomplete.length - 1]?.reason).toBe('truncated')
     expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
   })
 
@@ -166,6 +189,73 @@ describe('runAgent stop-reason classification', () => {
 
     expect(events.some((e) => e.type === 'incomplete')).toBe(false)
     expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
+  })
+
+  it('live-forwards tool_call chunks as tool_call_delta before assistant_message', async () => {
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      if (call === 1) {
+        yield { type: 'text', text: 'checking' }
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }
+        }
+        yield { type: 'done', stopReason: 'tool_calls' }
+        return
+      }
+      yield { type: 'text', text: 'done' }
+      yield { type: 'done', stopReason: 'stop' }
+    })
+    executeTool.mockResolvedValue({ ok: true, summary: 'file', content: 'ok' })
+
+    const events = await collect('live-forward-tool', workspace)
+    const deltaIdx = events.findIndex((e) => e.type === 'tool_call_delta')
+    const msgIdx = events.findIndex((e) => e.type === 'assistant_message')
+
+    expect(deltaIdx).toBeGreaterThanOrEqual(0)
+    expect(msgIdx).toBeGreaterThan(deltaIdx)
+    expect(events[deltaIdx]).toMatchObject({
+      type: 'tool_call_delta',
+      toolCallId: 'c1',
+      name: 'read',
+      argumentsDelta: '{"path":"a.ts"}'
+    })
+
+    const eventsPath = join(resolveRunDir(workspace, 'live-forward-tool'), 'events.jsonl')
+    const persisted = readFileSync(eventsPath, 'utf8')
+    expect(persisted).toContain('"type":"tool_call_delta"')
+    expect(persisted).toContain('"toolCallId":"c1"')
+  })
+
+  it('does not concatenate full tool_call args on a second live-forward of the same id', async () => {
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      if (call === 1) {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }
+        }
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }
+        }
+        yield { type: 'done', stopReason: 'tool_calls' }
+        return
+      }
+      yield { type: 'text', text: 'done' }
+      yield { type: 'done', stopReason: 'stop' }
+    })
+    executeTool.mockResolvedValue({ ok: true, summary: 'file', content: 'ok' })
+
+    const events = await collect('live-forward-dedupe', workspace)
+    const deltas = events.filter((e) => e.type === 'tool_call_delta') as Array<{
+      argumentsDelta?: string
+    }>
+
+    expect(deltas[0]?.argumentsDelta).toBe('{"path":"a.ts"}')
+    expect(deltas[1]?.argumentsDelta).toBe('')
   })
 
   it('reports truncation when stopReason is tool_calls but no tools were parsed', async () => {

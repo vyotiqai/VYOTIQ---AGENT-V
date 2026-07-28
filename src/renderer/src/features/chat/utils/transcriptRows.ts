@@ -213,6 +213,59 @@ export function buildTranscriptRows(
   )
 }
 
+/** Fingerprint of a row's visible content for React.memo identity reuse. */
+export function transcriptRowFingerprint(row: TranscriptRow): string {
+  switch (row.kind) {
+    case 'user':
+      return `user:${row.id}:${row.item.content.length}:${row.item.at ?? ''}`
+    case 'turn':
+      return `turn:${row.id}:${row.span.startedAt}:${row.span.endedAt}:${row.span.active}:${row.span.activity ?? ''}`
+    case 'thinking':
+      return `thinking:${row.id}:${row.item.thinking?.length ?? 0}:${row.item.thinkingStreaming ? 1 : 0}:${row.item.thinkingExpanded ?? ''}`
+    case 'text':
+      return `text:${row.id}:${row.item.content.length}:${row.item.streaming ? 1 : 0}:${row.final ? 1 : 0}`
+    case 'activity':
+      return `activity:${row.id}:${row.tools
+        .map(
+          (t) =>
+            `${t.id}:${t.tool.status}:${t.tool.argsPreview?.length ?? 0}:${t.tool.summary}:${t.groupExpanded ?? ''}:${t.toolExpanded ?? ''}`
+        )
+        .join('|')}`
+    case 'card':
+      return `card:${row.id}:${row.item.tool.status}:${row.item.tool.argsPreview?.length ?? 0}:${row.item.tool.summary}:${row.item.toolExpanded ?? ''}:${row.item.groupExpanded ?? ''}`
+    case 'changes':
+      return `changes:${row.id}:${row.files.map((f) => `${f.path}:${f.added}:${f.removed}`).join('|')}`
+    case 'approval':
+      return `approval:${row.id}:${row.approval.requestId}`
+    default: {
+      const _exhaustive: never = row
+      return _exhaustive
+    }
+  }
+}
+
+/**
+ * Reuse previous TranscriptRow object references when fingerprints match so
+ * React.memo(TranscriptRowBlock) can skip historical rows during streaming.
+ */
+export function stabilizeTranscriptRows(
+  previous: readonly TranscriptRow[] | null | undefined,
+  next: TranscriptRow[]
+): TranscriptRow[] {
+  if (!previous?.length) return next
+  const prevById = new Map(previous.map((row) => [row.id, row]))
+  let changed = previous.length !== next.length
+  const out = next.map((row, index) => {
+    const prior = prevById.get(row.id) ?? previous[index]
+    if (prior && prior.kind === row.kind && transcriptRowFingerprint(prior) === transcriptRowFingerprint(row)) {
+      return prior
+    }
+    changed = true
+    return row
+  })
+  return changed ? out : (previous as TranscriptRow[])
+}
+
 /** Tools that write files, and so contribute to a turn's change summary. */
 const WRITING_TOOLS = new Set(['edit', 'multi_edit', 'delete'])
 
@@ -244,7 +297,8 @@ function withChangeSummaries(rows: TranscriptRow[]): TranscriptRow[] {
   let totals = new Map<string, ChangedFile>()
 
   const closeTurn = (): void => {
-    if (turnIndex != null && totals.size > 1) {
+    // A single edit already has its own card; only roll up multi-file turns.
+    if (turnIndex != null && totals.size >= 2) {
       out.push({
         kind: 'changes',
         id: `changes:${turnIndex}`,
@@ -378,8 +432,16 @@ function isRowActive(row: TranscriptRow): boolean {
       return row.item.tool.status === 'running'
     case 'activity':
       return row.tools.some((tool) => tool.tool.status === 'running')
-    default:
+    case 'approval':
+      return true
+    case 'user':
+    case 'turn':
+    case 'changes':
       return false
+    default: {
+      const _exhaustive: never = row
+      return _exhaustive
+    }
   }
 }
 

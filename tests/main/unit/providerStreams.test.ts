@@ -198,6 +198,11 @@ describe('openai responses stream', () => {
     const chunks = await collect(streamOpenAiResponses(baseReq({ model: 'gpt-5' })))
     const deltas = chunks.filter((c) => c.type === 'tool_call_delta')
 
+    expect(deltas[0]?.toolCallDelta).toMatchObject({
+      id: 'call_1',
+      name: 'read',
+      arguments: ''
+    })
     expect(deltas.map((d) => d.toolCallDelta?.arguments).join('')).toBe('{"path":"a.ts"}')
     expect(deltas.every((d) => d.toolCallDelta?.id === 'call_1')).toBe(true)
     expect(chunks.filter((c) => c.type === 'tool_call')).toHaveLength(1)
@@ -250,6 +255,95 @@ describe('anthropic thinking block boundaries', () => {
 
     expect(types.indexOf('thinking_done')).toBeLessThan(types.indexOf('text'))
     expect(chunks.find((c) => c.type === 'thinking_done')?.text).toBe('Plan first.')
+  })
+
+  it('emits tool_call_delta when a tool_use block starts', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseBody([
+          'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read"}}\n\n',
+          'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"a.ts\\"}"}}\n\n',
+          'data: {"type":"content_block_stop","index":0}\n\n',
+          'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n'
+        ])
+      )
+    )
+
+    const chunks = await collect(anthropicProvider.streamChat(baseReq()))
+    const deltas = chunks.filter((c) => c.type === 'tool_call_delta')
+
+    expect(deltas[0]?.toolCallDelta).toMatchObject({
+      id: 'toolu_1',
+      name: 'read',
+      arguments: ''
+    })
+    expect(deltas[1]?.toolCallDelta?.arguments).toBe('{"path":"a.ts"}')
+  })
+})
+
+describe('openai compat tool-before-text ordering', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('yields tool_call_delta before text when both arrive in the same SSE frame', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseBody([
+          'data: {"choices":[{"delta":{"content":"Looking up.","tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{\\"path\\":\\"a.ts\\"}"}}]}}]}\n\n',
+          'data: {"choices":[{"finish_reason":"tool_calls"}]}\n\n'
+        ])
+      )
+    )
+
+    const chunks = await collect(
+      openrouterProvider.streamChat(baseReq({ model: 'deepseek/deepseek-v3' }))
+    )
+    const types = chunks.map((c) => c.type)
+    const toolIdx = types.indexOf('tool_call_delta')
+    const textIdx = types.indexOf('text')
+
+    expect(toolIdx).toBeGreaterThanOrEqual(0)
+    expect(textIdx).toBeGreaterThan(toolIdx)
+  })
+})
+
+describe('gemini mid-stream tool_call', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('yields tool_call when a functionCall part appears mid-stream', async () => {
+    const { geminiProvider } = await import('@main/agent/providers/gemini')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseBody([
+          'data: {"candidates":[{"content":{"parts":[{"text":"Checking."}]}}]}\n\n',
+          'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{"path":"a.ts"},"id":"g1"}}]}}]}\n\n',
+          'data: {"candidates":[{"finishReason":"STOP"}]}\n\n'
+        ])
+      )
+    )
+
+    const chunks = await collect(
+      geminiProvider.streamChat(
+        baseReq({ model: 'gemini-2.0-flash', apiKey: 'test-key', tools: [] })
+      )
+    )
+    const midStreamCalls = chunks.filter((c) => c.type === 'tool_call')
+    const textIdx = chunks.findIndex((c) => c.type === 'text')
+    const firstCallIdx = chunks.findIndex((c) => c.type === 'tool_call')
+
+    expect(midStreamCalls).toHaveLength(1)
+    expect(firstCallIdx).toBeGreaterThan(textIdx)
+    expect(midStreamCalls[0]?.toolCall).toMatchObject({
+      id: 'g1',
+      name: 'read',
+      arguments: '{"path":"a.ts"}'
+    })
   })
 })
 

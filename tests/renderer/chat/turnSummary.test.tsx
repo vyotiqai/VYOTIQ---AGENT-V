@@ -25,7 +25,7 @@ describe('TurnSummary', () => {
       />
     )
 
-    expect(screen.getByRole('button', { name: /^3s$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Collapse turn work, 3s/i })).toBeTruthy()
     expect(document.querySelector('.vy-text-shimmer--active')).toBeTruthy()
   })
 
@@ -75,11 +75,45 @@ describe('TurnSummary', () => {
           active: true,
           activity: { kind: 'planning' }
         }}
-        collapsed={false}
+        collapsed={true}
         onToggle={() => {}}
       />
     )
 
     expect(screen.getByRole('button', { name: /Planning/i })).toBeTruthy()
+  })
+
+  it('shows phase label when expanded before duration is reportable', () => {
+    render(
+      <TurnSummary
+        span={{
+          startedAt: Date.now(),
+          endedAt: null,
+          active: true,
+          activity: { kind: 'thinking' }
+        }}
+        collapsed={false}
+        onToggle={() => {}}
+      />
+    )
+
+    expect(screen.getByRole('button', { name: /Collapse turn work, Thinking/i })).toBeTruthy()
+  })
+
+  it('keeps awaiting approval visible when expanded without duration', () => {
+    render(
+      <TurnSummary
+        span={{
+          startedAt: Date.now(),
+          endedAt: null,
+          active: true,
+          activity: { kind: 'awaiting_approval' }
+        }}
+        collapsed={false}
+        onToggle={() => {}}
+      />
+    )
+
+    expect(screen.getByRole('button', { name: /Awaiting approval/i })).toBeTruthy()
   })
 })

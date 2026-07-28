@@ -325,6 +325,7 @@ function ContextMeterPanel({
 export function ContextMeter({
   usage,
   modelWindow,
+  compactionTriggerRatio,
   onCompact,
   compactDisabled = false,
   className
@@ -332,6 +333,8 @@ export function ContextMeter({
   usage: ContextUsageState | null
   /** Current model context window — realigns stale hydrated events (e.g. 128k fallback). */
   modelWindow?: number | null
+  /** Compaction threshold used when realigning usage against the model window. */
+  compactionTriggerRatio?: number
   /** Summarize the run's older history on demand; omitted when no run exists. */
   onCompact?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
   /** When true, Compact stays visible but disabled (e.g. agent is running). */
@@ -347,7 +350,7 @@ export function ContextMeter({
   const panelId = useId()
   const alignedUsage =
     usage && modelWindow && modelWindow > 0
-      ? alignContextUsageToModelWindow(usage, modelWindow)
+      ? alignContextUsageToModelWindow(usage, modelWindow, compactionTriggerRatio)
       : usage
   const { position } = useDropdownMenu({
     open,

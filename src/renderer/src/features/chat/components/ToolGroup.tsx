@@ -158,18 +158,13 @@ export const ToolGroup = memo(function ToolGroup({
     }
     return (
       <div className={ACTIVITY_ROW} role="group" aria-busy={isPending || undefined}>
-        {isInterrupted ? (
-          <div className="flex items-baseline gap-1.5 px-0 py-0.5 text-xs text-danger">
-            <span>interrupted</span>
-            {summary ? <span className="text-tertiary">{summary}</span> : null}
-          </div>
-        ) : null}
         <CompactRow
           title={nested.title}
           subtitle={nested.subtitle}
           status={nested.status}
           expanded={isToolExpanded}
           hasBody={hasBody}
+          interrupted={isInterrupted}
           onToggle={toggleSingle}
         />
         {hasBody && isToolExpanded ? (
@@ -179,6 +174,7 @@ export const ToolGroup = memo(function ToolGroup({
             subagentContextUsage={item.subagentContextUsage}
             onLoadFullContent={onLoadFullContent}
             mcpServerNames={mcpServerNames}
+            inGroup
           />
         ) : null}
       </div>
@@ -223,7 +219,15 @@ export const ToolGroup = memo(function ToolGroup({
           {tools.map((item) => {
             const nested = nestedById.get(item.id)
             if (!nested) return null
-            const isToolExpanded = expandedToolIds?.has(item.id) ?? false
+            const hasBody = toolHasBody(item.tool, {
+              subagent: item.subagent,
+              subagentContextUsage: item.subagentContextUsage
+            })
+            const defaultExpanded = isPending || hasBody
+            const isToolExpanded =
+              expandedToolIds?.has(item.id) ??
+              item.toolExpanded ??
+              defaultExpanded
             return (
               <NestedToolRow
                 key={item.id}

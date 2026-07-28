@@ -108,6 +108,24 @@ describe('deriveRunActivity', () => {
     expect(phase).toEqual({ kind: 'tool', label: 'Investigating', detail: '2 agents' })
   })
 
+  it('reports awaiting approval when an approval row is pending', () => {
+    const phase = deriveRunActivity([
+      {
+        kind: 'approval',
+        id: 'approval:1',
+        turnIndex: 0,
+        approval: {
+          requestId: 'req-1',
+          toolName: 'edit',
+          summary: 'edit file',
+          argsPreview: '{}',
+          mutating: true
+        }
+      }
+    ])
+    expect(phase).toEqual({ kind: 'awaiting_approval' })
+  })
+
   it('reports planning when pendingRun is true with no rows yet', () => {
     expect(deriveRunActivity([], true)).toEqual({ kind: 'planning' })
   })
@@ -133,5 +151,6 @@ describe('formatRunActivityLabel', () => {
     expect(formatRunActivityLabel({ kind: 'writing' })).toBe('Writing')
     expect(formatRunActivityLabel({ kind: 'planning' })).toBe('Planning')
     expect(formatRunActivityLabel({ kind: 'working' })).toBe('Working')
+    expect(formatRunActivityLabel({ kind: 'awaiting_approval' })).toBe('Awaiting approval')
   })
 })

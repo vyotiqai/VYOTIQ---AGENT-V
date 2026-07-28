@@ -202,7 +202,15 @@ export function duplicatesReasoning(item: UiItem): boolean {
 export function isToolShapedTextLeak(content: string): boolean {
   const trimmed = content.trimStart()
   if (!trimmed) return false
-  return /^tool\s*(\{|[a-z_]+\b)/i.test(trimmed)
+  if (/^tool\s*(\{|[a-z_]+\b)/i.test(trimmed)) return true
+  // Whole buffer is only tool-shaped leak (possibly after whitespace / multiple blobs).
+  if (
+    /\btool\s*(\{|[a-z_]+\b)/i.test(trimmed) &&
+    stripToolShapedAssistantTextForStream(content).trim() === ''
+  ) {
+    return true
+  }
+  return false
 }
 
 /**
@@ -241,6 +249,13 @@ export function stripIncompleteToolPrefix(content: string): string {
   const lineMatch = content.match(/(?:^|\n)(tool\s+[a-z_]+(?:\s+\S[^\n]*)?)$/i)
   if (lineMatch && lineMatch.index !== undefined) {
     const start = lineMatch.index === 0 ? 0 : lineMatch.index + 1
+    return content.slice(0, start).replace(/[ \t]*(?:\r?\n)+$/, '')
+  }
+
+  // Hide a trailing bare `tool` / `tool ` prefix still being typed into the text channel.
+  const bareMatch = content.match(/(?:^|\n)(tool\s*)$/i)
+  if (bareMatch && bareMatch.index !== undefined) {
+    const start = bareMatch.index === 0 ? 0 : bareMatch.index + 1
     return content.slice(0, start).replace(/[ \t]*(?:\r?\n)+$/, '')
   }
 
@@ -406,6 +421,60 @@ export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
   }
 
   return items
+}
+
+/**
+ * Rebuild in-progress tool chrome from persisted live snapshots when messages
+ * do not yet include those tool_calls (mid-stream reattach / remount).
+ */
+export function applyPersistedLiveTools(items: UiItem[], events: PersistedEvent[]): UiItem[] {
+  if (!events.length) return items
+  const existing = new Set(
+    items.filter((item): item is Extract<UiItem, { kind: 'tool' }> => item.kind === 'tool').map((item) => item.id)
+  )
+  const extras: UiItem[] = []
+
+  for (const row of events) {
+    if (!isAgentEvent(row.event)) continue
+    const event = row.event
+    if (event.type === 'tool_call_delta') {
+      if (existing.has(event.toolCallId)) continue
+      const name = event.name && event.name !== 'tool' ? event.name : ''
+      if (!name) continue
+      existing.add(event.toolCallId)
+      const args = event.argumentsDelta || undefined
+      extras.push({
+        kind: 'tool',
+        id: event.toolCallId,
+        at: row.at,
+        tool: {
+          id: event.toolCallId,
+          name,
+          summary: summarizeToolArgs(name, args ?? ''),
+          status: 'running',
+          argsPreview: args
+        }
+      })
+      continue
+    }
+    if (event.type === 'tool_start') {
+      if (existing.has(event.toolCallId)) continue
+      existing.add(event.toolCallId)
+      extras.push({
+        kind: 'tool',
+        id: event.toolCallId,
+        at: row.at,
+        tool: {
+          id: event.toolCallId,
+          name: event.name,
+          summary: event.summary,
+          status: 'running'
+        }
+      })
+    }
+  }
+
+  return extras.length ? [...items, ...extras] : items
 }
 
 function toolResultOk(events: PersistedEvent[]): Map<string, boolean> {

@@ -705,6 +705,39 @@ describe('useWorkspaceManager', () => {
     expect(assistant.content.startsWith(`[${overflow}]`)).toBe(true)
   })
 
+  it('keeps terminal orphan events when the buffer overflows with text deltas', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    const { ORPHAN_EVENT_BUFFER_MAX } = WORKSPACE_MANAGER_LIMITS
+
+    await act(async () => {
+      handler?.({
+        type: 'assistant_message',
+        runId: 'ghost-terminal',
+        content: 'kept-answer',
+        toolCalls: []
+      })
+      for (let i = 0; i < ORPHAN_EVENT_BUFFER_MAX; i++) {
+        handler?.({ type: 'text_delta', runId: 'ghost-terminal', text: `[${i}]` })
+      }
+    })
+
+    await act(async () => {
+      result.current.openRunTab('ghost-terminal')
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    })
+
+    const ctrl = result.current.getRunController('ghost-terminal')
+    const assistant = ctrl?.items.find((i) => i.kind === 'message' && i.role === 'assistant')
+    expect(assistant?.kind).toBe('message')
+    if (assistant?.kind !== 'message') return
+    expect(assistant.content).toContain('kept-answer')
+  })
+
   it('does not resurrect an empty transcript from late events after closing a idle run tab', async () => {
     loadRun.mockResolvedValue({
       ok: true,

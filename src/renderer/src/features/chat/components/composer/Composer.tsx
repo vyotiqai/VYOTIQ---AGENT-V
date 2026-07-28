@@ -133,7 +133,7 @@ export function Composer({
     onSend
   })
 
-  const [catalogLoading, setCatalogLoading] = useState(false)
+  const [refreshingCatalog, setRefreshingCatalog] = useState(false)
   const [browsedProvider, setBrowsedProvider] = useState<ProviderId>(provider)
 
   useEffect(() => {
@@ -148,7 +148,8 @@ export function Composer({
     modelsWarning,
     catalog,
     filterOpts,
-    refreshCatalog
+    refreshCatalog,
+    catalogLoading: catalogFetchLoading
   } = useComposerModels({
     provider,
     model,
@@ -158,6 +159,8 @@ export function Composer({
     hasImages: images.length > 0,
     browsedProvider
   })
+
+  const catalogLoading = catalogFetchLoading || refreshingCatalog
 
   const ensureVisionModel = (): void => {
     if (running) return
@@ -281,9 +284,9 @@ export function Composer({
             onToggleFavorite={onToggleFavorite}
             onServiceTierChange={onServiceTierChange}
             onRefreshCatalog={() => {
-              setCatalogLoading(true)
+              setRefreshingCatalog(true)
               void refreshCatalog({ forceRefresh: true, provider: browsedProvider }).finally(() =>
-                setCatalogLoading(false)
+                setRefreshingCatalog(false)
               )
             }}
             onBrowseProvider={setBrowsedProvider}
@@ -304,6 +307,7 @@ export function Composer({
           runNotice={runNotice}
           incomplete={incomplete}
           onContinue={onContinue}
+          running={running}
         />
 
         {isDock ? trailing : null}

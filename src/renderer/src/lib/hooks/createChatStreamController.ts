@@ -25,6 +25,7 @@ import { logger } from '@shared/logger'
 import {
   messagesToUiItems,
   applyEventTimestamps,
+  applyPersistedLiveTools,
   finalizeHydratedTranscript,
   mergeThinking,
   messageUiId,
@@ -51,8 +52,18 @@ const CANCEL_RECOVERY_POLL_MS = 500
 const CANCEL_RECOVERY_TIMEOUT_MS = 5_000
 
 function withPresentationLock(tool: UiToolRow, name: string, argsPreview?: string): UiToolRow {
-  if (tool.presentation) return tool
-  return { ...tool, presentation: toolPresentation(name, argsPreview) }
+  const resolvedName = name && name !== 'tool' ? name : tool.name && tool.name !== 'tool' ? tool.name : ''
+  // OpenAI often sends nameless first deltas; locking on placeholder "tool" would
+  // permanently demote terminal/edit/etc. to compact.
+  if (!resolvedName) return tool
+  if (tool.presentation && tool.name && tool.name !== 'tool') {
+    // Recompute terminal when args arrive so read-only commands can demote.
+    if (resolvedName === 'terminal') {
+      return { ...tool, presentation: toolPresentation(resolvedName, argsPreview) }
+    }
+    return tool
+  }
+  return { ...tool, presentation: toolPresentation(resolvedName, argsPreview) }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -399,18 +410,36 @@ function runningToolIndices(items: UiItem[]): number[] {
  * Find the row a `tool_result` belongs to. Beyond the id match, a result whose id
  * drifted from its `tool_start` must still land on the live row: appending a second row
  * would leave the original running forever, which is what pins the group on "Exploring".
+ * When several same-name tools are running, prefer a unique summary match; otherwise
+ * complete the oldest unmatched same-name row (FIFO) so UI status stays in sync with
+ * messages instead of leaving tools stuck on "running".
  */
-function findToolResultRowIndex(items: UiItem[], toolCallId: string, name: string): number {
+function findToolResultRowIndex(
+  items: UiItem[],
+  toolCallId: string,
+  name: string,
+  summary?: string
+): number {
   const direct = findToolRowIndex(items, toolCallId, name)
   if (direct >= 0) return direct
 
   const running = runningToolIndices(items)
-  for (const idx of running) {
+  const sameName = running.filter((idx) => {
     const item = items[idx]
-    if (item.kind === 'tool' && item.tool.name === name) return idx
+    return item.kind === 'tool' && item.tool.name === name
+  })
+  if (sameName.length === 1) return sameName[0]!
+  if (sameName.length > 1 && summary) {
+    const bySummary = sameName.filter((idx) => {
+      const item = items[idx]
+      return item.kind === 'tool' && item.tool.summary === summary
+    })
+    if (bySummary.length === 1) return bySummary[0]!
+    if (bySummary.length > 1) return bySummary[0]!
   }
-  // Only adopt an unrelated row when there is no ambiguity about which one is live.
-  if (running.length === 1) return running[0]
+  // Ambiguous or missing summary: FIFO among same-name running rows.
+  if (sameName.length > 0) return sameName[0]!
+  if (running.length === 1) return running[0]!
   return -1
 }
 
@@ -435,7 +464,19 @@ function incompleteFromPersisted(events: PersistedEvent[]): IncompleteTurnState 
 }
 
 function hydrateFromDisk(kept: ChatMessage[], events: PersistedEvent[]) {
-  const items = applyEventTimestamps(messagesToUiItems(kept), events)
+  const items = applyEventTimestamps(
+    applyPersistedLiveTools(messagesToUiItems(kept), events),
+    events
+  ).map((item) => {
+    if (item.kind !== 'tool' || item.tool.presentation) return item
+    return {
+      ...item,
+      tool: {
+        ...item.tool,
+        presentation: toolPresentation(item.tool.name, item.tool.argsPreview)
+      }
+    }
+  })
   return {
     messages: kept,
     error: errorFromPersisted(events),
@@ -494,9 +535,20 @@ export type ChatStreamController = ChatStreamState & {
   respondToApproval: (requestId: string, decision: ToolApprovalDecision) => Promise<void>
   /** Reload transcript from disk when a run finished but IPC was missed. */
   syncFromDisk: (runId: string) => Promise<boolean>
+  /** Update meter + notice after a manual Compact now. */
+  applyManualCompaction: (result: {
+    estimatedTokens?: number
+    contextWindow?: number
+    contentWindow?: number
+    tokenEstimate: number
+  }) => void
   handleEvent: (event: AgentEvent) => void
   subscribe: (listener: () => void) => () => void
+  subscribeItems: (listener: () => void) => () => void
+  subscribeMeta: (listener: () => void) => () => void
   getRevision: () => number
+  getItemsRevision: () => number
+  getMetaRevision: () => number
   setTranscriptLoading: (loading: boolean) => void
   /** True after `dispose()`; async restores must not hydrate this instance. */
   readonly disposed: boolean
@@ -515,6 +567,8 @@ export function createChatStreamController(
 ): ChatStreamController {
   const { workspacePath, onRunIdAssigned, onTerminal } = options
   const listeners = new Set<() => void>()
+  const itemsListeners = new Set<() => void>()
+  const metaListeners = new Set<() => void>()
   const closedRuns = new Set<string>()
   let assistantId: string | null = null
   /** Row that owns the current step's reasoning, cleared when the step closes. */
@@ -533,6 +587,8 @@ export function createChatStreamController(
   const supersededInvokeIds = new Set<number>()
   let disposed = false
   let revision = 0
+  let itemsRevision = 0
+  let metaRevision = 0
   let turnSeq = 0
   let completedTurnSeq = 0
   let runningTurnSeq = 0
@@ -541,6 +597,11 @@ export function createChatStreamController(
   let streamPatchRaf: number | null = null
   let pendingTextDelta = ''
   let pendingThinkingDelta = ''
+  let pendingToolCallDeltas: Array<{
+    toolCallId: string
+    name?: string
+    argumentsDelta: string
+  }> = []
   const toolContentCache = new Map<string, string>()
 
   const applyToolCallDelta = (
@@ -614,16 +675,24 @@ export function createChatStreamController(
     })
   }
 
-  const applyToolCallDeltaEvent = (
+  const scheduleToolCallDelta = (
     event: Extract<AgentEvent, { type: 'tool_call_delta' }>
   ): void => {
     if (isToolShapedTextLeak(pendingTextDelta)) {
       pendingTextDelta = ''
     }
-    closeOpenThinkingStep()
-    let items = applyToolCallDelta(state.items, event, state.runStartedAt)
-    items = scrubStreamingAssistantToolLeak(items)
-    patch({ items })
+    const last = pendingToolCallDeltas[pendingToolCallDeltas.length - 1]
+    if (last && last.toolCallId === event.toolCallId) {
+      last.argumentsDelta += event.argumentsDelta
+      if (event.name) last.name = event.name
+    } else {
+      pendingToolCallDeltas.push({
+        toolCallId: event.toolCallId,
+        name: event.name,
+        argumentsDelta: event.argumentsDelta
+      })
+    }
+    scheduleStreamingPatch()
   }
 
   const applyStreamingPatches = (): void => {
@@ -689,6 +758,28 @@ export function createChatStreamController(
       pendingTextDelta = ''
     }
 
+    if (pendingToolCallDeltas.length) {
+      if (reasoningId) {
+        const id = reasoningId
+        const index = findMessageIndex(items, id)
+        if (index >= 0) {
+          const item = items[index]
+          if (item?.kind === 'message' && item.thinkingStreaming) {
+            items = replaceAt(items, index, {
+              ...item,
+              thinkingStreaming: false
+            })
+          }
+        }
+      }
+      const deltas = pendingToolCallDeltas
+      pendingToolCallDeltas = []
+      for (const delta of deltas) {
+        items = applyToolCallDelta(items, delta, state.runStartedAt)
+      }
+      changed = true
+    }
+
     if (changed) {
       items = scrubStreamingAssistantToolLeak(items)
       patch({ items })
@@ -743,12 +834,42 @@ export function createChatStreamController(
     for (const listener of listeners) listener()
   }
 
+  const notifyItems = (): void => {
+    if (disposed) return
+    itemsRevision += 1
+    for (const listener of itemsListeners) listener()
+    notify()
+  }
+
+  const notifyMeta = (): void => {
+    if (disposed) return
+    metaRevision += 1
+    for (const listener of metaListeners) listener()
+    notify()
+  }
+
   const getRevision = (): number => revision
+  const getItemsRevision = (): number => itemsRevision
+  const getMetaRevision = (): number => metaRevision
 
   const patch = (partial: Partial<ChatStreamState>): void => {
     if (disposed) return
+    const touchedItems = Object.prototype.hasOwnProperty.call(partial, 'items')
+    const touchedMeta = Object.keys(partial).some((key) => key !== 'items')
     Object.assign(state, partial)
-    notify()
+    if (touchedItems && touchedMeta) {
+      itemsRevision += 1
+      metaRevision += 1
+      for (const listener of itemsListeners) listener()
+      for (const listener of metaListeners) listener()
+      notify()
+      return
+    }
+    if (touchedItems) {
+      notifyItems()
+      return
+    }
+    if (touchedMeta) notifyMeta()
   }
 
   const closeRun = (id: string | null | undefined): void => {
@@ -815,9 +936,21 @@ export function createChatStreamController(
 
     if (
       event.type !== 'text_delta' &&
-      event.type !== 'thinking_delta'
+      event.type !== 'thinking_delta' &&
+      event.type !== 'tool_call_delta'
     ) {
+      // Scrub before flush so leak text never paints one frame ahead of tool chrome
+      // (also covers status/usage events that flush pending text).
+      if (isToolShapedTextLeak(pendingTextDelta)) {
+        pendingTextDelta = ''
+      } else if (pendingTextDelta) {
+        pendingTextDelta = stripToolShapedAssistantTextForStream(pendingTextDelta)
+      }
       flushStreamingPatches()
+      const scrubbed = scrubStreamingAssistantToolLeak(state.items)
+      if (scrubbed !== state.items) {
+        patch({ items: scrubbed })
+      }
     }
 
     if (event.type === 'text_delta') {
@@ -913,7 +1046,8 @@ export function createChatStreamController(
       nextItems = pruneOrphanDeltaToolRows(nextItems, event.toolCalls)
       patch({ items: nextItems, messages: nextMessages })
     } else if (event.type === 'tool_call_delta') {
-      applyToolCallDeltaEvent(event)
+      scheduleToolCallDelta(event)
+      return
     } else if (event.type === 'tool_start') {
       assistantId = null
       const items = state.items
@@ -976,7 +1110,12 @@ export function createChatStreamController(
       }
     } else if (event.type === 'tool_result') {
       const items = state.items
-      const existingIdx = findToolResultRowIndex(items, event.toolCallId, event.name)
+      const existingIdx = findToolResultRowIndex(
+        items,
+        event.toolCallId,
+        event.name,
+        event.summary
+      )
       const existing =
         existingIdx >= 0 && items[existingIdx].kind === 'tool' ? items[existingIdx] : undefined
       let nextItems = items
@@ -1001,7 +1140,15 @@ export function createChatStreamController(
               )
             : item
         )
-      } else {
+      } else if (
+        !items.some(
+          (item) =>
+            item.kind === 'tool' &&
+            item.tool.status === 'running' &&
+            item.tool.name === event.name
+        )
+      ) {
+        // No live same-name row to complete — create one (hydrate / late result).
         nextItems = appendTool(
           items,
           {
@@ -1073,6 +1220,7 @@ export function createChatStreamController(
       // text, thinking, and any tool rows that only exist from streamed deltas.
       pendingTextDelta = ''
       pendingThinkingDelta = ''
+      pendingToolCallDeltas = []
       flushStreamingPatches()
       const discardIds = new Set([assistantId, reasoningId].filter((id): id is string => !!id))
       const nextItems = state.items
@@ -1123,6 +1271,8 @@ export function createChatStreamController(
         patch({
           running: true,
           pendingRun: false,
+          // Auto-continue after truncation clears the Continue banner for the next step.
+          incomplete: null,
           runStartedAt: state.runStartedAt ?? Date.now()
         })
       }
@@ -1156,7 +1306,9 @@ export function createChatStreamController(
           running: false,
           runId: sessionRunId,
           runStartedAt: null,
-          runNotice: null,
+          // Keep compaction notice readable after the run ends; cleared on next send.
+          runNotice:
+            state.runNotice?.startsWith('Context summarized') === true ? state.runNotice : null,
           runTerminalTick: state.runTerminalTick + 1,
           ...(event.status === 'error' && !state.error
             ? { error: lastRunErrorMessage ?? 'Run failed' }
@@ -1650,15 +1802,66 @@ export function createChatStreamController(
     return () => listeners.delete(listener)
   }
 
+  const subscribeItems = (listener: () => void): (() => void) => {
+    itemsListeners.add(listener)
+    return () => itemsListeners.delete(listener)
+  }
+
+  const subscribeMeta = (listener: () => void): (() => void) => {
+    metaListeners.add(listener)
+    return () => metaListeners.delete(listener)
+  }
+
   const setTranscriptLoading = (loading: boolean): void => {
     if (disposed) return
     patch({ transcriptLoading: loading })
+  }
+
+  const applyManualCompaction = (result: {
+    estimatedTokens?: number
+    contextWindow?: number
+    contentWindow?: number
+    tokenEstimate: number
+  }): void => {
+    if (disposed) return
+    const estimated = result.estimatedTokens ?? result.tokenEstimate
+    const prev = state.contextUsage
+    patch({
+      runNotice: 'Context summarized to stay within the model window.',
+      contextUsage: prev
+        ? {
+            ...prev,
+            used: estimated,
+            estimatedTokens: estimated,
+            inputTokens: undefined,
+            source: 'estimate',
+            window: result.contextWindow ?? prev.window,
+            contentWindow: result.contentWindow ?? prev.contentWindow,
+            updatedAt: new Date().toISOString()
+          }
+        : result.contextWindow && result.contentWindow
+          ? {
+              step: 0,
+              used: estimated,
+              estimatedTokens: estimated,
+              window: result.contextWindow,
+              contentWindow: result.contentWindow,
+              compactionTrigger: Math.floor(result.contextWindow * 0.7),
+              source: 'estimate',
+              layers: { system: 0, history: estimated, tools: 0, buffer: 0 },
+              stepUsage: emptyStepUsageTotals(),
+              updatedAt: new Date().toISOString()
+            }
+          : prev
+    })
   }
 
   const dispose = (): void => {
     disposed = true
     flushStreamingPatches()
     listeners.clear()
+    itemsListeners.clear()
+    metaListeners.clear()
   }
 
   const controller: ChatStreamController = {
@@ -1720,9 +1923,14 @@ export function createChatStreamController(
     handleApprovalRequest,
     respondToApproval,
     syncFromDisk,
+    applyManualCompaction,
     handleEvent,
     subscribe,
+    subscribeItems,
+    subscribeMeta,
     getRevision,
+    getItemsRevision,
+    getMetaRevision,
     setTranscriptLoading,
     dispose
   }

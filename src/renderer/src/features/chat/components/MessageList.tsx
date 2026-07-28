@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
 import type { UiItem } from '@shared/transcript'
@@ -14,6 +15,7 @@ import {
   buildTranscriptRows,
   isTurnWorkRow,
   rowLeadingGap,
+  stabilizeTranscriptRows,
   type TranscriptRow
 } from '../utils/transcriptRows'
 import { ChangeSummary } from './ChangeSummary'
@@ -271,12 +273,15 @@ export function MessageList({
     [collapsedTurns]
   )
   const prevStructuralKeyRef = useRef<string | null>(null)
+  const prevRowsRef = useRef<TranscriptRow[] | null>(null)
 
   const itemsStructuralKey = useMemo(() => structuralKey(items), [items])
-  const allRows = useMemo(
-    () => buildTranscriptRows(items, { pendingRun, running, showThinking }),
-    [items, pendingRun, running, showThinking]
-  )
+  const allRows = useMemo(() => {
+    const next = buildTranscriptRows(items, { pendingRun, running, showThinking })
+    const stable = stabilizeTranscriptRows(prevRowsRef.current, next)
+    prevRowsRef.current = stable
+    return stable
+  }, [items, pendingRun, running, showThinking])
   const displayRows = useMemo(() => {
     if (collapsedTurnSet.size === 0) return allRows
     return allRows.filter((row) => !(collapsedTurnSet.has(row.turnIndex) && isTurnWorkRow(row)))
@@ -447,46 +452,40 @@ export function MessageList({
     ? ({ paddingBottom: 'var(--vy-dock-h, 8rem)' } as const)
     : undefined
 
-  const blocks = useMemo(() => {
-    const turnWorkPanelAssigned = new Set<number>()
-    return displayRows.map((row) => {
-      const turnPanelId =
-        isTurnWorkRow(row) && !turnWorkPanelAssigned.has(row.turnIndex)
-          ? `turn-work-${row.turnIndex}`
-          : undefined
-      if (turnPanelId) turnWorkPanelAssigned.add(row.turnIndex)
+  const streamingAnnouncement = useMemo(() => {
+    for (const row of displayRows) {
+      if (row.kind === 'text' && row.item.streaming) return 'Assistant is responding'
+      if (row.kind === 'thinking' && row.item.thinkingStreaming) return 'Assistant is thinking'
+    }
+    return ''
+  }, [displayRows])
 
-      return (
-        <div key={row.id} id={turnPanelId} className={rowSpacingClass(row)}>
-          <TranscriptRowBlock
-            row={row}
-            onImageClick={onImageClick}
-            onLoadToolContent={onLoadToolContent}
-            onThinkingToggle={onThinkingToggle}
-            onToolToggle={onToolToggle}
-            onGroupToggle={onGroupToggle}
-            onTurnToggle={handleTurnToggle}
-            onApprovalDecision={onApprovalDecision}
-            turnCollapsed={collapsedTurnSet.has(row.turnIndex)}
-            showThinking={showThinking}
-            mcpServerNames={mcpServerNames}
-          />
-        </div>
-      )
-    })
-  }, [
-      displayRows,
-      collapsedTurnSet,
-      onImageClick,
-      onLoadToolContent,
-      onThinkingToggle,
-      onToolToggle,
-      onGroupToggle,
-      handleTurnToggle,
-      onApprovalDecision,
-      showThinking,
-      mcpServerNames
-  ])
+  const getItemKey = useCallback((index: number) => displayRows[index]?.id ?? index, [displayRows])
+
+  const rowVirtualizer = useVirtualizer({
+    count: displayRows.length,
+    getScrollElement: () => containerRef.current,
+    estimateSize: () => 72,
+    getItemKey,
+    anchorTo: 'end',
+    followOnAppend: true,
+    scrollEndThreshold: nearBottomPx,
+    overscan: 6,
+    // jsdom / first paint often report 0×0 until layout; seed a viewport so rows mount.
+    initialRect: { width: 720, height: 800 }
+  })
+
+  useLayoutEffect(() => {
+    rowVirtualizer.measure()
+  }, [rowVirtualizer, displayRows.length, scrollRestored])
+
+  useLayoutEffect(() => {
+    if (!scrollRestored || displayRows.length === 0) return
+    if (restoreScrollTop && restoreScrollTop > 0) return
+    rowVirtualizer.scrollToEnd()
+    // Pin once after restore/surface — followOnAppend handles stream growth.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot pin
+  }, [scrollRestored, scrollRestoreToken])
 
   return (
     <>
@@ -498,6 +497,9 @@ export function MessageList({
         onScroll={(e) => handleScroll(e.currentTarget.scrollTop)}
       >
         <div className={columnClass} data-chat-column>
+          <div className="sr-only" role="status" aria-live="polite">
+            {streamingAnnouncement}
+          </div>
           {transcriptLoading && items.length === 0 ? (
             <div
               className="flex min-h-[12rem] flex-col items-center justify-center gap-2 text-sm text-muted"
@@ -509,7 +511,71 @@ export function MessageList({
               <span>Loading chat…</span>
             </div>
           ) : (
-            blocks
+            (() => {
+              const virtualItems = rowVirtualizer.getVirtualItems()
+              // jsdom often yields an empty range; still paint rows for tests/SSR.
+              if (virtualItems.length === 0 && displayRows.length > 0) {
+                return (
+                  <div className="flex w-full flex-col">
+                    {displayRows.map((row) => (
+                      <div
+                        key={row.id}
+                        id={isTurnWorkRow(row) ? `turn-work-${row.turnIndex}` : undefined}
+                        className={rowSpacingClass(row)}
+                      >
+                        <TranscriptRowBlock
+                          row={row}
+                          onImageClick={onImageClick}
+                          onLoadToolContent={onLoadToolContent}
+                          onThinkingToggle={onThinkingToggle}
+                          onToolToggle={onToolToggle}
+                          onGroupToggle={onGroupToggle}
+                          onTurnToggle={handleTurnToggle}
+                          onApprovalDecision={onApprovalDecision}
+                          turnCollapsed={collapsedTurnSet.has(row.turnIndex)}
+                          showThinking={showThinking}
+                          mcpServerNames={mcpServerNames}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )
+              }
+              return (
+                <div
+                  className="relative w-full"
+                  style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+                >
+                  {virtualItems.map((virtualItem) => {
+                    const row = displayRows[virtualItem.index]!
+                    return (
+                      <div
+                        key={virtualItem.key}
+                        data-index={virtualItem.index}
+                        ref={rowVirtualizer.measureElement}
+                        id={isTurnWorkRow(row) ? `turn-work-${row.turnIndex}` : undefined}
+                        className={cn('absolute left-0 top-0 w-full', rowSpacingClass(row))}
+                        style={{ transform: `translateY(${virtualItem.start}px)` }}
+                      >
+                        <TranscriptRowBlock
+                          row={row}
+                          onImageClick={onImageClick}
+                          onLoadToolContent={onLoadToolContent}
+                          onThinkingToggle={onThinkingToggle}
+                          onToolToggle={onToolToggle}
+                          onGroupToggle={onGroupToggle}
+                          onTurnToggle={handleTurnToggle}
+                          onApprovalDecision={onApprovalDecision}
+                          turnCollapsed={collapsedTurnSet.has(row.turnIndex)}
+                          showThinking={showThinking}
+                          mcpServerNames={mcpServerNames}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            })()
           )}
         </div>
       </div>

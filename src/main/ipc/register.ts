@@ -70,6 +70,7 @@ import {
   setInstalledEnabled,
   syncMarketplaceMcpIntoSettings,
   resolveEffectiveMcpServers,
+  resolveMcpServersForSessionMap,
   getPackageContents,
   detectMcpInput,
   applyDetectedManualMcp,
@@ -108,6 +109,7 @@ import {
   listRuns,
   loadMessages,
   loadEventsForRun,
+  LOAD_EVENTS_UI_LIMIT,
   loadToolResultContent,
   deleteRun,
   renameRun,
@@ -279,7 +281,10 @@ export function registerIpc(): void {
       if (!senderOk(event)) return fail('Invalid sender')
       try {
         const { path, override } = WorkspacesSetSettingsOverrideRequestSchema.parse(raw)
-        return ok(setWorkspaceSettingsOverride(path, override))
+        const next = setWorkspaceSettingsOverride(path, override)
+        // Force-off / Force-on may change which MCP processes should stay alive.
+        await syncMcpServers(resolveMcpServersForSessionMap())
+        return ok(next)
       } catch (err) {
         return failFrom(err, IPC.workspacesSetSettingsOverride)
       }
@@ -305,7 +310,7 @@ export function registerIpc(): void {
         applySentryTelemetry(next.telemetryEnabled)
       }
       if (partial.mcpServers !== undefined || partial.marketplace !== undefined) {
-        await syncMcpServers(resolveEffectiveMcpServers())
+        await syncMcpServers(resolveMcpServersForSessionMap())
       }
       return ok(next)
     } catch (err) {
@@ -572,7 +577,7 @@ export function registerIpc(): void {
       try {
         const req = LoadRunEventsRequestSchema.parse(raw)
         if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
-        return ok(loadEventsForRun(req.workspacePath, req.runId))
+        return ok(loadEventsForRun(req.workspacePath, req.runId, { limit: LOAD_EVENTS_UI_LIMIT }))
       } catch (err) {
         return failFrom(err, IPC.loadRunEvents)
       }
@@ -699,6 +704,7 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.mcpStatus, async (event): Promise<IpcResult<McpStatusResult>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
+      // List all configured servers for UI; connection map may be a subset (N6).
       const servers = resolveEffectiveMcpServers()
       return ok({ servers: getMcpServerStatus(servers) })
     } catch (err) {
@@ -709,8 +715,8 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.mcpRefresh, async (event): Promise<IpcResult<McpStatusResult>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
-      const servers = await refreshMcpServers(resolveEffectiveMcpServers())
-      return ok({ servers })
+      await refreshMcpServers(resolveMcpServersForSessionMap())
+      return ok({ servers: getMcpServerStatus(resolveEffectiveMcpServers()) })
     } catch (err) {
       return failFrom(err, IPC.mcpRefresh)
     }
@@ -730,7 +736,7 @@ export function registerIpc(): void {
           : s
       )
       setSettings({ mcpServers: nextServers })
-      await syncMcpServers(resolveEffectiveMcpServers())
+      await syncMcpServers(resolveMcpServersForSessionMap())
       return ok(true)
     } catch (err) {
       return failFrom(err, IPC.mcpSetAuthToken)
@@ -750,7 +756,7 @@ export function registerIpc(): void {
           : s
       )
       setSettings({ mcpServers: nextServers })
-      await syncMcpServers(resolveEffectiveMcpServers())
+      await syncMcpServers(resolveMcpServersForSessionMap())
       return ok(true)
     } catch (err) {
       return failFrom(err, IPC.mcpClearAuthToken)
@@ -762,7 +768,8 @@ export function registerIpc(): void {
     try {
       const { serverId } = z.object({ serverId: z.string().min(1) }).parse(raw)
       await startMcpOAuth(serverId)
-      return ok(true)
+      await syncMcpServers(resolveMcpServersForSessionMap())
+      return ok({ servers: getMcpServerStatus(resolveEffectiveMcpServers()) })
     } catch (err) {
       return failFrom(err, IPC.mcpStartOAuth)
     }
@@ -804,7 +811,7 @@ export function registerIpc(): void {
     try {
       const req = MarketplaceInstallRequestSchema.parse(raw)
       const result = await installMarketplacePackage(req)
-      await syncMcpServers(resolveEffectiveMcpServers())
+      await syncMcpServers(resolveMcpServersForSessionMap())
       return ok(result)
     } catch (err) {
       return failFrom(err, IPC.marketplaceInstall)
@@ -828,7 +835,7 @@ export function registerIpc(): void {
       const req = McpApplyDetectedRequestSchema.parse(raw)
       if (req.install) {
         const result = await installMarketplacePackage(req.install)
-        await syncMcpServers(resolveEffectiveMcpServers())
+        await syncMcpServers(resolveMcpServersForSessionMap())
         return ok({
           applied: 'marketplace' as const,
           serverId: result.item.id,
@@ -836,7 +843,7 @@ export function registerIpc(): void {
         })
       }
       const applied = applyDetectedManualMcp(req)
-      await syncMcpServers(resolveEffectiveMcpServers())
+      await syncMcpServers(resolveMcpServersForSessionMap())
       return ok(applied)
     } catch (err) {
       return failFrom(err, IPC.marketplaceApplyDetectedMcp)
@@ -858,7 +865,7 @@ export function registerIpc(): void {
     try {
       const req = McpImportExternalRequestSchema.parse(raw)
       const result = importExternalMcpServers(req)
-      await syncMcpServers(resolveEffectiveMcpServers())
+      await syncMcpServers(resolveMcpServersForSessionMap())
       return ok(result)
     } catch (err) {
       return failFrom(err, IPC.marketplaceImportExternalMcp)
@@ -871,7 +878,7 @@ export function registerIpc(): void {
       const { id } = MarketplaceUninstallRequestSchema.parse(raw)
       const index = removeInstalledItem(id)
       syncMarketplaceMcpIntoSettings()
-      await syncMcpServers(resolveEffectiveMcpServers())
+      await syncMcpServers(resolveMcpServersForSessionMap())
       return ok(index)
     } catch (err) {
       return failFrom(err, IPC.marketplaceUninstall)
@@ -886,7 +893,7 @@ export function registerIpc(): void {
       const item = index.items.find((i) => i.id === id)
       if (item?.kind === 'mcp' || item?.kind === 'plugin') {
         if (item.kind === 'mcp') syncMarketplaceMcpIntoSettings()
-        await syncMcpServers(resolveEffectiveMcpServers())
+        await syncMcpServers(resolveMcpServersForSessionMap())
       }
       return ok(index)
     } catch (err) {

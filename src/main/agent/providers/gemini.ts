@@ -359,9 +359,6 @@ export const geminiProvider: LlmProvider = {
       if (!parts) continue
 
       for (const part of parts) {
-        if (typeof part.text === 'string' && part.text) {
-          yield { type: 'text', text: part.text }
-        }
         const fc = part.functionCall as { name?: string; args?: unknown; id?: string } | undefined
         if (fc?.name) {
           const id =
@@ -370,19 +367,24 @@ export const geminiProvider: LlmProvider = {
           const existing = pendingCalls.get(id)
           if (existing) {
             existing.arguments = argsJson
+            // Mid-stream update: live-forward so chrome/args appear before stream end.
+            yield { type: 'tool_call', toolCall: { ...existing } }
           } else {
-            pendingCalls.set(id, {
+            const call = {
               id: typeof fc.id === 'string' && fc.id ? fc.id : `gemini_${toolIndex++}`,
               name: fc.name,
               arguments: argsJson
-            })
+            }
+            pendingCalls.set(id, call)
+            yield { type: 'tool_call', toolCall: { ...call } }
           }
         }
       }
-    }
-
-    for (const call of pendingCalls.values()) {
-      yield { type: 'tool_call', toolCall: call }
+      for (const part of parts) {
+        if (typeof part.text === 'string' && part.text) {
+          yield { type: 'text', text: part.text }
+        }
+      }
     }
 
     yield {

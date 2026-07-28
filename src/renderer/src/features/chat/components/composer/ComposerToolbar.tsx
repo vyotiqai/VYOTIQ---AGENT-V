@@ -192,6 +192,7 @@ export function ComposerToolbar({
         <ContextMeter
           usage={contextUsage ?? null}
           modelWindow={modelWindow}
+          compactionTriggerRatio={chatSettings.compactionTriggerRatio}
           onCompact={onCompactContext}
           compactDisabled={running}
         />

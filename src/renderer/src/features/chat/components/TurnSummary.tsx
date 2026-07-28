@@ -36,24 +36,39 @@ export const TurnSummary = memo(function TurnSummary({
 
   const duration = elapsedMs != null && elapsedMs >= MIN_REPORTABLE_MS ? formatElapsed(elapsedMs) : ''
   const phaseLabel = activity ? formatRunActivityLabel(activity) : 'Working'
-  // When expanded, work rows already show verbs — keep the timeline to duration only.
+  // When expanded with a duration, work rows already show verbs — duration only.
+  // Before the duration is reportable, keep the phase visible so the header is not blank.
   const activeLabel = collapsed
     ? duration
       ? `${phaseLabel} · ${duration}`
       : phaseLabel
     : duration || phaseLabel
   const doneLabel = duration ? `Worked for ${duration}` : 'Worked'
+  const accessibleName = active
+    ? collapsed
+      ? activeLabel || phaseLabel
+      : activeLabel
+        ? `Collapse turn work, ${activeLabel}`
+        : 'Collapse turn work'
+    : doneLabel
 
   return (
     <button
       type="button"
-      className={cn(DISCLOSURE_ROW, 'text-tertiary')}
+      className={cn(DISCLOSURE_ROW, 'w-full text-left text-tertiary')}
       aria-expanded={!collapsed}
       aria-controls={!collapsed ? panelId : undefined}
+      aria-label={accessibleName}
       onClick={onToggle}
     >
       {active ? (
-        <TextShimmer className="shrink-0">{activeLabel}</TextShimmer>
+        activeLabel ? (
+          <TextShimmer className="shrink-0">{activeLabel}</TextShimmer>
+        ) : (
+          <span className="shrink-0 tabular-nums opacity-0" aria-hidden>
+            ·
+          </span>
+        )
       ) : (
         <span className="shrink-0 tabular-nums">{doneLabel}</span>
       )}

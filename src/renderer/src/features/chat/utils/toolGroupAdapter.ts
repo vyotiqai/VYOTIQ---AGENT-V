@@ -14,6 +14,7 @@ import {
   toolLabel,
   type ToolCategory
 } from '../toolUi'
+import { truncateText } from '../toolUi/parsers/common'
 import { parseReadLineRange } from '../toolUi/parsers/read'
 
 export type ToolGroupCategory = ToolCategory
@@ -130,10 +131,10 @@ function toolSubtitle(tool: UiToolRow): string {
     const args = parseArgsRecord(tool.argsPreview)
     if (args) {
       const fromMcp = mcpToolSummary(mcp.toolName, args)
-      if (fromMcp) return fromMcp.length > 80 ? `${fromMcp.slice(0, 77)}...` : fromMcp
+      if (fromMcp) return truncateText(fromMcp, 80)
     }
   }
-  return summary.length > 80 ? `${summary.slice(0, 77)}...` : summary
+  return truncateText(summary, 80)
 }
 
 function nestedRowTitle(tool: UiToolRow, subtitle: string, inGroup: boolean): string {
@@ -146,7 +147,7 @@ function nestedRowTitle(tool: UiToolRow, subtitle: string, inGroup: boolean): st
     }
     if (tool.name && tool.name !== 'tool') {
       const summary = tool.summary?.trim()
-      if (summary) return summary.length > 80 ? `${summary.slice(0, 77)}...` : summary
+      if (summary) return truncateText(summary, 80)
     }
   }
   if (

@@ -66,7 +66,10 @@ export function PathList({ paths }: { paths: string[] }) {
           <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-fg/80" title={path}>
             {path}
           </span>
-          <CopyButton text={path} className="shrink-0 opacity-0 group-hover:opacity-100" />
+          <CopyButton
+            text={path}
+            className="shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
+          />
         </li>
       ))}
     </ul>

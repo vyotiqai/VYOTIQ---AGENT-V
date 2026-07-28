@@ -235,6 +235,17 @@ export async function* streamOpenAiResponses(
           arguments: ''
         }
         pending.set(callId, call)
+        // Emit immediately so UI can show tool chrome before argument deltas.
+        yield* emitThinkingDoneIfNeeded()
+        yield {
+          type: 'tool_call_delta',
+          toolCallDelta: {
+            index: indexForCall(callId),
+            id: callId,
+            name: call.name || undefined,
+            arguments: ''
+          }
+        }
       }
     }
 
