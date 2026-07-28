@@ -55,44 +55,47 @@ async function streamFreeformSummary(input: {
   return summary.trim()
 }
 
-export async function compactMessages(input: {
+function formatMessagesForCompaction(messages: ChatMessage[]): string {
+  return messages
+    .map((m) => {
+      const body = contentToText(m.content)
+      const tools = m.toolCalls?.map((t) => `${t.name}(${t.arguments})`).join(', ')
+      return `${m.role}${tools ? ` tools=${tools}` : ''}: ${body}`
+    })
+    .join('\n\n')
+}
+
+/** Split messages into chunks that fit under charCap (greedy by message). */
+function chunkMessagesForCap(messages: ChatMessage[], charCap: number): ChatMessage[][] {
+  if (messages.length === 0) return []
+  const chunks: ChatMessage[][] = []
+  let current: ChatMessage[] = []
+  let currentChars = 0
+  for (const message of messages) {
+    const piece = formatMessagesForCompaction([message])
+    const pieceLen = piece.length + (current.length > 0 ? 2 : 0)
+    if (current.length > 0 && currentChars + pieceLen > charCap) {
+      chunks.push(current)
+      current = [message]
+      currentChars = piece.length
+    } else {
+      current.push(message)
+      currentChars += pieceLen
+    }
+  }
+  if (current.length > 0) chunks.push(current)
+  return chunks
+}
+
+async function summarizeHistoryChunk(input: {
   provider: LlmProvider
   model: string
   apiKey?: string | null
   baseUrl?: string
   signal: AbortSignal
-  messages: ChatMessage[]
+  historyText: string
   supportsStructuredOutput?: boolean
-  contextWindow?: number
-  /** Previous compaction summary to retain across successive folds. */
-  priorSummary?: string
-}): Promise<CompactionRecord | null> {
-  if (input.signal.aborted) return null
-
-  const tokenCap = Math.max(
-    4000,
-    Math.floor((input.contextWindow ?? 128_000) * 0.25)
-  )
-  const charCap = tokenCap * 4
-
-  const prior = input.priorSummary?.trim() ?? ''
-  const priorBlock = prior
-    ? `## Prior session summary\n${prior}\n\n## Recent history to fold\n`
-    : ''
-
-  const historyText = (
-    priorBlock +
-    input.messages
-      .map((m) => {
-        const body = contentToText(m.content)
-        const tools = m.toolCalls?.map((t) => `${t.name}(${t.arguments})`).join(', ')
-        return `${m.role}${tools ? ` tools=${tools}` : ''}: ${body}`
-      })
-      .join('\n\n')
-  ).slice(0, charCap)
-
-  if (!historyText.trim()) return null
-
+}): Promise<string> {
   let summary = ''
   const useStructured = input.supportsStructuredOutput !== false
 
@@ -107,7 +110,7 @@ export async function compactMessages(input: {
           signal: input.signal,
           tools: [],
           system: COMPACTION_PROMPT,
-          messages: [{ role: 'user', content: historyText }],
+          messages: [{ role: 'user', content: input.historyText }],
           responseFormat: {
             type: 'json_schema',
             name: 'compaction_summary',
@@ -135,18 +138,69 @@ export async function compactMessages(input: {
   }
 
   if (!summary) {
-    if (input.signal.aborted) return null
+    if (input.signal.aborted) return ''
     summary = await streamFreeformSummary({
       provider: input.provider,
       model: input.model,
       apiKey: input.apiKey,
       baseUrl: input.baseUrl,
       signal: input.signal,
-      historyText
+      historyText: input.historyText
     })
   }
+  return summary.trim()
+}
 
-  if (!summary) {
+export async function compactMessages(input: {
+  provider: LlmProvider
+  model: string
+  apiKey?: string | null
+  baseUrl?: string
+  signal: AbortSignal
+  messages: ChatMessage[]
+  supportsStructuredOutput?: boolean
+  contextWindow?: number
+  /** Previous compaction summary to retain across successive folds. */
+  priorSummary?: string
+}): Promise<CompactionRecord | null> {
+  if (input.signal.aborted) return null
+
+  const tokenCap = Math.max(
+    4000,
+    Math.floor((input.contextWindow ?? 128_000) * 0.25)
+  )
+  const charCap = tokenCap * 4
+
+  const prior = input.priorSummary?.trim() ?? ''
+  const chunks = chunkMessagesForCap(input.messages, Math.max(2000, charCap - 500))
+  if (chunks.length === 0 && !prior) return null
+
+  let mergedPrior = prior
+  const parts: string[] = []
+
+  for (const chunk of chunks.length > 0 ? chunks : [[]]) {
+    if (input.signal.aborted) return null
+    const priorBlock = mergedPrior
+      ? `## Prior session summary\n${mergedPrior}\n\n## Recent history to fold\n`
+      : ''
+    const historyText = (priorBlock + formatMessagesForCompaction(chunk)).slice(0, charCap)
+    if (!historyText.trim()) continue
+
+    const summary = await summarizeHistoryChunk({
+      provider: input.provider,
+      model: input.model,
+      apiKey: input.apiKey,
+      baseUrl: input.baseUrl,
+      signal: input.signal,
+      historyText,
+      supportsStructuredOutput: input.supportsStructuredOutput
+    })
+    if (!summary) continue
+    parts.push(summary)
+    mergedPrior = mergedPrior ? `${mergedPrior}\n\n---\n\n${summary}` : summary
+  }
+
+  if (parts.length === 0) {
     logger.warn('Compaction produced no summary despite eligible history', {
       scope: 'agent',
       code: 'COMPACTION',
@@ -155,7 +209,7 @@ export async function compactMessages(input: {
     return null
   }
 
-  const merged = prior ? `${prior}\n\n---\n\n${summary.trim()}` : summary.trim()
+  const merged = parts.length === 1 && !prior ? parts[0]! : mergedPrior
   return {
     summary: merged,
     createdAt: new Date().toISOString(),

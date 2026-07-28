@@ -1,6 +1,6 @@
 import type { ComponentType } from 'react'
 import type { UiToolRow } from '@shared/transcript'
-import { summarizeToolArgs } from '@shared/toolSummary'
+import { isUnresolvedToolName, summarizeToolArgs } from '@shared/toolSummary'
 import { formatPathLabel } from '@shared/utils/displayPath'
 import { basename } from '@shared/utils/path'
 import { DeleteBody } from './bodies/DeleteBody'
@@ -273,6 +273,8 @@ export function toolHasBody(
     subagentContextUsage?: ToolBodyProps['subagentContextUsage']
   }
 ): boolean {
+  // Nameless streaming deltas must not expand FallbackBody with raw args JSON.
+  if (isUnresolvedToolName(tool.name)) return false
   if (tool.status === 'running') return true
   return getToolEntry(tool.name).hasBody(tool, ctx)
 }
@@ -284,6 +286,13 @@ export function getToolHeaderMeta(
     subagentContextUsage?: ToolBodyProps['subagentContextUsage']
   }
 ): ToolHeaderMeta {
+  if (isUnresolvedToolName(tool.name)) {
+    return {
+      verb: toolLabel(tool.name, tool.status),
+      target: '',
+      icon: toolIconName(tool.name)
+    }
+  }
   const entry = getToolEntry(tool.name)
   if (entry.headerMeta) return entry.headerMeta(tool, ctx)
   return {

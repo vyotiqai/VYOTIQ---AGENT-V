@@ -38,7 +38,7 @@ import {
   type UiItem,
   type UiToolRow
 } from '@shared/transcript'
-import { summarizeToolArgs } from '@shared/toolSummary'
+import { isUnresolvedToolName, summarizeToolArgs } from '@shared/toolSummary'
 import { toolPresentation } from '@renderer/features/chat/toolUi/meta'
 import type { ContextUsageState } from '@shared/utils/contextUsage'
 import {
@@ -549,6 +549,7 @@ export type ChatStreamController = ChatStreamState & {
   getRevision: () => number
   getItemsRevision: () => number
   getMetaRevision: () => number
+  getContextUsage: () => import('@shared/utils/contextUsage').ContextUsageState | null
   setTranscriptLoading: (loading: boolean) => void
   /** True after `dispose()`; async restores must not hydrate this instance. */
   readonly disposed: boolean
@@ -615,7 +616,11 @@ export function createChatStreamController(
     const toolName = event.name || (existing?.kind === 'tool' ? existing.tool.name : '')
     const argsPreview =
       (existing?.kind === 'tool' ? existing.tool.argsPreview ?? '' : '') + event.argumentsDelta
-    const summarized = summarizeToolArgs(toolName || 'tool', argsPreview)
+    const resolvedName = toolName || (existing?.kind === 'tool' ? existing.tool.name : '') || 'tool'
+    const summarized = summarizeToolArgs(resolvedName, argsPreview)
+    const summary = isUnresolvedToolName(resolvedName)
+      ? ''
+      : summarized || (existing?.kind === 'tool' ? existing.tool.summary : '') || ''
     if (existing?.kind === 'tool') {
       return replaceAt(
         items,
@@ -628,7 +633,7 @@ export function createChatStreamController(
                 ...existing.tool,
                 name: toolName || existing.tool.name,
                 argsPreview,
-                summary: summarized || existing.tool.summary || ''
+                summary
               },
               toolName || existing.tool.name,
               argsPreview
@@ -647,7 +652,7 @@ export function createChatStreamController(
           {
             id: event.toolCallId,
             name: toolName || 'tool',
-            summary: summarized,
+            summary,
             status: 'running' as const,
             argsPreview: event.argumentsDelta
           },
@@ -851,6 +856,7 @@ export function createChatStreamController(
   const getRevision = (): number => revision
   const getItemsRevision = (): number => itemsRevision
   const getMetaRevision = (): number => metaRevision
+  const getContextUsage = (): typeof state.contextUsage => state.contextUsage
 
   const patch = (partial: Partial<ChatStreamState>): void => {
     if (disposed) return
@@ -1931,6 +1937,7 @@ export function createChatStreamController(
     getRevision,
     getItemsRevision,
     getMetaRevision,
+    getContextUsage,
     setTranscriptLoading,
     dispose
   }

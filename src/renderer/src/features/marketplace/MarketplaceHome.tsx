@@ -260,7 +260,8 @@ export function MarketplaceHome({
     feedback,
     formLocked,
     installFromCatalog,
-    reload
+    reload,
+    refreshCatalog
   } = controller
 
   const installedById = useMemo(() => {
@@ -316,7 +317,11 @@ export function MarketplaceHome({
           <option value="skill">Skills</option>
           <option value="plugin">Plugins</option>
         </select>
-        <Button variant="subtle" disabled={formLocked || catalogLoading} onClick={() => void reload()}>
+        <Button
+          variant="subtle"
+          disabled={formLocked || catalogLoading}
+          onClick={() => void refreshCatalog()}
+        >
           {catalogLoading ? 'Refreshing…' : 'Refresh'}
         </Button>
         <Button variant="subtle" onClick={onOpenManage}>

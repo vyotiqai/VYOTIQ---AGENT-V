@@ -1,5 +1,11 @@
 import type { UiToolRow } from '@shared/transcript'
-import { MCP_TOOL_PREFIX, TOOL_LABELS, parseArgsRecord, parseMcpToolDisplay } from '@shared/toolSummary'
+import {
+  MCP_TOOL_PREFIX,
+  TOOL_LABELS,
+  isUnresolvedToolName,
+  parseArgsRecord,
+  parseMcpToolDisplay
+} from '@shared/toolSummary'
 import { mcpDoneLabel, mcpRunningLabel, mcpToolKind, humanizeSnakeCase } from '@shared/utils/mcpToolMeta'
 import { isReadOnlyTerminalCommand } from '@shared/utils/displayPath'
 import type { IconName } from '@renderer/lib/icons'
@@ -75,6 +81,9 @@ export function toolCategory(name: string): ToolCategory {
 }
 
 export function toolLabel(name: string, status: UiToolRow['status']): string {
+  if (isUnresolvedToolName(name)) {
+    return status === 'running' ? 'Preparing…' : 'Tool'
+  }
   const mcp = parseMcpToolDisplay(name)
   if (mcp) {
     return status === 'running' ? mcpRunningLabel(mcp.toolName) : mcpDoneLabel(mcp.toolName)

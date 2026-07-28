@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
@@ -7,6 +7,7 @@ import type { ToolApprovalDecision } from '@shared/ipc'
 import {
   CHAT_COLUMN,
   CHAT_GUTTER,
+  TOOL_BODY_CLAMP_PX,
   TRANSCRIPT_ROW_GAP,
   TRANSCRIPT_TURN_GAP,
   TRANSCRIPT_WORK_ROW_GAP
@@ -16,6 +17,7 @@ import {
   isTurnWorkRow,
   rowLeadingGap,
   stabilizeTranscriptRows,
+  transcriptRowFingerprint,
   type TranscriptRow
 } from '../utils/transcriptRows'
 import { ChangeSummary } from './ChangeSummary'
@@ -27,9 +29,92 @@ import { ToolGroup } from './ToolGroup'
 import { TurnSummary } from './TurnSummary'
 import { UserPrompt } from './UserPrompt'
 import { MarkdownContent } from '@renderer/lib/ui'
+import { shouldRenderThinking } from '@shared/transcript'
+
+/** ~chars per visual line in the 720px chat column at text-sm. */
+const CHARS_PER_LINE = 56
+const LINE_PX = 22
+
+/**
+ * First-paint height guesses for the virtualizer.
+ * Collapsed Thought/Read stay near disclosure height (~44–52). Text/user/card
+ * must not under-estimate — that stacks absolute rows on top of each other.
+ */
+export function estimateTranscriptRowSize(row: TranscriptRow | undefined): number {
+  if (!row) return 48
+  switch (row.kind) {
+    case 'turn':
+      return 40
+    case 'thinking':
+      return row.item.thinkingStreaming ? 112 : 44
+    case 'user': {
+      const len = row.item.content?.length ?? 0
+      const media =
+        (row.item.images?.length ?? 0) + (row.item.attachments?.length ?? 0)
+      // UserPrompt clamps body at TOOL_BODY_CLAMP_PX when overflowing.
+      const bodyLines = Math.max(1, Math.ceil(len / CHARS_PER_LINE))
+      const body = Math.min(TOOL_BODY_CLAMP_PX, 28 + bodyLines * LINE_PX)
+      const chrome = 40 + (media > 0 ? 36 : 0) + (len > 400 ? 22 : 0)
+      return chrome + body
+    }
+    case 'text': {
+      const content = row.item.content
+      const newlines = content.split('\n').length
+      const fromChars = Math.ceil(content.length / CHARS_PER_LINE)
+      const lines = Math.max(1, newlines, fromChars)
+      const base = 40 + lines * LINE_PX
+      // Prefer slight overestimate over overlap; measureElement corrects mounted rows.
+      if (row.item.streaming) return Math.min(1200, base)
+      return Math.min(2400, base)
+    }
+    case 'activity': {
+      const live = row.tools.some((t) => t.tool.status === 'running')
+      const groupExpanded = row.tools[0]?.groupExpanded === true
+      const toolExpanded = row.tools.some((t) => t.toolExpanded === true)
+      if (live || groupExpanded || toolExpanded) {
+        return toolExpanded ? 56 + TOOL_BODY_CLAMP_PX : 140
+      }
+      return 48
+    }
+    case 'card': {
+      const live = row.item.tool.status === 'running'
+      const expanded = row.item.toolExpanded === true
+      const hasBody = Boolean(
+        row.item.tool.content ||
+          row.item.tool.argsPreview ||
+          (row.item.subagent && row.item.subagent.length > 0)
+      )
+      if (expanded) return 56 + TOOL_BODY_CLAMP_PX + 80
+      // ProminentChrome still paints clamped body when collapsed + hasBody.
+      if (hasBody || live) return 56 + TOOL_BODY_CLAMP_PX
+      return 56
+    }
+    case 'changes':
+      return 56
+    case 'approval':
+      return 120
+    default: {
+      const _exhaustive: never = row
+      return _exhaustive
+    }
+  }
+}
+
+/** Cheap revision string so streaming content growth remasures without a length change. */
+export function transcriptRowsContentRevision(rows: readonly TranscriptRow[]): string {
+  if (rows.length === 0) return ''
+  return rows.map((row) => transcriptRowFingerprint(row)).join('\n')
+}
 
 /** Minimum pin slack when no dock reserve is known yet. */
 const NEAR_BOTTOM_MIN_PX = 80
+
+/**
+ * Virtualize only long idle transcripts that never streamed in this mount.
+ * Live runs (and the idle view right after them) stay in document flow so a
+ * cold virtualizer cannot invent black gaps / overlapping translateY slots.
+ */
+const VIRTUALIZE_MIN_ROWS = 160
 
 function distanceFromBottom(el: HTMLElement): number {
   return el.scrollHeight - el.scrollTop - el.clientHeight
@@ -40,10 +125,9 @@ function nearBottomThreshold(dockReservePx?: number): number {
   return Math.max(NEAR_BOTTOM_MIN_PX, dockReservePx)
 }
 
+/** Structure for tail-follow — ids only; tool status churn must not yank scroll. */
 function structuralKey(items: UiItem[]): string {
-  return items
-    .map((item) => (item.kind === 'tool' ? `${item.id}:${item.tool.status}` : item.id))
-    .join('|')
+  return items.map((item) => item.id).join('|')
 }
 
 function ImageLightbox({ url, label, onClose }: { url: string; label: string; onClose: () => void }) {
@@ -274,6 +358,11 @@ export function MessageList({
   )
   const prevStructuralKeyRef = useRef<string | null>(null)
   const prevRowsRef = useRef<TranscriptRow[] | null>(null)
+  /** After a live run in this mount, keep flow layout until the list remounts. */
+  const stayInFlowAfterLiveRef = useRef(false)
+  if (pendingRun || running) {
+    stayInFlowAfterLiveRef.current = true
+  }
 
   const itemsStructuralKey = useMemo(() => structuralKey(items), [items])
   const allRows = useMemo(() => {
@@ -283,9 +372,18 @@ export function MessageList({
     return stable
   }, [items, pendingRun, running, showThinking])
   const displayRows = useMemo(() => {
-    if (collapsedTurnSet.size === 0) return allRows
-    return allRows.filter((row) => !(collapsedTurnSet.has(row.turnIndex) && isTurnWorkRow(row)))
-  }, [allRows, collapsedTurnSet])
+    const visible = collapsedTurnSet.size === 0
+      ? allRows
+      : allRows.filter((row) => !(collapsedTurnSet.has(row.turnIndex) && isTurnWorkRow(row)))
+    // Drop thinking rows that would render null — they still reserved virtual slots / padding.
+    if (!showThinking) {
+      return visible.filter((row) => row.kind !== 'thinking')
+    }
+    return visible.filter((row) => {
+      if (row.kind !== 'thinking') return true
+      return shouldRenderThinking(row.item.thinking, row.item.thinkingStreaming)
+    })
+  }, [allRows, collapsedTurnSet, showThinking])
 
   const nearBottomPx = nearBottomThreshold(dockReservePx)
   const nearBottomPxRef = useRef(nearBottomPx)
@@ -398,7 +496,8 @@ export function MessageList({
       autoScrollRafRef.current = null
       if (!scrollRestored || restorePendingRef.current || !pinnedToBottomRef.current) return
       const el = containerRef.current
-      if (el && distanceFromBottom(el) <= 1) return
+      // Already within pin slack — avoid yanking on every height tick.
+      if (el && distanceFromBottom(el) <= nearBottomPxRef.current) return
       followTail('auto')
     })
   }, [followTail, scrollRestored])
@@ -408,7 +507,7 @@ export function MessageList({
     if (!reserveComposerSpace || dockReservePx == null) return
     if (!scrollRestored || restorePendingRef.current || !pinnedToBottomRef.current) return
     const el = containerRef.current
-    if (el && distanceFromBottom(el) <= 1) return
+    if (el && distanceFromBottom(el) <= nearBottomPxRef.current) return
     followTail('auto')
   }, [dockReservePx, reserveComposerSpace, followTail, scrollRestored])
 
@@ -425,7 +524,7 @@ export function MessageList({
     const ro = new ResizeObserver(() => {
       if (!scrollRestored || restorePendingRef.current || !pinnedToBottomRef.current) return
       const current = containerRef.current
-      if (current && distanceFromBottom(current) <= 1) return
+      if (current && distanceFromBottom(current) <= nearBottomPxRef.current) return
       scheduleTailFollow()
     })
     ro.observe(el)
@@ -446,8 +545,6 @@ export function MessageList({
     [onScrollTopChange]
   )
 
-  const columnClass = cn('flex w-full flex-col', CHAT_COLUMN)
-
   const dockReserveStyle = reserveComposerSpace
     ? ({ paddingBottom: 'var(--vy-dock-h, 8rem)' } as const)
     : undefined
@@ -460,124 +557,175 @@ export function MessageList({
     return ''
   }, [displayRows])
 
+  const rowsContentRevision = useMemo(
+    () => transcriptRowsContentRevision(displayRows),
+    [displayRows]
+  )
+
   const getItemKey = useCallback((index: number) => displayRows[index]?.id ?? index, [displayRows])
 
+  const estimateSize = useCallback(
+    (index: number) => estimateTranscriptRowSize(displayRows[index]),
+    [displayRows]
+  )
+
+  const measureElementHeight = useCallback((element: Element) => {
+    // offsetHeight includes padding/border and avoids transform-skewed rects.
+    if (element instanceof HTMLElement && element.offsetHeight > 0) {
+      return element.offsetHeight
+    }
+    return element.getBoundingClientRect().height
+  }, [])
+
+  const shouldVirtualize =
+    !pendingRun &&
+    !running &&
+    !stayInFlowAfterLiveRef.current &&
+    displayRows.length >= VIRTUALIZE_MIN_ROWS
+
   const rowVirtualizer = useVirtualizer({
-    count: displayRows.length,
+    count: shouldVirtualize ? displayRows.length : 0,
     getScrollElement: () => containerRef.current,
-    estimateSize: () => 72,
+    estimateSize,
+    measureElement: measureElementHeight,
     getItemKey,
     anchorTo: 'end',
     followOnAppend: true,
     scrollEndThreshold: nearBottomPx,
-    overscan: 6,
+    overscan: 8,
+    enabled: shouldVirtualize,
     // jsdom / first paint often report 0×0 until layout; seed a viewport so rows mount.
     initialRect: { width: 720, height: 800 }
   })
 
+  const remasureMountedRows = useCallback(() => {
+    const root = containerRef.current
+    if (!root) return
+    const nodes = root.querySelectorAll('[data-index]')
+    for (const node of nodes) {
+      rowVirtualizer.measureElement(node)
+    }
+  }, [rowVirtualizer])
+
+  // Never call measure() here — it clears itemSizeCache and off-screen rows fall
+  // back to estimates (huge gaps between Thought/Read). Remasure mounted only.
   useLayoutEffect(() => {
-    rowVirtualizer.measure()
-  }, [rowVirtualizer, displayRows.length, scrollRestored])
+    if (!shouldVirtualize) return
+    remasureMountedRows()
+  }, [displayRows.length, scrollRestored, shouldVirtualize, remasureMountedRows])
+
+  useLayoutEffect(() => {
+    if (!shouldVirtualize) return
+    remasureMountedRows()
+  }, [rowsContentRevision, shouldVirtualize, remasureMountedRows])
 
   useLayoutEffect(() => {
     if (!scrollRestored || displayRows.length === 0) return
     if (restoreScrollTop && restoreScrollTop > 0) return
-    rowVirtualizer.scrollToEnd()
+    if (shouldVirtualize) {
+      // Remasure visible rows first so scrollToEnd uses real heights, not cold estimates.
+      remasureMountedRows()
+      rowVirtualizer.scrollToEnd()
+    } else {
+      const el = containerRef.current
+      if (el) el.scrollTop = el.scrollHeight
+    }
     // Pin once after restore/surface — followOnAppend handles stream growth.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot pin
-  }, [scrollRestored, scrollRestoreToken])
+  }, [scrollRestored, scrollRestoreToken, shouldVirtualize])
+
+  const renderRow = (row: TranscriptRow): ReactNode => (
+    <TranscriptRowBlock
+      row={row}
+      onImageClick={onImageClick}
+      onLoadToolContent={onLoadToolContent}
+      onThinkingToggle={onThinkingToggle}
+      onToolToggle={onToolToggle}
+      onGroupToggle={onGroupToggle}
+      onTurnToggle={handleTurnToggle}
+      onApprovalDecision={onApprovalDecision}
+      turnCollapsed={collapsedTurnSet.has(row.turnIndex)}
+      showThinking={showThinking}
+      mcpServerNames={mcpServerNames}
+    />
+  )
 
   return (
     <>
       <div
         ref={containerRef}
         data-transcript-scroll
-        className={cn('flex min-h-0 flex-1 flex-col overflow-auto pt-4', CHAT_GUTTER)}
+        className={cn('min-h-0 flex-1 overflow-auto pt-4', CHAT_GUTTER)}
         style={dockReserveStyle}
         onScroll={(e) => handleScroll(e.currentTarget.scrollTop)}
       >
-        <div className={columnClass} data-chat-column>
-          <div className="sr-only" role="status" aria-live="polite">
-            {streamingAnnouncement}
+        <div className="sr-only" role="status" aria-live="polite">
+          {streamingAnnouncement}
+        </div>
+        {transcriptLoading && items.length === 0 ? (
+          <div
+            className={cn(
+              CHAT_COLUMN,
+              'flex min-h-[12rem] flex-col items-center justify-center gap-2 text-sm text-muted'
+            )}
+            role="status"
+            aria-live="polite"
+            aria-busy="true"
+          >
+            <Icon name="loader" size={16} className="motion-safe:animate-spin" />
+            <span>Loading chat…</span>
           </div>
-          {transcriptLoading && items.length === 0 ? (
-            <div
-              className="flex min-h-[12rem] flex-col items-center justify-center gap-2 text-sm text-muted"
-              role="status"
-              aria-live="polite"
-              aria-busy="true"
-            >
-              <Icon name="loader" size={16} className="motion-safe:animate-spin" />
-              <span>Loading chat…</span>
-            </div>
-          ) : (
-            (() => {
-              const virtualItems = rowVirtualizer.getVirtualItems()
-              // jsdom often yields an empty range; still paint rows for tests/SSR.
-              if (virtualItems.length === 0 && displayRows.length > 0) {
-                return (
-                  <div className="flex w-full flex-col">
-                    {displayRows.map((row) => (
-                      <div
-                        key={row.id}
-                        id={isTurnWorkRow(row) ? `turn-work-${row.turnIndex}` : undefined}
-                        className={rowSpacingClass(row)}
-                      >
-                        <TranscriptRowBlock
-                          row={row}
-                          onImageClick={onImageClick}
-                          onLoadToolContent={onLoadToolContent}
-                          onThinkingToggle={onThinkingToggle}
-                          onToolToggle={onToolToggle}
-                          onGroupToggle={onGroupToggle}
-                          onTurnToggle={handleTurnToggle}
-                          onApprovalDecision={onApprovalDecision}
-                          turnCollapsed={collapsedTurnSet.has(row.turnIndex)}
-                          showThinking={showThinking}
-                          mcpServerNames={mcpServerNames}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                )
-              }
+        ) : (
+          (() => {
+            // Short transcripts: normal flow — no absolute translateY collision risk.
+            // Long transcripts / Vitest empty-range: virtualize or full-DOM test fallback.
+            const virtualItems = shouldVirtualize ? rowVirtualizer.getVirtualItems() : []
+            const allowFullFallback =
+              typeof process !== 'undefined' && process.env.VITEST === 'true'
+            const useFlowLayout =
+              !shouldVirtualize ||
+              (virtualItems.length === 0 && displayRows.length > 0 && allowFullFallback)
+
+            if (useFlowLayout) {
               return (
-                <div
-                  className="relative w-full"
-                  style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
-                >
-                  {virtualItems.map((virtualItem) => {
-                    const row = displayRows[virtualItem.index]!
-                    return (
-                      <div
-                        key={virtualItem.key}
-                        data-index={virtualItem.index}
-                        ref={rowVirtualizer.measureElement}
-                        id={isTurnWorkRow(row) ? `turn-work-${row.turnIndex}` : undefined}
-                        className={cn('absolute left-0 top-0 w-full', rowSpacingClass(row))}
-                        style={{ transform: `translateY(${virtualItem.start}px)` }}
-                      >
-                        <TranscriptRowBlock
-                          row={row}
-                          onImageClick={onImageClick}
-                          onLoadToolContent={onLoadToolContent}
-                          onThinkingToggle={onThinkingToggle}
-                          onToolToggle={onToolToggle}
-                          onGroupToggle={onGroupToggle}
-                          onTurnToggle={handleTurnToggle}
-                          onApprovalDecision={onApprovalDecision}
-                          turnCollapsed={collapsedTurnSet.has(row.turnIndex)}
-                          showThinking={showThinking}
-                          mcpServerNames={mcpServerNames}
-                        />
-                      </div>
-                    )
-                  })}
+                <div className={cn('flex w-full flex-col', CHAT_COLUMN)} data-chat-column>
+                  {displayRows.map((row) => (
+                    <div
+                      key={row.id}
+                      id={isTurnWorkRow(row) ? `turn-work-${row.turnIndex}` : undefined}
+                      className={rowSpacingClass(row)}
+                    >
+                      {renderRow(row)}
+                    </div>
+                  ))}
                 </div>
               )
-            })()
-          )}
-        </div>
+            }
+            return (
+              <div
+                className={cn('relative w-full', CHAT_COLUMN)}
+                data-chat-column
+                style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+              >
+                {virtualItems.map((virtualItem) => {
+                  const row = displayRows[virtualItem.index]!
+                  return (
+                    <div
+                      key={virtualItem.key}
+                      data-index={virtualItem.index}
+                      ref={rowVirtualizer.measureElement}
+                      id={isTurnWorkRow(row) ? `turn-work-${row.turnIndex}` : undefined}
+                      className={cn('absolute left-0 top-0 w-full', rowSpacingClass(row))}
+                      style={{ transform: `translateY(${virtualItem.start}px)` }}
+                    >
+                      {renderRow(row)}
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })()
+        )}
       </div>
       {lightbox ? (
         <ImageLightbox

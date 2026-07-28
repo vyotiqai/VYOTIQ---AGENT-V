@@ -86,7 +86,7 @@ import {
   clearMcpAuthToken,
   clearMcpOAuthState
 } from '@main/settings/secrets'
-import { ChatEventBatcher } from './streamBatch'
+import { ChatEventBatcher, getChatEventBatchStats, resetChatEventBatchStats } from './streamBatch'
 import { runAgent, createRunId } from '../agent/loop'
 import { compactRunNow, CompactionUnavailableError } from '../agent/compactRun'
 import { extractAttachment } from '../attachments/extract'
@@ -107,8 +107,8 @@ import {
 } from '../agent/runRegistry'
 import {
   listRuns,
-  loadMessages,
-  loadEventsForRun,
+  loadMessagesAsync,
+  loadEventsForRunAsync,
   LOAD_EVENTS_UI_LIMIT,
   loadToolResultContent,
   deleteRun,
@@ -473,6 +473,11 @@ export function registerIpc(): void {
           }
         } finally {
           batcher.flush()
+          if (process.env.VYOTIQ_PERF === '1') {
+            const stats = getChatEventBatchStats()
+            console.info('[vyotiq-perf] chatEvent batch', JSON.stringify(stats))
+            resetChatEventBatchStats()
+          }
           releaseApprovalSender()
           cancelPendingApprovals(runId, invokeId)
           clearRunAbort(runId, invokeId)
@@ -562,7 +567,7 @@ export function registerIpc(): void {
       try {
         const req = LoadRunRequestSchema.parse(raw)
         if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
-        const messages = loadMessages(req.workspacePath, req.runId)
+        const messages = await loadMessagesAsync(req.workspacePath, req.runId)
         return ok({ runId: req.runId, messages })
       } catch (err) {
         return failFrom(err, IPC.loadRun)
@@ -577,7 +582,11 @@ export function registerIpc(): void {
       try {
         const req = LoadRunEventsRequestSchema.parse(raw)
         if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
-        return ok(loadEventsForRun(req.workspacePath, req.runId, { limit: LOAD_EVENTS_UI_LIMIT }))
+        return ok(
+          await loadEventsForRunAsync(req.workspacePath, req.runId, {
+            limit: LOAD_EVENTS_UI_LIMIT
+          })
+        )
       } catch (err) {
         return failFrom(err, IPC.loadRunEvents)
       }

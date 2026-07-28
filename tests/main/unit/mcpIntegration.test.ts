@@ -67,6 +67,9 @@ describe('MCP stdio integration', () => {
     expect(env.ANTHROPIC_API_KEY).toBeUndefined()
     expect(env.CUSTOM_OK).toBe('1')
     expect(env.PATH).toBe('/usr/bin')
+    if (process.platform === 'win32') {
+      expect(env.PYTHONIOENCODING).toBe('utf-8')
+    }
   })
 
   it('connects, lists tools, invokes echo, and disconnects', async () => {
@@ -210,6 +213,23 @@ describe('syncMcpServers', () => {
     ])
     expect(status[0]?.connected).toBe(false)
     expect(status[0]?.error).toBeTruthy()
+  })
+
+  it('does not re-attempt a failed connect within the cooldown window', async () => {
+    const bad = {
+      id: 'bad-cooldown',
+      name: 'Bad',
+      enabled: true,
+      command: 'vyotiq-nonexistent-mcp-command',
+      args: [] as string[]
+    }
+    await syncMcpServers([bad])
+    const first = getMcpServerStatus([bad])[0]?.error
+    expect(first).toBeTruthy()
+
+    // Second sync should skip the spawn (same config, within cooldown) and keep the error.
+    await syncMcpServers([bad])
+    expect(getMcpServerStatus([bad])[0]?.error).toBe(first)
   })
 
   it('reconnects when connection config changes', async () => {

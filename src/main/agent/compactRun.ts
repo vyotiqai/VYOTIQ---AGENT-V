@@ -6,10 +6,11 @@ import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
 import { getSecret, hasStoredSecretBlob, secretStatus } from '@main/settings/secrets'
 import { getSettings } from '@main/settings/settings'
 import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/workspace/workspaces'
-import { allocateBudget, contentWindow } from './context/budget'
+import { allocateBudget, contentWindow, contextWindowFor } from './context/budget'
 import { compactMessages, preserveRecentMessages } from './context/compact'
+import { estimateMessagesTokens } from './context/estimate'
 import { promoteCompactionToMemory } from './context/memoryPromote'
-import { KEEP_RECENT_TURNS } from './context/types'
+import { isTrimWatermarkCompaction, KEEP_RECENT_TURNS } from './context/types'
 import { resolveModelInfo } from './modelResolve'
 import { getProvider } from './providers'
 import { loadCompaction, loadMessages, runExists, saveCompaction } from './state'
@@ -95,7 +96,7 @@ export async function compactRunNow(input: {
     messages: toSummarize.map(({ thinking: _thinking, ...rest }) => rest),
     supportsStructuredOutput: model.supportsStructuredOutput,
     contextWindow: contentWindow(model),
-    priorSummary: existing?.summary
+    priorSummary: isTrimWatermarkCompaction(existing) ? undefined : existing?.summary
   })
 
   if (!record) throw new CompactionUnavailableError('The model returned no summary.')
@@ -123,10 +124,16 @@ export async function compactRunNow(input: {
     keptMessages: kept.length
   })
 
+  const remainingEstimate =
+    estimateMessagesTokens(kept, model) + (record.tokenEstimate ?? 0)
+
   return {
     summary: record.summary,
     tokenEstimate: record.tokenEstimate,
     keptMessages: kept.length,
-    messagesBefore: working.length
+    messagesBefore: working.length,
+    estimatedTokens: remainingEstimate,
+    contextWindow: contextWindowFor(model),
+    contentWindow: contentWindow(model)
   }
 }

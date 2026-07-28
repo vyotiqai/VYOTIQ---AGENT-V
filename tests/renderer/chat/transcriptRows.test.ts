@@ -3,6 +3,8 @@ import {
   buildTranscriptRows,
   isTurnWorkRow,
   rowLeadingGap,
+  stabilizeTranscriptRows,
+  transcriptRowFingerprint,
   TURN_GAP_PX
 } from '@renderer/features/chat/utils/transcriptRows'
 import type { UiItem } from '@shared/transcript'
@@ -683,5 +685,76 @@ describe('buildTranscriptRows', () => {
         }
       })
     ).toBe(true)
+  })
+})
+
+describe('transcriptRowFingerprint / stabilizeTranscriptRows', () => {
+  it('invalidates activity identity when tool content grows', () => {
+    const base: UiItem = {
+      kind: 'tool',
+      id: 't1',
+      tool: {
+        id: 't1',
+        name: 'read',
+        summary: 'a.ts',
+        status: 'done',
+        content: 'short'
+      }
+    }
+    const grown: UiItem = {
+      ...base,
+      tool: { ...base.tool, content: 'short'.repeat(40) }
+    }
+    const prev = buildTranscriptRows([base])
+    const next = buildTranscriptRows([grown])
+    expect(prev[0]?.kind).toBe('activity')
+    expect(next[0]?.kind).toBe('activity')
+    if (prev[0]?.kind !== 'activity' || next[0]?.kind !== 'activity') return
+    expect(transcriptRowFingerprint(prev[0])).not.toBe(transcriptRowFingerprint(next[0]))
+    const stable = stabilizeTranscriptRows(prev, next)
+    expect(stable[0]).toBe(next[0])
+    expect(stable[0]).not.toBe(prev[0])
+  })
+
+  it('invalidates card identity when subagent progress updates', () => {
+    const base: UiItem = {
+      kind: 'tool',
+      id: 'edit-1',
+      tool: {
+        id: 'edit-1',
+        name: 'edit',
+        summary: 'a.ts',
+        status: 'running',
+        presentation: 'prominent'
+      },
+      subagent: [{ kind: 'text', text: 'hi' }]
+    }
+    const grown: UiItem = {
+      ...base,
+      subagent: [
+        { kind: 'text', text: 'hi' },
+        { kind: 'tool', text: 'read pkg' }
+      ]
+    }
+    const prev = buildTranscriptRows([base])
+    const next = buildTranscriptRows([grown])
+    expect(prev[0]?.kind).toBe('card')
+    expect(next[0]?.kind).toBe('card')
+    if (prev[0]?.kind !== 'card' || next[0]?.kind !== 'card') return
+    expect(transcriptRowFingerprint(prev[0])).not.toBe(transcriptRowFingerprint(next[0]))
+    const stable = stabilizeTranscriptRows(prev, next)
+    expect(stable[0]).not.toBe(prev[0])
+  })
+
+  it('reuses activity row identity when only unrelated fields are unchanged', () => {
+    const item: UiItem = {
+      kind: 'tool',
+      id: 't1',
+      tool: { id: 't1', name: 'read', summary: 'a.ts', status: 'done', content: 'body' }
+    }
+    const prev = buildTranscriptRows([item])
+    const next = buildTranscriptRows([{ ...item }])
+    const stable = stabilizeTranscriptRows(prev, next)
+    expect(stable[0]).toBe(prev[0])
   })
 })

@@ -25,9 +25,43 @@ import { stripImagesFromMessages } from './stripImages'
 import { buildWorkspaceRulesSection } from './rules'
 import { buildWorkspaceSnapshotAsync } from './workspaceSnapshot'
 import { logger } from '../../../shared/logger'
+import { perfLog, perfNow } from './perfDebug'
 
 const COMPACTION_MIN_MESSAGES = 4
 const COMPACTION_MIN_TOKENS = 2000
+
+type SystemCacheEntry = { fingerprint: string; system: string }
+let systemPromptCache: SystemCacheEntry | null = null
+
+function systemFingerprint(parts: {
+  harness: string
+  workspace: string
+  rules: string
+  skillsSection: string
+  pluginRulesSection: string
+  memoryIndex: string
+  memoryState: string
+  contract: string
+  compactionSummary?: string
+  loopHint?: string
+  historyBudget: number
+  toolsBudget: number
+}): string {
+  return [
+    parts.harness,
+    parts.workspace,
+    parts.rules,
+    parts.skillsSection,
+    parts.pluginRulesSection,
+    parts.memoryIndex,
+    parts.memoryState,
+    parts.contract,
+    parts.compactionSummary ?? '',
+    parts.loopHint ?? '',
+    String(parts.historyBudget),
+    String(parts.toolsBudget)
+  ].join('\0')
+}
 
 function modelAcceptsVision(model: AssembleInput['model']): boolean {
   return model.supportsVision || model.inputModalities.includes('image')
@@ -107,6 +141,27 @@ function buildSystem(parts: {
   budgets: ReturnType<typeof allocateBudget>
   loopHint?: string
 }): string {
+  const fingerprint = systemFingerprint({
+    harness: parts.harness,
+    workspace: parts.workspace,
+    rules: parts.rules,
+    skillsSection: parts.skillsSection ?? '',
+    pluginRulesSection: parts.pluginRulesSection ?? '',
+    memoryIndex: parts.memoryIndex,
+    memoryState: parts.memoryState,
+    contract: parts.contract ?? '',
+    compactionSummary:
+      parts.compaction?.summary && !isTrimWatermarkCompaction(parts.compaction)
+        ? parts.compaction.summary
+        : undefined,
+    loopHint: parts.loopHint,
+    historyBudget: parts.budgets.history,
+    toolsBudget: parts.budgets.tools
+  })
+  if (systemPromptCache?.fingerprint === fingerprint) {
+    return systemPromptCache.system
+  }
+
   const sections: string[] = []
   sections.push(capHarness(parts.harness, parts.budgets.system))
   if (parts.skillsSection?.trim()) {
@@ -150,7 +205,9 @@ function buildSystem(parts: {
       ].join('\n')
     )
   }
-  return sections.join('\n\n')
+  const system = sections.join('\n\n')
+  systemPromptCache = { fingerprint, system }
+  return system
 }
 
 function computeLayers(
@@ -217,6 +274,7 @@ export async function assembleContext(
     signal: AbortSignal
   }
 ): Promise<AssembleResult> {
+  const assembleStarted = perfNow()
   const budgets = allocateBudget(input.model)
   const keepRecent = input.keepRecentTurns ?? KEEP_RECENT_TURNS
   const triggerRatio = input.compactionTriggerRatio ?? 0.7
@@ -248,6 +306,7 @@ export async function assembleContext(
   let compaction = input.priorCompaction ?? null
   let contextShrunk = false
 
+  const estimateStarted = perfNow()
   const systemDraft = buildSystem({
     harness: input.harness,
     workspace,
@@ -264,12 +323,22 @@ export async function assembleContext(
 
   let layers = computeLayers(systemDraft, messages, input.toolsJsonEstimate, input.model, budgets)
   let estimated = totalFromLayers(layers)
+  perfLog('estimateMessagesTokens', estimateStarted, {
+    messages: messages.length,
+    estimated
+  })
 
   const trigger = compactionTriggerTokens(input.model, triggerRatio)
   let used = resolveUsedTokens(estimated, input.lastUsage, trigger)
 
   if (used >= trigger || estimated >= trigger) {
-    const toSummarize = messages.slice(0, Math.max(0, messages.length - keepRecent * 2))
+    const keptForBoundary = preserveRecentMessages(
+      messages,
+      keepRecent,
+      budgets.history,
+      input.model
+    )
+    const toSummarize = messages.slice(0, Math.max(0, messages.length - keptForBoundary.length))
     if (shouldCompactHistory(toSummarize, input.model)) {
       const record = await compactMessages({
         provider: input.provider,
@@ -285,7 +354,7 @@ export async function assembleContext(
           : input.priorCompaction?.summary
       })
       if (record) {
-        messages = preserveRecentMessages(messages, keepRecent, budgets.history, input.model)
+        messages = keptForBoundary
         compaction = record
         contextShrunk = true
       }
@@ -383,6 +452,12 @@ export async function assembleContext(
       })
     }
   }
+
+  perfLog('assembleContext', assembleStarted, {
+    messages: messages.length,
+    estimated,
+    contextShrunk
+  })
 
   return {
     system,

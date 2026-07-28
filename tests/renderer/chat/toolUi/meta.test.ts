@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { isProminentTool, toolCategory, toolLabel } from '@renderer/features/chat/toolUi/meta'
+import { toolHasBody } from '@renderer/features/chat/toolUi/registry'
 
 describe('toolUi meta', () => {
   it('marks prominent tools for standalone cards', () => {
@@ -34,5 +35,22 @@ describe('toolUi meta', () => {
   it('humanizes unknown built-in tool names', () => {
     expect(toolLabel('ask_question', 'running')).toBe('Running Ask Question')
     expect(toolLabel('ask_question', 'done')).toBe('Ask Question')
+  })
+
+  it('labels unresolved streaming tool names as Preparing', () => {
+    expect(toolLabel('tool', 'running')).toBe('Preparing…')
+    expect(toolLabel('', 'running')).toBe('Preparing…')
+  })
+
+  it('does not claim a body for unresolved running tool rows', () => {
+    expect(
+      toolHasBody({
+        id: 'pending_0',
+        name: 'tool',
+        summary: '',
+        status: 'running',
+        argsPreview: '{"todos":[{"id":"1"}]}'
+      })
+    ).toBe(false)
   })
 })

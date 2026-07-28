@@ -1,3 +1,4 @@
+import { useCallback, useSyncExternalStore } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { IconButton, cn } from '@renderer/lib/ui'
 import type { ProviderId, ServiceTier } from '@shared/ipc'
@@ -10,6 +11,40 @@ import { ModelPicker } from './ModelPicker'
 import { ThinkingControls } from './ThinkingControls'
 import type { ModelPickerOption } from './composerModelUtils'
 import type { ModelInfo } from '@shared/ipc'
+import type { ChatMetaStore } from '../../chatStores'
+
+function ContextMeterLeaf({
+  metaStore,
+  usage,
+  modelWindow,
+  compactionTriggerRatio,
+  onCompact,
+  compactDisabled
+}: {
+  metaStore?: ChatMetaStore
+  usage?: ContextUsageState | null
+  modelWindow?: number | null
+  compactionTriggerRatio?: number
+  onCompact?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
+  compactDisabled?: boolean
+}) {
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => metaStore?.subscribeMeta(onStoreChange) ?? (() => {}),
+    [metaStore]
+  )
+  const getRevision = useCallback(() => metaStore?.getMetaRevision() ?? 0, [metaStore])
+  useSyncExternalStore(subscribe, getRevision, getRevision)
+  const resolved = metaStore ? metaStore.getContextUsage() : (usage ?? null)
+  return (
+    <ContextMeter
+      usage={resolved}
+      modelWindow={modelWindow}
+      compactionTriggerRatio={compactionTriggerRatio}
+      onCompact={onCompact}
+      compactDisabled={compactDisabled}
+    />
+  )
+}
 
 /** Shared compact control height for the toolbar row. */
 const iconCtl =
@@ -60,6 +95,7 @@ export function ComposerToolbar({
   canSend,
   onStop,
   contextUsage,
+  metaStore,
   onCompactContext
 }: {
   variant: ComposerVariant
@@ -90,6 +126,7 @@ export function ComposerToolbar({
   canSend: boolean
   onStop: () => void
   contextUsage?: ContextUsageState | null
+  metaStore?: ChatMetaStore
   onCompactContext?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
 }) {
   void variant
@@ -189,8 +226,9 @@ export function ComposerToolbar({
 
       {/* Right: context + send, always trailing */}
       <div className={cn(zone, 'justify-end')}>
-        <ContextMeter
-          usage={contextUsage ?? null}
+        <ContextMeterLeaf
+          metaStore={metaStore}
+          usage={contextUsage}
           modelWindow={modelWindow}
           compactionTriggerRatio={chatSettings.compactionTriggerRatio}
           onCompact={onCompactContext}

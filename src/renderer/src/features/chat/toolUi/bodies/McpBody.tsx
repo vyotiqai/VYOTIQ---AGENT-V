@@ -1,10 +1,11 @@
 import { useMemo } from 'react'
 import { cn } from '@renderer/lib/ui'
 import { TOOL_BODY_INNER } from '@renderer/lib/utils/layout'
+import { isUnresolvedToolName } from '@shared/toolSummary'
+import { humanizeSnakeCase } from '@shared/utils/mcpToolMeta'
 import type { ToolBodyProps } from '../types'
 import { parseMcpData } from '../parsers/mcp'
 import { CodeBlock, CopyButton, PathList, TruncatedBanner } from '../primitives'
-import { humanizeSnakeCase } from '@shared/utils/mcpToolMeta'
 
 function formatJson(value: unknown): string {
   try {
@@ -118,6 +119,7 @@ export function McpBody({ tool, loading, loadFailed, mcpServerNames }: ToolBodyP
 }
 
 export function FallbackBody({ tool, loading, loadFailed }: ToolBodyProps) {
+  const unresolved = isUnresolvedToolName(tool.name)
   return (
     <div>
       {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
@@ -125,7 +127,7 @@ export function FallbackBody({ tool, loading, loadFailed }: ToolBodyProps) {
         className="m-0 max-h-48 overflow-auto px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-fg/80 [overflow-wrap:anywhere]"
         aria-busy={loading || undefined}
       >
-        {tool.argsPreview ? `args: ${tool.argsPreview}\n\n` : ''}
+        {!unresolved && tool.argsPreview ? `args: ${tool.argsPreview}\n\n` : ''}
         {tool.content ?? ''}
       </pre>
     </div>

@@ -13,7 +13,7 @@ import type {
   Settings
 } from '@shared/ipc'
 
-export type MarketplaceFeedback = { kind: 'success' | 'error'; text: string }
+export type MarketplaceFeedback = { kind: 'success' | 'error' | 'warning'; text: string }
 
 const REMOTE_INSTALL_SOURCES = new Set(['registry', 'git', 'npm', 'zip', 'remote'])
 const QUERY_DEBOUNCE_MS = 250
@@ -109,6 +109,23 @@ export function useMarketplaceController({
     }
   }, [kindFilter, debouncedQuery])
 
+  const refreshCatalog = useCallback(async () => {
+    setCatalogLoading(true)
+    setFeedback(null)
+    try {
+      const registryUrl = (settings.marketplace?.registryUrl ?? '').trim()
+      if (registryUrl && window.vyotiq.marketplaceRefreshCatalog) {
+        const refreshRes = await window.vyotiq.marketplaceRefreshCatalog()
+        if (!refreshRes.ok) {
+          setFeedback({ kind: 'error', text: refreshRes.error })
+        }
+      }
+      await reload()
+    } finally {
+      setCatalogLoading(false)
+    }
+  }, [reload, settings.marketplace?.registryUrl])
+
   useEffect(() => {
     void reload()
   }, [reload])
@@ -116,6 +133,16 @@ export function useMarketplaceController({
   useEffect(() => {
     void reload()
   }, [settings.marketplace?.registryUrl]) // eslint-disable-line react-hooks/exhaustive-deps -- reload on registry URL change only
+
+  useEffect(() => {
+    const onCatalogRefreshed = (): void => {
+      void reload()
+    }
+    window.addEventListener('vyotiq:marketplace-catalog-refreshed', onCatalogRefreshed)
+    return () => {
+      window.removeEventListener('vyotiq:marketplace-catalog-refreshed', onCatalogRefreshed)
+    }
+  }, [reload])
 
   useEffect(() => {
     void loadMcpStatus()
@@ -327,7 +354,7 @@ export function useMarketplaceController({
         }
         if (res.data.warnings.length > 0) {
           setFeedback({
-            kind: 'error',
+            kind: 'warning',
             text: res.data.warnings.slice(0, 3).join(' ')
           })
         }
@@ -392,6 +419,7 @@ export function useMarketplaceController({
     loadMcpStatus,
     runUpdate,
     reload,
+    refreshCatalog,
     runInstall,
     installFromCatalog,
     setEnabled,

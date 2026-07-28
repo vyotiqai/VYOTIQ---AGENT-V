@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, rmSync, writeFileSync, appendFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, rmSync, writeFileSync } from 'fs'
 import { readFile, readdir } from 'fs/promises'
 import { join, basename } from 'path'
 import { atomicWriteFile, atomicWriteJson } from '../storage/atomicWrite'
 import { enqueueEventAppend, flushEventAppends } from './eventAppendQueue'
+import { enqueueMessageAppend, flushMessageAppends } from './messageAppendQueue'
 import { getCachedListRuns, invalidateListRunsCache } from './runListCache'
 import {
   ChatMessageSchema,
@@ -25,6 +26,7 @@ import { isActive } from './runRegistry'
 import { CompactionRecordSchema, type CompactionRecord } from './context/types'
 
 export { flushEventAppends } from './eventAppendQueue'
+export { flushMessageAppends } from './messageAppendQueue'
 
 const CONTRACT_CAP = 4000
 
@@ -110,9 +112,15 @@ export function syncMessages(dir: string, messages: ChatMessage[]): void {
   atomicWriteFile(join(dir, 'messages.jsonl'), body ? `${body}\n` : '')
 }
 
+/** Await pending async appends, then rewrite messages.jsonl (authoritative). */
+export async function syncMessagesAsync(dir: string, messages: ChatMessage[]): Promise<void> {
+  await flushMessageAppends(dir)
+  syncMessages(dir, messages)
+}
+
 export function appendMessage(dir: string, message: ChatMessage): void {
   const line = `${JSON.stringify(message)}\n`
-  appendFileSync(join(dir, 'messages.jsonl'), line, 'utf8')
+  enqueueMessageAppend(dir, line)
 }
 
 export function createRun(workspacePath: string, runId: string, goal: string): string {
@@ -214,6 +222,22 @@ export function loadMessages(workspacePath: string, runId: string): ChatMessage[
   return parseMessagesJsonl(readFileSync(p, 'utf8'))
 }
 
+export async function loadMessagesAsync(
+  workspacePath: string,
+  runId: string
+): Promise<ChatMessage[]> {
+  const dir = resolveRunDir(workspacePath, runId)
+  await flushMessageAppends(dir)
+  const p = join(dir, 'messages.jsonl')
+  if (!existsSync(p)) return []
+  try {
+    return parseMessagesJsonl(await readFile(p, 'utf8'))
+  } catch (err) {
+    logger.warn('Failed to read messages.jsonl', { scope: 'state', runId, err })
+    return []
+  }
+}
+
 function toolMessageText(content: MessageContent): string {
   return typeof content === 'string' ? content : contentToText(content)
 }
@@ -262,13 +286,17 @@ function normalizePersistedEvent(
   }
 }
 
-export function loadEvents(dir: string, runId?: string): PersistedEvent[] {
-  const p = join(dir, 'events.jsonl')
-  if (!existsSync(p)) return []
-  const inferredRunId = runId ?? basename(dir)
+function parseEventsFromText(
+  text: string,
+  inferredRunId: string,
+  options?: { limit?: number }
+): PersistedEvent[] {
   const events: PersistedEvent[] = []
-  const lines = readFileSync(p, 'utf8').split('\n')
-  for (let index = 0; index < lines.length; index++) {
+  const lines = text.split('\n')
+  const limit = options?.limit
+  const start =
+    limit != null && limit > 0 && lines.length > limit ? Math.max(0, lines.length - limit) : 0
+  for (let index = start; index < lines.length; index++) {
     const line = lines[index]
     if (!line) continue
     try {
@@ -292,10 +320,55 @@ export function loadEvents(dir: string, runId?: string): PersistedEvent[] {
   return events
 }
 
-export function loadEventsForRun(workspacePath: string, runId: string): PersistedEvent[] {
+export function loadEvents(
+  dir: string,
+  runId?: string,
+  options?: { limit?: number }
+): PersistedEvent[] {
+  const p = join(dir, 'events.jsonl')
+  if (!existsSync(p)) return []
+  const inferredRunId = runId ?? basename(dir)
+  return parseEventsFromText(readFileSync(p, 'utf8'), inferredRunId, options)
+}
+
+/** Non-blocking events load for IPC / UI restore (Electron: do not block main). */
+export async function loadEventsAsync(
+  dir: string,
+  runId?: string,
+  options?: { limit?: number }
+): Promise<PersistedEvent[]> {
+  const p = join(dir, 'events.jsonl')
+  if (!existsSync(p)) return []
+  const inferredRunId = runId ?? basename(dir)
+  try {
+    return parseEventsFromText(await readFile(p, 'utf8'), inferredRunId, options)
+  } catch (err) {
+    logger.warn('Failed to read events.jsonl', { scope: 'state', runId: inferredRunId, err })
+    return []
+  }
+}
+
+/** Default UI restore bound — full history stays on disk. */
+export const LOAD_EVENTS_UI_LIMIT = 500
+
+export function loadEventsForRun(
+  workspacePath: string,
+  runId: string,
+  options?: { limit?: number }
+): PersistedEvent[] {
   const dir = resolveRunDir(workspacePath, runId)
   if (!existsSync(join(dir, 'events.jsonl'))) return []
-  return loadEvents(dir, runId)
+  return loadEvents(dir, runId, options)
+}
+
+export async function loadEventsForRunAsync(
+  workspacePath: string,
+  runId: string,
+  options?: { limit?: number }
+): Promise<PersistedEvent[]> {
+  const dir = resolveRunDir(workspacePath, runId)
+  if (!existsSync(join(dir, 'events.jsonl'))) return []
+  return loadEventsAsync(dir, runId, options)
 }
 
 const RUN_LIST_CAP = 30

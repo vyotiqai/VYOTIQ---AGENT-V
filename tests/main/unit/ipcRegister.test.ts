@@ -97,7 +97,11 @@ vi.mock('@main/agent/runRegistry', () => ({
 vi.mock('@main/agent/state', () => ({
   listRuns: vi.fn(),
   loadMessages: vi.fn(),
+  loadMessagesAsync: vi.fn(),
   loadEventsForRun: vi.fn(),
+  loadEventsForRunAsync: vi.fn(),
+  LOAD_EVENTS_UI_LIMIT: 500,
+  loadToolResultContent: vi.fn(),
   deleteRun: vi.fn(),
   renameRun: vi.fn(),
   runExists: runExistsMock

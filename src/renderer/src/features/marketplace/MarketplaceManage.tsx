@@ -464,15 +464,8 @@ export function MarketplaceManage({
     enabled: boolean
   ) => {
     if (!activeWorkspacePath || !onSetSettingsOverride) return
-    // If chat override was off, start a marketplace-only override so Force on/off
-    // does not resurrect stale provider/model fields left from a previous override.
-    const prev =
-      workspaceOverride?.useOverride === true
-        ? workspaceOverride
-        : {
-            useOverride: true as const,
-            marketplaceOverrides: workspaceOverride?.marketplaceOverrides
-          }
+    // Write marketplace Force on/off without flipping Settings → Override (provider/model).
+    const prev = workspaceOverride ?? { useOverride: false as const }
     const marketplaceOverrides = {
       ...(prev.marketplaceOverrides ?? {}),
       [kind]: {
@@ -482,7 +475,6 @@ export function MarketplaceManage({
     }
     const res = await onSetSettingsOverride(activeWorkspacePath, {
       ...prev,
-      useOverride: true,
       marketplaceOverrides
     })
     if (!res.ok) setFeedback({ kind: 'error', text: res.error })
@@ -502,7 +494,6 @@ export function MarketplaceManage({
     }
     const res = await onSetSettingsOverride(activeWorkspacePath, {
       ...workspaceOverride,
-      useOverride: true,
       marketplaceOverrides
     })
     if (!res.ok) setFeedback({ kind: 'error', text: res.error })
@@ -512,8 +503,7 @@ export function MarketplaceManage({
     kind: 'mcp' | 'skills' | 'plugins',
     id: string
   ): boolean | undefined => {
-    if (!workspaceOverride?.useOverride) return undefined
-    const map = workspaceOverride.marketplaceOverrides?.[kind]
+    const map = workspaceOverride?.marketplaceOverrides?.[kind]
     if (map && Object.prototype.hasOwnProperty.call(map, id)) return map[id]
     return undefined
   }
@@ -529,16 +519,35 @@ export function MarketplaceManage({
     )
 
   const addStdioMcp = async (): Promise<void> => {
-    const id = crypto.randomUUID()
+    const command = stdioCommand.trim() || 'npx'
     const args = stdioArgs
       .split('\n')
       .map((s) => s.trim())
       .filter(Boolean)
+    const paste = [command, ...args].join(' ')
+    const detected = await detectMcp(paste)
+    if (detected?.server) {
+      const applied = await applyDetectedMcp({
+        server: {
+          ...detected.server,
+          name: stdioName.trim() || detected.server.name
+        },
+        overwrite: false
+      })
+      if (applied) {
+        setTab('installed')
+        setStdioName('')
+        setStdioCommand('')
+        setStdioArgs('')
+      }
+      return
+    }
+    const id = crypto.randomUUID()
     const next: McpServer = {
       id,
       name: stdioName.trim() || 'New MCP server',
       transport: 'stdio',
-      command: stdioCommand.trim() || 'npx',
+      command,
       args: args.length > 0 ? args : undefined,
       enabled: true,
       source: 'manual'
@@ -547,9 +556,9 @@ export function MarketplaceManage({
     if (ok) {
       setFeedback({ kind: 'success', text: `Added MCP server "${next.name}"` })
       setTab('installed')
-      setStdioName('New MCP server')
-      setStdioCommand('npx')
-      setStdioArgs('-y\n@modelcontextprotocol/server-filesystem\n.')
+      setStdioName('')
+      setStdioCommand('')
+      setStdioArgs('')
       await loadMcpStatus(true)
     }
   }

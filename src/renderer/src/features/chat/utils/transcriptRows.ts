@@ -226,13 +226,45 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
       return `text:${row.id}:${row.item.content.length}:${row.item.streaming ? 1 : 0}:${row.final ? 1 : 0}`
     case 'activity':
       return `activity:${row.id}:${row.tools
-        .map(
-          (t) =>
-            `${t.id}:${t.tool.status}:${t.tool.argsPreview?.length ?? 0}:${t.tool.summary}:${t.groupExpanded ?? ''}:${t.toolExpanded ?? ''}`
-        )
+        .map((t) => {
+          const sub = t.subagent?.length ?? 0
+          const subLast = t.subagent?.[t.subagent.length - 1]
+          const usage = t.subagentContextUsage
+          return [
+            t.id,
+            t.tool.status,
+            t.tool.argsPreview?.length ?? 0,
+            t.tool.content?.length ?? 0,
+            t.tool.contentTruncated ? 1 : 0,
+            t.tool.summary,
+            t.groupExpanded ?? '',
+            t.toolExpanded ?? '',
+            sub,
+            subLast ? `${subLast.kind}:${subLast.text.length}` : '',
+            usage ? `${usage.step}:${usage.used}:${usage.updatedAt}` : ''
+          ].join(':')
+        })
         .join('|')}`
-    case 'card':
-      return `card:${row.id}:${row.item.tool.status}:${row.item.tool.argsPreview?.length ?? 0}:${row.item.tool.summary}:${row.item.toolExpanded ?? ''}:${row.item.groupExpanded ?? ''}`
+    case 'card': {
+      const t = row.item
+      const sub = t.subagent?.length ?? 0
+      const subLast = t.subagent?.[t.subagent.length - 1]
+      const usage = t.subagentContextUsage
+      return [
+        'card',
+        row.id,
+        t.tool.status,
+        t.tool.argsPreview?.length ?? 0,
+        t.tool.content?.length ?? 0,
+        t.tool.contentTruncated ? 1 : 0,
+        t.tool.summary,
+        t.toolExpanded ?? '',
+        t.groupExpanded ?? '',
+        sub,
+        subLast ? `${subLast.kind}:${subLast.text.length}` : '',
+        usage ? `${usage.step}:${usage.used}:${usage.updatedAt}` : ''
+      ].join(':')
+    }
     case 'changes':
       return `changes:${row.id}:${row.files.map((f) => `${f.path}:${f.added}:${f.removed}`).join('|')}`
     case 'approval':

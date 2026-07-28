@@ -9,6 +9,11 @@ import { humanizeSnakeCase } from './mcpToolMeta'
 
 export const MCP_TOOL_PREFIX = 'mcp__'
 
+/** True while the provider has not yet sent a real tool name (OpenAI nameless deltas). */
+export function isUnresolvedToolName(name: string | undefined | null): boolean {
+  return !name || name === 'tool'
+}
+
 export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   read: { running: 'Reading', done: 'Read' },
   edit: { running: 'Editing', done: 'Edited' },
@@ -165,6 +170,9 @@ export function summarizeToolArgsFromRecord(
 }
 
 export function summarizeToolArgs(name: string, args: string | undefined): string {
+  // Placeholder names must not invent a "Tool" subtitle from streaming JSON args —
+  // that produces "Running Tool Tool" and expands a raw args dump in the timeline.
+  if (isUnresolvedToolName(name)) return ''
   const parsed = parseArgsRecord(args)
   if (parsed) {
     const fromRecord = summarizeToolArgsFromRecord(name, parsed)

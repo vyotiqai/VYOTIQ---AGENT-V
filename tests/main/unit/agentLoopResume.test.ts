@@ -90,7 +90,7 @@ vi.mock('@main/agent/providers', () => ({
 
 import { runAgent } from '@main/agent/loop'
 import { isActive, registerRunAbort, resetActiveRunsForTests } from '@main/agent/runRegistry'
-import { appendMessage, createRun, loadCompaction, loadMessages, saveCompaction } from '@main/agent/state'
+import { appendMessage, createRun, flushMessageAppends, loadCompaction, loadMessages, saveCompaction } from '@main/agent/state'
 import { resolveRunDir } from '@main/storage/paths'
 
 describe('runAgent session continuation', () => {
@@ -257,6 +257,7 @@ describe('runAgent session continuation', () => {
     // Simulate chatStart having already appended the follow-up user turn.
     const runDir = resolveRunDir(workspace, runId)
     appendMessage(runDir, { role: 'user', content: 'list files' })
+    await flushMessageAppends(runDir)
 
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
       yield { type: 'text', text: 'listed' }
@@ -284,6 +285,7 @@ describe('runAgent session continuation', () => {
     const runDir = createRun(workspace, runId, 'goal')
     appendMessage(runDir, { role: 'user', content: 'old' })
     appendMessage(runDir, { role: 'assistant', content: 'prior' })
+    await flushMessageAppends(runDir)
     saveCompaction(runDir, {
       summary: 'prior summary',
       createdAt: new Date().toISOString(),

@@ -20,16 +20,27 @@ export type PackageActivity = {
   className?: string
 }
 
+export type PackageActivityOptions = {
+  /** Workspace Force on/off for this package (MCP / skill / plugin id). */
+  workspaceEnabled?: boolean
+  /** Nested MCP connection status for plugin packages. */
+  nestedMcpStatuses?: Array<McpServerStatus | undefined>
+}
+
 export function packageActivity(
   entry: MarketplaceCatalogEntry,
   installed: MarketplaceInstalledItem | undefined,
-  mcpStatus: McpServerStatus | undefined
+  mcpStatus: McpServerStatus | undefined,
+  options?: PackageActivityOptions
 ): PackageActivity {
   if (entry.installable === false) {
     return { kind: 'coming-soon', label: 'Coming soon' }
   }
   if (!installed) {
     return { kind: 'available', label: kindFallback(entry) }
+  }
+  if (options?.workspaceEnabled === false) {
+    return { kind: 'disabled', label: 'Force off here' }
   }
   if (!installed.enabled) {
     return { kind: 'disabled', label: 'Disabled' }
@@ -47,6 +58,29 @@ export function packageActivity(
       return { kind: 'enabled', label: 'Enabled · not connected', className: 'text-danger' }
     }
     return { kind: 'enabled', label: 'Enabled' }
+  }
+  if (entry.kind === 'plugin' && options?.nestedMcpStatuses?.length) {
+    const statuses = options.nestedMcpStatuses.filter(
+      (s): s is McpServerStatus => s != null
+    )
+    if (statuses.length > 0) {
+      const connected = statuses.filter((s) => s.connected)
+      const tools = connected.reduce((sum, s) => sum + s.toolCount, 0)
+      if (connected.length === statuses.length) {
+        return {
+          kind: 'connected',
+          label: `Connected · ${tools} tool${tools === 1 ? '' : 's'}`,
+          className: 'text-success'
+        }
+      }
+      if (connected.length > 0) {
+        return {
+          kind: 'enabled',
+          label: `${connected.length}/${statuses.length} MCP connected`,
+          className: 'text-success'
+        }
+      }
+    }
   }
   return { kind: 'enabled', label: 'Enabled' }
 }

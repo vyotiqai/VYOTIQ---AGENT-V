@@ -225,5 +225,16 @@ describe('mapToolGroupProps', () => {
     expect(result.nestedTools[0]?.title).toBe('Preparing…')
   })
 
+  it('keeps Preparing even when unresolved rows already have streaming args', () => {
+    const row = tool('t1', 'tool', 'Tool', 'running')
+    row.argsPreview = JSON.stringify({
+      todos: [{ id: 'audit-1', content: 'Audit Auth', status: 'in_progress' }]
+    })
+    const result = mapToolGroupProps([row], { groupTiming: { startedAt: 1_000 } })
+
+    expect(result.nestedTools[0]?.title).toBe('Preparing…')
+    expect(result.nestedTools[0]?.subtitle).toBe('')
+  })
+
 })
 

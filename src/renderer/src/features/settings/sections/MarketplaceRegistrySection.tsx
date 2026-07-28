@@ -72,6 +72,9 @@ export function MarketplaceRegistrySection({
                         kind: 'success',
                         text: `Catalog refreshed (${res.data.packages.length} packages)`
                       })
+                      window.dispatchEvent(
+                        new CustomEvent('vyotiq:marketplace-catalog-refreshed')
+                      )
                     } else setFeedback({ kind: 'error', text: res.error })
                   } finally {
                     setBusy(false)

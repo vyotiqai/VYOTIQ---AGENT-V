@@ -20,7 +20,13 @@ function normalizeSettings(data: Settings): Settings {
 }
 
 function stripLegacyFields(raw: Record<string, unknown>): Record<string, unknown> {
-  const { workspacePath: _legacy, maxSteps: _maxSteps, ...rest } = raw
+  const {
+    workspacePath: _legacy,
+    maxSteps: _maxSteps,
+    maxAgentSteps: _maxAgentSteps,
+    maxSubagentSteps: _maxSubagentSteps,
+    ...rest
+  } = raw
   return rest
 }
 
@@ -73,7 +79,12 @@ export function getSettings(): Settings {
         })
       }
     }
-    if ('workspacePath' in raw || 'maxSteps' in raw) {
+    if (
+      'workspacePath' in raw ||
+      'maxSteps' in raw ||
+      'maxAgentSteps' in raw ||
+      'maxSubagentSteps' in raw
+    ) {
       try {
         writeSettings(data)
       } catch (err) {

@@ -38,6 +38,7 @@ import {
 import { remoteMcpIdFromUrl, headersWithoutAuthorization } from '../../shared/utils/mcpAuth'
 import { setMcpAuthToken } from '../settings/secrets'
 import { synthesizeVyotiqMcpManifest } from './mcpImport'
+import { withCompatibleUvxArgs } from '../agent/mcp/uvxCompat'
 
 const execFileAsync = promisify(execFile)
 
@@ -181,6 +182,7 @@ export function mcpServerFromManifest(root: string): McpServer {
 
 /** Sync marketplace-sourced MCP entries in settings.mcpServers from installed packages. */
 export function syncMarketplaceMcpIntoSettings(): void {
+  repairBundledMcpManifestsFromResources()
   const index = readMarketplaceIndex()
   const settings = getSettings()
   const manual = (settings.mcpServers ?? []).filter((s) => s.source !== 'marketplace')
@@ -209,6 +211,15 @@ export function syncMarketplaceMcpIntoSettings(): void {
         if (prev.url !== undefined) server.url = prev.url
         if (prev.headers) server.headers = prev.headers
       }
+      // Repair known-broken uvx launch args (mcp SDK v2 rename) even when settings
+      // still hold the pre-pin args from an older install.
+      server.args = withCompatibleUvxArgs(server.command, server.args)
+      if (server.command?.trim().toLowerCase() === 'uvx') {
+        server.env = {
+          PYTHONIOENCODING: 'utf-8',
+          ...(server.env ?? {})
+        }
+      }
       fromMarketplace.push(server)
     } catch (err) {
       logger.warn('Skip invalid marketplace MCP package', {
@@ -220,6 +231,37 @@ export function syncMarketplaceMcpIntoSettings(): void {
   }
   // Plugin-expanded MCP is handled in resolveEffectiveMcpServers
   setSettings({ mcpServers: [...manual, ...fromMarketplace] })
+}
+
+/**
+ * Overwrite installed bundled MCP manifests from the app's resources when they
+ * drift (e.g. after we ship uvx `--with mcp<2` pins for fetch/time).
+ */
+function repairBundledMcpManifestsFromResources(): void {
+  const index = readMarketplaceIndex()
+  for (const item of index.items) {
+    if (item.kind !== 'mcp' || item.installSource !== 'bundled') continue
+    const bundledRoot = bundledPackagePath(item.id)
+    const src = join(bundledRoot, 'vyotiq.mcp.json')
+    const dest = join(marketplacePackagesRoot(), item.packagePath, 'vyotiq.mcp.json')
+    if (!existsSync(src) || !existsSync(dest)) continue
+    try {
+      const next = readFileSync(src, 'utf8')
+      const prev = readFileSync(dest, 'utf8')
+      if (next === prev) continue
+      writeFileSync(dest, next, 'utf8')
+      logger.info('Repaired bundled MCP manifest from resources', {
+        scope: 'marketplace',
+        id: item.id
+      })
+    } catch (err) {
+      logger.warn('Failed to repair bundled MCP manifest', {
+        scope: 'marketplace',
+        id: item.id,
+        err: formatError(err)
+      })
+    }
+  }
 }
 
 function registerInstalled(

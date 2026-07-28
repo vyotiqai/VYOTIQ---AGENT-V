@@ -1,6 +1,7 @@
 import {
   Children,
   isValidElement,
+  memo,
   useEffect,
   useMemo,
   useState,
@@ -33,10 +34,50 @@ export function balanceIncompleteMarkdown(content: string): string {
   return balanceOutsideFences(content)
 }
 
+/**
+ * Split markdown into stable block units (paragraphs / fences / headings).
+ * Finished blocks keep stable identity so React.memo can skip them while the
+ * last block streams.
+ */
+export function splitMarkdownBlocks(source: string): string[] {
+  if (!source) return []
+  const blocks: string[] = []
+  let i = 0
+  const len = source.length
+  while (i < len) {
+    if (source.startsWith('```', i) || source.startsWith('~~~', i)) {
+      const fence = source.slice(i, i + 3)
+      const close = source.indexOf(`\n${fence}`, i + 3)
+      if (close < 0) {
+        blocks.push(source.slice(i))
+        break
+      }
+      const end = close + 1 + 3
+      const afterNewline = source[end] === '\n' ? end + 1 : end
+      blocks.push(source.slice(i, afterNewline))
+      i = afterNewline
+      continue
+    }
+    const nextBreak = source.indexOf('\n\n', i)
+    if (nextBreak < 0) {
+      blocks.push(source.slice(i))
+      break
+    }
+    blocks.push(source.slice(i, nextBreak + 2))
+    i = nextBreak + 2
+  }
+  return blocks.filter((b) => b.length > 0)
+}
+
 /** Max highlighted fence entries retained across the renderer session. */
 export const HIGHLIGHT_CACHE_MAX_ENTRIES = 200
 
 const highlightCache = new Map<string, string>()
+
+const remarkPlugins = [remarkGfm]
+const rehypePlugins: import('react-markdown').Options['rehypePlugins'] = [
+  [rehypeSanitize, markdownSanitizeSchema]
+]
 
 function highlightCacheKey(text: string, lang: string, theme: string): string {
   return `${theme}\0${lang}\0${text}`
@@ -69,6 +110,16 @@ export function highlightCacheSizeForTests(): number {
   return highlightCache.size
 }
 
+function scheduleIdle(cb: () => void, timeoutMs: number): () => void {
+  const w = typeof window !== 'undefined' ? window : null
+  if (w && typeof w.requestIdleCallback === 'function') {
+    const id = w.requestIdleCallback(() => cb(), { timeout: timeoutMs })
+    return () => w.cancelIdleCallback(id)
+  }
+  const id = globalThis.setTimeout(cb, Math.min(timeoutMs, 80))
+  return () => globalThis.clearTimeout(id)
+}
+
 function FencedCodeBlock({
   text,
   className,
@@ -98,14 +149,17 @@ function FencedCodeBlock({
     }
     let cancelled = false
     setHtml(null)
-    void highlightCode(text, lang).then((result) => {
-      if (cancelled) return
-      const next = result ? sanitizeHighlightedHtml(result) : null
-      if (next) setHighlightCacheEntry(cacheKey, next)
-      setHtml(next)
-    })
+    const cancelIdle = scheduleIdle(() => {
+      void highlightCode(text, lang).then((result) => {
+        if (cancelled) return
+        const next = result ? sanitizeHighlightedHtml(result) : null
+        if (next) setHighlightCacheEntry(cacheKey, next)
+        setHtml(next)
+      })
+    }, 80)
     return () => {
       cancelled = true
+      cancelIdle()
     }
   }, [text, lang, unstable, theme, cacheKey])
 
@@ -182,6 +236,21 @@ function buildMarkdownComponents(openFenceBody: string | null) {
   }
 }
 
+const MemoMarkdownBlock = memo(function MemoMarkdownBlock({
+  source,
+  openFenceBody
+}: {
+  source: string
+  openFenceBody: string | null
+}) {
+  const components = useMemo(() => buildMarkdownComponents(openFenceBody), [openFenceBody])
+  return (
+    <Markdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components}>
+      {source}
+    </Markdown>
+  )
+})
+
 export function MarkdownContent({
   content,
   streaming = false,
@@ -199,7 +268,7 @@ export function MarkdownContent({
     () => (streaming ? trailingOpenFenceBody(content) : null),
     [streaming, content]
   )
-  const components = useMemo(() => buildMarkdownComponents(openFenceBody), [openFenceBody])
+  const blocks = useMemo(() => splitMarkdownBlocks(markdown), [markdown])
 
   if (!content && !streaming) return null
 
@@ -210,14 +279,21 @@ export function MarkdownContent({
         className
       )}
     >
-      {markdown ? (
-        <Markdown
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={[[rehypeSanitize, markdownSanitizeSchema]]}
-          components={components}
-        >
-          {markdown}
-        </Markdown>
+      {blocks.map((block, index) => {
+        const isLast = index === blocks.length - 1
+        const blockOpenFence = streaming && isLast ? openFenceBody : null
+        return (
+          <MemoMarkdownBlock
+            key={`${index}:${block.length}:${isLast && streaming ? 's' : 'd'}:${block.slice(0, 24)}`}
+            source={block}
+            openFenceBody={blockOpenFence}
+          />
+        )
+      })}
+      {streaming ? (
+        <span className="streaming-caret-inline" aria-hidden>
+          ▍
+        </span>
       ) : null}
     </div>
   )

@@ -46,6 +46,7 @@ export function Composer({
   incomplete,
   onContinue,
   contextUsage,
+  metaStore,
   onCompactContext,
   onDismissError,
   leading,
@@ -85,6 +86,8 @@ export function Composer({
   incomplete?: import('@renderer/lib/hooks/createChatStreamController').IncompleteTurnState | null
   onContinue?: () => void
   contextUsage?: import('./ContextMeter').ContextUsageState | null
+  /** Prefer over contextUsage prop so meter patches do not re-render Composer. */
+  metaStore?: import('../../chatStores').ChatMetaStore
   onCompactContext?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
   onDismissError?: () => void
   /** Docked chrome floating just above the composer, e.g. the change pills. */
@@ -297,6 +300,7 @@ export function Composer({
             canSend={canSend}
             onStop={onStop}
             contextUsage={contextUsage}
+            metaStore={metaStore}
             onCompactContext={onCompactContext}
           />
         </form>

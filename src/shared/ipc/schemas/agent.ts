@@ -327,7 +327,11 @@ export const CompactRunResultSchema = z.object({
   tokenEstimate: z.number().int().min(0),
   /** Messages the working set was reduced to, for the confirmation message. */
   keptMessages: z.number().int().min(0),
-  messagesBefore: z.number().int().min(0)
+  messagesBefore: z.number().int().min(0),
+  /** Post-compact estimate for the live context meter. */
+  estimatedTokens: z.number().int().min(0).optional(),
+  contextWindow: z.number().int().min(1).optional(),
+  contentWindow: z.number().int().min(1).optional()
 })
 export type CompactRunResult = z.infer<typeof CompactRunResultSchema>
 

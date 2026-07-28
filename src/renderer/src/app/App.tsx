@@ -255,6 +255,7 @@ export function App() {
     }
     const res = await window.vyotiq.chatCompact(activeWorkspace, activeRunId)
     if (!res.ok) return { ok: false as const, message: res.error }
+    chatActionsRef.current?.applyManualCompaction?.(res.data)
     return {
       ok: true as const,
       message: `Summarized ${res.data.messagesBefore - res.data.keptMessages} messages; ${res.data.keptMessages} kept verbatim.`
@@ -483,6 +484,16 @@ export function App() {
             needsWorkspaceForMigration={registry?.needsWorkspaceForMigration}
             pendingMigrationCount={registry?.pendingMigrationCount}
             items={chat.items}
+            itemsStore={{
+              subscribeItems: chat.subscribeItems,
+              getItemsRevision: chat.getItemsRevision,
+              getItems: chat.getItems
+            }}
+            metaStore={{
+              subscribeMeta: chat.subscribeMeta,
+              getMetaRevision: chat.getMetaRevision,
+              getContextUsage: chat.getContextUsage
+            }}
             running={chat.running}
             pendingRun={chat.pendingRun}
             error={chatError}

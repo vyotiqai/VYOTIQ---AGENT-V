@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { summarizeToolArgs } from '@shared/utils/toolSummary'
+import { isUnresolvedToolName, summarizeToolArgs } from '@shared/utils/toolSummary'
 
 describe('toolSummary', () => {
   it('never leaks raw JSON into summaries', () => {
@@ -18,5 +18,18 @@ describe('toolSummary', () => {
     )
     expect(summary).not.toContain('"')
     expect(summary).toContain('app.tsx')
+  })
+
+  it('does not invent a Tool subtitle for unresolved streaming names', () => {
+    expect(isUnresolvedToolName('tool')).toBe(true)
+    expect(isUnresolvedToolName('')).toBe(true)
+    expect(isUnresolvedToolName('todo_write')).toBe(false)
+    const summary = summarizeToolArgs(
+      'tool',
+      JSON.stringify({
+        todos: [{ id: '1', content: 'Audit Auth', status: 'in_progress' }]
+      })
+    )
+    expect(summary).toBe('')
   })
 })

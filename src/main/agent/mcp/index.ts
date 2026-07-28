@@ -31,6 +31,9 @@ import {
   createMcpOAuthProvider
 } from './oauth'
 import { resolveEffectiveMcpServers } from '../../marketplace/resolve'
+import { withCompatibleUvxArgs } from './uvxCompat'
+
+export { withCompatibleUvxArgs, hasUvxMcpWithConstraint } from './uvxCompat'
 
 /** Scrubbed base env + optional user-configured MCP server.env overlays. */
 export function buildMcpChildEnv(
@@ -38,6 +41,10 @@ export function buildMcpChildEnv(
   source: NodeJS.ProcessEnv = process.env
 ): Record<string, string> {
   const env: Record<string, string> = { ...sanitizedTerminalEnv(source) }
+  // Official Python MCP servers on Windows often hang/garble without UTF-8 stdio.
+  if (process.platform === 'win32' && !env.PYTHONIOENCODING) {
+    env.PYTHONIOENCODING = 'utf-8'
+  }
   for (const [key, value] of Object.entries(serverEnv ?? {})) {
     if (typeof value === 'string') env[key] = value
   }
@@ -71,6 +78,17 @@ const connectErrors = new Map<string, string>()
 const sessionConfigKeys = new Map<string, string>()
 const mcpReadOnlyHints = new Map<string, boolean>()
 
+/** Skip re-attempting a failed connect with the same config until cooldown expires. */
+const CONNECT_RETRY_COOLDOWN_MS = 60_000
+type ConnectFailure = { at: number; configKey: string }
+const connectFailures = new Map<string, ConnectFailure>()
+
+/** In-flight connect promises — concurrent callers for the same id share one attempt. */
+const connecting = new Map<string, Promise<void>>()
+
+/** Serialize syncMcpServers so overlapping IPC/startup callers cannot race reconnects. */
+let syncChain: Promise<void> = Promise.resolve()
+
 /** True only when the MCP server declared readOnlyHint for this tool. */
 export function getMcpReadOnlyHint(name: string): boolean | undefined {
   return mcpReadOnlyHints.get(name)
@@ -99,7 +117,9 @@ export function mcpServerConfigKey(
   return JSON.stringify({
     transport,
     command: server.command ?? '',
-    args: server.args ?? [],
+    // Fingerprint the launch args we actually use so repairing `--with mcp<2`
+    // in settings does not thrash reconnects against older stored args.
+    args: withCompatibleUvxArgs(server.command, server.args),
     env: sortedRecordEntries(server.env),
     url: server.url ?? '',
     // Never fingerprint secret token values — only presence + non-auth headers.
@@ -178,6 +198,7 @@ export function getMcpServerStatus(servers: McpServer[]): McpServerStatus[] {
 
 export async function refreshMcpServers(servers: McpServer[]): Promise<McpServerStatus[]> {
   // Force reconnect so dead stdio/HTTP sessions are recovered (sync alone skips existing entries).
+  connectFailures.clear()
   for (const id of [...sessions.keys()]) {
     await disconnectMcpServer(id)
   }
@@ -196,7 +217,7 @@ function createTransport(
     const env = buildMcpChildEnv(server.env)
     return new StdioClientTransport({
       command,
-      args: server.args ?? [],
+      args: withCompatibleUvxArgs(command, server.args),
       env
     })
   }
@@ -321,51 +342,76 @@ async function connectRemoteWithOAuth(server: McpServer): Promise<{
 
 export async function connectMcpServer(server: McpServer): Promise<void> {
   if (sessions.has(server.id)) return
-  // OAuth browser flow may take minutes; non-OAuth still fails fast via server errors.
-  const CONNECT_TIMEOUT_MS = 120_000
-  const connectAbort = AbortSignal.timeout(CONNECT_TIMEOUT_MS)
-  let connected: { client: Client; transport: Transport }
-  try {
-    connected = await Promise.race([
-      connectWithOptionalOAuth(server),
-      new Promise<never>((_, reject) => {
-        connectAbort.addEventListener(
-          'abort',
-          () =>
-            reject(
-              new Error(
-                `MCP connect timed out after ${CONNECT_TIMEOUT_MS / 1000}s (${server.id})`
-              )
-            ),
-          { once: true }
-        )
-      })
-    ])
-  } catch (err) {
-    cancelMcpOAuthCallback(server.id)
-    throw err
+  const inflight = connecting.get(server.id)
+  if (inflight) {
+    await inflight
+    return
   }
 
-  const { client, transport } = connected
-  const listed = await client.listTools()
-  const tools: ToolDefinition[] = (listed.tools ?? []).map((t) => {
-    const fullName = mcpToolName(server.id, t.name)
-    mcpReadOnlyHints.set(fullName, t.annotations?.readOnlyHint === true)
-    return {
-      name: fullName,
-      description: t.description ?? `MCP tool ${t.name} (${server.name})`,
-      parameters: (t.inputSchema as Record<string, unknown>) ?? { type: 'object', properties: {} }
+  const attempt = (async () => {
+    // OAuth browser flow may take minutes; non-OAuth still fails fast via server errors.
+    const CONNECT_TIMEOUT_MS = 120_000
+    const connectAbort = AbortSignal.timeout(CONNECT_TIMEOUT_MS)
+    let connected: { client: Client; transport: Transport }
+    try {
+      connected = await Promise.race([
+        connectWithOptionalOAuth(server),
+        new Promise<never>((_, reject) => {
+          connectAbort.addEventListener(
+            'abort',
+            () =>
+              reject(
+                new Error(
+                  `MCP connect timed out after ${CONNECT_TIMEOUT_MS / 1000}s (${server.id})`
+                )
+              ),
+            { once: true }
+          )
+        })
+      ])
+    } catch (err) {
+      cancelMcpOAuthCallback(server.id)
+      throw err
     }
-  })
-  sessions.set(server.id, { client, transport, tools })
-  sessionConfigKeys.set(server.id, mcpServerConfigKey(server))
-  connectErrors.delete(server.id)
-  logger.info('MCP server connected', {
-    scope: 'mcp',
-    serverId: server.id,
-    transport: server.transport ?? 'stdio',
-    toolCount: tools.length
-  })
+
+    // Another concurrent path may have won while we were connecting.
+    if (sessions.has(server.id)) {
+      try {
+        await connected.client.close()
+      } catch {
+        // ignore
+      }
+      return
+    }
+
+    const { client, transport } = connected
+    const listed = await client.listTools()
+    const tools: ToolDefinition[] = (listed.tools ?? []).map((t) => {
+      const fullName = mcpToolName(server.id, t.name)
+      mcpReadOnlyHints.set(fullName, t.annotations?.readOnlyHint === true)
+      return {
+        name: fullName,
+        description: t.description ?? `MCP tool ${t.name} (${server.name})`,
+        parameters: (t.inputSchema as Record<string, unknown>) ?? { type: 'object', properties: {} }
+      }
+    })
+    sessions.set(server.id, { client, transport, tools })
+    sessionConfigKeys.set(server.id, mcpServerConfigKey(server))
+    connectErrors.delete(server.id)
+    logger.info('MCP server connected', {
+      scope: 'mcp',
+      serverId: server.id,
+      transport: server.transport ?? 'stdio',
+      toolCount: tools.length
+    })
+  })()
+
+  connecting.set(server.id, attempt)
+  try {
+    await attempt
+  } finally {
+    if (connecting.get(server.id) === attempt) connecting.delete(server.id)
+  }
 }
 
 /** Force re-auth for a remote MCP server (clears OAuth tokens and reconnects). */
@@ -401,6 +447,16 @@ export async function disconnectMcpServer(serverId: string): Promise<void> {
 }
 
 export async function syncMcpServers(servers: McpServer[]): Promise<void> {
+  const run = syncChain.then(() => syncMcpServersUnlocked(servers))
+  // Keep the chain alive even when a sync rejects so later callers still queue.
+  syncChain = run.then(
+    () => undefined,
+    () => undefined
+  )
+  await run
+}
+
+async function syncMcpServersUnlocked(servers: McpServer[]): Promise<void> {
   const duplicateError = validateMcpServers(servers)
   if (duplicateError) {
     throw new Error(duplicateError)
@@ -440,16 +496,29 @@ export async function syncMcpServers(servers: McpServer[]): Promise<void> {
     const connectedKey = sessionConfigKeys.get(server.id)
     if (sessions.has(server.id) && connectedKey !== configKey) {
       await disconnectMcpServer(server.id)
+      connectFailures.delete(server.id)
     }
     if (!sessions.has(server.id)) {
+      const priorFail = connectFailures.get(server.id)
+      if (
+        priorFail &&
+        priorFail.configKey === configKey &&
+        Date.now() - priorFail.at < CONNECT_RETRY_COOLDOWN_MS
+      ) {
+        // Keep the last error visible; avoid hammering broken launches (e.g. every agent step).
+        continue
+      }
       try {
         await connectMcpServer(server)
+        connectFailures.delete(server.id)
       } catch (err) {
-        connectErrors.set(server.id, formatError(err))
+        const message = formatError(err)
+        connectErrors.set(server.id, message)
+        connectFailures.set(server.id, { at: Date.now(), configKey })
         logger.warn('MCP connect failed', {
           scope: 'mcp',
           serverId: server.id,
-          err
+          err: message
         })
       }
     }
@@ -502,6 +571,10 @@ export async function invokeMcpTool(
     if (signal.aborted || isAbortError(err)) {
       throw new DOMException('Aborted', 'AbortError')
     }
+    // Drop the dead session so the next sync/refresh reconnects instead of
+    // leaving a forever-green "connected" status with failing tools.
+    connectErrors.set(serverId, formatError(err))
+    await disconnectMcpServer(serverId)
     return { ok: false, summary, content: formatError(err) }
   }
 }
@@ -518,6 +591,9 @@ export function resetMcpSessionsForTests(): void {
   connectErrors.clear()
   sessionConfigKeys.clear()
   mcpReadOnlyHints.clear()
+  connectFailures.clear()
+  connecting.clear()
+  syncChain = Promise.resolve()
 }
 
 /** Test helper — register MCP readOnlyHint values without a live server. */

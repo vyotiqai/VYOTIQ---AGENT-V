@@ -1,6 +1,5 @@
 import { BrowserWindow, session } from 'electron'
 import { shell } from 'electron'
-import { is } from '@electron-toolkit/utils'
 
 const ALLOWED_EXTERNAL = [/^https?:\/\//i]
 
@@ -22,12 +21,24 @@ export function attachSecurity(win: BrowserWindow): void {
   })
 }
 
-/** Dev needs unsafe-inline/eval + ws for Vite React Refresh / HMR. Prod stays strict. */
+/**
+ * Loosen CSP only while electron-vite serves the renderer over HTTP (HMR).
+ * `is.dev` is true for any unpackaged run (including `pnpm start` / preview),
+ * which must NOT get unsafe-eval — that triggers Electron's security warning
+ * and is unnecessary without Vite HMR.
+ */
+function needsViteHmrCsp(): boolean {
+  // electron-vite sets this only for `electron-vite dev` (HTTP + HMR).
+  return Boolean(process.env.ELECTRON_RENDERER_URL)
+}
+
 function cspPolicy(): string {
-  if (is.dev) {
+  if (needsViteHmrCsp()) {
+    // Vite injects inline module scripts for HMR; avoid unsafe-eval — modern
+    // Vite ESM HMR does not require it, and Electron warns when it is present.
     return [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+      "script-src 'self' 'unsafe-inline'",
       "style-src 'self' 'unsafe-inline'",
       "font-src 'self' data:",
       "img-src 'self' data: blob:",

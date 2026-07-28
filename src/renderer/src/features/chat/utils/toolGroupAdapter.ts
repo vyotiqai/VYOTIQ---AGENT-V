@@ -1,6 +1,7 @@
 import type { UiGroupTiming, UiToolRow } from '@shared/transcript'
 import { mcpDoneLabel, mcpRunningLabel } from '@shared/utils/mcpToolMeta'
 import {
+  isUnresolvedToolName,
   mcpToolSummary,
   parseArgsRecord,
   parseMcpToolDisplay,
@@ -117,6 +118,7 @@ function groupLabels(
 }
 
 function toolSubtitle(tool: UiToolRow): string {
+  if (isUnresolvedToolName(tool.name)) return ''
   const summary = tool.summary?.trim() || summarizeToolArgs(tool.name, tool.argsPreview)
   if (!summary) return '…'
   if (tool.name === 'terminal') return summary.slice(0, 80)
@@ -150,11 +152,7 @@ function nestedRowTitle(tool: UiToolRow, subtitle: string, inGroup: boolean): st
       if (summary) return truncateText(summary, 80)
     }
   }
-  if (
-    tool.status === 'running' &&
-    (!tool.name || tool.name === 'tool') &&
-    (!subtitle || subtitle === '…')
-  ) {
+  if (tool.status === 'running' && isUnresolvedToolName(tool.name)) {
     return 'Preparing…'
   }
   return toolLabel(tool.name, tool.status)

@@ -1,67 +1,96 @@
 import type { Ref } from 'react'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { GitBranchStrip, GitChangePills, useGitChrome } from './components/GitChrome'
+import { memo, useLayoutEffect, useRef, useState } from 'react'
 import { MessageList } from './components/MessageList'
 import { Composer } from './components/composer'
+import {
+  ChatGitLeading,
+  ChatGitTrailing,
+  useChatLiveItems,
+  useHasChatItems
+} from './components/ChatStreamLeaves'
 import { RecentsPicker } from './RecentsPicker'
 import type { UiItem } from '@shared/transcript'
 import type { ProviderId, ToolApprovalDecision } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { Alert } from '@renderer/lib/ui'
 import {
-  CHAT_COLUMN,
   CHAT_COLUMN_MAX,
   CHAT_GUTTER,
   COMPOSER_DOCK_FADE_PX,
   COMPOSER_DOCK_FALLBACK_PX
 } from '@renderer/lib/utils/layout'
 import { cn } from '@renderer/lib/ui/cn'
+import type { ChatItemsStore, ChatMetaStore } from './chatStores'
 
-/** Bumps on workspace change, run end, and (debounced) mid-run mutating tool results. */
-const MUTATING_GIT_TOOLS = new Set([
-  'edit',
-  'multi_edit',
-  'delete',
-  'terminal',
-  'memory_write'
-])
+export type { ChatItemsStore, ChatMetaStore } from './chatStores'
 
-function useGitRevision(
-  workspacePath: string | null,
-  running: boolean,
+const MemoComposer = memo(Composer)
+
+function TranscriptPane({
+  itemsStore,
+  items,
+  pendingRun,
+  running,
+  transcriptLoading,
+  dockReservePx,
+  restoreScrollTop,
+  scrollRestoreToken,
+  onScrollTopChange,
+  onLoadToolContent,
+  onThinkingToggle,
+  onToolToggle,
+  onGroupToggle,
+  onTurnToggle,
+  onApprovalDecision,
+  collapsedTurns,
+  showThinking,
+  mcpServerNames,
+  surfaceKey
+}: {
+  itemsStore?: ChatItemsStore
   items: UiItem[]
-): number {
-  const [revision, setRevision] = useState(0)
-  const wasRunning = useRef(running)
-  const mutatingDoneCount = useRef(0)
-
-  useEffect(() => {
-    if (wasRunning.current && !running) setRevision((value) => value + 1)
-    if (!wasRunning.current && running) mutatingDoneCount.current = 0
-    wasRunning.current = running
-  }, [running])
-
-  useEffect(() => {
-    setRevision((value) => value + 1)
-  }, [workspacePath])
-
-  useEffect(() => {
-    if (!running) return
-    let count = 0
-    for (const item of items) {
-      if (item.kind !== 'tool') continue
-      if (item.tool.status !== 'done' && item.tool.status !== 'fail') continue
-      if (MUTATING_GIT_TOOLS.has(item.tool.name)) count++
-    }
-    if (count <= mutatingDoneCount.current) return
-    mutatingDoneCount.current = count
-    const timer = window.setTimeout(() => {
-      setRevision((value) => value + 1)
-    }, 400)
-    return () => window.clearTimeout(timer)
-  }, [items, running])
-
-  return revision
+  pendingRun?: boolean
+  running: boolean
+  transcriptLoading?: boolean
+  dockReservePx: number
+  restoreScrollTop?: number
+  scrollRestoreToken?: number
+  onScrollTopChange?: (scrollTop: number) => void
+  onLoadToolContent?: (toolCallId: string) => Promise<string | null>
+  onThinkingToggle?: (messageId: string, expanded: boolean) => void
+  onToolToggle?: (toolCallId: string, expanded: boolean) => void
+  onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
+  onTurnToggle?: (turnIndex: number) => void
+  onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
+  collapsedTurns?: ReadonlySet<number>
+  showThinking?: boolean
+  mcpServerNames?: ReadonlyMap<string, string>
+  surfaceKey: string
+}) {
+  const liveItems = useChatLiveItems(itemsStore, items)
+  return (
+    <MessageList
+      key={`transcript:${surfaceKey}`}
+      items={liveItems}
+      pendingRun={pendingRun}
+      running={running}
+      transcriptLoading={transcriptLoading}
+      reserveComposerSpace
+      dockReservePx={dockReservePx}
+      restoreScrollTop={restoreScrollTop}
+      scrollRestoreToken={scrollRestoreToken}
+      onScrollTopChange={onScrollTopChange}
+      onLoadToolContent={onLoadToolContent}
+      onThinkingToggle={onThinkingToggle}
+      onToolToggle={onToolToggle}
+      onGroupToggle={onGroupToggle}
+      onTurnToggle={onTurnToggle}
+      onApprovalDecision={onApprovalDecision}
+      collapsedTurns={collapsedTurns}
+      showThinking={showThinking}
+      mcpServerNames={mcpServerNames}
+    />
+  )
 }
 
 export function ChatView({
@@ -70,6 +99,8 @@ export function ChatView({
   needsWorkspaceForMigration,
   pendingMigrationCount,
   items,
+  itemsStore,
+  metaStore,
   running,
   pendingRun = false,
   error,
@@ -122,6 +153,10 @@ export function ChatView({
   needsWorkspaceForMigration?: boolean
   pendingMigrationCount?: number
   items: UiItem[]
+  /** When set, transcript leaves subscribe so ChatView/Composer skip token patches. */
+  itemsStore?: ChatItemsStore
+  /** When set, ContextMeter reads usage via meta store (skips prop fanout). */
+  metaStore?: ChatMetaStore
   running: boolean
   pendingRun?: boolean
   error: string | null
@@ -177,12 +212,10 @@ export function ChatView({
    */
   chatSurfaceEpoch?: number
 }) {
+  // Boolean presence only — stays Object.is-stable across pure text_delta frames.
+  const hasItems = useHasChatItems(itemsStore, items)
   const bannerError = operationalError ?? error
-  const showHero = items.length === 0 && !activeRunId && !transcriptLoading
-  // A finished turn is the moment the working tree is most likely to have moved.
-  const gitRevision = useGitRevision(workspacePath, running, items)
-  // The hero has no dock, so there is nowhere to show a repository state yet.
-  const gitChrome = useGitChrome(workspacePath, gitRevision, !showHero)
+  const showHero = !hasItems && !activeRunId && !transcriptLoading
   const surfaceKey = `${workspacePath ?? 'none'}:${chatSurfaceEpoch}`
   const stageRef = useRef<HTMLDivElement>(null)
   const [dockReservePx, setDockReservePx] = useState(COMPOSER_DOCK_FALLBACK_PX)
@@ -235,7 +268,8 @@ export function ChatView({
     runNotice,
     incomplete,
     onContinue,
-    contextUsage,
+    contextUsage: metaStore ? undefined : contextUsage,
+    metaStore,
     onCompactContext,
     composerPlaceholder: transcriptLoading ? 'Loading chat…' : undefined
   }
@@ -292,7 +326,7 @@ export function ChatView({
               )}
               data-composer-hero
             >
-              <Composer
+              <MemoComposer
                 key={`composer:${surfaceKey}`}
                 {...composerProps}
                 variant="hero"
@@ -302,13 +336,12 @@ export function ChatView({
           </div>
         ) : (
           <div ref={stageRef} className="relative flex min-h-0 flex-1 flex-col" data-chat-stage>
-            <MessageList
-              key={`transcript:${surfaceKey}`}
+            <TranscriptPane
+              itemsStore={itemsStore}
               items={items}
               pendingRun={pendingRun}
               running={running}
               transcriptLoading={transcriptLoading}
-              reserveComposerSpace
               dockReservePx={dockReservePx}
               restoreScrollTop={restoreScrollTop}
               scrollRestoreToken={scrollRestoreToken}
@@ -322,16 +355,33 @@ export function ChatView({
               collapsedTurns={collapsedTurns}
               showThinking={showThinking}
               mcpServerNames={mcpServerNames}
+              surfaceKey={surfaceKey}
             />
 
-            <Composer
+            <MemoComposer
               key={`composer:${surfaceKey}`}
               {...composerProps}
               variant="dock"
               bannerError={bannerError}
               onDismissError={onDismissError}
-              leading={<GitChangePills chrome={gitChrome} />}
-              trailing={<GitBranchStrip chrome={gitChrome} />}
+              leading={
+                <ChatGitLeading
+                  itemsStore={itemsStore}
+                  items={items}
+                  workspacePath={workspacePath}
+                  running={running}
+                  enabled
+                />
+              }
+              trailing={
+                <ChatGitTrailing
+                  itemsStore={itemsStore}
+                  items={items}
+                  workspacePath={workspacePath}
+                  running={running}
+                  enabled
+                />
+              }
             />
           </div>
         )}

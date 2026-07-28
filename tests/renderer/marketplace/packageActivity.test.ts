@@ -64,3 +64,31 @@ describe('packageActivity', () => {
     ).toBe('Disabled')
   })
 })
+
+  it('shows Force off here when workspace disables an installed package', () => {
+    const a = packageActivity(
+      entry({ id: 'memory', kind: 'mcp' }),
+      installed({ id: 'memory', enabled: true }),
+      undefined,
+      { workspaceEnabled: false }
+    )
+    expect(a.kind).toBe('disabled')
+    expect(a.label).toBe('Force off here')
+  })
+
+  it('aggregates nested MCP status for plugins', () => {
+    const a = packageActivity(
+      entry({ id: 'devtools', kind: 'plugin' }),
+      installed({ id: 'devtools', kind: 'plugin', enabled: true }),
+      undefined,
+      {
+        nestedMcpStatuses: [
+          { id: 'a', name: 'A', enabled: true, connected: true, toolCount: 2 },
+          { id: 'b', name: 'B', enabled: true, connected: true, toolCount: 1 }
+        ]
+      }
+    )
+    expect(a.kind).toBe('connected')
+    expect(a.label).toBe('Connected · 3 tools')
+  })
+

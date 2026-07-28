@@ -1093,7 +1093,10 @@ export function useWorkspaceManager() {
         collapsedTurnIndices: activeController.collapsedTurnIndices,
         subscribeItems: activeController.subscribeItems.bind(activeController),
         getItemsRevision: activeController.getItemsRevision.bind(activeController),
-        getItems: () => activeController.items
+        getItems: () => activeController.items,
+        subscribeMeta: activeController.subscribeMeta.bind(activeController),
+        getMetaRevision: activeController.getMetaRevision.bind(activeController),
+        getContextUsage: activeController.getContextUsage.bind(activeController)
       }
     : {
         items: [] as ChatStreamController['items'],
@@ -1111,7 +1114,10 @@ export function useWorkspaceManager() {
         collapsedTurnIndices: [] as number[],
         subscribeItems: (_listener: () => void) => () => {},
         getItemsRevision: () => 0,
-        getItems: () => [] as ChatStreamController['items']
+        getItems: () => [] as ChatStreamController['items'],
+        subscribeMeta: (_listener: () => void) => () => {},
+        getMetaRevision: () => 0,
+        getContextUsage: () => null
       }
 
   const collapsedTurns = useMemo(

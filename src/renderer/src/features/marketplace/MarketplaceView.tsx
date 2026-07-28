@@ -10,7 +10,10 @@ import { MarketplaceManage } from './MarketplaceManage'
 type Pane =
   | { kind: 'home' }
   | { kind: 'detail'; entryId: string; fallback: MarketplaceCatalogEntry }
-  | { kind: 'manage' }
+  | {
+      kind: 'manage'
+      returnTo?: { entryId: string; fallback: MarketplaceCatalogEntry }
+    }
 
 export function MarketplaceView({
   settings,
@@ -93,7 +96,12 @@ export function MarketplaceView({
               entry={detailEntry}
               controller={controller}
               onBack={() => setPane({ kind: 'home' })}
-              onOpenManage={() => setPane({ kind: 'manage' })}
+              onOpenManage={() =>
+                setPane({
+                  kind: 'manage',
+                  returnTo: { entryId: detailEntry.id, fallback: detailEntry }
+                })
+              }
             />
           ) : null}
           {pane.kind === 'manage' ? (
@@ -103,7 +111,18 @@ export function MarketplaceView({
               activeWorkspacePath={activeWorkspacePath}
               settingsOverridesByPath={settingsOverridesByPath}
               onSetSettingsOverride={onSetSettingsOverride}
-              onBack={() => setPane({ kind: 'home' })}
+              onBack={() => {
+                if (pane.returnTo) {
+                  setSelectedEntryId(pane.returnTo.entryId)
+                  setPane({
+                    kind: 'detail',
+                    entryId: pane.returnTo.entryId,
+                    fallback: pane.returnTo.fallback
+                  })
+                } else {
+                  setPane({ kind: 'home' })
+                }
+              }}
             />
           ) : null}
         </div>

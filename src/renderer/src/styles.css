@@ -649,3 +649,21 @@
 .vy-text-shimmer--active {
   animation: vy-shimmer var(--vy-shimmer-duration, 2s) linear infinite;
 }
+@keyframes vy-streaming-caret {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.streaming-caret-inline {
+  display: inline-block;
+  margin-left: 1px;
+  color: var(--color-fg-strong);
+  animation: vy-streaming-caret 1s step-end infinite;
+  user-select: none;
+}

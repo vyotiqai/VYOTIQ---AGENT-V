@@ -70,9 +70,10 @@ import {
   readContractAsync,
   resumeRun,
   saveCompaction,
-  syncMessages,
+  syncMessagesAsync,
   updateStatus,
-  flushEventAppends
+  flushEventAppends,
+  flushMessageAppends
 } from './state'
 import { toolResultEventForIpc, toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
 import { AGENT_TOOLS } from './types'
@@ -275,7 +276,7 @@ export async function* runAgent(input: {
       } else {
         messages = diskMessages.map((m) => ({ ...m }))
       }
-      syncMessages(runDir, messages)
+      await syncMessagesAsync(runDir, messages)
     } else {
       messages = (input.messages ?? []).map((m) => ({ ...m }))
       runDir = createRun(workspace, runId, goal)
@@ -497,21 +498,9 @@ export async function* runAgent(input: {
     let consecutiveToolFailureSteps = 0
     let truncationContinues = 0
     const MAX_TRUNCATION_CONTINUES = 2
-    const maxAgentSteps = Math.max(1, settings.maxAgentSteps ?? DEFAULT_SETTINGS.maxAgentSteps)
 
     while (true) {
       if (controller.signal.aborted) break
-      if (step >= maxAgentSteps) {
-        const msg = `Stopped after reaching the max agent step limit (${maxAgentSteps}).`
-        logger.warn(msg, { scope: 'agent', code: 'AGENT_MAX_STEPS', correlationId: runId, step })
-        const errEv: AgentEvent = { type: 'error', runId, message: msg, code: 'AGENT_MAX_STEPS' }
-        appendEvent(runDir, errEv)
-        yield errEv
-        yield { type: 'status', runId, status: 'error' }
-        writeStatus({ status: 'error' })
-        appendEvent(runDir, { type: 'status', runId, status: 'error' })
-        return
-      }
       step++
       writeStatus({ step, status: 'running' })
       // Steps after the first pick up MCP servers enabled/reconnected mid-run.
@@ -1159,7 +1148,10 @@ export async function* runAgent(input: {
   } finally {
     // Always drain the per-run append chain so a superseded invoke cannot leave
     // events buffered when a follow-up turn starts immediately.
-    if (runDir) await flushEventAppends(runDir)
+    if (runDir) {
+      await flushMessageAppends(runDir)
+      await flushEventAppends(runDir)
+    }
     clearRunAbort(runId, invokeId)
   }
 }
