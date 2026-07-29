@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   assertPublicUrl,
+  isSyncBlockedUrl,
   resetDnsLookupForTests,
   setDnsLookupForTests,
   toolWebFetch
@@ -39,6 +40,21 @@ describe('assertPublicUrl', () => {
 
     const url = await assertPublicUrl('http://example.test/')
     expect(url.hostname).toBe('example.test')
+  })
+})
+
+describe('isSyncBlockedUrl', () => {
+  it('blocks private literals and non-http protocols without DNS', () => {
+    expect(isSyncBlockedUrl('http://127.0.0.1/')).toBe(true)
+    expect(isSyncBlockedUrl('http://localhost/')).toBe(true)
+    expect(isSyncBlockedUrl('http://192.168.0.1/')).toBe(true)
+    expect(isSyncBlockedUrl('file:///etc/passwd')).toBe(true)
+    expect(isSyncBlockedUrl('not a url')).toBe(true)
+  })
+
+  it('allows public hostnames pending DNS (assertPublicUrl after load)', () => {
+    expect(isSyncBlockedUrl('https://example.com/')).toBe(false)
+    expect(isSyncBlockedUrl(`http://${PUBLIC_IP}/`)).toBe(false)
   })
 })
 

@@ -2,7 +2,7 @@ import { BrowserWindow, session, type WebContents } from 'electron'
 import { mkdirSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { IPC } from '../../shared/channels'
-import { assertPublicUrl } from '@main/agent/tools/webFetch'
+import { assertPublicUrl, isSyncBlockedUrl } from '@main/agent/tools/webFetch'
 import { getMainWindow } from '@main/app/window'
 import { isAbortError } from '../../shared/errors'
 
@@ -53,6 +53,14 @@ function attachAgentSecurity(wc: WebContents): void {
   wc.session.setPermissionRequestHandler((_contents, _permission, callback) => {
     callback(false)
   })
+
+  // Sync reject private/loopback/non-http(s) on in-window navigations and redirects.
+  // Full DNS SSRF is re-checked after load in navigateUrl.
+  const blockPrivateNav = (event: Electron.Event, url: string): void => {
+    if (isSyncBlockedUrl(url)) event.preventDefault()
+  }
+  wc.on('will-navigate', blockPrivateNav)
+  wc.on('will-redirect', blockPrivateNav)
 }
 
 function ensureWindow(): BrowserWindow {
@@ -176,8 +184,16 @@ export async function navigateUrl(
     throw err
   }
 
-  emitCurrent({ snapshotDataUrl: null })
   const finalUrl = win.webContents.getURL()
+  try {
+    await assertPublicUrl(finalUrl)
+  } catch (err) {
+    void win.loadURL('about:blank')
+    emitCurrent({ snapshotDataUrl: null })
+    throw err
+  }
+
+  emitCurrent({ snapshotDataUrl: null })
   const title = win.webContents.getTitle()
   return [`Navigated to ${finalUrl}`, `Title: ${title || '(none)'}`].join('\n')
 }

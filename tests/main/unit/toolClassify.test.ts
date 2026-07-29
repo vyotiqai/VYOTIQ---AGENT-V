@@ -38,9 +38,9 @@ describe('tool classify', () => {
     expect(isToolGated('read', 'mutating', new Set(), [])).toBe(false)
   })
 
-  it('gates browser tools like web_fetch', () => {
-    expect(isParallelSafeTool('browser_navigate')).toBe(true)
-    expect(isParallelSafeTool('browser_snapshot')).toBe(true)
+  it('serializes browser tools on the shared window and gates approval', () => {
+    expect(isParallelSafeTool('browser_navigate')).toBe(false)
+    expect(isParallelSafeTool('browser_snapshot')).toBe(false)
     expect(isApprovalExemptTool('browser_navigate')).toBe(false)
     expect(isApprovalExemptTool('browser_snapshot')).toBe(false)
     expect(isToolGated('browser_navigate', 'mutating', new Set(), [])).toBe(true)

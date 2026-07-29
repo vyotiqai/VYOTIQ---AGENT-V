@@ -69,6 +69,30 @@ export async function assertPublicUrl(raw: string): Promise<URL> {
   return url
 }
 
+/**
+ * Sync SSRF gate for Electron navigation events (no DNS).
+ * Returns true when the URL must be refused immediately.
+ * Hostnames that need DNS resolution return false — callers should
+ * still `assertPublicUrl` after the load settles.
+ */
+export function isSyncBlockedUrl(raw: string): boolean {
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    return true
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return true
+
+  const host = stripIpv6Brackets(url.hostname).toLowerCase()
+  if (isBlockedHostname(host)) return true
+
+  const literalVersion = isIP(host)
+  if (literalVersion === 4) return isPrivateIpv4(host)
+  if (literalVersion === 6) return isPrivateIpv6(host)
+  return false
+}
+
 function stripIpv6Brackets(host: string): string {
   return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
 }

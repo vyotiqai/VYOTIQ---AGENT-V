@@ -111,6 +111,7 @@ const api: VyotiqApi = {
       ipcRenderer.removeListener(IPC.browserState, listener)
     }
   },
+  browserGetState: () => ipcRenderer.invoke(IPC.browserGetState),
   browserFocus: () => ipcRenderer.invoke(IPC.browserFocus),
   browserClose: () => ipcRenderer.invoke(IPC.browserClose),
   openLogsDir: () => ipcRenderer.invoke(IPC.logsOpenDir),

@@ -8,7 +8,18 @@ export function AgentBrowserPanel({ className }: { className?: string }) {
   const [state, setState] = useState<AgentBrowserState>(EMPTY)
 
   useEffect(() => {
-    return window.vyotiq.onBrowserState((next) => setState(next))
+    let cancelled = false
+    void window.vyotiq.browserGetState().then((res) => {
+      if (cancelled || !res.ok) return
+      setState(res.value)
+    })
+    const unsub = window.vyotiq.onBrowserState((next) => {
+      if (!cancelled) setState(next)
+    })
+    return () => {
+      cancelled = true
+      unsub()
+    }
   }, [])
 
   if (!state.open && !state.snapshotDataUrl) return null

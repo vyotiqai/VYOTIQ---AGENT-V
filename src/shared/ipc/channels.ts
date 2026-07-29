@@ -32,6 +32,7 @@ export const IPC = {
   runsResolveWrites: 'runs:resolveWrites',
   runsReadArtifact: 'runs:readArtifact',
   browserState: 'browser:state',
+  browserGetState: 'browser:getState',
   browserFocus: 'browser:focus',
   browserClose: 'browser:close',
   gitStatus: 'git:status',

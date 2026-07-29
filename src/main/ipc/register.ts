@@ -61,7 +61,8 @@ import {
   type WorkspacesState,
   type ActiveRunsResult,
   type GitStatus,
-  type GitCommitResult
+  type GitCommitResult,
+  type AgentBrowserState
 } from '../../shared/ipc'
 import { resolveOllamaListBaseUrl } from '../../shared/providers'
 import { existsSync, mkdirSync, readFileSync } from 'fs'
@@ -108,7 +109,7 @@ import { runAgent, createRunId } from '../agent/loop'
 import { compactRunNow, CompactionUnavailableError } from '../agent/compactRun'
 import { undoWrites, resolveWrites, getWriteCheckpointMeta } from '../agent/checkpoints'
 import { resolveRunDir } from '@main/storage/paths'
-import { focusAgentBrowser, closeAgentBrowser } from '@main/app/agentBrowser'
+import { focusAgentBrowser, closeAgentBrowser, getAgentBrowserState } from '@main/app/agentBrowser'
 import { extractAttachment } from '../attachments/extract'
 import {
   cancelPendingApprovals,
@@ -1197,6 +1198,15 @@ export function registerIpc(): void {
       return ok(win.isMaximized())
     } catch (err) {
       return failFrom(err, IPC.windowIsMaximized)
+    }
+  })
+
+  ipcMain.handle(IPC.browserGetState, async (event): Promise<IpcResult<AgentBrowserState>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      return ok(getAgentBrowserState())
+    } catch (err) {
+      return failFrom(err, IPC.browserGetState)
     }
   })
 
