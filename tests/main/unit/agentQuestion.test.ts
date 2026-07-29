@@ -51,6 +51,14 @@ describe('agentQuestion', () => {
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
   })
 
+  it('releases prompts left over when a run ends', async () => {
+    registerQuestionSender('run-1', () => {})
+    const pending = askQuestionThroughRenderer(REQUEST, new AbortController().signal)
+    await Promise.resolve()
+    cancelPendingQuestions('run-1')
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
   it('lists pending questions for remount restore', async () => {
     const seen: AgentQuestionRequest[] = []
     registerQuestionSender('run-1', (request) => {

@@ -16,6 +16,8 @@ import { highlightCode } from '@renderer/lib/markdown/markdownHighlight'
 import {
   balanceOutsideFences,
   closeOpenFence,
+  isFenceCloser,
+  parseFenceLine,
   trailingOpenFenceBody
 } from '@renderer/lib/markdown/fenceUtils'
 import { markdownSanitizeSchema, sanitizeHighlightedHtml } from '@renderer/lib/markdown/markdownSanitize'
@@ -37,34 +39,46 @@ export function balanceIncompleteMarkdown(content: string): string {
 /**
  * Split markdown into stable block units (paragraphs / fences / headings).
  * Finished blocks keep stable identity so React.memo can skip them while the
- * last block streams.
+ * last block streams. Fence boundaries use the same CommonMark rules as
+ * {@link closeOpenFence} (variable length, indented openers).
  */
 export function splitMarkdownBlocks(source: string): string[] {
   if (!source) return []
+  const lines = source.split('\n')
   const blocks: string[] = []
   let i = 0
-  const len = source.length
-  while (i < len) {
-    if (source.startsWith('```', i) || source.startsWith('~~~', i)) {
-      const fence = source.slice(i, i + 3)
-      const close = source.indexOf(`\n${fence}`, i + 3)
-      if (close < 0) {
-        blocks.push(source.slice(i))
+  while (i < lines.length) {
+    const parsed = parseFenceLine(lines[i]!)
+    if (parsed) {
+      const open = parsed.open
+      let j = i + 1
+      while (j < lines.length && !isFenceCloser(lines[j]!, open)) j++
+      if (j >= lines.length) {
+        blocks.push(lines.slice(i).join('\n'))
         break
       }
-      const end = close + 1 + 3
-      const afterNewline = source[end] === '\n' ? end + 1 : end
-      blocks.push(source.slice(i, afterNewline))
-      i = afterNewline
+      // Include closer; keep a trailing newline when more content follows so the
+      // next block's start index stays stable across streaming ticks.
+      const end = j + 1
+      const chunk = lines.slice(i, end).join('\n')
+      blocks.push(end < lines.length ? `${chunk}\n` : chunk)
+      i = end
       continue
     }
-    const nextBreak = source.indexOf('\n\n', i)
-    if (nextBreak < 0) {
-      blocks.push(source.slice(i))
-      break
+
+    // Paragraph / prose: consume through the next blank line (inclusive) or up
+    // to the next fence opener.
+    let j = i + 1
+    while (j < lines.length) {
+      if (lines[j] === '') {
+        j++
+        break
+      }
+      if (parseFenceLine(lines[j]!)) break
+      j++
     }
-    blocks.push(source.slice(i, nextBreak + 2))
-    i = nextBreak + 2
+    blocks.push(lines.slice(i, j).join('\n'))
+    i = j
   }
   return blocks.filter((b) => b.length > 0)
 }

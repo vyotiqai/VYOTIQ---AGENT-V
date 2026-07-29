@@ -370,9 +370,13 @@ const browserSelectOptionArgs = z.object({
 })
 
 const mcpListToolsArgs = z.object({
-  server_id: z
+  serverId: z
     .string()
     .describe('Optional MCP server id filter (substring match on tool name prefix)')
+    .optional(),
+  server_id: z
+    .string()
+    .describe('Deprecated alias for serverId')
     .optional()
 })
 

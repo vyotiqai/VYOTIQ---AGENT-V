@@ -327,6 +327,28 @@ describe('buildTranscriptRows', () => {
     expect(rows.some((row) => row.kind === 'card')).toBe(false)
   })
 
+  it('emits a question row and hides the gated ask_question tool card', () => {
+    const rows = buildTranscriptRows([
+      {
+        kind: 'tool',
+        id: 'q1',
+        tool: { id: 'q1', name: 'ask_question', summary: 'Pick?', status: 'running' }
+      },
+      {
+        kind: 'question',
+        id: 'question:req-q',
+        question: {
+          requestId: 'req-q',
+          toolCallId: 'q1',
+          question: 'Pick?',
+          options: ['A', 'B']
+        }
+      }
+    ])
+    expect(rows.map((row) => row.kind)).toEqual(['question'])
+    expect(rows.some((row) => row.kind === 'card')).toBe(false)
+  })
+
   it('strips leaked tool JSON from assistant text rows', () => {
     const rows = buildTranscriptRows([
       {
@@ -649,16 +671,26 @@ describe('buildTranscriptRows', () => {
         kind: 'approval',
         id: 'a1',
         turnIndex: 0,
-        item: {
-          kind: 'tool',
-          id: 't1',
-          tool: { id: 't1', name: 'edit', summary: 'edit', status: 'running' },
-          approval: {
-            requestId: 'r1',
-            toolName: 'edit',
-            summary: 'edit',
-            mutating: true
-          }
+        approval: {
+          requestId: 'r1',
+          toolName: 'edit',
+          summary: 'edit',
+          mutating: true
+        }
+      })
+    ).toBe(false)
+  })
+
+  it('keeps question rows visible when a turn is collapsed', () => {
+    expect(
+      isTurnWorkRow({
+        kind: 'question',
+        id: 'q1',
+        turnIndex: 0,
+        question: {
+          requestId: 'rq',
+          toolCallId: 't1',
+          question: 'Continue?'
         }
       })
     ).toBe(false)

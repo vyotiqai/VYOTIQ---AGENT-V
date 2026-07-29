@@ -510,10 +510,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
   },
   mcp_list_tools: (_workspace, args, signal) => {
     throwIfAborted(signal)
-    const filter =
-      typeof args.server_id === 'string' && args.server_id.trim()
-        ? args.server_id.trim().toLowerCase()
-        : ''
+    const filter = optionalMcpServerId(args)?.toLowerCase() ?? ''
     const defs = listMcpToolDefinitions().filter((t) =>
       filter ? t.name.toLowerCase().includes(filter) : true
     )
@@ -521,7 +518,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       return toolOk(
         'mcp_list_tools',
         filter || 'mcp',
-        filter ? `No MCP tools matching server_id=${filter}` : 'No MCP tools connected.'
+        filter ? `No MCP tools matching serverId=${filter}` : 'No MCP tools connected.'
       )
     }
     const lines = defs.map((t) => {

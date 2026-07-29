@@ -12,6 +12,7 @@ import { collectWritingChanges } from '../toolUi/parsers/edit'
 import { parseDeleteData } from '../toolUi/parsers/delete'
 import { deriveRunActivity, type RunActivityPhase } from './runActivity'
 import { mapToolGroupProps } from './toolGroupAdapter'
+import { WRITING_TOOLS } from './turnFileDiffs'
 
 export type { RunActivityPhase } from './runActivity'
 
@@ -315,7 +316,6 @@ export function stabilizeTranscriptRows(
 }
 
 /** Tools that write files, and so contribute to a turn's change summary. */
-const WRITING_TOOLS = new Set(['edit', 'multi_edit', 'str_replace', 'delete'])
 
 function writingToolChanges(item: ToolItem): ChangedFile[] {
   if (!WRITING_TOOLS.has(item.tool.name) || item.tool.status !== 'done') return []

@@ -4,6 +4,7 @@ import { Icon } from '@renderer/lib/icons'
 import type { UiItem } from '@shared/transcript'
 import { TerminalBody } from '../toolUi/bodies/TerminalBody'
 import type { ToolItem } from '../utils/transcriptRows'
+import { useFullToolContent } from './useFullToolContent'
 import { EmptyPanel, PanelHeader } from './PanelChrome'
 
 function isToolItem(item: UiItem): item is ToolItem {
@@ -25,17 +26,53 @@ function terminalStatusLabel(status: ToolItem['tool']['status']): string {
   }
 }
 
+function TerminalPanelEntry({
+  item,
+  onLoadToolContent
+}: {
+  item: ToolItem
+  onLoadToolContent?: (toolCallId: string) => Promise<string | null>
+}) {
+  const enabled = item.tool.contentTruncated === true
+  const { loading, failed } = useFullToolContent(item.tool, enabled, onLoadToolContent)
+  return (
+    <li className="overflow-hidden rounded-md border border-border/50 bg-surface">
+      <div className="flex items-center gap-2 border-b border-border/40 px-3 py-1.5 text-[11px]">
+        <Icon name="terminal" size={12} className="text-muted" />
+        <span className="min-w-0 flex-1 truncate font-mono text-fg" title={item.tool.summary}>
+          {item.tool.summary || item.tool.name}
+        </span>
+        <span
+          className={cn(
+            'shrink-0 tabular-nums',
+            item.tool.status === 'fail'
+              ? 'text-danger'
+              : item.tool.status === 'running'
+                ? 'text-muted'
+                : 'text-success'
+          )}
+        >
+          {terminalStatusLabel(item.tool.status)}
+        </span>
+      </div>
+      <TerminalBody tool={item.tool} expanded loading={loading} loadFailed={failed} />
+    </li>
+  )
+}
+
 /**
  * Docked panel showing recent terminal tool output from the chat transcript.
  */
 export function TerminalPanel({
   items,
   className,
-  onClose
+  onClose,
+  onLoadToolContent
 }: {
   items: UiItem[]
   className?: string
   onClose?: () => void
+  onLoadToolContent?: (toolCallId: string) => Promise<string | null>
 }) {
   const terminals = useMemo(() => {
     const out: ToolItem[] = []
@@ -69,30 +106,11 @@ export function TerminalPanel({
         ) : (
           <ul className="m-0 list-none space-y-2 p-2">
             {terminals.map((item) => (
-              <li
+              <TerminalPanelEntry
                 key={item.id}
-                className="overflow-hidden rounded-md border border-border/50 bg-surface"
-              >
-                <div className="flex items-center gap-2 border-b border-border/40 px-3 py-1.5 text-[11px]">
-                  <Icon name="terminal" size={12} className="text-muted" />
-                  <span className="min-w-0 flex-1 truncate font-mono text-fg" title={item.tool.summary}>
-                    {item.tool.summary || item.tool.name}
-                  </span>
-                  <span
-                    className={cn(
-                      'shrink-0 tabular-nums',
-                      item.tool.status === 'fail'
-                        ? 'text-danger'
-                        : item.tool.status === 'running'
-                          ? 'text-muted'
-                          : 'text-success'
-                    )}
-                  >
-                    {terminalStatusLabel(item.tool.status)}
-                  </span>
-                </div>
-                <TerminalBody tool={item.tool} expanded loading={false} loadFailed={false} />
-              </li>
+                item={item}
+                onLoadToolContent={onLoadToolContent}
+              />
             ))}
           </ul>
         )}

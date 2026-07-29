@@ -7,6 +7,7 @@ import {
   MarkdownContent,
   balanceIncompleteMarkdown,
   prepareStreamingMarkdown,
+  splitMarkdownBlocks,
   trailingOpenFenceBody,
   HIGHLIGHT_CACHE_MAX_ENTRIES,
   setHighlightCacheEntry,
@@ -62,6 +63,23 @@ describe('prepareStreamingMarkdown fence nesting', () => {
     expect(prepareStreamingMarkdown('```js\nconst x = 1\n```ts\nlet y = 2\n```')).toBe(
       '```js\nconst x = 1\n```ts\nlet y = 2\n```'
     )
+  })
+})
+
+describe('splitMarkdownBlocks fences', () => {
+  it('keeps nested triple backticks inside a four-backtick fence as one block', () => {
+    const source = '````md\n```js\nconst x = 1\n```\n````\n\nAfter'
+    const blocks = splitMarkdownBlocks(source)
+    expect(blocks[0]).toContain('````md')
+    expect(blocks[0]).toContain('```js')
+    expect(blocks[0]).toContain('````')
+    expect(blocks.some((b) => b.includes('After'))).toBe(true)
+  })
+
+  it('treats indented fences as a single block', () => {
+    const blocks = splitMarkdownBlocks('  ```js\n  const x = 1\n  ```\n\nNext')
+    expect(blocks[0]?.startsWith('  ```js')).toBe(true)
+    expect(blocks[0]).toContain('  ```')
   })
 })
 

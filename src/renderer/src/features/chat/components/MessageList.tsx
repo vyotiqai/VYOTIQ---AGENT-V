@@ -237,6 +237,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   undoBusy = false,
   onUndoWrites,
   writeFileResolutions,
+  writeResolvablePaths,
   onKeepWriteFile,
   onDiscardWriteFile,
   onKeepAllWrites,
@@ -259,6 +260,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   undoBusy?: boolean
   onUndoWrites?: () => void | Promise<unknown>
   writeFileResolutions?: ReadonlyMap<string, 'kept' | 'discarded' | undefined>
+  writeResolvablePaths?: ReadonlySet<string>
   onKeepWriteFile?: (path: string) => void | Promise<unknown>
   onDiscardWriteFile?: (path: string) => void | Promise<unknown>
   onKeepAllWrites?: () => void | Promise<unknown>
@@ -309,6 +311,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
         files={row.files}
         fileDiffs={fileDiffs}
         fileResolutions={writeFileResolutions}
+        resolvablePaths={writeResolvablePaths}
         canResolve={canUndoWrites}
         resolveBusy={undoBusy}
         onKeepFile={onKeepWriteFile}
@@ -389,6 +392,7 @@ export function MessageList({
   undoBusy = false,
   onUndoWrites,
   writeFileResolutions,
+  writeResolvablePaths,
   onKeepWriteFile,
   onDiscardWriteFile,
   onKeepAllWrites
@@ -419,6 +423,7 @@ export function MessageList({
   undoBusy?: boolean
   onUndoWrites?: () => void | Promise<unknown>
   writeFileResolutions?: ReadonlyMap<string, 'kept' | 'discarded' | undefined>
+  writeResolvablePaths?: ReadonlySet<string>
   onKeepWriteFile?: (path: string) => void | Promise<unknown>
   onDiscardWriteFile?: (path: string) => void | Promise<unknown>
   onKeepAllWrites?: () => void | Promise<unknown>
@@ -760,6 +765,7 @@ export function MessageList({
       undoBusy={undoBusy}
       onUndoWrites={onUndoWrites}
       writeFileResolutions={writeFileResolutions}
+      writeResolvablePaths={writeResolvablePaths}
       onKeepWriteFile={onKeepWriteFile}
       onDiscardWriteFile={onDiscardWriteFile}
       onKeepAllWrites={onKeepAllWrites}

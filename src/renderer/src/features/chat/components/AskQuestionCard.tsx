@@ -40,10 +40,10 @@ export const AskQuestionCard = memo(function AskQuestionCard({
   }
 
   const submit = (): void => {
-    if (phase !== 'idle' || !answers.length) return
+    if (phase !== 'idle' || !answers.length || !onSubmit) return
     setPhase('pending')
     setLocalError(null)
-    void Promise.resolve(onSubmit?.(question.requestId, answers))
+    void Promise.resolve(onSubmit(question.requestId, answers))
       .then(() => {
         setPhase('done')
       })

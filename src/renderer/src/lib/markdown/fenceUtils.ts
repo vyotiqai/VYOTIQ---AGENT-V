@@ -22,6 +22,8 @@ function isFenceCloser(line: string, open: FenceOpen): boolean {
   return parsed.open.char === open.char && parsed.open.length >= open.length
 }
 
+export { isFenceCloser }
+
 /** Walk lines and return the still-open fence, if any. */
 export function scanOpenFence(content: string): FenceOpen | null {
   const lines = content.split('\n')

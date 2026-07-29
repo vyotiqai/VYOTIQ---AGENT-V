@@ -16,6 +16,8 @@ import {
   ModelInfoSchema,
   ProviderIdSchema,
   AgentEventSchema,
+  AgentQuestionRequestSchema,
+  AgentQuestionResponseSchema,
   WindowMaximizedChangedSchema,
   LoadRunRequestSchema,
   LoadToolResultRequestSchema,
@@ -242,6 +244,28 @@ describe('ipc schemas', () => {
         step: 2
       }).type
     ).toBe('stream_reset')
+    expect(
+      AgentEventSchema.parse({
+        type: 'mode_changed',
+        runId: 'r1',
+        mode: 'plan'
+      }).mode
+    ).toBe('plan')
+    expect(
+      AgentQuestionRequestSchema.parse({
+        requestId: 'q1',
+        runId: 'r1',
+        toolCallId: 't1',
+        question: 'Ready?',
+        options: ['yes', 'no']
+      }).question
+    ).toBe('Ready?')
+    expect(
+      AgentQuestionResponseSchema.parse({
+        requestId: 'q1',
+        answers: ['yes']
+      }).answers
+    ).toEqual(['yes'])
     expect(
       AgentEventSchema.parse({
         type: 'incomplete',

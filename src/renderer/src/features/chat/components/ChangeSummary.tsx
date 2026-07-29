@@ -15,6 +15,7 @@ export const ChangeSummary = memo(function ChangeSummary({
   files,
   fileDiffs,
   fileResolutions,
+  resolvablePaths,
   canResolve = false,
   resolveBusy = false,
   onKeepFile,
@@ -28,6 +29,11 @@ export const ChangeSummary = memo(function ChangeSummary({
   fileDiffs?: ReadonlyMap<string, DiffLine[]>
   /** Path → Keep/Discard status from the write checkpoint. */
   fileResolutions?: ReadonlyMap<string, ChangeSummaryFileResolution>
+  /**
+   * Paths that belong to the active write checkpoint. Keep/Discard only apply
+   * here — session-wide older edits stay list-only.
+   */
+  resolvablePaths?: ReadonlySet<string>
   canResolve?: boolean
   resolveBusy?: boolean
   onKeepFile?: (path: string) => void | Promise<unknown>
@@ -41,9 +47,17 @@ export const ChangeSummary = memo(function ChangeSummary({
 
   if (files.length === 0) return null
 
+  const isResolvablePath = (path: string): boolean => {
+    if (!resolvablePaths) return true
+    if (resolvablePaths.has(path)) return true
+    return resolvablePaths.has(normalizeRelPath(path))
+  }
+
   const totalAdded = files.reduce((sum, file) => sum + file.added, 0)
   const totalRemoved = files.reduce((sum, file) => sum + file.removed, 0)
-  const unresolved = files.filter((f) => !fileResolutions?.get(f.path))
+  const unresolved = files.filter(
+    (f) => isResolvablePath(f.path) && !fileResolutions?.get(f.path)
+  )
 
   const togglePath = (path: string): void => {
     setExpandedPaths((prev) => {
@@ -101,6 +115,7 @@ export const ChangeSummary = memo(function ChangeSummary({
           const lines = fileDiffs?.get(norm) ?? fileDiffs?.get(file.path)
           const expanded = expandedPaths.has(file.path)
           const canExpand = Boolean(lines && lines.length > 0) || file.removed > 0
+          const showResolve = canResolve && isResolvablePath(file.path)
 
           return (
             <li
@@ -132,7 +147,7 @@ export const ChangeSummary = memo(function ChangeSummary({
                     <span className="text-tertiary">Kept</span>
                   ) : resolution === 'discarded' ? (
                     <span className="text-tertiary">Discarded</span>
-                  ) : canResolve ? (
+                  ) : showResolve ? (
                     <>
                       {onKeepFile ? (
                         <Button

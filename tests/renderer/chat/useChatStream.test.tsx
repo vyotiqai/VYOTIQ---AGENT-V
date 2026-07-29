@@ -4,6 +4,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { useChatStream } from '@renderer/lib/hooks/useChatStream'
+import { createChatStreamController } from '@renderer/lib/hooks/createChatStreamController'
 import { buildTranscriptRows } from '@renderer/features/chat/utils/transcriptRows'
 import type { AgentEvent } from '@shared/ipc'
 
@@ -731,6 +732,36 @@ describe('useChatStream', () => {
       (i) => i.kind === 'message' && i.role === 'assistant'
     )
     expect(assistant?.kind === 'message' ? assistant.content : null).toBe('Checking routes.')
+  })
+
+  it('prunes real-id orphan tools when assistant_message has no toolCalls', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('audit')
+    })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({
+        type: 'tool_call_delta',
+        runId: 'run-1',
+        toolCallId: 'orphan-real',
+        name: 'read',
+        argumentsDelta: '{"path":"ghost.ts"}'
+      })
+      handler?.({
+        type: 'assistant_message',
+        runId: 'run-1',
+        content: 'No tools this step.'
+      })
+    })
+
+    expect(result.current.items.some((i) => i.kind === 'tool')).toBe(false)
+    const assistant = result.current.items.find(
+      (i) => i.kind === 'message' && i.role === 'assistant'
+    )
+    expect(assistant?.kind === 'message' ? assistant.content : null).toBe('No tools this step.')
   })
 
   it('does not render in-progress leaked tool JSON as streaming assistant text', async () => {
@@ -1941,6 +1972,18 @@ describe('useChatStream', () => {
         (i) => i.kind === 'question' && i.question.requestId === 'q-keep'
       )
     ).toBe(true)
+  })
+
+  it('forwards mode_changed to onAgentModeChange', () => {
+    const onAgentModeChange = vi.fn()
+    const controller = createChatStreamController({
+      workspacePath: '/ws',
+      runId: 'run-1',
+      onAgentModeChange
+    })
+    controller.handleEvent({ type: 'mode_changed', runId: 'run-1', mode: 'plan' })
+    expect(onAgentModeChange).toHaveBeenCalledWith('plan')
+    controller.dispose()
   })
 
   it('uses contentRunId for lazy tool loads after syncFromDisk clears runId', async () => {

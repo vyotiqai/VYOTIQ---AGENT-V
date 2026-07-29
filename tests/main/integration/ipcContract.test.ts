@@ -130,7 +130,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(false)
     }
-    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(71)
+    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(72)
   })
 
   it('maps every VyotiqApi push listener to a push channel', () => {

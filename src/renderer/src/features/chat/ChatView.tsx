@@ -59,6 +59,7 @@ function TranscriptPane({
   undoBusy,
   onUndoWrites,
   writeFileResolutions,
+  writeResolvablePaths,
   onKeepWriteFile,
   onDiscardWriteFile,
   onKeepAllWrites
@@ -87,6 +88,7 @@ function TranscriptPane({
   undoBusy?: boolean
   onUndoWrites?: () => void | Promise<unknown>
   writeFileResolutions?: ReadonlyMap<string, 'kept' | 'discarded' | undefined>
+  writeResolvablePaths?: ReadonlySet<string>
   onKeepWriteFile?: (path: string) => void | Promise<unknown>
   onDiscardWriteFile?: (path: string) => void | Promise<unknown>
   onKeepAllWrites?: () => void | Promise<unknown>
@@ -118,6 +120,7 @@ function TranscriptPane({
       undoBusy={undoBusy}
       onUndoWrites={onUndoWrites}
       writeFileResolutions={writeFileResolutions}
+      writeResolvablePaths={writeResolvablePaths}
       onKeepWriteFile={onKeepWriteFile}
       onDiscardWriteFile={onDiscardWriteFile}
       onKeepAllWrites={onKeepAllWrites}
@@ -188,6 +191,7 @@ export function ChatView({
   undoBusy = false,
   onUndoWrites,
   writeFileResolutions,
+  writeResolvablePaths,
   onKeepWriteFile,
   onDiscardWriteFile,
   onKeepAllWrites
@@ -264,6 +268,7 @@ export function ChatView({
   undoBusy?: boolean
   onUndoWrites?: () => void | Promise<unknown>
   writeFileResolutions?: ReadonlyMap<string, 'kept' | 'discarded' | undefined>
+  writeResolvablePaths?: ReadonlySet<string>
   onKeepWriteFile?: (path: string) => void | Promise<unknown>
   onDiscardWriteFile?: (path: string) => void | Promise<unknown>
   onKeepAllWrites?: () => void | Promise<unknown>
@@ -495,6 +500,7 @@ export function ChatView({
                 undoBusy={undoBusy}
                 onUndoWrites={onUndoWrites}
                 writeFileResolutions={writeFileResolutions}
+                writeResolvablePaths={writeResolvablePaths}
                 onKeepWriteFile={onKeepWriteFile}
                 onDiscardWriteFile={onDiscardWriteFile}
                 onKeepAllWrites={onKeepAllWrites}
@@ -536,7 +542,11 @@ export function ChatView({
           />
         ) : null}
         {activeRightPanel === 'terminal' ? (
-          <TerminalPanel items={liveItems} onClose={() => setRightPanel(null)} />
+          <TerminalPanel
+            items={liveItems}
+            onClose={() => setRightPanel(null)}
+            onLoadToolContent={onLoadToolContent}
+          />
         ) : null}
         {activeRightPanel === 'files' ? (
           <FilesPanel items={liveItems} onClose={() => setRightPanel(null)} />
@@ -546,6 +556,7 @@ export function ChatView({
             items={liveItems}
             onClose={() => setRightPanel(null)}
             writeFileResolutions={writeFileResolutions}
+            resolvablePaths={writeResolvablePaths}
             canResolve={canUndoWrites}
             resolveBusy={undoBusy}
             onKeepWriteFile={onKeepWriteFile}

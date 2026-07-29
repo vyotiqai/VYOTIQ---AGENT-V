@@ -16,6 +16,7 @@ export function ChangesPanel({
   className,
   onClose,
   writeFileResolutions,
+  resolvablePaths,
   canResolve,
   resolveBusy,
   onKeepWriteFile,
@@ -27,6 +28,8 @@ export function ChangesPanel({
   className?: string
   onClose?: () => void
   writeFileResolutions?: ReadonlyMap<string, 'kept' | 'discarded' | undefined>
+  /** Active checkpoint paths — Keep/Discard only for these. */
+  resolvablePaths?: ReadonlySet<string>
   canResolve?: boolean
   resolveBusy?: boolean
   onKeepWriteFile?: (path: string) => void | Promise<unknown>
@@ -59,6 +62,7 @@ export function ChangesPanel({
             files={files}
             fileDiffs={fileDiffs}
             fileResolutions={writeFileResolutions}
+            resolvablePaths={resolvablePaths}
             canResolve={canResolve}
             resolveBusy={resolveBusy}
             onKeepFile={onKeepWriteFile}

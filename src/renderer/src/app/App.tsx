@@ -329,6 +329,12 @@ export function App() {
     return map
   }, [chat.writeCheckpoint])
 
+  const writeResolvablePaths = useMemo(() => {
+    const files = chat.writeCheckpoint?.files
+    if (!files?.length) return undefined
+    return new Set(files.filter((f) => f.undoable !== false).map((f) => f.path))
+  }, [chat.writeCheckpoint])
+
   const slashHandlersValue = useMemo(
     () => ({
       onCompact: async () => {
@@ -726,6 +732,7 @@ export function App() {
             undoBusy={undoBusy}
             onUndoWrites={onUndoWrites}
             writeFileResolutions={writeFileResolutions}
+            writeResolvablePaths={writeResolvablePaths}
             onKeepWriteFile={onKeepWriteFile}
             onDiscardWriteFile={onDiscardWriteFile}
             onKeepAllWrites={onKeepAllWrites}
