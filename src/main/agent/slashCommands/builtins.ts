@@ -54,6 +54,33 @@ export const BUILTIN_COMMANDS: SlashCommandDescriptor[] = [
     kind: 'builtin',
     group: 'App',
     availability: 'ready'
+  },
+  {
+    id: 'builtin:ask',
+    trigger: 'ask',
+    label: 'Ask mode',
+    description: 'Switch to Ask mode (read-only tools)',
+    kind: 'builtin',
+    group: 'App',
+    availability: 'ready'
+  },
+  {
+    id: 'builtin:plan',
+    trigger: 'plan',
+    label: 'Plan mode',
+    description: 'Switch to Plan mode (explore + plan artifacts)',
+    kind: 'builtin',
+    group: 'App',
+    availability: 'ready'
+  },
+  {
+    id: 'builtin:agent',
+    trigger: 'agent',
+    label: 'Agent mode',
+    description: 'Switch to Agent mode (full tools)',
+    kind: 'builtin',
+    group: 'App',
+    availability: 'ready'
   }
 ]
 
@@ -79,6 +106,12 @@ export function resolveBuiltin(
       return { action: 'send', message: helpMessage }
     case 'builtin:undo':
       return { action: 'client', clientAction: 'undo_writes' }
+    case 'builtin:ask':
+      return { action: 'client', clientAction: 'set_mode_ask' }
+    case 'builtin:plan':
+      return { action: 'client', clientAction: 'set_mode_plan' }
+    case 'builtin:agent':
+      return { action: 'client', clientAction: 'set_mode_agent' }
     default:
       return null
   }

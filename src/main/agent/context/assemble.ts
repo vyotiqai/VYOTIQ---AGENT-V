@@ -42,6 +42,7 @@ function systemFingerprint(parts: {
   memoryIndex: string
   memoryState: string
   contract: string
+  modeSection?: string
   compactionSummary?: string
   loopHint?: string
   historyBudget: number
@@ -56,6 +57,7 @@ function systemFingerprint(parts: {
     parts.memoryIndex,
     parts.memoryState,
     parts.contract,
+    parts.modeSection ?? '',
     parts.compactionSummary ?? '',
     parts.loopHint ?? '',
     String(parts.historyBudget),
@@ -137,6 +139,7 @@ function buildSystem(parts: {
   memoryIndex: string
   memoryState: string
   contract?: string
+  modeSection?: string
   compaction?: CompactionRecord | null
   budgets: ReturnType<typeof allocateBudget>
   loopHint?: string
@@ -150,6 +153,7 @@ function buildSystem(parts: {
     memoryIndex: parts.memoryIndex,
     memoryState: parts.memoryState,
     contract: parts.contract ?? '',
+    modeSection: parts.modeSection,
     compactionSummary:
       parts.compaction?.summary && !isTrimWatermarkCompaction(parts.compaction)
         ? parts.compaction.summary
@@ -164,6 +168,9 @@ function buildSystem(parts: {
 
   const sections: string[] = []
   sections.push(capHarness(parts.harness, parts.budgets.system))
+  if (parts.modeSection?.trim()) {
+    sections.push(capText(parts.modeSection.trim(), Math.floor(parts.budgets.system * 0.2)))
+  }
   if (parts.skillsSection?.trim()) {
     sections.push(
       capText(parts.skillsSection.trim(), Math.floor(parts.budgets.system * 0.35))
@@ -316,6 +323,7 @@ export async function assembleContext(
     memoryIndex,
     memoryState,
     contract: input.contract,
+    modeSection: input.modeSection,
     compaction,
     budgets,
     loopHint: input.loopHint

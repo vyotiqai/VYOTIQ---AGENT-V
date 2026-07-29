@@ -6,6 +6,7 @@ import type {
   ChatStartResult,
   CompactRunResult,
   UndoWritesResult,
+  ResolveWritesResult,
   GitCommitResult,
   GitStatus,
   IpcResult,
@@ -83,6 +84,13 @@ export interface VyotiqApi {
     runId: string,
     checkpointId?: string
   ) => Promise<IpcResult<UndoWritesResult>>
+  resolveWrites: (payload: {
+    workspacePath: string
+    runId: string
+    checkpointId?: string
+    action: 'keep' | 'discard'
+    paths?: string[]
+  }) => Promise<IpcResult<ResolveWritesResult>>
   onChatEvent: (handler: (event: AgentEvent) => void) => () => void
   onToolApprovalRequest: (handler: (request: ToolApprovalRequest) => void) => () => void
   respondToolApproval: (

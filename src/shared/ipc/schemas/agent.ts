@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { AgentInteractionModeSchema } from './settings'
 
 export const MAX_IMAGE_BYTES = 4 * 1024 * 1024
 export const MAX_IMAGE_DATA_URL_CHARS = Math.ceil(MAX_IMAGE_BYTES * (4 / 3)) + 128
@@ -250,7 +251,8 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
       z.object({
         path: z.string().min(1),
         action: z.enum(['created', 'modified', 'deleted']),
-        undoable: z.boolean()
+        undoable: z.boolean(),
+        resolved: z.enum(['kept', 'discarded']).optional()
       })
     )
   })
@@ -295,7 +297,9 @@ export const ChatStartRequestSchema = z
     newMessages: z.array(ChatMessageSchema).optional(),
     incremental: z.boolean().optional(),
     workspacePath: z.string().min(1),
-    runId: RunIdSchema.optional()
+    runId: RunIdSchema.optional(),
+    /** Ask / Plan / Agent — authoritative for this invoke. */
+    mode: AgentInteractionModeSchema.optional()
   })
   .superRefine((val, ctx) => {
     if (val.incremental) {
@@ -361,6 +365,25 @@ export const UndoWritesResultSchema = z.object({
   skipped: z.array(z.string())
 })
 export type UndoWritesResult = z.infer<typeof UndoWritesResultSchema>
+
+export const ResolveWritesRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  runId: RunIdSchema,
+  checkpointId: z.string().min(1).optional(),
+  action: z.enum(['keep', 'discard']),
+  /** When omitted, applies to all unresolved files. */
+  paths: z.array(z.string().min(1)).optional()
+})
+export type ResolveWritesRequest = z.infer<typeof ResolveWritesRequestSchema>
+
+export const ResolveWritesResultSchema = z.object({
+  checkpointId: z.string().min(1),
+  kept: z.array(z.string()),
+  discarded: z.array(z.string()),
+  skipped: z.array(z.string()),
+  fullyResolved: z.boolean()
+})
+export type ResolveWritesResult = z.infer<typeof ResolveWritesResultSchema>
 
 /**
  * A gated tool call waiting on the user. The loop is parked on this request, so

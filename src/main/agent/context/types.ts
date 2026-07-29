@@ -70,6 +70,8 @@ export type AssembleInput = {
   skillsSection?: string
   /** Enabled plugin rules section (pre-built markdown). */
   pluginRulesSection?: string
+  /** Ask / Plan mode overlay (null/omit for Agent). */
+  modeSection?: string
 }
 
 export type ContextLayerBreakdown = {

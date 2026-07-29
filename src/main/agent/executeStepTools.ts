@@ -1,4 +1,4 @@
-import type { AgentEvent, ChatMessage } from '../../shared/ipc'
+import type { AgentEvent, AgentInteractionMode, ChatMessage } from '../../shared/ipc'
 import { isAbortError, isExpectedToolError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
 import { summarizeToolArgs } from '../../shared/toolSummary'
@@ -22,6 +22,8 @@ export type ToolStepContext = {
   maxParallelReadTools?: number
   /** Present only when the workspace opted into tool approval. */
   approval?: ToolApprovalGate
+  /** Ask / Plan / Agent for this invoke. */
+  agentMode?: AgentInteractionMode
   /** Streams events while a tool is still running (sub-agent progress). */
   emitLiveEvent?: (ev: AgentEvent) => void
   /**
@@ -200,6 +202,7 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
     const result = await executeTool(call.name, call.arguments, ctx.workspace, ctx.signal, {
       runDir: ctx.runDir,
       depth: 0,
+      agentMode: ctx.agentMode,
       runEnabledMcpIds: ctx.runEnabledMcpIds,
       mcpToolPolicies: ctx.mcpToolPolicies,
       onProgress: ctx.emitLiveEvent

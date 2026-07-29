@@ -71,6 +71,7 @@ export function App() {
     workspaceHasBackgroundRun,
     scrollRestoreToken,
     setComposerDraft,
+    setAgentMode,
     onMessageListScroll,
     setSettingsOverride,
     workspaceError,
@@ -295,6 +296,64 @@ export function App() {
     }
   }, [activeWorkspace, activeRunId, chat.running, chat.writeCheckpoint])
 
+  const resolveAgentWrites = useCallback(
+    async (action: 'keep' | 'discard', paths?: string[]) => {
+      if (!activeWorkspace || !activeRunId) {
+        setSettingsError('Keep/Discard is unavailable.')
+        return
+      }
+      if (chat.running) {
+        setSettingsError('Stop the run before resolving agent writes.')
+        return
+      }
+      const checkpointId = chat.writeCheckpoint?.undone
+        ? undefined
+        : chat.writeCheckpoint?.checkpointId
+      setUndoBusy(true)
+      try {
+        const res = await window.vyotiq.resolveWrites({
+          workspacePath: activeWorkspace,
+          runId: activeRunId,
+          ...(checkpointId ? { checkpointId } : {}),
+          action,
+          ...(paths?.length ? { paths } : {})
+        })
+        if (!res.ok) {
+          setSettingsError(res.error)
+          return
+        }
+        chatActionsRef.current?.applyWriteCheckpointResolution?.(res.data)
+        setSettingsError(null)
+      } finally {
+        setUndoBusy(false)
+      }
+    },
+    [activeWorkspace, activeRunId, chat.running, chat.writeCheckpoint]
+  )
+
+  const onKeepWriteFile = useCallback(
+    (path: string) => resolveAgentWrites('keep', [path]),
+    [resolveAgentWrites]
+  )
+  const onDiscardWriteFile = useCallback(
+    (path: string) => resolveAgentWrites('discard', [path]),
+    [resolveAgentWrites]
+  )
+  const onKeepAllWrites = useCallback(
+    () => resolveAgentWrites('keep'),
+    [resolveAgentWrites]
+  )
+
+  const writeFileResolutions = useMemo(() => {
+    const files = chat.writeCheckpoint?.files
+    if (!files?.length) return undefined
+    const map = new Map<string, 'kept' | 'discarded' | undefined>()
+    for (const f of files) {
+      map.set(f.path, f.resolved)
+    }
+    return map
+  }, [chat.writeCheckpoint])
+
   const slashHandlersValue = useMemo(
     () => ({
       onCompact: () => {
@@ -302,6 +361,9 @@ export function App() {
       },
       onUndoWrites: () => {
         void onUndoWrites()
+      },
+      onSetAgentMode: (mode) => {
+        setAgentMode(mode)
       },
       onOpenMarketplace: (mcpServerId?: string) => {
         setMarketplaceFocusServerId(mcpServerId ?? null)
@@ -381,7 +443,7 @@ export function App() {
         setSettingsError(message)
       }
     }),
-    [activeWorkspace, onCompactContext, onUndoWrites]
+    [activeWorkspace, onCompactContext, onUndoWrites, setAgentMode]
   )
 
   const operationalError = settingsError ?? workspaceError
@@ -652,6 +714,8 @@ export function App() {
             onServiceTierChange={onServiceTierChange}
             chatSettings={effectiveChatSettings}
             onChatSettingsChange={onChatSettingsChange}
+            agentMode={activeContext?.ui.agentMode ?? 'agent'}
+            onAgentModeChange={setAgentMode}
             onSend={onChatSend}
             onStop={onChatStop}
             onDismissError={onDismissChatBanner}
@@ -675,6 +739,10 @@ export function App() {
             )}
             undoBusy={undoBusy}
             onUndoWrites={onUndoWrites}
+            writeFileResolutions={writeFileResolutions}
+            onKeepWriteFile={onKeepWriteFile}
+            onDiscardWriteFile={onDiscardWriteFile}
+            onKeepAllWrites={onKeepAllWrites}
           />
         </ErrorBoundary>
       )}

@@ -1,14 +1,20 @@
 import { z } from 'zod'
 import { ProviderIdSchema } from './providers'
 import { MarketplaceOverridesSchema } from './marketplace'
-import { ThinkingEffortSchema, ToolApprovalSettingsSchema } from './settings'
+import {
+  AgentInteractionModeSchema,
+  ThinkingEffortSchema,
+  ToolApprovalSettingsSchema
+} from './settings'
 
 export const WorkspaceUiStateSchema = z.object({
   activeRunId: z.string().nullable(),
   openRunIds: z.array(z.string()),
   scrollTop: z.number(),
   scrollTopByRunId: z.record(z.string(), z.number()).default({}),
-  composerDraft: z.string()
+  composerDraft: z.string(),
+  /** Per-workspace composer Ask / Plan / Agent mode. */
+  agentMode: AgentInteractionModeSchema.default('agent')
 })
 export type WorkspaceUiState = z.infer<typeof WorkspaceUiStateSchema>
 

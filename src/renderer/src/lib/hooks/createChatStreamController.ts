@@ -1,5 +1,6 @@
 import type {
   AgentEvent,
+  AgentInteractionMode,
   AttachedFile,
   ChatMessage,
   IncompleteReason,
@@ -458,9 +459,17 @@ export type IncompleteTurnState = {
   message: string
 }
 
+export type WriteCheckpointFileState = {
+  path: string
+  action: 'created' | 'modified' | 'deleted'
+  undoable: boolean
+  resolved?: 'kept' | 'discarded'
+}
+
 export type WriteCheckpointState = {
   checkpointId: string
   undone: boolean
+  files: WriteCheckpointFileState[]
 }
 
 function incompleteFromPersisted(events: PersistedEvent[]): IncompleteTurnState | null {
@@ -479,7 +488,16 @@ function writeCheckpointFromPersisted(events: PersistedEvent[]): WriteCheckpoint
     const event = events[i]?.event
     if (!isAgentEvent(event)) continue
     if (event.type === 'writes_checkpoint') {
-      return { checkpointId: event.checkpointId, undone: false }
+      return {
+        checkpointId: event.checkpointId,
+        undone: false,
+        files: event.files.map((f) => ({
+          path: f.path,
+          action: f.action,
+          undoable: f.undoable,
+          ...(f.resolved ? { resolved: f.resolved } : {})
+        }))
+      }
     }
   }
   return null
@@ -563,6 +581,13 @@ export type ChatStreamController = ChatStreamState & {
   }) => void
   /** Mark the live write checkpoint as undone after a successful IPC undo. */
   markWriteCheckpointUndone: (checkpointId?: string) => void
+  /** Apply Keep/Discard results onto the live write checkpoint state. */
+  applyWriteCheckpointResolution: (result: {
+    checkpointId: string
+    kept: string[]
+    discarded: string[]
+    fullyResolved: boolean
+  }) => void
   handleEvent: (event: AgentEvent) => void
   subscribe: (listener: () => void) => () => void
   subscribeItems: (listener: () => void) => () => void
@@ -582,12 +607,14 @@ export type CreateChatStreamControllerOptions = {
   runId?: string | null
   onRunIdAssigned?: (runId: string) => void
   onTerminal?: () => void
+  /** Current Ask / Plan / Agent mode for chatStart. */
+  getAgentMode?: () => AgentInteractionMode
 }
 
 export function createChatStreamController(
   options: CreateChatStreamControllerOptions
 ): ChatStreamController {
-  const { workspacePath, onRunIdAssigned, onTerminal } = options
+  const { workspacePath, onRunIdAssigned, onTerminal, getAgentMode } = options
   const listeners = new Set<() => void>()
   const itemsListeners = new Set<() => void>()
   const metaListeners = new Set<() => void>()
@@ -1286,7 +1313,16 @@ export function createChatStreamController(
       })
     } else if (event.type === 'writes_checkpoint') {
       patch({
-        writeCheckpoint: { checkpointId: event.checkpointId, undone: false }
+        writeCheckpoint: {
+          checkpointId: event.checkpointId,
+          undone: false,
+          files: event.files.map((f) => ({
+            path: f.path,
+            action: f.action,
+            undoable: f.undoable,
+            ...(f.resolved ? { resolved: f.resolved } : {})
+          }))
+        }
       })
     } else if (event.type === 'step_usage') {
       const usage = stepUsageFromEvent(event)
@@ -1443,17 +1479,20 @@ export function createChatStreamController(
       awaitingRun = true
       patch({ pendingRun: true, running: true, runStartedAt: Date.now(), runId: null })
     }
+    const mode = getAgentMode?.() ?? 'agent'
     const res = await window.vyotiq.chatStart(
       continuingRunId
         ? {
             incremental: true,
             newMessages: [user],
             workspacePath,
-            runId: continuingRunId
+            runId: continuingRunId,
+            mode
           }
         : {
             messages: nextMessages,
-            workspacePath
+            workspacePath,
+            mode
           }
     )
     if (!res.ok) {
@@ -1904,7 +1943,40 @@ export function createChatStreamController(
     const current = state.writeCheckpoint
     if (!current) return
     if (checkpointId && current.checkpointId !== checkpointId) return
-    patch({ writeCheckpoint: { ...current, undone: true } })
+    patch({
+      writeCheckpoint: {
+        ...current,
+        undone: true,
+        files: current.files.map((f) =>
+          f.resolved ? f : { ...f, resolved: 'discarded' as const }
+        )
+      }
+    })
+  }
+
+  const applyWriteCheckpointResolution = (result: {
+    checkpointId: string
+    kept: string[]
+    discarded: string[]
+    fullyResolved: boolean
+  }): void => {
+    if (disposed) return
+    const current = state.writeCheckpoint
+    if (!current || current.checkpointId !== result.checkpointId) return
+    const kept = new Set(result.kept)
+    const discarded = new Set(result.discarded)
+    const files = current.files.map((f) => {
+      if (kept.has(f.path)) return { ...f, resolved: 'kept' as const }
+      if (discarded.has(f.path)) return { ...f, resolved: 'discarded' as const }
+      return f
+    })
+    patch({
+      writeCheckpoint: {
+        ...current,
+        files,
+        undone: result.fullyResolved || files.every((f) => Boolean(f.resolved))
+      }
+    })
   }
 
   const dispose = (): void => {
@@ -1979,6 +2051,7 @@ export function createChatStreamController(
     syncFromDisk,
     applyManualCompaction,
     markWriteCheckpointUndone,
+    applyWriteCheckpointResolution,
     handleEvent,
     subscribe,
     subscribeItems,

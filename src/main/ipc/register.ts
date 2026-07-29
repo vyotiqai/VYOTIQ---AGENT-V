@@ -6,6 +6,7 @@ import {
   CancelRunRequestSchema,
   CompactRunRequestSchema,
   UndoWritesRequestSchema,
+  ResolveWritesRequestSchema,
   SetSettingsRequestSchema,
   SetSecretRequestSchema,
   ClearSecretRequestSchema,
@@ -47,6 +48,7 @@ import {
   type ChatMessage,
   type CompactRunResult,
   type UndoWritesResult,
+  type ResolveWritesResult,
   type ListRunsResult,
   type RunSummary,
   type SecretsStatus,
@@ -102,7 +104,7 @@ import {
 import { ChatEventBatcher, getChatEventBatchStats, resetChatEventBatchStats } from './streamBatch'
 import { runAgent, createRunId } from '../agent/loop'
 import { compactRunNow, CompactionUnavailableError } from '../agent/compactRun'
-import { undoWrites } from '../agent/checkpoints'
+import { undoWrites, resolveWrites } from '../agent/checkpoints'
 import { resolveRunDir } from '@main/storage/paths'
 import { extractAttachment } from '../attachments/extract'
 import {
@@ -439,13 +441,15 @@ export function registerIpc(): void {
                 workspacePath: req.workspacePath,
                 resume,
                 incremental: true as const,
-                newMessages: req.newMessages
+                newMessages: req.newMessages,
+                mode: req.mode
               }
             : {
                 runId,
                 messages: req.messages ?? [],
                 workspacePath: req.workspacePath,
-                resume
+                resume,
+                mode: req.mode
               }
         // Stamp the invoke on every event so the renderer can tell a live event apart
         // from one arriving late from the previous turn of the same run.
@@ -584,6 +588,38 @@ export function registerIpc(): void {
       return failFrom(err, IPC.runsUndoWrites)
     }
   })
+
+  ipcMain.handle(
+    IPC.runsResolveWrites,
+    async (event, raw): Promise<IpcResult<ResolveWritesResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = ResolveWritesRequestSchema.parse(raw)
+        if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+        if (isActive(req.runId)) {
+          return fail('Stop the run before resolving agent writes.')
+        }
+        const runDir = resolveRunDir(req.workspacePath, req.runId)
+        const result = resolveWrites(runDir, req.workspacePath, {
+          checkpointId: req.checkpointId,
+          action: req.action,
+          paths: req.paths
+        })
+        logger.info('Resolved agent writes', {
+          scope: 'ipc',
+          correlationId: req.runId,
+          channel: IPC.runsResolveWrites,
+          checkpointId: result.checkpointId,
+          action: req.action,
+          kept: result.kept.length,
+          discarded: result.discarded.length
+        })
+        return ok(result)
+      } catch (err) {
+        return failFrom(err, IPC.runsResolveWrites)
+      }
+    }
+  )
 
   ipcMain.handle(IPC.listRuns, async (event, raw): Promise<IpcResult<ListRunsResult>> => {
     if (!senderOk(event)) return fail('Invalid sender')

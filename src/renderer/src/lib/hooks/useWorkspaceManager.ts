@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type {
   AgentEvent,
+  AgentInteractionMode,
   PersistedEvent,
   RunSummary,
   ToolApprovalRequest,
@@ -52,6 +53,7 @@ export type WorkspaceUiSlice = {
   scrollTop: number
   scrollTopByRunId: Record<string, number>
   composerDraft: string
+  agentMode: AgentInteractionMode
 }
 
 const DRAFT_SCROLL_KEY = '__draft__'
@@ -79,7 +81,8 @@ function defaultUiState(): WorkspaceUiState {
     openRunIds: [],
     scrollTop: 0,
     scrollTopByRunId: {},
-    composerDraft: ''
+    composerDraft: '',
+    agentMode: 'agent'
   }
 }
 
@@ -95,7 +98,8 @@ function uiStateFromContext(ctx: WorkspaceContext): WorkspaceUiState {
     openRunIds: [...ctx.openRunIds],
     scrollTop,
     scrollTopByRunId: { ...ctx.ui.scrollTopByRunId },
-    composerDraft: ctx.ui.composerDraft
+    composerDraft: ctx.ui.composerDraft,
+    agentMode: ctx.ui.agentMode
   }
 }
 
@@ -119,7 +123,8 @@ function contextFromRegistry(path: string, registry: WorkspacesState): Workspace
     ui: {
       scrollTop: ui.scrollTop,
       scrollTopByRunId,
-      composerDraft: ui.composerDraft
+      composerDraft: ui.composerDraft,
+      agentMode: ui.agentMode ?? 'agent'
     },
     settingsOverride:
       findSettingsOverride(registry.settingsOverridesByPath, path) ?? null
@@ -403,7 +408,8 @@ export function useWorkspaceManager() {
         workspacePath,
         runId,
         onRunIdAssigned,
-        onTerminal
+        onTerminal,
+        getAgentMode: () => contextsRef.current[workspacePath]?.ui.agentMode ?? 'agent'
       })
       controllersRef.current.set(key, controller)
       if (runId) registerRunId(runId, workspacePath)
@@ -627,7 +633,8 @@ export function useWorkspaceManager() {
                 ...existing.ui.scrollTopByRunId,
                 ...(refUi?.scrollTopByRunId ?? {})
               },
-              composerDraft
+              composerDraft,
+              agentMode: existing.ui.agentMode ?? refUi?.agentMode ?? ui.agentMode ?? 'agent'
             },
             settingsOverride: findSettingsOverride(state.settingsOverridesByPath, path)
           }
@@ -971,6 +978,26 @@ export function useWorkspaceManager() {
     [activeWorkspace, schedulePersistUiState]
   )
 
+  const setAgentMode = useCallback(
+    (mode: AgentInteractionMode) => {
+      if (!activeWorkspace) return
+      const ctx = contextsRef.current[activeWorkspace]
+      if (!ctx) return
+      if (ctx.ui.agentMode === mode) return
+      const nextCtx: WorkspaceContext = {
+        ...ctx,
+        ui: { ...ctx.ui, agentMode: mode }
+      }
+      contextsRef.current = {
+        ...contextsRef.current,
+        [activeWorkspace]: nextCtx
+      }
+      setContexts((prev) => ({ ...prev, [activeWorkspace]: nextCtx }))
+      schedulePersistUiState(activeWorkspace, nextCtx)
+    },
+    [activeWorkspace, schedulePersistUiState]
+  )
+
   const onMessageListScroll = useCallback(
     (scrollTop: number) => {
       if (!activeWorkspace) return
@@ -1200,7 +1227,9 @@ export function useWorkspaceManager() {
             clearError: activeController.clearError.bind(activeController),
             applyManualCompaction: activeController.applyManualCompaction.bind(activeController),
             markWriteCheckpointUndone:
-              activeController.markWriteCheckpointUndone.bind(activeController)
+              activeController.markWriteCheckpointUndone.bind(activeController),
+            applyWriteCheckpointResolution:
+              activeController.applyWriteCheckpointResolution.bind(activeController)
           }
         : null,
     [activeController]
@@ -1235,6 +1264,7 @@ export function useWorkspaceManager() {
     clearWorkspaceError,
     clearRunsError,
     setComposerDraft,
+    setAgentMode,
     onMessageListScroll,
     setSettingsOverride,
     onLoadToolContent,

@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import type {
   AgentEvent,
+  AgentInteractionMode,
   ChatMessage,
   IncompleteReason,
   ModelInfo,
@@ -83,6 +84,9 @@ import { resolveEffectiveMcpServers, resolveMcpServersForSessionMap } from '../m
 import { buildSkillsSection, loadEnabledSkills, loadPluginRules } from './skills'
 import { beginWriteCheckpoint, finalizeWriteCheckpoint } from './checkpoints'
 import { isMcpToolPermitted } from '../../shared/utils/mcpToolPolicy'
+import { filterToolDefsForMode, modeSectionMarkdown } from './tools/modePolicy'
+import { existsSync, writeFileSync } from 'fs'
+import { join } from 'path'
 
 export { cancelRun, clearRunAbort, registerRunAbort, resetActiveRunsForTests }
 
@@ -241,12 +245,15 @@ export async function* runAgent(input: {
   incremental?: boolean
   workspacePath: string
   resume?: boolean
+  /** Ask / Plan / Agent — defaults to agent when omitted. */
+  mode?: AgentInteractionMode
 }): AsyncGenerator<AgentEvent> {
   const globalSettings = getSettings()
   const workspaces = readWorkspacesState()
   const override = findWorkspaceSettingsOverride(workspaces, input.workspacePath)
   const effective = resolveEffectiveSettings(globalSettings, override)
   const settings = { ...DEFAULT_SETTINGS, ...globalSettings, ...effective }
+  const agentMode: AgentInteractionMode = input.mode ?? 'agent'
   const workspace = input.workspacePath
   const runId = input.runId
   const { controller, invokeId } = registerRunAbort(runId, workspace)
@@ -303,6 +310,22 @@ export async function* runAgent(input: {
 
     beginWriteCheckpoint(runDir, workspace)
 
+    if (agentMode === 'plan') {
+      const planPath = join(runDir, 'plan.md')
+      if (!existsSync(planPath)) {
+        writeFileSync(
+          planPath,
+          [
+            '# Plan',
+            '',
+            '_Draft the plan here. Update as you learn. Do not edit product source in Plan mode._',
+            ''
+          ].join('\n'),
+          'utf8'
+        )
+      }
+    }
+
     let compaction: CompactionRecord | null = loadCompaction(runDir)
     // Everything before the watermark is already represented by the summary, so it
     // never re-enters the working set. `messages.jsonl` still holds the full history
@@ -326,6 +349,7 @@ export async function* runAgent(input: {
       correlationId: runId,
       provider: settings.provider,
       model: settings.model,
+      mode: agentMode,
       ...(workspace ? { workspaceId: workspaceIdFromPath(workspace) } : {}),
       resume: Boolean(input.resume)
     })
@@ -503,7 +527,9 @@ export async function* runAgent(input: {
         return true
       })
       const allToolDefs =
-        modelInfo.supportsTools !== false ? [...AGENT_TOOLS, ...mcpToolDefs] : []
+        modelInfo.supportsTools !== false
+          ? filterToolDefsForMode(agentMode, [...AGENT_TOOLS, ...mcpToolDefs])
+          : []
       const toolBudget = allocateBudget(modelInfo).tools
       const trimmedTools = trimToolsToBudget(allToolDefs, toolBudget)
       toolDefs = trimmedTools.tools.map((t) => ({
@@ -575,6 +601,7 @@ export async function* runAgent(input: {
         compactionTriggerRatio: settings.compactionTriggerRatio,
         skillsSection,
         pluginRulesSection,
+        modeSection: modeSectionMarkdown(agentMode) ?? undefined,
         loopHint: combineLoopHints(
           omittedMcpHint,
           loopHintForConsecutiveFailures(consecutiveToolFailureSteps)
@@ -1077,6 +1104,7 @@ export async function* runAgent(input: {
         appendMessage: (msg: ChatMessage) => appendMessage(runDir!, msg),
         appendEvent: (ev: AgentEvent) => appendEvent(runDir!, ev),
         approval: approvalGate,
+        agentMode,
         runEnabledMcpIds,
         mcpToolPolicies,
         emitLiveEvent: (ev: AgentEvent) => {

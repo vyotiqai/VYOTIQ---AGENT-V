@@ -10,7 +10,7 @@ import {
 } from './components/ChatStreamLeaves'
 import { RecentsPicker } from './RecentsPicker'
 import type { UiItem } from '@shared/transcript'
-import type { ProviderId, ToolApprovalDecision } from '@shared/ipc'
+import type { AgentInteractionMode, ProviderId, ToolApprovalDecision } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { Alert } from '@renderer/lib/ui'
 import {
@@ -48,7 +48,11 @@ function TranscriptPane({
   surfaceKey,
   canUndoWrites,
   undoBusy,
-  onUndoWrites
+  onUndoWrites,
+  writeFileResolutions,
+  onKeepWriteFile,
+  onDiscardWriteFile,
+  onKeepAllWrites
 }: {
   itemsStore?: ChatItemsStore
   items: UiItem[]
@@ -72,6 +76,10 @@ function TranscriptPane({
   canUndoWrites?: boolean
   undoBusy?: boolean
   onUndoWrites?: () => void | Promise<unknown>
+  writeFileResolutions?: ReadonlyMap<string, 'kept' | 'discarded' | undefined>
+  onKeepWriteFile?: (path: string) => void | Promise<unknown>
+  onDiscardWriteFile?: (path: string) => void | Promise<unknown>
+  onKeepAllWrites?: () => void | Promise<unknown>
 }) {
   const liveItems = useChatLiveItems(itemsStore, items)
   return (
@@ -98,6 +106,10 @@ function TranscriptPane({
       canUndoWrites={canUndoWrites}
       undoBusy={undoBusy}
       onUndoWrites={onUndoWrites}
+      writeFileResolutions={writeFileResolutions}
+      onKeepWriteFile={onKeepWriteFile}
+      onDiscardWriteFile={onDiscardWriteFile}
+      onKeepAllWrites={onKeepAllWrites}
     />
   )
 }
@@ -138,6 +150,8 @@ export function ChatView({
   onServiceTierChange = () => {},
   chatSettings,
   onChatSettingsChange,
+  agentMode = 'agent',
+  onAgentModeChange = () => {},
   onSend,
   onStop,
   onDismissError,
@@ -159,7 +173,11 @@ export function ChatView({
   slashHandlers,
   canUndoWrites = false,
   undoBusy = false,
-  onUndoWrites
+  onUndoWrites,
+  writeFileResolutions,
+  onKeepWriteFile,
+  onDiscardWriteFile,
+  onKeepAllWrites
 }: {
   hasOpenWorkspaces: boolean
   recentPaths: string[]
@@ -198,6 +216,8 @@ export function ChatView({
   onServiceTierChange?: (tier: import('@shared/ipc').ServiceTier) => void
   chatSettings: EffectiveChatSettings
   onChatSettingsChange: (patch: ChatSettingsPatch) => void
+  agentMode?: AgentInteractionMode
+  onAgentModeChange?: (mode: AgentInteractionMode) => void
   onSend: (
     text: string,
     images?: string[],
@@ -228,6 +248,10 @@ export function ChatView({
   canUndoWrites?: boolean
   undoBusy?: boolean
   onUndoWrites?: () => void | Promise<unknown>
+  writeFileResolutions?: ReadonlyMap<string, 'kept' | 'discarded' | undefined>
+  onKeepWriteFile?: (path: string) => void | Promise<unknown>
+  onDiscardWriteFile?: (path: string) => void | Promise<unknown>
+  onKeepAllWrites?: () => void | Promise<unknown>
 }) {
   // Boolean presence only — stays Object.is-stable across pure text_delta frames.
   const hasItems = useHasChatItems(itemsStore, items)
@@ -280,6 +304,8 @@ export function ChatView({
     onServiceTierChange,
     chatSettings,
     onChatSettingsChange,
+    agentMode,
+    onAgentModeChange,
     onSend,
     onStop,
     runNotice,
@@ -377,6 +403,10 @@ export function ChatView({
               canUndoWrites={canUndoWrites}
               undoBusy={undoBusy}
               onUndoWrites={onUndoWrites}
+              writeFileResolutions={writeFileResolutions}
+              onKeepWriteFile={onKeepWriteFile}
+              onDiscardWriteFile={onDiscardWriteFile}
+              onKeepAllWrites={onKeepAllWrites}
             />
 
             <MemoComposer

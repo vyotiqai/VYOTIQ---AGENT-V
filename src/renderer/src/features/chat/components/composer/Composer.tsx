@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AttachedFile, ProviderId, ServiceTier, SlashCommandDescriptor } from '@shared/ipc'
+import type { AgentInteractionMode, AttachedFile, ProviderId, ServiceTier, SlashCommandDescriptor } from '@shared/ipc'
 import { buildUserContent } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { triggerKey } from '@shared/slashCommands'
@@ -45,6 +45,8 @@ export function Composer({
   onServiceTierChange = () => {},
   chatSettings,
   onChatSettingsChange,
+  agentMode = 'agent',
+  onAgentModeChange = () => {},
   onSend,
   onStop,
   composerPlaceholder,
@@ -82,6 +84,8 @@ export function Composer({
   onServiceTierChange?: (tier: ServiceTier) => void
   chatSettings: EffectiveChatSettings
   onChatSettingsChange: (patch: ChatSettingsPatch) => void
+  agentMode?: AgentInteractionMode
+  onAgentModeChange?: (mode: AgentInteractionMode) => void
   onSend: (
     text: string,
     images?: string[],
@@ -479,6 +483,8 @@ export function Composer({
             catalogLoading={catalogLoading}
             chatSettings={chatSettings}
             onChatSettingsChange={onChatSettingsChange}
+            agentMode={agentMode}
+            onAgentModeChange={onAgentModeChange}
             running={running}
             canSend={canSend}
             onStop={onStop}

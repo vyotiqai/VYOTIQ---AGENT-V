@@ -8,9 +8,11 @@ import { MAX_IMAGES } from './useComposerImages'
 import { MAX_FILES } from './useComposerFiles'
 import { ContextMeter, type ContextUsageState } from './ContextMeter'
 import { ModelPicker } from './ModelPicker'
+import { ModePicker } from './ModePicker'
 import { ThinkingControls } from './ThinkingControls'
 import type { ModelPickerOption } from './composerModelUtils'
 import type { ModelInfo } from '@shared/ipc'
+import type { AgentInteractionMode } from '@shared/ipc'
 import type { ChatMetaStore } from '../../chatStores'
 
 function ContextMeterLeaf({
@@ -91,6 +93,8 @@ export function ComposerToolbar({
   catalogLoading,
   chatSettings,
   onChatSettingsChange,
+  agentMode,
+  onAgentModeChange,
   running,
   canSend,
   onStop,
@@ -122,6 +126,8 @@ export function ComposerToolbar({
   catalogLoading?: boolean
   chatSettings: EffectiveChatSettings
   onChatSettingsChange: (patch: ChatSettingsPatch) => void
+  agentMode: AgentInteractionMode
+  onAgentModeChange: (mode: AgentInteractionMode) => void
   running: boolean
   canSend: boolean
   onStop: () => void
@@ -191,8 +197,14 @@ export function ComposerToolbar({
         </button>
       </div>
 
-      {/* Middle: model + thinking, truncates into the flexible column */}
+      {/* Middle: mode + model + thinking, truncates into the flexible column */}
       <div className={zone}>
+        <ModePicker
+          mode={agentMode}
+          onModeChange={onAgentModeChange}
+          disabled={locked}
+          running={running}
+        />
         <ModelPicker
           className="min-w-0 max-w-[10rem] shrink @max-[420px]:max-w-[min(100%,12rem)]"
           triggerClassName={modelPillTrigger}

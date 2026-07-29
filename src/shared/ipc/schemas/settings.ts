@@ -95,6 +95,10 @@ export type ToolApprovalMode = z.infer<typeof ToolApprovalModeSchema>
 export const TerminalShellSchema = z.enum(['auto', 'cmd', 'powershell', 'bash'])
 export type TerminalShell = z.infer<typeof TerminalShellSchema>
 
+/** Composer interaction mode: Ask (read-only), Plan (plan artifacts), Agent (full). */
+export const AgentInteractionModeSchema = z.enum(['ask', 'plan', 'agent'])
+export type AgentInteractionMode = z.infer<typeof AgentInteractionModeSchema>
+
 export const ToolApprovalSettingsSchema = z.object({
   mode: ToolApprovalModeSchema.default('off'),
   /** Tool names the user chose to always allow, persisted per workspace. */
@@ -125,6 +129,13 @@ export const SettingsSchema = z.object({
   toolApproval: ToolApprovalSettingsSchema.default(DEFAULT_TOOL_APPROVAL),
   /** Shell used by the terminal tool. `auto` prefers PowerShell on Windows when available. */
   terminalShell: TerminalShellSchema.default('auto'),
+  /**
+   * Optional override for the diagnostics tool typecheck command.
+   * Empty = auto-detect from package.json scripts / tsc.
+   */
+  diagnosticsCommand: z.string().default(''),
+  /** Default composer mode for new workspaces (Ask / Plan / Agent). */
+  agentMode: AgentInteractionModeSchema.default('agent'),
   /** When set, sub-agents use this provider instead of `provider`. */
   subagentProvider: ProviderIdSchema.optional(),
   /** When set, sub-agents use this model instead of `model`. */
@@ -153,6 +164,8 @@ export const DEFAULT_SETTINGS: Settings = {
   serviceTier: 'default',
   toolApproval: DEFAULT_TOOL_APPROVAL,
   terminalShell: 'auto',
+  diagnosticsCommand: '',
+  agentMode: 'agent',
   marketplace: DEFAULT_MARKETPLACE_SETTINGS
 }
 

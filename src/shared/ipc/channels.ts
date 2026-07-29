@@ -29,6 +29,7 @@ export const IPC = {
   runsRename: 'runs:rename',
   runsActive: 'runs:active',
   runsUndoWrites: 'runs:undoWrites',
+  runsResolveWrites: 'runs:resolveWrites',
   gitStatus: 'git:status',
   gitCommit: 'git:commit',
   windowMinimize: 'window:minimize',

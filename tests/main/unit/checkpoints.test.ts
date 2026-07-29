@@ -8,7 +8,8 @@ import {
   finalizeWriteCheckpoint,
   getWriteCheckpoint,
   resetWriteCheckpointsForTests,
-  undoWrites
+  undoWrites,
+  resolveWrites
 } from '@main/agent/checkpoints'
 import { executeTool } from '@main/agent/tools'
 
@@ -99,5 +100,48 @@ describe('write checkpoints', () => {
 
   it('getWriteCheckpoint is empty without begin', () => {
     expect(getWriteCheckpoint(runDir)).toBeUndefined()
+  })
+
+  it('discards one path and keeps another', () => {
+    writeFileSync(join(workspace, 'b.txt'), 'beta\n', 'utf8')
+    const cp = beginWriteCheckpoint(runDir, workspace)
+    cp.recordPrior('a.txt', 'write')
+    cp.recordPrior('b.txt', 'write')
+    writeFileSync(join(workspace, 'a.txt'), 'A\n', 'utf8')
+    writeFileSync(join(workspace, 'b.txt'), 'B\n', 'utf8')
+    const meta = finalizeWriteCheckpoint(runDir)
+    expect(meta!.files).toHaveLength(2)
+
+    const discarded = resolveWrites(runDir, workspace, {
+      checkpointId: meta!.id,
+      action: 'discard',
+      paths: ['a.txt']
+    })
+    expect(discarded.discarded).toEqual(['a.txt'])
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('hello\n')
+    expect(readFileSync(join(workspace, 'b.txt'), 'utf8')).toBe('B\n')
+
+    const kept = resolveWrites(runDir, workspace, {
+      checkpointId: meta!.id,
+      action: 'keep',
+      paths: ['b.txt']
+    })
+    expect(kept.kept).toEqual(['b.txt'])
+    expect(kept.fullyResolved).toBe(true)
+    expect(readFileSync(join(workspace, 'b.txt'), 'utf8')).toBe('B\n')
+  })
+
+  it('keep all resolves without touching disk', () => {
+    const cp = beginWriteCheckpoint(runDir, workspace)
+    cp.recordPrior('a.txt', 'write')
+    writeFileSync(join(workspace, 'a.txt'), 'changed\n', 'utf8')
+    const meta = finalizeWriteCheckpoint(runDir)
+    const result = resolveWrites(runDir, workspace, {
+      checkpointId: meta!.id,
+      action: 'keep'
+    })
+    expect(result.kept).toEqual(['a.txt'])
+    expect(result.fullyResolved).toBe(true)
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('changed\n')
   })
 })

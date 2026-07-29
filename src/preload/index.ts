@@ -36,6 +36,7 @@ const api: VyotiqApi = {
       runId,
       ...(checkpointId ? { checkpointId } : {})
     }),
+  resolveWrites: (payload) => ipcRenderer.invoke(IPC.runsResolveWrites, payload),
   onChatEvent: (handler) => {
     const listener = (_: IpcRendererEvent, raw: unknown): void => {
       const parsed = AgentEventSchema.safeParse(raw)

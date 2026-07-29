@@ -7,6 +7,7 @@ import type {
 export type SlashClientHandlers = {
   onCompact?: () => void | Promise<unknown>
   onUndoWrites?: () => void | Promise<unknown>
+  onSetAgentMode?: (mode: 'ask' | 'plan' | 'agent') => void | Promise<unknown>
   onOpenMarketplace?: (mcpServerId?: string) => void
   onOpenSettings?: () => void
   onCreateRule?: (title?: string) => void | Promise<unknown>
@@ -55,6 +56,15 @@ async function runClientAction(
       return
     case 'undo_writes':
       await handlers.onUndoWrites?.()
+      return
+    case 'set_mode_ask':
+      await handlers.onSetAgentMode?.('ask')
+      return
+    case 'set_mode_plan':
+      await handlers.onSetAgentMode?.('plan')
+      return
+    case 'set_mode_agent':
+      await handlers.onSetAgentMode?.('agent')
       return
     case 'open_marketplace':
       handlers.onOpenMarketplace?.(opts.mcpServerId)

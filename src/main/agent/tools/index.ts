@@ -21,6 +21,12 @@ import { runSubagent, SubagentDepthError, type SubagentContextUsage } from '../s
 import { toolMemoryList, toolMemoryRead, toolMemoryWrite } from './memory'
 import { getSettings } from '@main/settings/settings'
 import { getWriteCheckpoint } from '../checkpoints'
+import {
+  assertToolAllowedInMode,
+  isPlanArtifactPath
+} from './modePolicy'
+import type { AgentInteractionMode } from '../../../shared/ipc'
+import { basename } from 'path'
 
 export interface ToolResult {
   ok: boolean
@@ -36,6 +42,8 @@ export type ToolExecutionContext = {
   runDir?: string
   /** Nesting level of the caller: 0 for the top-level run, 1 inside a sub-agent. */
   depth?: number
+  /** Ask / Plan / Agent mode for this invoke. */
+  agentMode?: AgentInteractionMode
   /** Live progress from a long-running tool, surfaced under its transcript row. */
   onProgress?: (update: { kind: 'text' | 'thinking' | 'tool' | 'done'; text: string }) => void
   /** Per-step context fill for nested sub-agents. */
@@ -291,6 +299,8 @@ export async function executeTool(
 ): Promise<ToolResult> {
   throwIfAborted(signal)
 
+  const agentMode: AgentInteractionMode = context.agentMode ?? 'agent'
+
   const mcp = parseMcpToolName(name)
   if (mcp) {
     let parsed: Record<string, unknown>
@@ -298,6 +308,10 @@ export async function executeTool(
       parsed = JSON.parse(argsJson || '{}') as Record<string, unknown>
     } catch {
       return toolFail(name, name, 'Failed to parse tool arguments JSON')
+    }
+    const modeGate = assertToolAllowedInMode(agentMode, name, parsed)
+    if (!modeGate.ok) {
+      return toolFail(name, name, modeGate.error)
     }
     if (context.runEnabledMcpIds && !context.runEnabledMcpIds.has(mcp.serverId)) {
       return toolFail(
@@ -343,14 +357,34 @@ export async function executeTool(
     return toolFail(name, 'invalid args', validated.error)
   }
   const args = validated.data
+  const modeGate = assertToolAllowedInMode(agentMode, name, args)
+  if (!modeGate.ok) {
+    return toolFail(name, summarizeToolArgsFromRecord(name, args), modeGate.error)
+  }
   const summary = summarizeToolArgsFromRecord(name, args)
   if (!Object.prototype.hasOwnProperty.call(BUILTIN_HANDLERS, name)) {
     return toolFail(name, name, `Unknown tool: ${name}`)
   }
   const handler = BUILTIN_HANDLERS[name as AgentToolName]
 
+  // Plan mode: write plan.md / contract.md into the run directory, not the workspace.
+  let effectiveWorkspace = workspace
+  let effectiveArgs = args
+  if (
+    agentMode === 'plan' &&
+    (name === 'edit' || name === 'str_replace') &&
+    typeof args.path === 'string' &&
+    isPlanArtifactPath(args.path)
+  ) {
+    if (!context.runDir) {
+      return toolFail(name, summary, 'Plan artifacts require an active run directory')
+    }
+    effectiveWorkspace = context.runDir
+    effectiveArgs = { ...args, path: basename(args.path.replace(/\\/g, '/')) }
+  }
+
   try {
-    return await handler(workspace, args, signal, context)
+    return await handler(effectiveWorkspace, effectiveArgs, signal, context)
   } catch (err) {
     if (isAbortError(err)) {
       logger.warn('Tool aborted', { scope: 'tools', tool: name })

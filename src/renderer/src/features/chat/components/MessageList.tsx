@@ -209,7 +209,11 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   mcpServerNames,
   canUndoWrites = false,
   undoBusy = false,
-  onUndoWrites
+  onUndoWrites,
+  writeFileResolutions,
+  onKeepWriteFile,
+  onDiscardWriteFile,
+  onKeepAllWrites
 }: {
   row: TranscriptRow
   onImageClick: (url: string, label: string) => void
@@ -225,6 +229,10 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   canUndoWrites?: boolean
   undoBusy?: boolean
   onUndoWrites?: () => void | Promise<unknown>
+  writeFileResolutions?: ReadonlyMap<string, 'kept' | 'discarded' | undefined>
+  onKeepWriteFile?: (path: string) => void | Promise<unknown>
+  onDiscardWriteFile?: (path: string) => void | Promise<unknown>
+  onKeepAllWrites?: () => void | Promise<unknown>
 }) {
   if (row.kind === 'user') {
     return <UserPrompt item={row.item} onImageClick={onImageClick} />
@@ -268,9 +276,13 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
     return (
       <ChangeSummary
         files={row.files}
-        canUndo={canUndoWrites}
-        undoBusy={undoBusy}
-        onUndo={onUndoWrites}
+        fileResolutions={writeFileResolutions}
+        canResolve={canUndoWrites}
+        resolveBusy={undoBusy}
+        onKeepFile={onKeepWriteFile}
+        onDiscardFile={onDiscardWriteFile}
+        onKeepAll={onKeepAllWrites}
+        onDiscardAll={onUndoWrites}
       />
     )
   }
@@ -337,7 +349,11 @@ export function MessageList({
   transcriptLoading = false,
   canUndoWrites = false,
   undoBusy = false,
-  onUndoWrites
+  onUndoWrites,
+  writeFileResolutions,
+  onKeepWriteFile,
+  onDiscardWriteFile,
+  onKeepAllWrites
 }: {
   items: UiItem[]
   reserveComposerSpace?: boolean
@@ -363,6 +379,10 @@ export function MessageList({
   canUndoWrites?: boolean
   undoBusy?: boolean
   onUndoWrites?: () => void | Promise<unknown>
+  writeFileResolutions?: ReadonlyMap<string, 'kept' | 'discarded' | undefined>
+  onKeepWriteFile?: (path: string) => void | Promise<unknown>
+  onDiscardWriteFile?: (path: string) => void | Promise<unknown>
+  onKeepAllWrites?: () => void | Promise<unknown>
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const appliedRestoreRef = useRef<number | null>(null)
@@ -691,6 +711,10 @@ export function MessageList({
       )}
       undoBusy={undoBusy}
       onUndoWrites={onUndoWrites}
+      writeFileResolutions={writeFileResolutions}
+      onKeepWriteFile={onKeepWriteFile}
+      onDiscardWriteFile={onDiscardWriteFile}
+      onKeepAllWrites={onKeepAllWrites}
     />
   )
 

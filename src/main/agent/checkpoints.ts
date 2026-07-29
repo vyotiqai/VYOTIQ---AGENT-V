@@ -15,18 +15,24 @@ import { logger } from '../../shared/logger'
 
 export type CheckpointFileAction = 'created' | 'modified' | 'deleted'
 
+export type CheckpointFileResolution = 'kept' | 'discarded'
+
 export type CheckpointFileEntry = {
   /** Workspace-relative path using forward slashes. */
   path: string
   action: CheckpointFileAction
   /** False for recursive directory deletes (v1 cannot restore). */
   undoable: boolean
+  /** Set when the user Keep/Discard resolves this path. */
+  resolved?: CheckpointFileResolution
 }
 
 export type WriteCheckpointMeta = {
   id: string
   createdAt: string
   undone?: boolean
+  /** True when every file is Keep/Discard resolved (or discarded via Undo). */
+  resolved?: boolean
   files: CheckpointFileEntry[]
 }
 
@@ -209,22 +215,22 @@ export type UndoWritesResult = {
   skipped: string[]
 }
 
-/**
- * Restore files from a checkpoint. If checkpointId is omitted, uses the latest
- * not-yet-undone checkpoint.
- */
-export function undoWrites(
-  runDir: string,
-  workspaceRoot: string,
-  checkpointId?: string
-): UndoWritesResult {
+export type ResolveWritesResult = {
+  checkpointId: string
+  kept: string[]
+  discarded: string[]
+  skipped: string[]
+  fullyResolved: boolean
+}
+
+function resolveCheckpointId(runDir: string, checkpointId?: string): string {
   const index = loadIndex(runDir)
   let id = checkpointId
   if (!id) {
     for (let i = index.checkpoints.length - 1; i >= 0; i--) {
       const entry = index.checkpoints[i]!
       const meta = loadMeta(runDir, entry.id)
-      if (meta && !meta.undone) {
+      if (meta && !meta.undone && !meta.resolved) {
         id = entry.id
         break
       }
@@ -233,57 +239,151 @@ export function undoWrites(
   if (!id) {
     throw new Error('No undoable write checkpoint found for this run')
   }
+  return id
+}
 
+function restoreOneFile(
+  workspaceRoot: string,
+  checkpointDir: string,
+  file: CheckpointFileEntry
+): 'restored' | 'skipped' {
+  if (!file.undoable) return 'skipped'
+  const resolved = resolveInsideWorkspace(workspaceRoot, file.path)
+  try {
+    if (file.action === 'created') {
+      if (existsSync(resolved)) {
+        rmSync(resolved, { force: true })
+      }
+      return 'restored'
+    }
+    const blob = blobPathFor(checkpointDir, file.path)
+    if (!existsSync(blob)) return 'skipped'
+    mkdirSync(dirname(resolved), { recursive: true })
+    copyFileSync(blob, resolved)
+    return 'restored'
+  } catch (err) {
+    logger.warn('Failed to restore checkpoint file', {
+      scope: 'agent',
+      path: file.path,
+      err
+    })
+    return 'skipped'
+  }
+}
+
+function markCheckpointFullyResolved(runDir: string, meta: WriteCheckpointMeta): void {
+  meta.resolved = true
+  meta.undone = true
+  saveMeta(runDir, meta)
+  const idx = loadIndex(runDir)
+  const entry = idx.checkpoints.find((c) => c.id === meta.id)
+  if (entry) entry.undone = true
+  saveIndex(runDir, idx)
+}
+
+/**
+ * Restore files from a checkpoint. If checkpointId is omitted, uses the latest
+ * not-yet-undone checkpoint. Skips paths already Keep/Discard resolved.
+ */
+export function undoWrites(
+  runDir: string,
+  workspaceRoot: string,
+  checkpointId?: string
+): UndoWritesResult {
+  const id = resolveCheckpointId(runDir, checkpointId)
   const meta = loadMeta(runDir, id)
   if (!meta) throw new Error(`Checkpoint not found: ${id}`)
-  if (meta.undone) throw new Error('That checkpoint was already undone')
+  if (meta.undone || meta.resolved) throw new Error('That checkpoint was already undone')
 
   const checkpointDir = join(runDir, 'checkpoints', id)
   const restored: string[] = []
   const skipped: string[] = []
 
-  // Restore in reverse order so later overwrites undo first conceptually;
-  // paths are unique so order is mostly for deletes vs creates.
   for (const file of [...meta.files].reverse()) {
-    if (!file.undoable) {
+    if (file.resolved) {
       skipped.push(file.path)
       continue
     }
-    const resolved = resolveInsideWorkspace(workspaceRoot, file.path)
-    try {
-      if (file.action === 'created') {
-        if (existsSync(resolved)) {
-          rmSync(resolved, { force: true })
-        }
-        restored.push(file.path)
-        continue
-      }
-      const blob = blobPathFor(checkpointDir, file.path)
-      if (!existsSync(blob)) {
-        skipped.push(file.path)
-        continue
-      }
-      mkdirSync(dirname(resolved), { recursive: true })
-      copyFileSync(blob, resolved)
+    const outcome = restoreOneFile(workspaceRoot, checkpointDir, file)
+    if (outcome === 'restored') {
+      file.resolved = 'discarded'
       restored.push(file.path)
-    } catch (err) {
-      logger.warn('Failed to restore checkpoint file', {
-        scope: 'agent',
-        path: file.path,
-        err
-      })
+    } else {
       skipped.push(file.path)
     }
   }
 
-  meta.undone = true
-  saveMeta(runDir, meta)
-  const idx = loadIndex(runDir)
-  const entry = idx.checkpoints.find((c) => c.id === id)
-  if (entry) entry.undone = true
-  saveIndex(runDir, idx)
-
+  markCheckpointFullyResolved(runDir, meta)
   return { checkpointId: id, restored, skipped }
+}
+
+/**
+ * Keep and/or discard specific paths (or all unresolved when paths omitted for discard/keep all).
+ */
+export function resolveWrites(
+  runDir: string,
+  workspaceRoot: string,
+  opts: {
+    checkpointId?: string
+    action: 'keep' | 'discard'
+    /** When omitted, applies to all unresolved files. */
+    paths?: string[]
+  }
+): ResolveWritesResult {
+  const id = resolveCheckpointId(runDir, opts.checkpointId)
+  const meta = loadMeta(runDir, id)
+  if (!meta) throw new Error(`Checkpoint not found: ${id}`)
+  if (meta.undone || meta.resolved) throw new Error('That checkpoint was already resolved')
+
+  const targetPaths =
+    opts.paths && opts.paths.length > 0
+      ? new Set(opts.paths.map((p) => normalizeRelPath(p)))
+      : null
+
+  const checkpointDir = join(runDir, 'checkpoints', id)
+  const kept: string[] = []
+  const discarded: string[] = []
+  const skipped: string[] = []
+
+  for (const file of meta.files) {
+    if (targetPaths && !targetPaths.has(file.path)) continue
+    if (file.resolved) {
+      skipped.push(file.path)
+      continue
+    }
+    if (opts.action === 'keep') {
+      file.resolved = 'kept'
+      kept.push(file.path)
+      continue
+    }
+    const outcome = restoreOneFile(workspaceRoot, checkpointDir, file)
+    if (outcome === 'restored') {
+      file.resolved = 'discarded'
+      discarded.push(file.path)
+    } else {
+      // Non-undoable: still mark discarded so the UI can clear it.
+      file.resolved = 'discarded'
+      skipped.push(file.path)
+    }
+  }
+
+  const fullyResolved = meta.files.every((f) => Boolean(f.resolved) || !f.undoable)
+  // Treat non-undoable without resolution as needing an explicit resolve; if all
+  // undoable are resolved, mark checkpoint done.
+  const allHandled = meta.files.every((f) => Boolean(f.resolved))
+  if (allHandled) {
+    markCheckpointFullyResolved(runDir, meta)
+  } else {
+    saveMeta(runDir, meta)
+  }
+
+  return {
+    checkpointId: id,
+    kept,
+    discarded,
+    skipped,
+    fullyResolved: allHandled || fullyResolved
+  }
 }
 
 /** Test helper: clear all active sessions. */

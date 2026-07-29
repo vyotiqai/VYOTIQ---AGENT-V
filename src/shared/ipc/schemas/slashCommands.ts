@@ -37,7 +37,10 @@ export const BuiltinClientActionSchema = z.enum([
   'open_marketplace',
   'open_settings',
   'create_rule',
-  'undo_writes'
+  'undo_writes',
+  'set_mode_ask',
+  'set_mode_plan',
+  'set_mode_agent'
 ])
 export type BuiltinClientAction = z.infer<typeof BuiltinClientActionSchema>
 
