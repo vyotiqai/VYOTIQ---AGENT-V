@@ -14,6 +14,8 @@ export const ASK_SAFE_BUILTIN = new Set([
   'web_search',
   'browser_navigate',
   'browser_snapshot',
+  'browser_click',
+  'browser_type',
   'memory_list',
   'memory_read',
   'subagent',
@@ -137,7 +139,12 @@ export function assertToolAllowedInMode(
  * Ask-safe tools are normally parallel-safe. Exception: agent-browser tools share
  * one BrowserWindow and must stay serial while remaining Ask-readable.
  */
-const ASK_SAFE_SERIAL_OK = new Set(['browser_navigate', 'browser_snapshot'])
+const ASK_SAFE_SERIAL_OK = new Set([
+  'browser_navigate',
+  'browser_snapshot',
+  'browser_click',
+  'browser_type'
+])
 
 export function askSafeAlignsWithParallelSafe(): boolean {
   for (const name of ASK_SAFE_BUILTIN) {

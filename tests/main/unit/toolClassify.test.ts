@@ -47,10 +47,16 @@ describe('tool classify', () => {
   it('serializes browser tools on the shared window and gates approval', () => {
     expect(isParallelSafeTool('browser_navigate')).toBe(false)
     expect(isParallelSafeTool('browser_snapshot')).toBe(false)
+    expect(isParallelSafeTool('browser_click')).toBe(false)
+    expect(isParallelSafeTool('browser_type')).toBe(false)
     expect(isApprovalExemptTool('browser_navigate')).toBe(false)
     expect(isApprovalExemptTool('browser_snapshot')).toBe(false)
+    expect(isApprovalExemptTool('browser_click')).toBe(false)
+    expect(isApprovalExemptTool('browser_type')).toBe(false)
     expect(isToolGated('browser_navigate', 'mutating', new Set(), [])).toBe(true)
     expect(isToolGated('browser_snapshot', 'mutating', new Set(), [])).toBe(true)
+    expect(isToolGated('browser_click', 'mutating', new Set(), [])).toBe(true)
+    expect(isToolGated('browser_type', 'mutating', new Set(), [])).toBe(true)
   })
 
   it('treats MCP tools as untrusted regardless of readOnlyHint', () => {

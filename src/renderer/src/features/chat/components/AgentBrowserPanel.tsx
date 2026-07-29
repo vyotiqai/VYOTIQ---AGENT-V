@@ -11,7 +11,7 @@ export function AgentBrowserPanel({ className }: { className?: string }) {
     let cancelled = false
     void window.vyotiq.browserGetState().then((res) => {
       if (cancelled || !res.ok) return
-      setState(res.value)
+      setState(res.data)
     })
     const unsub = window.vyotiq.onBrowserState((next) => {
       if (!cancelled) setState(next)

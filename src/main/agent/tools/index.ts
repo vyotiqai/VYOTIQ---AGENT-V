@@ -281,6 +281,35 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     throwIfAborted(signal)
     return toolOk('browser_snapshot', 'page', content)
   },
+  browser_click: async (_workspace, args, signal) => {
+    throwIfAborted(signal)
+    const selector = String(args.selector ?? '')
+    const { clickSelector } = await import('@main/app/agentBrowser')
+    const button =
+      args.button === 'left' || args.button === 'right' || args.button === 'middle'
+        ? args.button
+        : undefined
+    const content = await clickSelector(selector, { signal, button })
+    throwIfAborted(signal)
+    return toolOk('browser_click', selector, content)
+  },
+  browser_type: async (_workspace, args, signal) => {
+    throwIfAborted(signal)
+    const text = String(args.text ?? '')
+    const { typeText } = await import('@main/app/agentBrowser')
+    const content = await typeText(text, {
+      signal,
+      selector: typeof args.selector === 'string' ? args.selector : undefined,
+      clear: args.clear === true,
+      pressEnter: args.pressEnter === true
+    })
+    throwIfAborted(signal)
+    const target =
+      typeof args.selector === 'string' && args.selector.trim()
+        ? args.selector.trim()
+        : 'active element'
+    return toolOk('browser_type', target, content)
+  },
   subagent: async (workspace, args, signal, context) => {
     throwIfAborted(signal)
     const task = String(args.task ?? '')

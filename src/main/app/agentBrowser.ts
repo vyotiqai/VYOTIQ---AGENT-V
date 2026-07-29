@@ -207,10 +207,7 @@ export async function snapshotPage(
   } = {}
 ): Promise<string> {
   throwIfAborted(opts.signal)
-  const win = browserWin
-  if (!win || win.isDestroyed()) {
-    throw new Error('No browser page open. Call browser_navigate first.')
-  }
+  const win = requireOpenWindow()
 
   const maxChars = Math.max(1_000, opts.maxChars ?? DEFAULT_SNAPSHOT_CHARS)
   const url = win.webContents.getURL()
@@ -250,6 +247,174 @@ export async function snapshotPage(
 
   const body = String(pageText ?? '').slice(0, maxChars)
   return [`URL: ${url}`, `Title: ${title || '(none)'}`, '', body].join('\n') + imageNote
+}
+
+function requireOpenWindow(): BrowserWindow {
+  const win = browserWin
+  if (!win || win.isDestroyed()) {
+    throw new Error('No browser page open. Call browser_navigate first.')
+  }
+  return win
+}
+
+type ElementHit = {
+  x: number
+  y: number
+  tag: string
+  label: string
+}
+
+async function resolveSelector(win: BrowserWindow, selector: string): Promise<ElementHit> {
+  const hit = (await win.webContents.executeJavaScript(
+    `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)})
+      if (!el) return null
+      el.scrollIntoView({ block: 'center', inline: 'nearest' })
+      const r = el.getBoundingClientRect()
+      if (r.width <= 0 || r.height <= 0) return null
+      const label = (
+        el.getAttribute('aria-label') ||
+        el.getAttribute('placeholder') ||
+        el.getAttribute('name') ||
+        (typeof el.value === 'string' ? el.value : '') ||
+        el.innerText ||
+        ''
+      ).slice(0, 120)
+      return {
+        x: Math.round(r.left + r.width / 2),
+        y: Math.round(r.top + r.height / 2),
+        tag: el.tagName,
+        label: String(label).trim()
+      }
+    })()`,
+    true
+  )) as ElementHit | null
+
+  if (!hit) {
+    throw new Error(`No visible element matched selector: ${selector}`)
+  }
+  return hit
+}
+
+/** Click a CSS-selected element in the agent browser (via mouse input events). */
+export async function clickSelector(
+  selector: string,
+  opts: { signal?: AbortSignal; button?: 'left' | 'right' | 'middle' } = {}
+): Promise<string> {
+  throwIfAborted(opts.signal)
+  const sel = String(selector ?? '').trim()
+  if (!sel) throw new Error('selector is required')
+
+  const win = requireOpenWindow()
+  if (!win.isVisible()) win.show()
+  win.focus()
+
+  const hit = await resolveSelector(win, sel)
+  throwIfAborted(opts.signal)
+
+  const button = opts.button ?? 'left'
+  win.webContents.sendInputEvent({
+    type: 'mouseDown',
+    x: hit.x,
+    y: hit.y,
+    button,
+    clickCount: 1
+  })
+  win.webContents.sendInputEvent({
+    type: 'mouseUp',
+    x: hit.x,
+    y: hit.y,
+    button,
+    clickCount: 1
+  })
+
+  emitCurrent()
+  const label = hit.label ? ` "${hit.label}"` : ''
+  return `Clicked ${hit.tag}${label} at (${hit.x}, ${hit.y}) via ${sel}`
+}
+
+const MAX_TYPE_CHARS = 4_000
+
+/** Type into the focused element, optionally focusing a CSS selector first. */
+export async function typeText(
+  text: string,
+  opts: {
+    signal?: AbortSignal
+    selector?: string
+    clear?: boolean
+    pressEnter?: boolean
+  } = {}
+): Promise<string> {
+  throwIfAborted(opts.signal)
+  const value = String(text ?? '')
+  if (value.length > MAX_TYPE_CHARS) {
+    throw new Error(`text exceeds ${MAX_TYPE_CHARS} characters`)
+  }
+
+  const win = requireOpenWindow()
+  if (!win.isVisible()) win.show()
+  win.focus()
+
+  let focusNote = 'active element'
+  const selector = opts.selector?.trim()
+  if (selector) {
+    const hit = await resolveSelector(win, selector)
+    throwIfAborted(opts.signal)
+    win.webContents.sendInputEvent({
+      type: 'mouseDown',
+      x: hit.x,
+      y: hit.y,
+      button: 'left',
+      clickCount: 1
+    })
+    win.webContents.sendInputEvent({
+      type: 'mouseUp',
+      x: hit.x,
+      y: hit.y,
+      button: 'left',
+      clickCount: 1
+    })
+    focusNote = `${hit.tag}${hit.label ? ` "${hit.label}"` : ''} (${selector})`
+  } else {
+    await win.webContents.executeJavaScript(
+      `(() => {
+        const el = document.activeElement
+        if (el && typeof el.focus === 'function') el.focus()
+        return true
+      })()`,
+      true
+    )
+  }
+
+  throwIfAborted(opts.signal)
+
+  if (opts.clear) {
+    // Select-all then delete (works across platforms for most inputs).
+    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: ['control'] })
+    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: ['control'] })
+    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' })
+    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' })
+  }
+
+  for (const char of value) {
+    throwIfAborted(opts.signal)
+    if (char === '\n' || char === '\r') {
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' })
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
+      continue
+    }
+    win.webContents.sendInputEvent({ type: 'char', keyCode: char })
+  }
+
+  if (opts.pressEnter) {
+    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' })
+    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
+  }
+
+  emitCurrent()
+  const clearNote = opts.clear ? ', cleared first' : ''
+  const enterNote = opts.pressEnter ? ', pressed Enter' : ''
+  return `Typed ${value.length} character(s) into ${focusNote}${clearNote}${enterNote}`
 }
 
 export function focusAgentBrowser(): boolean {

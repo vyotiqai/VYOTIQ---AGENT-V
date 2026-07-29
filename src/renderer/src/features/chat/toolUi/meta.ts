@@ -37,6 +37,8 @@ const SEARCH_TOOLS = new Set([
   'web_search',
   'browser_navigate',
   'browser_snapshot',
+  'browser_click',
+  'browser_type',
   'git_status',
   'git_diff'
 ])
@@ -141,6 +143,8 @@ const TOOL_ICON_BY_NAME: Record<string, IconName> = {
   web_search: 'globe',
   browser_navigate: 'globe',
   browser_snapshot: 'globe',
+  browser_click: 'globe',
+  browser_type: 'globe',
   subagent: 'bot',
   terminal: 'terminal',
   memory_list: 'memory',

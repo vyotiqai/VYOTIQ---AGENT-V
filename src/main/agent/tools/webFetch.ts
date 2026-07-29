@@ -287,7 +287,7 @@ export async function toolWebFetch(
 async function fetchWithValidatedRedirects(
   startUrl: URL,
   signal: AbortSignal,
-  headers?: HeadersInit
+  headers?: Record<string, string>
 ): Promise<{ response: Response; finalUrl: URL }> {
   let currentUrl = startUrl
 
@@ -343,7 +343,7 @@ async function readCapped(res: Response, cap: number): Promise<Buffer> {
 export async function fetchPublicResponse(
   startUrl: URL,
   signal: AbortSignal,
-  headers?: HeadersInit
+  headers?: Record<string, string>
 ): Promise<{ response: Response; finalUrl: URL; body: Buffer }> {
   const { response, finalUrl } = await fetchWithValidatedRedirects(startUrl, signal, headers)
   const body = await readCapped(response, MAX_BYTES)

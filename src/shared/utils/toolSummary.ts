@@ -29,6 +29,8 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   web_search: { running: 'Searching web', done: 'Web search' },
   browser_navigate: { running: 'Browsing', done: 'Browsed' },
   browser_snapshot: { running: 'Snapshotting', done: 'Snapshot' },
+  browser_click: { running: 'Clicking', done: 'Clicked' },
+  browser_type: { running: 'Typing', done: 'Typed' },
   subagent: { running: 'Investigating', done: 'Investigated' },
   terminal: { running: 'Running', done: 'Ran' },
   memory_list: { running: 'Listing memory', done: 'Listed memory' },
@@ -116,6 +118,14 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
   if (name === 'web_search') {
     const query = args.query
     if (typeof query === 'string') return truncate(query)
+  }
+  if (name === 'browser_click' || name === 'browser_type') {
+    const selector = args.selector
+    if (typeof selector === 'string' && selector.trim()) return truncate(selector)
+    if (name === 'browser_type') {
+      const text = args.text
+      if (typeof text === 'string') return truncate(text)
+    }
   }
   if (name === 'browser_snapshot') {
     return 'page'
