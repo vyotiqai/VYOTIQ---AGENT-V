@@ -1,7 +1,9 @@
 import { lookup as dnsLookup } from 'dns/promises'
+import { mkdirSync, writeFileSync } from 'fs'
 import * as http from 'http'
 import * as https from 'https'
 import { isIP } from 'net'
+import { dirname } from 'path'
 import type { IncomingMessage, RequestOptions } from 'http'
 
 export const WEB_FETCH_MAX_BYTES = 2 * 1024 * 1024
@@ -467,4 +469,124 @@ export async function fetchPublicResponse(
   const { response, finalUrl } = await fetchWithValidatedRedirects(startUrl, signal, headers)
   const body = await readCapped(response, MAX_BYTES)
   return { response, finalUrl, body }
+}
+
+/**
+ * Download a public URL to disk with DNS pinning and validated redirects.
+ * Uses a higher byte cap than web_fetch (marketplace packages, etc.).
+ */
+export async function downloadPublicUrlToFile(
+  rawUrl: string,
+  destPath: string,
+  signal?: AbortSignal,
+  maxBytes = 100 * 1024 * 1024
+): Promise<void> {
+  const abortSignal = signal ?? AbortSignal.timeout(60_000)
+  let currentUrl = await assertPublicUrl(String(rawUrl ?? '').trim())
+
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    const { url: validated, addresses } = await resolvePublicUrl(currentUrl.href)
+    const hopResult = await downloadPinnedHop(validated, addresses, abortSignal, maxBytes)
+
+    if (hopResult.kind === 'redirect') {
+      if (hop === MAX_REDIRECTS) {
+        throw new Error(`Too many redirects while downloading ${rawUrl}`)
+      }
+      currentUrl = new URL(hopResult.location, validated)
+      continue
+    }
+
+    mkdirSync(dirname(destPath), { recursive: true })
+    writeFileSync(destPath, hopResult.body)
+    return
+  }
+
+  throw new Error(`Too many redirects while downloading ${rawUrl}`)
+}
+
+type DownloadHopResult =
+  | { kind: 'redirect'; location: string }
+  | { kind: 'body'; body: Buffer }
+
+/** One DNS-pinned GET; either returns a redirect Location or the response body. */
+function downloadPinnedHop(
+  url: URL,
+  addresses: string[],
+  signal: AbortSignal,
+  maxBytes: number
+): Promise<DownloadHopResult> {
+  const publicAddrs = addresses.filter((a) => !isPrivateResolvedAddress(a))
+  if (publicAddrs.length === 0) {
+    return Promise.reject(
+      new Error(`Refusing to fetch a private or loopback address: ${url.hostname}`)
+    )
+  }
+  const pinnedIp = publicAddrs.find((a) => isIP(a) === 4) ?? publicAddrs[0]
+  const family = isIP(pinnedIp) === 6 ? 6 : 4
+  const defaultPort = url.protocol === 'https:' ? 443 : 80
+  const port = url.port ? Number(url.port) : defaultPort
+  const lib = url.protocol === 'https:' ? https : http
+
+  return new Promise<DownloadHopResult>((resolve, reject) => {
+    const req = lib.request(
+      {
+        protocol: url.protocol,
+        hostname: url.hostname,
+        port,
+        path: `${url.pathname}${url.search}`,
+        method: 'GET',
+        headers: { host: url.host, accept: '*/*' },
+        lookup: (_hostname, _opts, cb) => {
+          cb(null, pinnedIp, family)
+        }
+      },
+      (incoming) => {
+        const status = incoming.statusCode ?? 0
+        if (status >= 300 && status < 400) {
+          const location = incoming.headers.location
+          incoming.resume()
+          if (!location) {
+            reject(new Error(`Redirect response missing Location header for ${url.href}`))
+            return
+          }
+          resolve({ kind: 'redirect', location: Array.isArray(location) ? location[0] : location })
+          return
+        }
+        if (status < 200 || status >= 300) {
+          incoming.resume()
+          reject(new Error(`Download failed: HTTP ${status}`))
+          return
+        }
+        const chunks: Buffer[] = []
+        let total = 0
+        incoming.on('data', (chunk: Buffer | string) => {
+          const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk
+          total += buf.byteLength
+          if (total > maxBytes) {
+            req.destroy()
+            reject(new Error(`Download exceeded ${maxBytes} bytes`))
+            return
+          }
+          chunks.push(buf)
+        })
+        incoming.on('end', () => resolve({ kind: 'body', body: Buffer.concat(chunks) }))
+        incoming.on('error', reject)
+      }
+    )
+    const onAbort = (): void => {
+      req.destroy(new Error('Aborted'))
+    }
+    if (signal.aborted) {
+      onAbort()
+      reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }))
+      return
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    req.on('error', (err) => {
+      signal.removeEventListener('abort', onAbort)
+      reject(err)
+    })
+    req.on('close', () => signal.removeEventListener('abort', onAbort))
+    req.end()
+  })
 }

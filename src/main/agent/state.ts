@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, rmSync, writeFileSync, openSync, readSync, closeSync, fstatSync } from 'fs'
 import { readFile, readdir } from 'fs/promises'
 import { join, basename } from 'path'
 import { atomicWriteFile, atomicWriteJson } from '../storage/atomicWrite'
@@ -320,6 +320,35 @@ function parseEventsFromText(
   return events
 }
 
+/**
+ * Read approximately the last `byteBudget` bytes of a file so callers can parse
+ * a trailing window of JSONL without loading multi-MB histories.
+ */
+function readFileTailSync(path: string, byteBudget: number): string {
+  const fd = openSync(path, 'r')
+  try {
+    const size = fstatSync(fd).size
+    if (size <= 0) return ''
+    const start = Math.max(0, size - byteBudget)
+    const length = size - start
+    const buf = Buffer.alloc(length)
+    readSync(fd, buf, 0, length, start)
+    let text = buf.toString('utf8')
+    if (start > 0) {
+      const firstNl = text.indexOf('\n')
+      text = firstNl >= 0 ? text.slice(firstNl + 1) : text
+    }
+    return text
+  } finally {
+    closeSync(fd)
+  }
+}
+
+/** Heuristic: ~2KB average event line × limit, with a floor for short files. */
+function eventsTailByteBudget(limit: number): number {
+  return Math.max(64 * 1024, limit * 2048)
+}
+
 export function loadEvents(
   dir: string,
   runId?: string,
@@ -328,7 +357,12 @@ export function loadEvents(
   const p = join(dir, 'events.jsonl')
   if (!existsSync(p)) return []
   const inferredRunId = runId ?? basename(dir)
-  return parseEventsFromText(readFileSync(p, 'utf8'), inferredRunId, options)
+  const limit = options?.limit
+  const text =
+    limit != null && limit > 0
+      ? readFileTailSync(p, eventsTailByteBudget(limit))
+      : readFileSync(p, 'utf8')
+  return parseEventsFromText(text, inferredRunId, options)
 }
 
 /** Non-blocking events load for IPC / UI restore (Electron: do not block main). */
@@ -341,7 +375,12 @@ export async function loadEventsAsync(
   if (!existsSync(p)) return []
   const inferredRunId = runId ?? basename(dir)
   try {
-    return parseEventsFromText(await readFile(p, 'utf8'), inferredRunId, options)
+    const limit = options?.limit
+    const text =
+      limit != null && limit > 0
+        ? readFileTailSync(p, eventsTailByteBudget(limit))
+        : await readFile(p, 'utf8')
+    return parseEventsFromText(text, inferredRunId, options)
   } catch (err) {
     logger.warn('Failed to read events.jsonl', { scope: 'state', runId: inferredRunId, err })
     return []

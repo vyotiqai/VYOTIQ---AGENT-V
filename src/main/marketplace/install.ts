@@ -41,7 +41,7 @@ import { remoteMcpIdFromUrl, headersWithoutAuthorization } from '../../shared/ut
 import { setMcpAuthToken } from '../settings/secrets'
 import { synthesizeVyotiqMcpManifest } from './mcpImport'
 import { withCompatibleUvxArgs } from '../agent/mcp/uvxCompat'
-import { assertPublicUrl, fetchPublicResponse } from '../agent/tools/webFetch'
+import { downloadPublicUrlToFile } from '../agent/tools/webFetch'
 
 const execFileAsync = promisify(execFile)
 
@@ -155,14 +155,7 @@ function findPackageRoot(extractedDir: string): string {
 }
 
 async function downloadToFile(url: string, destPath: string): Promise<void> {
-  const validated = await assertPublicUrl(url)
-  const { response, body } = await fetchPublicResponse(
-    validated,
-    AbortSignal.timeout(60_000)
-  )
-  if (!response.ok) throw new Error(`Download failed: HTTP ${response.status}`)
-  mkdirSync(dirname(destPath), { recursive: true })
-  writeFileSync(destPath, body)
+  await downloadPublicUrlToFile(url, destPath)
 }
 
 function copyPackageIntoStore(srcRoot: string, id: string, version: string): string {
