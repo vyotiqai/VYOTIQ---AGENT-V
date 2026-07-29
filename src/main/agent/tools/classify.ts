@@ -13,6 +13,7 @@ const PARALLEL_SAFE_BUILTIN = new Set([
   'git_status',
   'git_diff',
   'diagnostics',
+  'read_lints',
   'mcp_list_tools'
 ])
 

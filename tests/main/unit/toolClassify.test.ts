@@ -71,6 +71,11 @@ describe('tool classify', () => {
     expect(isApprovalExemptTool('mcp_list_tools')).toBe(true)
   })
 
+  it('treats read_lints as parallel-safe and approval-exempt', () => {
+    expect(isParallelSafeTool('read_lints')).toBe(true)
+    expect(isApprovalExemptTool('read_lints')).toBe(true)
+  })
+
   it('treats MCP tools as untrusted regardless of readOnlyHint', () => {
     expect(isParallelSafeTool('mcp__fs__read_file')).toBe(false)
     expect(isApprovalExemptTool('mcp__fs__read_file')).toBe(false)

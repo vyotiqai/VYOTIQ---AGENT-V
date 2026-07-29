@@ -21,7 +21,7 @@ import { isFindstrNoMatchContent, isDirMissingPathContent, toolTerminal, TERMINA
 import { runSubagent, SubagentDepthError, type SubagentContextUsage } from '../subagent'
 import { toolMemoryList, toolMemoryRead, toolMemoryWrite } from './memory'
 import { toolGitDiffAsync, toolGitStatusAsync } from './gitHelpers'
-import { toolDiagnosticsAsync } from './diagnostics'
+import { toolDiagnosticsAsync, toolReadLintsAsync } from './diagnostics'
 import { getSettings } from '@main/settings/settings'
 import { getWriteCheckpoint } from '../checkpoints'
 import {
@@ -580,6 +580,18 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     throwIfAborted(signal)
     if (!result.ok) return toolFail('diagnostics', kind, result.content)
     return toolOk('diagnostics', kind, result.content)
+  },
+  read_lints: async (workspace, args, signal) => {
+    throwIfAborted(signal)
+    const paths = Array.isArray(args.paths)
+      ? args.paths.filter((p): p is string => typeof p === 'string')
+      : []
+    const result = await toolReadLintsAsync(workspace, paths, signal)
+    throwIfAborted(signal)
+    const summary =
+      paths.length === 1 ? paths[0]! : paths.length > 1 ? `${paths.length} paths` : 'lints'
+    if (!result.ok) return toolFail('read_lints', summary, result.content)
+    return toolOk('read_lints', summary, result.content)
   }
 }
 
