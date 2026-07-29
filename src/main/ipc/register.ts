@@ -109,7 +109,7 @@ import { runAgent, createRunId } from '../agent/loop'
 import { compactRunNow, CompactionUnavailableError } from '../agent/compactRun'
 import { undoWrites, resolveWrites, getWriteCheckpointMeta } from '../agent/checkpoints'
 import { resolveRunDir } from '@main/storage/paths'
-import { focusAgentBrowser, closeAgentBrowser, getAgentBrowserState, selectBrowserTab, browserGoBack, browserGoForward, setAgentBrowserBounds, navigateUrl } from '@main/app/agentBrowser'
+import { focusAgentBrowser, closeAgentBrowser, getAgentBrowserState, selectBrowserTab, browserGoBack, browserGoForward, setAgentBrowserBounds, navigateUrl, clearAgentBrowserData, takeBrowserScreenshot } from '@main/app/agentBrowser'
 import { extractAttachment } from '../attachments/extract'
 import {
   cancelPendingApprovals,
@@ -1284,6 +1284,46 @@ export function registerIpc(): void {
       return failFrom(err, IPC.browserReload)
     }
   })
+
+  ipcMain.handle(
+    IPC.browserTakeScreenshot,
+    async (event, raw): Promise<IpcResult<{ path: string }>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const payload = raw as { workspacePath?: string; runId?: string; tabId?: string }
+        const workspacePath = payload?.workspacePath?.trim()
+        const runId = payload?.runId?.trim()
+        if (!workspacePath || !runId) return fail('workspacePath and runId required')
+        const runDir = resolveRunDir(workspacePath, runId)
+        const result = await takeBrowserScreenshot({
+          runDir,
+          tabId: typeof payload.tabId === 'string' ? payload.tabId : undefined
+        })
+        return ok(result)
+      } catch (err) {
+        return failFrom(err, IPC.browserTakeScreenshot)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    IPC.browserClearBrowsingData,
+    async (
+      event,
+      raw
+    ): Promise<IpcResult<{ cleared: 'history' | 'cookies' | 'cache' | 'all' }>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const kind = (raw as { kind?: string })?.kind
+        if (kind !== 'history' && kind !== 'cookies' && kind !== 'cache' && kind !== 'all') {
+          return fail('Invalid clear kind')
+        }
+        return ok(await clearAgentBrowserData(kind))
+      } catch (err) {
+        return failFrom(err, IPC.browserClearBrowsingData)
+      }
+    }
+  )
 
   ipcMain.handle(
     IPC.browserSetBounds,

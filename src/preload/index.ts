@@ -120,6 +120,9 @@ const api: VyotiqApi = {
   browserSetBounds: (bounds) => ipcRenderer.invoke(IPC.browserSetBounds, bounds),
   browserNavigate: (url: string) => ipcRenderer.invoke(IPC.browserNavigate, url),
   browserReload: () => ipcRenderer.invoke(IPC.browserReload),
+  browserTakeScreenshot: (payload) => ipcRenderer.invoke(IPC.browserTakeScreenshot, payload),
+  browserClearBrowsingData: (payload) =>
+    ipcRenderer.invoke(IPC.browserClearBrowsingData, payload),
   openLogsDir: () => ipcRenderer.invoke(IPC.logsOpenDir),
   getLogsPath: () => ipcRenderer.invoke(IPC.logsGetPath),
   telemetryStatus: () => ipcRenderer.invoke(IPC.telemetryStatus),

@@ -1115,6 +1115,38 @@ export function closeAgentBrowser(): void {
   })
 }
 
+export type BrowserClearKind = 'history' | 'cookies' | 'cache' | 'all'
+
+/** Clear storage/cache for the agent-browser partition only. */
+export async function clearAgentBrowserData(
+  kind: BrowserClearKind
+): Promise<{ cleared: BrowserClearKind }> {
+  const ses = session.fromPartition(PARTITION)
+  if (kind === 'history' || kind === 'all') {
+    // Electron has no per-partition browsingHistory API; closing tabs resets
+    // in-memory navigation stacks. App-level Recents are cleared in the renderer.
+    closeAgentBrowser()
+  }
+  if (kind === 'cookies' || kind === 'all') {
+    await ses.clearStorageData({
+      storages: ['cookies', 'localstorage', 'indexdb', 'shadercache', 'serviceworkers', 'cachestorage', 'filesystem']
+    })
+  }
+  if (kind === 'cache' || kind === 'all') {
+    await ses.clearCache()
+  }
+  return { cleared: kind }
+}
+
+/** Capture the active page to `{runDir}/browser/snapshot.jpg`. */
+export async function takeBrowserScreenshot(opts: {
+  runDir: string
+  tabId?: string
+}): Promise<{ path: string }> {
+  await snapshotPage({ runDir: opts.runDir, tabId: opts.tabId })
+  return { path: join(opts.runDir, 'browser', 'snapshot.jpg') }
+}
+
 export function getAgentBrowserState(): AgentBrowserState {
   return lastState
 }

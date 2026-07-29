@@ -151,6 +151,14 @@ export interface VyotiqApi {
   ) => Promise<IpcResult<true>>
   browserNavigate: (url: string) => Promise<IpcResult<boolean>>
   browserReload: () => Promise<IpcResult<boolean>>
+  browserTakeScreenshot: (payload: {
+    workspacePath: string
+    runId: string
+    tabId?: string
+  }) => Promise<IpcResult<{ path: string }>>
+  browserClearBrowsingData: (payload: {
+    kind: 'history' | 'cookies' | 'cache' | 'all'
+  }) => Promise<IpcResult<{ cleared: 'history' | 'cookies' | 'cache' | 'all' }>>
   openLogsDir: () => Promise<IpcResult<true>>
   getLogsPath: () => Promise<IpcResult<string>>
   telemetryStatus: () => Promise<IpcResult<TelemetryStatus>>

@@ -10,6 +10,8 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
   try {
     localStorage.removeItem('vyotiq.browserPanelOpen')
+    localStorage.removeItem('vyotiq.rightPanel')
+    localStorage.removeItem('vyotiq.browserRecents')
   } catch {
     /* ignore */
   }
@@ -26,7 +28,15 @@ beforeEach(() => {
       onBrowserState: vi.fn().mockReturnValue(() => undefined),
       browserSetBounds: vi.fn().mockResolvedValue({ ok: true, data: true }),
       browserNavigate: vi.fn().mockResolvedValue({ ok: true, data: true }),
-      browserReload: vi.fn().mockResolvedValue({ ok: true, data: true })
+      browserReload: vi.fn().mockResolvedValue({ ok: true, data: true }),
+      browserTakeScreenshot: vi.fn().mockResolvedValue({
+        ok: true,
+        data: { path: '/tmp/snapshot.jpg' }
+      }),
+      browserClearBrowsingData: vi.fn().mockResolvedValue({
+        ok: true,
+        data: { cleared: 'history' }
+      })
     }
   })
   class ResizeObserverStub {
@@ -88,8 +98,46 @@ describe('ChatView composer placement', () => {
     fireEvent.click(screen.getByRole('button', { name: /Show browser panel/i }))
     expect(document.querySelector('[data-agent-browser-panel]')).toBeTruthy()
     expect(document.querySelector('[data-agent-browser-viewport]')).toBeTruthy()
+    expect(document.querySelector('[data-chat-side-rail]')).toBeTruthy()
     expect(screen.getByText('No page loaded')).toBeTruthy()
     expect(screen.getByPlaceholderText('Search or enter URL')).toBeTruthy()
+  })
+
+  it('switches docked panels from the side rail', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    expect(screen.getByText('No terminal output yet')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /Show files panel/i }))
+    expect(document.querySelector('[data-files-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-terminal-panel]')).toBeNull()
+    expect(screen.getByText('No files changed')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /Show changes panel/i }))
+    expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
+    expect(screen.getByText('No changes yet')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /^Hide changes panel$/i }))
+    expect(document.querySelector('[data-changes-panel]')).toBeNull()
+  })
+
+  it('shows Recents in the empty browser panel when history exists', () => {
+    localStorage.setItem(
+      'vyotiq.browserRecents',
+      JSON.stringify([
+        {
+          url: 'https://example.com',
+          title: 'Example Domain',
+          visitedAt: Date.now()
+        }
+      ])
+    )
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Show browser panel/i }))
+    expect(screen.getByText('Recents')).toBeTruthy()
+    expect(screen.getByText('Example Domain')).toBeTruthy()
   })
 
   it('renders a single hero composer in empty state without dock gutter', () => {

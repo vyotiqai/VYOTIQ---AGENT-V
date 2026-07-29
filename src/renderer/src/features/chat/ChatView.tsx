@@ -1,8 +1,11 @@
 import type { Ref } from 'react'
-import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { MessageList } from './components/MessageList'
 import { AgentBrowserPanel } from './components/AgentBrowserPanel'
+import { ChangesPanel } from './components/ChangesPanel'
 import { ChatSideRail } from './components/ChatSideRail'
+import { FilesPanel } from './components/FilesPanel'
+import { TerminalPanel } from './components/TerminalPanel'
 import { Composer } from './components/composer'
 import {
   ChatGitLeading,
@@ -15,13 +18,14 @@ import type { UiItem } from '@shared/transcript'
 import type { AgentInteractionMode, ProviderId, ToolApprovalDecision } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { Alert } from '@renderer/lib/ui'
-import { usePersistedBoolean } from '@renderer/lib/hooks/usePersistedBoolean'
 import {
   BROWSER_PANEL_OPEN_KEY,
   CHAT_COLUMN_MAX,
   CHAT_GUTTER,
   COMPOSER_DOCK_FADE_PX,
-  COMPOSER_DOCK_FALLBACK_PX
+  COMPOSER_DOCK_FALLBACK_PX,
+  RIGHT_PANEL_KEY,
+  type ChatRightPanelId
 } from '@renderer/lib/utils/layout'
 import { cn } from '@renderer/lib/ui/cn'
 import type { ChatItemsStore, ChatMetaStore } from './chatStores'
@@ -266,30 +270,59 @@ export function ChatView({
   const surfaceKey = `${workspacePath ?? 'none'}:${chatSurfaceEpoch}`
   const stageRef = useRef<HTMLDivElement>(null)
   const [dockReservePx, setDockReservePx] = useState(COMPOSER_DOCK_FALLBACK_PX)
-  const [browserPanelOpen, setBrowserPanelOpen] = usePersistedBoolean(
-    BROWSER_PANEL_OPEN_KEY,
-    false
-  )
+  const [activeRightPanel, setActiveRightPanel] = useState<ChatRightPanelId | null>(() => {
+    try {
+      const raw = localStorage.getItem(RIGHT_PANEL_KEY)
+      if (raw === 'browser' || raw === 'terminal' || raw === 'files' || raw === 'changes') {
+        return raw
+      }
+      // Migrate legacy browser-open preference.
+      const legacy = localStorage.getItem(BROWSER_PANEL_OPEN_KEY)
+      if (legacy === '1' || legacy === 'true') return 'browser'
+    } catch {
+      /* ignore */
+    }
+    return null
+  })
   const [browserActive, setBrowserActive] = useState(false)
+  const liveItems = useChatLiveItems(itemsStore, items)
+
+  const setRightPanel = useCallback((next: ChatRightPanelId | null) => {
+    setActiveRightPanel(next)
+    try {
+      if (next) localStorage.setItem(RIGHT_PANEL_KEY, next)
+      else localStorage.removeItem(RIGHT_PANEL_KEY)
+      localStorage.setItem(BROWSER_PANEL_OPEN_KEY, next === 'browser' ? '1' : '0')
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  const toggleRightPanel = useCallback(
+    (panel: ChatRightPanelId) => {
+      setRightPanel(activeRightPanel === panel ? null : panel)
+    },
+    [activeRightPanel, setRightPanel]
+  )
 
   useEffect(() => {
     let cancelled = false
     void window.vyotiq.browserGetState?.().then((res) => {
       if (cancelled || !res.ok) return
       setBrowserActive(Boolean(res.data.open))
-      if (res.data.open) setBrowserPanelOpen(true)
+      if (res.data.open) setRightPanel('browser')
     })
     const unsub = window.vyotiq.onBrowserState?.((next) => {
       if (cancelled) return
       setBrowserActive(Boolean(next.open))
       // Auto-open so a live page is not hidden behind a closed rail.
-      if (next.open) setBrowserPanelOpen(true)
+      if (next.open) setRightPanel('browser')
     })
     return () => {
       cancelled = true
       unsub?.()
     }
-  }, [setBrowserPanelOpen])
+  }, [setRightPanel])
 
   // Transcript scrolls behind the floating composer, so it has to reserve the
   // dock height plus the fade painted above it (not included in offsetHeight).
@@ -470,15 +503,37 @@ export function ChatView({
             </div>
           )}
         </div>
-        {browserPanelOpen ? (
-          <AgentBrowserPanel />
-        ) : (
-          <ChatSideRail
-            browserOpen={browserPanelOpen}
-            browserActive={browserActive}
-            onToggleBrowser={() => setBrowserPanelOpen((v) => !v)}
+        {activeRightPanel === 'browser' ? (
+          <AgentBrowserPanel
+            workspacePath={workspacePath}
+            activeRunId={activeRunId}
+            onClose={() => setRightPanel(null)}
           />
-        )}
+        ) : null}
+        {activeRightPanel === 'terminal' ? (
+          <TerminalPanel items={liveItems} onClose={() => setRightPanel(null)} />
+        ) : null}
+        {activeRightPanel === 'files' ? (
+          <FilesPanel items={liveItems} onClose={() => setRightPanel(null)} />
+        ) : null}
+        {activeRightPanel === 'changes' ? (
+          <ChangesPanel
+            items={liveItems}
+            onClose={() => setRightPanel(null)}
+            writeFileResolutions={writeFileResolutions}
+            canResolve={canUndoWrites}
+            resolveBusy={undoBusy}
+            onKeepWriteFile={onKeepWriteFile}
+            onDiscardWriteFile={onDiscardWriteFile}
+            onKeepAllWrites={onKeepAllWrites}
+            onDiscardAllWrites={onUndoWrites}
+          />
+        ) : null}
+        <ChatSideRail
+          activePanel={activeRightPanel}
+          browserActive={browserActive}
+          onSelectPanel={toggleRightPanel}
+        />
       </div>
     </div>
   )

@@ -41,6 +41,8 @@ export const IPC = {
   browserSetBounds: 'browser:setBounds',
   browserNavigate: 'browser:navigate',
   browserReload: 'browser:reload',
+  browserTakeScreenshot: 'browser:takeScreenshot',
+  browserClearBrowsingData: 'browser:clearBrowsingData',
   gitStatus: 'git:status',
   gitCommit: 'git:commit',
   windowMinimize: 'window:minimize',
