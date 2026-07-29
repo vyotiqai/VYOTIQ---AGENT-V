@@ -117,6 +117,7 @@ const api: VyotiqApi = {
   browserSelectTab: (tabId: string) => ipcRenderer.invoke(IPC.browserSelectTab, { tabId }),
   browserBack: () => ipcRenderer.invoke(IPC.browserBack),
   browserForward: () => ipcRenderer.invoke(IPC.browserForward),
+  browserSetBounds: (bounds) => ipcRenderer.invoke(IPC.browserSetBounds, bounds),
   openLogsDir: () => ipcRenderer.invoke(IPC.logsOpenDir),
   getLogsPath: () => ipcRenderer.invoke(IPC.logsGetPath),
   telemetryStatus: () => ipcRenderer.invoke(IPC.telemetryStatus),
