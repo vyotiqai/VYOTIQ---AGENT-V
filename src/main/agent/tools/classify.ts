@@ -8,7 +8,10 @@ const PARALLEL_SAFE_BUILTIN = new Set([
   'web_fetch',
   'memory_list',
   'memory_read',
-  'subagent'
+  'subagent',
+  'git_status',
+  'git_diff',
+  'diagnostics'
 ])
 
 /**

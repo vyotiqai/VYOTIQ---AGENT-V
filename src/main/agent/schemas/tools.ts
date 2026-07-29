@@ -244,6 +244,26 @@ const memoryWriteArgs = z.object({
     .describe('Full markdown contents to write. Never store secrets.')
 })
 
+const gitStatusArgs = z.object({})
+
+const gitDiffArgs = z.object({
+  path: z
+    .string()
+    .describe('Optional workspace-relative path to limit the diff')
+    .optional(),
+  staged: z
+    .boolean()
+    .describe('When true, show staged (index) diff instead of working tree')
+    .optional()
+})
+
+const diagnosticsArgs = z.object({
+  kind: z
+    .enum(['typecheck', 'lint'])
+    .describe('typecheck (default) or lint — uses package scripts when present')
+    .optional()
+})
+
 const TOOL_REGISTRY = {
   read: {
     description:
@@ -320,6 +340,19 @@ const TOOL_REGISTRY = {
     description:
       'Create or update a memory file (index.md, state.md, or notes/<name>.md).',
     schema: memoryWriteArgs
+  },
+  git_status: {
+    description: 'Structured git status for the workspace (branch, changed files, +/- counts).',
+    schema: gitStatusArgs
+  },
+  git_diff: {
+    description: 'Unified git diff for the workspace (optional path; optional staged).',
+    schema: gitDiffArgs
+  },
+  diagnostics: {
+    description:
+      'Run project typecheck or lint and return structured diagnostics when parseable.',
+    schema: diagnosticsArgs
   }
 } as const
 
