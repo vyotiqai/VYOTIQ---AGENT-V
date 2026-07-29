@@ -31,6 +31,8 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   browser_snapshot: { running: 'Snapshotting', done: 'Snapshot' },
   browser_click: { running: 'Clicking', done: 'Clicked' },
   browser_type: { running: 'Typing', done: 'Typed' },
+  browser_scroll: { running: 'Scrolling', done: 'Scrolled' },
+  browser_fill: { running: 'Filling', done: 'Filled' },
   subagent: { running: 'Investigating', done: 'Investigated' },
   terminal: { running: 'Running', done: 'Ran' },
   memory_list: { running: 'Listing memory', done: 'Listed memory' },
@@ -119,12 +121,21 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
     const query = args.query
     if (typeof query === 'string') return truncate(query)
   }
-  if (name === 'browser_click' || name === 'browser_type') {
+  if (name === 'browser_click' || name === 'browser_type' || name === 'browser_fill' || name === 'browser_scroll') {
     const selector = args.selector
     if (typeof selector === 'string' && selector.trim()) return truncate(selector)
     if (name === 'browser_type') {
       const text = args.text
       if (typeof text === 'string') return truncate(text)
+    }
+    if (name === 'browser_fill') {
+      const value = args.value
+      if (typeof value === 'string') return truncate(value)
+    }
+    if (name === 'browser_scroll') {
+      const dx = typeof args.deltaX === 'number' ? args.deltaX : 0
+      const dy = typeof args.deltaY === 'number' ? args.deltaY : 0
+      if (dx !== 0 || dy !== 0) return `Δ(${dx},${dy})`
     }
   }
   if (name === 'browser_snapshot') {

@@ -29,10 +29,18 @@ export type AgentBrowserState = {
   title: string
   /** Optional JPEG data URL from the latest snapshot (UI preview only). */
   snapshotDataUrl?: string | null
+  /** True while a navigation is in flight. */
+  navigating?: boolean
 }
 
 let browserWin: BrowserWindow | null = null
-let lastState: AgentBrowserState = { open: false, url: '', title: '', snapshotDataUrl: null }
+let lastState: AgentBrowserState = {
+  open: false,
+  url: '',
+  title: '',
+  snapshotDataUrl: null,
+  navigating: false
+}
 /** Serialize navigate/click/type/snapshot across concurrent runs sharing one window. */
 let browserOpChain: Promise<void> = Promise.resolve()
 
@@ -55,7 +63,7 @@ function pushState(partial: Partial<AgentBrowserState>): void {
 function emitCurrent(extra?: Partial<AgentBrowserState>): void {
   const win = browserWin
   if (!win || win.isDestroyed()) {
-    pushState({ open: false, url: '', title: '', snapshotDataUrl: null, ...extra })
+    pushState({ open: false, url: '', title: '', snapshotDataUrl: null, navigating: false, ...extra })
     return
   }
   pushState({
@@ -129,7 +137,7 @@ function ensureWindow(): BrowserWindow {
 
   browserWin.on('closed', () => {
     browserWin = null
-    pushState({ open: false, url: '', title: '', snapshotDataUrl: null })
+    pushState({ open: false, url: '', title: '', snapshotDataUrl: null, navigating: false })
   })
 
   browserWin.webContents.on('did-navigate', () => emitCurrent())
@@ -220,12 +228,14 @@ async function navigateUrlUnlocked(
   const win = ensureWindow()
   if (!win.isVisible()) win.show()
   win.focus()
+  emitCurrent({ navigating: true })
 
   try {
     const loadPromise = waitForLoad(win, opts.signal, timeoutMs)
     void win.loadURL(url.toString())
     await loadPromise
   } catch (err) {
+    emitCurrent({ navigating: false })
     if (isAbortError(err)) throw err
     throw err
   }
@@ -235,12 +245,13 @@ async function navigateUrlUnlocked(
     await assertPublicUrl(finalUrl)
   } catch (err) {
     void win.loadURL('about:blank')
-    emitCurrent({ snapshotDataUrl: null })
+    emitCurrent({ snapshotDataUrl: null, navigating: false })
     throw err
   }
 
   lastRefs = new Map()
-  emitCurrent({ snapshotDataUrl: null })
+  // Keep prior snapshot preview until the next snapshot succeeds.
+  emitCurrent({ navigating: false })
   const title = win.webContents.getTitle()
   return [`Navigated to ${finalUrl}`, `Title: ${title || '(none)'}`].join('\n')
 }
@@ -432,6 +443,39 @@ type ElementHit = {
   y: number
   tag: string
   label: string
+  matchIndex: number
+  matchCount: number
+  css: string
+}
+
+const SETTLE_FALLBACK_MS = 400
+const SETTLE_NAV_TIMEOUT_MS = 8_000
+
+async function settleAfterAction(
+  win: BrowserWindow,
+  signal: AbortSignal | undefined,
+  opts: { waitForNav?: boolean } = {}
+): Promise<void> {
+  throwIfAborted(signal)
+  const fallback = new Promise<void>((resolve) => setTimeout(resolve, SETTLE_FALLBACK_MS))
+  if (!opts.waitForNav) {
+    await fallback
+    throwIfAborted(signal)
+    return
+  }
+  const nav = new Promise<void>((resolve) => {
+    const wc = win.webContents
+    const done = (): void => {
+      wc.removeListener('did-finish-load', done)
+      wc.removeListener('did-navigate-in-page', done)
+      resolve()
+    }
+    wc.once('did-finish-load', done)
+    wc.once('did-navigate-in-page', done)
+    setTimeout(done, SETTLE_NAV_TIMEOUT_MS)
+  })
+  await Promise.race([nav, fallback])
+  throwIfAborted(signal)
 }
 
 async function resolveSelector(win: BrowserWindow, selector: string): Promise<ElementHit> {
@@ -449,14 +493,42 @@ async function resolveSelector(win: BrowserWindow, selector: string): Promise<El
 
   const hit = (await win.webContents.executeJavaScript(
     `(() => {
-      const el = document.querySelector(${JSON.stringify(css)})
-      if (!el) return null
+      const css = ${JSON.stringify(css)}
+      const all = Array.from(document.querySelectorAll(css))
+      const interactable = (el) => {
+        if (!el || el.nodeType !== 1) return false
+        if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false
+        const style = window.getComputedStyle(el)
+        if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none') return false
+        if (Number(style.opacity || '1') === 0) return false
+        const r = el.getBoundingClientRect()
+        if (r.width <= 0 || r.height <= 0) return false
+        return true
+      }
+      const candidates = all.filter(interactable)
+      if (candidates.length === 0) {
+        return { error: all.length === 0 ? 'none' : 'hidden', matchCount: all.length }
+      }
+      const el = candidates[0]
       el.scrollIntoView({ block: 'center', inline: 'nearest' })
       if (typeof el.focus === 'function') {
         try { el.focus({ preventScroll: true }) } catch { el.focus() }
       }
       const r = el.getBoundingClientRect()
-      if (r.width <= 0 || r.height <= 0) return null
+      const x = Math.round(r.left + r.width / 2)
+      const y = Math.round(r.top + r.height / 2)
+      const top = document.elementFromPoint(x, y)
+      if (top && top !== el && !el.contains(top) && !top.contains(el)) {
+        // Still click the intended element; report overlay for debugging.
+      }
+      el.classList.add('vyotiq-agent-hit')
+      if (!document.getElementById('vyotiq-agent-hit-style')) {
+        const style = document.createElement('style')
+        style.id = 'vyotiq-agent-hit-style'
+        style.textContent = '.vyotiq-agent-hit{outline:2px solid #2563eb !important;outline-offset:2px !important;}'
+        document.documentElement.appendChild(style)
+      }
+      setTimeout(() => { try { el.classList.remove('vyotiq-agent-hit') } catch {} }, 1000)
       const label = (
         el.getAttribute('aria-label') ||
         el.getAttribute('placeholder') ||
@@ -466,20 +538,29 @@ async function resolveSelector(win: BrowserWindow, selector: string): Promise<El
         ''
       ).slice(0, 120)
       return {
-        x: Math.round(r.left + r.width / 2),
-        y: Math.round(r.top + r.height / 2),
+        x, y,
         tag: el.tagName,
-        label: String(label).trim()
+        label: String(label).trim(),
+        matchIndex: 0,
+        matchCount: candidates.length,
+        css
       }
     })()`,
     true
-  )) as ElementHit | null
+  )) as
+    | (ElementHit & { error?: undefined })
+    | { error: string; matchCount: number }
+    | null
 
-  if (!hit) {
+  if (!hit || 'error' in hit) {
+    const reason =
+      hit && 'error' in hit && hit.error === 'hidden'
+        ? `matched ${hit.matchCount} node(s) but none were interactable`
+        : 'no matches'
     throw new Error(
       target.kind === 'ref'
-        ? `Snapshot ref @${target.id} no longer matches a visible element (css=${css})`
-        : `No visible element matched selector: ${selector}`
+        ? `Snapshot ref @${target.id} ${reason} (css=${css})`
+        : `No interactable element for selector: ${selector} (${reason})`
     )
   }
   return hit
@@ -524,9 +605,12 @@ async function clickSelectorUnlocked(
     clickCount: 1
   })
 
+  await settleAfterAction(win, opts.signal, { waitForNav: true })
   emitCurrent()
   const label = hit.label ? ` "${hit.label}"` : ''
-  return `Clicked ${hit.tag}${label} at (${hit.x}, ${hit.y}) via ${sel}`
+  const amb =
+    hit.matchCount > 1 ? ` (match 1 of ${hit.matchCount} interactable)` : ''
+  return `Clicked ${hit.tag}${label} at (${hit.x}, ${hit.y}) via ${sel}${amb}`
 }
 
 const MAX_TYPE_CHARS = 4_000
@@ -564,10 +648,12 @@ async function typeTextUnlocked(
   win.focus()
 
   let focusNote = 'active element'
+  let cssForFill: string | null = null
   const selector = opts.selector?.trim()
   if (selector) {
     const hit = await resolveSelector(win, selector)
     throwIfAborted(opts.signal)
+    cssForFill = hit.css
     win.webContents.sendInputEvent({
       type: 'mouseDown',
       x: hit.x,
@@ -596,29 +682,181 @@ async function typeTextUnlocked(
 
   throwIfAborted(opts.signal)
 
-  if (opts.clear) {
-    // Select-all then delete (meta on macOS, control elsewhere).
-    const selectMod = process.platform === 'darwin' ? 'meta' : 'control'
-    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: [selectMod] })
-    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: [selectMod] })
-    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' })
-    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' })
-  }
-
-  // Bulk insert avoids thousands of per-character sendInputEvent calls.
-  if (value.length > 0) {
-    win.webContents.insertText(value)
+  let path = 'insertText'
+  if (cssForFill && opts.clear) {
+    const filled = (await win.webContents.executeJavaScript(
+      `(() => {
+        const el = document.querySelector(${JSON.stringify(cssForFill)})
+        if (!el) return false
+        const tag = el.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA') {
+          const proto = tag === 'INPUT' ? window.HTMLInputElement.prototype : window.HTMLTextAreaElement.prototype
+          const desc = Object.getOwnPropertyDescriptor(proto, 'value')
+          if (desc && desc.set) desc.set.call(el, ${JSON.stringify(value)})
+          else el.value = ${JSON.stringify(value)}
+          el.dispatchEvent(new Event('input', { bubbles: true }))
+          el.dispatchEvent(new Event('change', { bubbles: true }))
+          return 'value'
+        }
+        return false
+      })()`,
+      true
+    )) as false | 'value'
+    if (filled === 'value') {
+      path = 'input.value'
+    } else {
+      const selectMod = process.platform === 'darwin' ? 'meta' : 'control'
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: [selectMod] })
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: [selectMod] })
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' })
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' })
+      if (value.length > 0) win.webContents.insertText(value)
+    }
+  } else {
+    if (opts.clear) {
+      const selectMod = process.platform === 'darwin' ? 'meta' : 'control'
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: [selectMod] })
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: [selectMod] })
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' })
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' })
+    }
+    if (value.length > 0) win.webContents.insertText(value)
   }
 
   if (opts.pressEnter) {
     win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' })
     win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
+    await settleAfterAction(win, opts.signal, { waitForNav: true })
+  } else {
+    await settleAfterAction(win, opts.signal)
   }
 
   emitCurrent()
   const clearNote = opts.clear ? ', cleared first' : ''
   const enterNote = opts.pressEnter ? ', pressed Enter' : ''
-  return `Typed ${value.length} character(s) into ${focusNote}${clearNote}${enterNote}`
+  return `Typed ${value.length} character(s) into ${focusNote}${clearNote}${enterNote} via ${path}`
+}
+
+/** Scroll the agent browser page or a target element into view / by deltas. */
+export async function scrollPage(
+  opts: {
+    signal?: AbortSignal
+    selector?: string
+    deltaX?: number
+    deltaY?: number
+  } = {}
+): Promise<string> {
+  return withBrowserLock(() => scrollPageUnlocked(opts))
+}
+
+async function scrollPageUnlocked(
+  opts: {
+    signal?: AbortSignal
+    selector?: string
+    deltaX?: number
+    deltaY?: number
+  } = {}
+): Promise<string> {
+  throwIfAborted(opts.signal)
+  const win = requireOpenWindow()
+  const selector = opts.selector?.trim()
+  const dx = Number.isFinite(opts.deltaX) ? Number(opts.deltaX) : 0
+  const dy = Number.isFinite(opts.deltaY) ? Number(opts.deltaY) : 0
+
+  if (selector) {
+    const hit = await resolveSelector(win, selector)
+    throwIfAborted(opts.signal)
+    await settleAfterAction(win, opts.signal)
+    emitCurrent()
+    return `Scrolled ${hit.tag}${hit.label ? ` "${hit.label}"` : ''} into view (${selector})`
+  }
+
+  if (dx === 0 && dy === 0) {
+    throw new Error('Provide selector to scroll into view, or deltaX/deltaY to scroll the page')
+  }
+
+  await win.webContents.executeJavaScript(
+    `window.scrollBy(${dx}, ${dy}); true`,
+    true
+  )
+  await settleAfterAction(win, opts.signal)
+  emitCurrent()
+  return `Scrolled page by (${dx}, ${dy})`
+}
+
+/** Fill an input/textarea via the value setter (React-friendly) or type into contenteditable. */
+export async function fillSelector(
+  selector: string,
+  value: string,
+  opts: { signal?: AbortSignal; pressEnter?: boolean } = {}
+): Promise<string> {
+  return withBrowserLock(() => fillSelectorUnlocked(selector, value, opts))
+}
+
+async function fillSelectorUnlocked(
+  selector: string,
+  value: string,
+  opts: { signal?: AbortSignal; pressEnter?: boolean } = {}
+): Promise<string> {
+  throwIfAborted(opts.signal)
+  const sel = String(selector ?? '').trim()
+  if (!sel) throw new Error('selector is required')
+  const text = String(value ?? '')
+  if (text.length > MAX_TYPE_CHARS) {
+    throw new Error(`value exceeds ${MAX_TYPE_CHARS} characters`)
+  }
+
+  const win = requireOpenWindow()
+  if (!win.isVisible()) win.show()
+  win.focus()
+
+  const hit = await resolveSelector(win, sel)
+  throwIfAborted(opts.signal)
+
+  const result = (await win.webContents.executeJavaScript(
+    `(() => {
+      const el = document.querySelector(${JSON.stringify(hit.css)})
+      if (!el) return { ok: false, reason: 'missing' }
+      const tag = el.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA') {
+        const proto = tag === 'INPUT' ? window.HTMLInputElement.prototype : window.HTMLTextAreaElement.prototype
+        const desc = Object.getOwnPropertyDescriptor(proto, 'value')
+        if (desc && desc.set) desc.set.call(el, ${JSON.stringify(text)})
+        else el.value = ${JSON.stringify(text)}
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+        el.dispatchEvent(new Event('change', { bubbles: true }))
+        return { ok: true, path: 'value' }
+      }
+      if (el.isContentEditable) {
+        el.focus()
+        el.textContent = ${JSON.stringify(text)}
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+        return { ok: true, path: 'contenteditable' }
+      }
+      return { ok: false, reason: 'not-fillable' }
+    })()`,
+    true
+  )) as { ok: boolean; path?: string; reason?: string }
+
+  if (!result?.ok) {
+    throw new Error(
+      result?.reason === 'not-fillable'
+        ? `Element is not a fillable input/textarea/contenteditable: ${sel}`
+        : `Could not fill selector: ${sel}`
+    )
+  }
+
+  if (opts.pressEnter) {
+    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' })
+    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
+    await settleAfterAction(win, opts.signal, { waitForNav: true })
+  } else {
+    await settleAfterAction(win, opts.signal)
+  }
+
+  emitCurrent()
+  const label = hit.label ? ` "${hit.label}"` : ''
+  return `Filled ${hit.tag}${label} with ${text.length} character(s) via ${result.path} (${sel})`
 }
 
 export function focusAgentBrowser(): boolean {
@@ -635,7 +873,7 @@ export function closeAgentBrowser(): void {
   }
   browserWin = null
   lastRefs = new Map()
-  pushState({ open: false, url: '', title: '', snapshotDataUrl: null })
+  pushState({ open: false, url: '', title: '', snapshotDataUrl: null, navigating: false })
 }
 
 export function getAgentBrowserState(): AgentBrowserState {
@@ -645,7 +883,7 @@ export function getAgentBrowserState(): AgentBrowserState {
 /** Test helper — reset singleton without touching Electron windows. */
 export function resetAgentBrowserForTests(): void {
   browserWin = null
-  lastState = { open: false, url: '', title: '', snapshotDataUrl: null }
+  lastState = { open: false, url: '', title: '', snapshotDataUrl: null, navigating: false }
   lastRefs = new Map()
   browserOpChain = Promise.resolve()
 }

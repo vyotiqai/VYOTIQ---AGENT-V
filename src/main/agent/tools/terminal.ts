@@ -296,6 +296,31 @@ function formatTerminalOutput(
   return out
 }
 
+/** Format background/poll terminal session output for the model + TerminalBody parser. */
+export function formatTerminalSessionOutput(input: {
+  workspaceRoot: string
+  command: string
+  shell: ResolvedTerminalShell
+  stdout: string
+  stderr: string
+  exitCode: number | null
+  sessionId: string
+  status: string
+}): string {
+  const base = formatTerminalOutput(
+    input.workspaceRoot,
+    input.command,
+    input.stdout,
+    input.stderr,
+    input.exitCode,
+    [],
+    input.shell
+  )
+  return [`session_id: ${input.sessionId}`, `status: ${input.status}`, `command: ${input.command}`, base].join(
+    '\n'
+  )
+}
+
 /**
  * Minimal env for child shells — omit parent secrets (API keys, tokens) that
  * live on process.env in the Electron main process.

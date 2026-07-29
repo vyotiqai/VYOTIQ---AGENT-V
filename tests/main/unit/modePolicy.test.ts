@@ -59,17 +59,20 @@ describe('modePolicy', () => {
     expect(isPlanArtifactPath('src/app.ts')).toBe(false)
   })
 
-  it('filterToolDefsForMode drops mutating tools and all MCP in Ask', () => {
+  it('filterToolDefsForMode keeps readOnlyHint MCP in Ask and drops mutating tools', () => {
     const defs = [
       { name: 'read' },
       { name: 'edit' },
       { name: 'mcp__srv__tool' },
+      { name: 'mcp__srv__write' },
       { name: 'browser_click' },
       { name: 'browser_navigate' }
     ]
-    setMcpReadOnlyHintsForTests({ 'mcp__srv__tool': true })
+    setMcpReadOnlyHintsForTests({ 'mcp__srv__tool': true, 'mcp__srv__write': false })
     const ask = filterToolDefsForMode('ask', defs)
-    expect(ask.map((d) => d.name)).toEqual(['read', 'browser_navigate'])
+    expect(ask.map((d) => d.name)).toEqual(['read', 'mcp__srv__tool', 'browser_navigate'])
+    expect(assertToolAllowedInMode('ask', 'mcp__srv__tool', {}).ok).toBe(true)
+    expect(assertToolAllowedInMode('ask', 'mcp__srv__write', {}).ok).toBe(false)
   })
 
   it('Ask mode denies browser_click and browser_type', () => {

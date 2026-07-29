@@ -19,6 +19,7 @@ export {
   syncMarketplaceMcpIntoSettings,
   mcpServerFromManifest
 } from './install'
+export { ensureDefaultSemanticMcp } from './ensureDefaultSemanticMcp'
 export {
   classifyMcpInput,
   detectMcpInput,

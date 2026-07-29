@@ -2,7 +2,13 @@ import { useEffect, useState } from 'react'
 import { cn } from '@renderer/lib/ui/cn'
 import type { AgentBrowserState } from '@shared/ipc'
 
-const EMPTY: AgentBrowserState = { open: false, url: '', title: '', snapshotDataUrl: null }
+const EMPTY: AgentBrowserState = {
+  open: false,
+  url: '',
+  title: '',
+  snapshotDataUrl: null,
+  navigating: false
+}
 
 export function AgentBrowserPanel({ className }: { className?: string }) {
   const [state, setState] = useState<AgentBrowserState>(EMPTY)
@@ -42,6 +48,9 @@ export function AgentBrowserPanel({ className }: { className?: string }) {
             <span className="min-w-0 flex-1 truncate text-fg" title={title}>
               {title}
             </span>
+            {state.navigating ? (
+              <span className="shrink-0 text-muted">Loading…</span>
+            ) : null}
           </div>
           {url ? (
             <div className="mt-0.5 truncate text-muted" title={url}>
@@ -80,7 +89,7 @@ export function AgentBrowserPanel({ className }: { className?: string }) {
           <img
             src={state.snapshotDataUrl}
             alt={title}
-            className="max-h-40 w-full object-cover object-top"
+            className="max-h-56 w-full object-contain object-top"
           />
         </button>
       ) : null}
