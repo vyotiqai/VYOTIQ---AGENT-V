@@ -32,7 +32,7 @@ export {
   synthesizeVyotiqMcpManifest
 } from './mcpImport'
 export { parseSkillFrontmatter } from '../agent/skills/parse'
-export { resolveEffectiveMcpServers, resolveMcpServersForSessionMap, listEffectivelyEnabledSkills, invalidateMcpResolveCache } from './resolve'
+export { resolveEffectiveMcpServers, resolveMcpServersForSessionMap, listEffectivelyEnabledSkills, invalidateMcpResolveCache, mcpSessionMapFingerprint } from './resolve'
 export {
   getInstalledPackageContents,
   getPackageContents,

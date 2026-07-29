@@ -80,7 +80,7 @@ import {
 import { toolResultEventForIpc, toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
 import { AGENT_TOOLS } from './types'
 import { listMcpToolDefinitions, parseMcpToolName, syncMcpServers } from './mcp'
-import { resolveEffectiveMcpServers, resolveMcpServersForSessionMap } from '../marketplace/resolve'
+import { resolveEffectiveMcpServers, resolveMcpServersForSessionMap, mcpSessionMapFingerprint } from '../marketplace/resolve'
 import { buildSkillsSection, loadEnabledSkills, loadPluginRules } from './skills'
 import { beginWriteCheckpoint, finalizeWriteCheckpoint } from './checkpoints'
 import { isMcpToolPermitted } from '../../shared/utils/mcpToolPolicy'
@@ -500,12 +500,18 @@ export async function* runAgent(input: {
     let toolDefs: { name: string; description: string; parameters: Record<string, unknown> }[] = []
     let toolsJsonEstimate = 0
     let omittedMcpHint: string | undefined
+    let lastMcpRefreshFp = ''
 
     const refreshMcpToolsForStep = async (): Promise<void> => {
       // Session map unions every open workspace so Force-off only disconnects when
-      // no workspace still needs the server. Re-run each step so mid-run enable /
-      // reconnect is visible to the model on the next provider call.
-      await syncMcpServers(resolveMcpServersForSessionMap())
+      // no workspace still needs the server. Skip sync when config fingerprint is
+      // unchanged (still rebuild tool defs from connected sessions).
+      const refreshFp = `${mcpSessionMapFingerprint()}::${JSON.stringify(marketplaceOverrides ?? null)}`
+      const configUnchanged = refreshFp === lastMcpRefreshFp
+      lastMcpRefreshFp = refreshFp
+      if (!configUnchanged) {
+        await syncMcpServers(resolveMcpServersForSessionMap())
+      }
       const runMcpServers = resolveEffectiveMcpServers(marketplaceOverrides)
       runEnabledMcpIds = new Set(runMcpServers.filter((s) => s.enabled).map((s) => s.id))
       mcpToolPolicies = new Map(
