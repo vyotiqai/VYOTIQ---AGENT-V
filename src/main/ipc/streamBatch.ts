@@ -12,6 +12,13 @@ type PendingSegment =
       argumentsDelta: string
       invokeId?: number
     }
+  | {
+      kind: 'terminal_output_delta'
+      toolCallId: string
+      text: string
+      stream?: 'stdout' | 'stderr'
+      invokeId?: number
+    }
 
 /** Dev/test counters for IPC send rate (Electron: measure before optimizing). */
 export type ChatEventBatchStats = {
@@ -83,6 +90,18 @@ export class ChatEventBatcher {
       return
     }
 
+    if (ev.type === 'terminal_output_delta') {
+      this.appendSegment(ev.runId, {
+        kind: 'terminal_output_delta',
+        toolCallId: ev.toolCallId,
+        text: ev.text,
+        stream: ev.stream,
+        invokeId: ev.invokeId
+      })
+      this.schedule()
+      return
+    }
+
     this.flush()
     this.emit(ev)
   }
@@ -101,7 +120,11 @@ export class ChatEventBatcher {
       last.invokeId === segment.invokeId &&
       (segment.kind !== 'thinking' || (last.kind === 'thinking' && last.step === segment.step)) &&
       (segment.kind !== 'tool_call_delta' ||
-        (last.kind === 'tool_call_delta' && last.toolCallId === segment.toolCallId))
+        (last.kind === 'tool_call_delta' && last.toolCallId === segment.toolCallId)) &&
+      (segment.kind !== 'terminal_output_delta' ||
+        (last.kind === 'terminal_output_delta' &&
+          last.toolCallId === segment.toolCallId &&
+          last.stream === segment.stream))
     ) {
       if (segment.kind === 'thinking' && last.kind === 'thinking') {
         queue[queue.length - 1] = {
@@ -122,6 +145,14 @@ export class ChatEventBatcher {
           toolCallId: last.toolCallId,
           name: segment.name ?? last.name,
           argumentsDelta: last.argumentsDelta + segment.argumentsDelta,
+          invokeId: segment.invokeId
+        }
+      } else if (segment.kind === 'terminal_output_delta' && last.kind === 'terminal_output_delta') {
+        queue[queue.length - 1] = {
+          kind: 'terminal_output_delta',
+          toolCallId: last.toolCallId,
+          text: last.text + segment.text,
+          stream: segment.stream,
           invokeId: segment.invokeId
         }
       }
@@ -173,13 +204,23 @@ export class ChatEventBatcher {
           step: segment.step,
           invokeId: segment.invokeId
         })
-      } else {
+      } else if (segment.kind === 'tool_call_delta') {
         this.emit({
           type: 'tool_call_delta',
           runId,
           toolCallId: segment.toolCallId,
           name: segment.name,
           argumentsDelta: segment.argumentsDelta,
+          invokeId: segment.invokeId
+        })
+      } else {
+        if (!segment.text) continue
+        this.emit({
+          type: 'terminal_output_delta',
+          runId,
+          toolCallId: segment.toolCallId,
+          text: segment.text,
+          stream: segment.stream,
           invokeId: segment.invokeId
         })
       }

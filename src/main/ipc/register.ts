@@ -109,7 +109,7 @@ import { runAgent, createRunId } from '../agent/loop'
 import { compactRunNow, CompactionUnavailableError } from '../agent/compactRun'
 import { undoWrites, resolveWrites, getWriteCheckpointMeta } from '../agent/checkpoints'
 import { resolveRunDir } from '@main/storage/paths'
-import { focusAgentBrowser, closeAgentBrowser, getAgentBrowserState } from '@main/app/agentBrowser'
+import { focusAgentBrowser, closeAgentBrowser, getAgentBrowserState, selectBrowserTab, browserGoBack, browserGoForward } from '@main/app/agentBrowser'
 import { extractAttachment } from '../attachments/extract'
 import {
   cancelPendingApprovals,
@@ -1226,6 +1226,38 @@ export function registerIpc(): void {
       return ok(true)
     } catch (err) {
       return failFrom(err, IPC.browserClose)
+    }
+  })
+
+  ipcMain.handle(IPC.browserSelectTab, async (event, raw): Promise<IpcResult<boolean>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const tabId =
+        typeof (raw as { tabId?: unknown } | null)?.tabId === 'string'
+          ? (raw as { tabId: string }).tabId.trim()
+          : ''
+      if (!tabId) return fail('tabId is required')
+      return ok(selectBrowserTab(tabId))
+    } catch (err) {
+      return failFrom(err, IPC.browserSelectTab)
+    }
+  })
+
+  ipcMain.handle(IPC.browserBack, async (event): Promise<IpcResult<boolean>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      return ok(await browserGoBack())
+    } catch (err) {
+      return failFrom(err, IPC.browserBack)
+    }
+  })
+
+  ipcMain.handle(IPC.browserForward, async (event): Promise<IpcResult<boolean>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      return ok(await browserGoForward())
+    } catch (err) {
+      return failFrom(err, IPC.browserForward)
     }
   })
 

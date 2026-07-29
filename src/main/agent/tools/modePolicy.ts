@@ -12,10 +12,16 @@ export const ASK_SAFE_BUILTIN = new Set([
   'list_dir',
   'web_fetch',
   'web_search',
-  // Browse-only: click/type/fill can submit forms and mutate live sites.
+  // Browse-only: click/type/fill/press_key/select can mutate live sites.
   'browser_navigate',
   'browser_snapshot',
   'browser_scroll',
+  'browser_tabs',
+  'browser_back',
+  'browser_forward',
+  'browser_wait_for_selector',
+  'browser_wait_for_url',
+  'mcp_list_tools',
   'memory_list',
   'memory_read',
   'subagent',
@@ -144,7 +150,12 @@ export function assertToolAllowedInMode(
 const ASK_SAFE_SERIAL_OK = new Set([
   'browser_navigate',
   'browser_snapshot',
-  'browser_scroll'
+  'browser_scroll',
+  'browser_tabs',
+  'browser_back',
+  'browser_forward',
+  'browser_wait_for_selector',
+  'browser_wait_for_url'
 ])
 
 export function askSafeAlignsWithParallelSafe(): boolean {

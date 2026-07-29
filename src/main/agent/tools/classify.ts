@@ -12,7 +12,8 @@ const PARALLEL_SAFE_BUILTIN = new Set([
   'subagent',
   'git_status',
   'git_diff',
-  'diagnostics'
+  'diagnostics',
+  'mcp_list_tools'
 ])
 
 /**

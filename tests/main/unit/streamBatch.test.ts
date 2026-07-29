@@ -49,6 +49,37 @@ describe('ChatEventBatcher', () => {
     expect(sent).toEqual([{ type: 'text_delta', runId: 'run-1', text: 'hello' }])
   })
 
+  it('coalesces terminal_output_delta for the same toolCallId and stream', () => {
+    const batcher = new ChatEventBatcher((ev) => sent.push(ev))
+
+    batcher.push({
+      type: 'terminal_output_delta',
+      runId: 'run-1',
+      toolCallId: 't1',
+      text: 'hel',
+      stream: 'stdout'
+    })
+    batcher.push({
+      type: 'terminal_output_delta',
+      runId: 'run-1',
+      toolCallId: 't1',
+      text: 'lo\n',
+      stream: 'stdout'
+    })
+
+    vi.advanceTimersByTime(16)
+
+    expect(sent).toEqual([
+      {
+        type: 'terminal_output_delta',
+        runId: 'run-1',
+        toolCallId: 't1',
+        text: 'hello\n',
+        stream: 'stdout'
+      }
+    ])
+  })
+
   it('flushes pending deltas before non-delta events', () => {
     const batcher = new ChatEventBatcher((ev) => sent.push(ev))
 

@@ -378,6 +378,8 @@ export type ToolTerminalOptions = {
   timeoutMs?: number
   /** Settings preference; resolved at spawn time. */
   shell?: TerminalShell
+  /** Live stdout/stderr chunks for UI streaming (capped with the buffers). */
+  onOutput?: (chunk: { text: string; stream: 'stdout' | 'stderr' }) => void
 }
 
 export async function toolTerminal(
@@ -469,10 +471,20 @@ export async function toolTerminal(
     signal.addEventListener('abort', onAbort)
 
     child.stdout.on('data', (buf: Buffer) => {
-      if (stdout.length < MAX_OUTPUT) stdout += buf.toString('utf8')
+      if (stdout.length >= MAX_OUTPUT) return
+      const text = buf.toString('utf8')
+      const room = MAX_OUTPUT - stdout.length
+      const clipped = text.length > room ? text.slice(0, room) : text
+      stdout += clipped
+      if (clipped) opts.onOutput?.({ text: clipped, stream: 'stdout' })
     })
     child.stderr.on('data', (buf: Buffer) => {
-      if (stderr.length < MAX_OUTPUT) stderr += buf.toString('utf8')
+      if (stderr.length >= MAX_OUTPUT) return
+      const text = buf.toString('utf8')
+      const room = MAX_OUTPUT - stderr.length
+      const clipped = text.length > room ? text.slice(0, room) : text
+      stderr += clipped
+      if (clipped) opts.onOutput?.({ text: clipped, stream: 'stderr' })
     })
 
     child.on('error', (err) => {

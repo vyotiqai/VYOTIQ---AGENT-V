@@ -51,12 +51,24 @@ describe('tool classify', () => {
       'browser_click',
       'browser_type',
       'browser_scroll',
-      'browser_fill'
+      'browser_fill',
+      'browser_tabs',
+      'browser_back',
+      'browser_forward',
+      'browser_wait_for_selector',
+      'browser_wait_for_url',
+      'browser_press_key',
+      'browser_select_option'
     ]) {
       expect(isParallelSafeTool(name)).toBe(false)
       expect(isApprovalExemptTool(name)).toBe(false)
       expect(isToolGated(name, 'mutating', new Set(), [])).toBe(true)
     }
+  })
+
+  it('treats mcp_list_tools as parallel-safe and approval-exempt', () => {
+    expect(isParallelSafeTool('mcp_list_tools')).toBe(true)
+    expect(isApprovalExemptTool('mcp_list_tools')).toBe(true)
   })
 
   it('treats MCP tools as untrusted regardless of readOnlyHint', () => {

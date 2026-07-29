@@ -240,6 +240,19 @@ const webSearchArgs = z.object({
     .optional()
 })
 
+const browserTabIdArg = z
+  .string()
+  .min(1)
+  .describe('Optional tab id from browser_tabs / navigate (default: active tab)')
+  .optional()
+
+const browserSettleMsArg = z
+  .number()
+  .int()
+  .min(0)
+  .describe('Post-action settle wait in ms (default 400)')
+  .optional()
+
 const browserNavigateArgs = z.object({
   url: z
     .string()
@@ -249,7 +262,8 @@ const browserNavigateArgs = z.object({
     .int()
     .min(1000)
     .describe('Navigation timeout in ms (default 30000)')
-    .optional()
+    .optional(),
+  tab_id: browserTabIdArg
 })
 
 const browserSnapshotArgs = z.object({
@@ -258,7 +272,8 @@ const browserSnapshotArgs = z.object({
     .int()
     .min(1000)
     .describe('Cap on returned page text (default 40000)')
-    .optional()
+    .optional(),
+  tab_id: browserTabIdArg
 })
 
 const browserClickArgs = z.object({
@@ -269,7 +284,9 @@ const browserClickArgs = z.object({
   button: z
     .enum(['left', 'right', 'middle'])
     .describe('Mouse button (default left)')
-    .optional()
+    .optional(),
+  tab_id: browserTabIdArg,
+  settleMs: browserSettleMsArg
 })
 
 const browserTypeArgs = z.object({
@@ -280,7 +297,9 @@ const browserTypeArgs = z.object({
     .describe('Optional CSS selector or snapshot ref (@e12) to focus before typing')
     .optional(),
   clear: z.boolean().describe('Select-all and delete before typing (default false)').optional(),
-  pressEnter: z.boolean().describe('Press Enter after typing (default false)').optional()
+  pressEnter: z.boolean().describe('Press Enter after typing (default false)').optional(),
+  tab_id: browserTabIdArg,
+  settleMs: browserSettleMsArg
 })
 
 const browserScrollArgs = z.object({
@@ -290,7 +309,9 @@ const browserScrollArgs = z.object({
     .describe('Optional CSS selector or @eN ref to scroll into view')
     .optional(),
   deltaX: z.number().describe('Horizontal scroll delta in pixels').optional(),
-  deltaY: z.number().describe('Vertical scroll delta in pixels').optional()
+  deltaY: z.number().describe('Vertical scroll delta in pixels').optional(),
+  tab_id: browserTabIdArg,
+  settleMs: browserSettleMsArg
 })
 
 const browserFillArgs = z.object({
@@ -299,7 +320,60 @@ const browserFillArgs = z.object({
     .min(1)
     .describe('CSS selector or snapshot ref (@e12) of an input, textarea, or contenteditable.'),
   value: z.string().describe('Full value to set (replaces existing content).'),
-  pressEnter: z.boolean().describe('Press Enter after filling (default false)').optional()
+  pressEnter: z.boolean().describe('Press Enter after filling (default false)').optional(),
+  tab_id: browserTabIdArg,
+  settleMs: browserSettleMsArg
+})
+
+const browserTabsArgs = z.object({
+  action: z.enum(['list', 'open', 'close', 'select']).describe('Tab action to perform'),
+  tab_id: browserTabIdArg,
+  url: z
+    .string()
+    .describe('Optional URL to load when action is open')
+    .optional()
+})
+
+const browserBackArgs = z.object({ tab_id: browserTabIdArg })
+const browserForwardArgs = z.object({ tab_id: browserTabIdArg })
+
+const browserWaitForSelectorArgs = z.object({
+  selector: z.string().min(1).describe('CSS selector or @eN ref to wait for'),
+  timeoutMs: z.number().int().min(100).describe('Wait timeout in ms (default 15000)').optional(),
+  tab_id: browserTabIdArg
+})
+
+const browserWaitForUrlArgs = z.object({
+  match: z.string().min(1).describe('Substring or regex pattern the page URL must match'),
+  regex: z.boolean().describe('Treat match as a regex (default false)').optional(),
+  timeoutMs: z.number().int().min(100).describe('Wait timeout in ms (default 15000)').optional(),
+  tab_id: browserTabIdArg
+})
+
+const browserPressKeyArgs = z.object({
+  key: z.string().min(1).describe('Key code to press (e.g. Enter, Escape, Tab, a)'),
+  modifiers: z
+    .array(z.string())
+    .describe('Optional modifiers: control, shift, alt, meta')
+    .optional(),
+  tab_id: browserTabIdArg,
+  settleMs: browserSettleMsArg
+})
+
+const browserSelectOptionArgs = z.object({
+  selector: z.string().min(1).describe('CSS selector or @eN ref of a <select>'),
+  value: z.string().describe('Option value to select').optional(),
+  label: z.string().describe('Option visible label to select').optional(),
+  pressEnter: z.boolean().describe('Press Enter after selecting (default false)').optional(),
+  tab_id: browserTabIdArg,
+  settleMs: browserSettleMsArg
+})
+
+const mcpListToolsArgs = z.object({
+  server_id: z
+    .string()
+    .describe('Optional MCP server id filter (substring match on tool name prefix)')
+    .optional()
 })
 
 const strReplaceArgs = z.object({
@@ -455,6 +529,41 @@ const TOOL_REGISTRY = {
     description:
       'Set the full value of an input/textarea/contenteditable (React-friendly). Prefer over browser_type when replacing a field. Uses @eN refs from browser_snapshot.',
     schema: browserFillArgs
+  },
+  browser_tabs: {
+    description:
+      'Manage agent-browser tabs: list, open (optional url), close, or select by tab_id.',
+    schema: browserTabsArgs
+  },
+  browser_back: {
+    description: 'Go back in the active (or specified) agent-browser tab history.',
+    schema: browserBackArgs
+  },
+  browser_forward: {
+    description: 'Go forward in the active (or specified) agent-browser tab history.',
+    schema: browserForwardArgs
+  },
+  browser_wait_for_selector: {
+    description:
+      'Poll until a CSS selector or @eN ref is present and interactable, or timeout.',
+    schema: browserWaitForSelectorArgs
+  },
+  browser_wait_for_url: {
+    description: 'Poll until the page URL matches a substring or regex, or timeout.',
+    schema: browserWaitForUrlArgs
+  },
+  browser_press_key: {
+    description: 'Press a keyboard key (with optional modifiers) in the agent browser.',
+    schema: browserPressKeyArgs
+  },
+  browser_select_option: {
+    description: 'Select an option in a <select> by value or visible label.',
+    schema: browserSelectOptionArgs
+  },
+  mcp_list_tools: {
+    description:
+      'List connected MCP tools (name, description, readOnlyHint). Use when MCP defs were trimmed from context.',
+    schema: mcpListToolsArgs
   },
   subagent: {
     description:
