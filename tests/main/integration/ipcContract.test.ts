@@ -40,6 +40,7 @@ const VYOTIQ_INVOKE_MAP: Record<
   readRunArtifact: IPC.runsReadArtifact,
   respondToolApproval: IPC.toolApprovalResponse,
   respondAgentQuestion: IPC.agentQuestionResponse,
+  listPendingAgentQuestions: IPC.agentQuestionListPending,
   extractAttachment: IPC.attachmentExtract,
   listRuns: IPC.listRuns,
   loadRun: IPC.loadRun,

@@ -466,6 +466,13 @@ export const AgentQuestionResponseSchema = z.object({
 })
 export type AgentQuestionResponse = z.infer<typeof AgentQuestionResponseSchema>
 
+export const ListPendingAgentQuestionsRequestSchema = z.object({
+  runId: RunIdSchema
+})
+export type ListPendingAgentQuestionsRequest = z.infer<
+  typeof ListPendingAgentQuestionsRequestSchema
+>
+
 export const ListRunsRequestSchema = z.object({
   workspacePath: z.string().min(1)
 })

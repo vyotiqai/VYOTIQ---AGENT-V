@@ -84,6 +84,8 @@ const api: VyotiqApi = {
   },
   respondAgentQuestion: (requestId, answers) =>
     ipcRenderer.invoke(IPC.agentQuestionResponse, { requestId, answers }),
+  listPendingAgentQuestions: (runId) =>
+    ipcRenderer.invoke(IPC.agentQuestionListPending, { runId }),
   extractAttachment: (payload) => ipcRenderer.invoke(IPC.attachmentExtract, payload),
   listRuns: (workspacePath) => {
     const path = workspacePath?.trim() ?? ''

@@ -109,6 +109,7 @@ export interface VyotiqApi {
     requestId: string,
     answers: string[]
   ) => Promise<IpcResult<boolean>>
+  listPendingAgentQuestions: (runId: string) => Promise<IpcResult<AgentQuestionRequest[]>>
   extractAttachment: (
     payload: ExtractAttachmentRequest
   ) => Promise<IpcResult<ExtractAttachmentResult>>

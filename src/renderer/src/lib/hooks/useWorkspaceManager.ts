@@ -28,6 +28,19 @@ import {
 
 const ACTIVE_RUNS_POLL_MS = 5_000
 const ACTIVE_RUNS_WARN_INTERVAL_MS = 60_000
+
+/** Rehydrate ask_question cards after remount while main is still waiting. */
+async function restorePendingQuestions(
+  controller: ChatStreamController,
+  runId: string
+): Promise<void> {
+  if (!window.vyotiq?.listPendingAgentQuestions) return
+  const res = await window.vyotiq.listPendingAgentQuestions(runId)
+  if (!res.ok) return
+  for (const request of res.data) {
+    controller.handleQuestionRequest(request)
+  }
+}
 const ORPHAN_SYNC_DEBOUNCE_MS = 600
 const OPEN_RUN_TAB_LIMIT = 10
 /** Cap orphan IPC buffers for runIds not yet mapped to a controller. */
@@ -455,7 +468,10 @@ export function useWorkspaceManager() {
         }
       })
       controllersRef.current.set(key, controller)
-      if (runId) registerRunId(runId, workspacePath)
+      if (runId) {
+        registerRunId(runId, workspacePath)
+        void restorePendingQuestions(controller, runId)
+      }
       return controller
     },
     [bump, maybeEvictControllers, registerRunId, schedulePersistUiState, touchLru]

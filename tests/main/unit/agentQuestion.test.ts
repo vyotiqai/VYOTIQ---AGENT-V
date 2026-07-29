@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach } from 'vitest'
 import {
   askQuestionThroughRenderer,
   cancelPendingQuestions,
+  listPendingAgentQuestions,
   registerQuestionSender,
   resetAgentQuestionForTests,
   resolveAgentQuestion
@@ -50,11 +51,24 @@ describe('agentQuestion', () => {
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
   })
 
-  it('releases prompts left over when a run ends', async () => {
-    registerQuestionSender('run-1', () => {})
+  it('lists pending questions for remount restore', async () => {
+    const seen: AgentQuestionRequest[] = []
+    registerQuestionSender('run-1', (request) => {
+      seen.push(request)
+    })
     const pending = askQuestionThroughRenderer(REQUEST, new AbortController().signal)
     await Promise.resolve()
-    cancelPendingQuestions('run-1')
-    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(listPendingAgentQuestions('run-1')).toEqual([REQUEST])
+    expect(listPendingAgentQuestions('other')).toEqual([])
+
+    // Re-registering re-pushes still-pending questions.
+    registerQuestionSender('run-1', (request) => {
+      seen.push(request)
+    })
+    expect(seen).toHaveLength(2)
+
+    expect(resolveAgentQuestion({ requestId: 'req-1', answers: ['yes'] })).toBe(true)
+    await expect(pending).resolves.toEqual(['yes'])
+    expect(listPendingAgentQuestions('run-1')).toEqual([])
   })
 })

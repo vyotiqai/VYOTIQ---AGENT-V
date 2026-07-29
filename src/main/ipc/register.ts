@@ -27,6 +27,7 @@ import {
   GitCommitRequestSchema,
   ToolApprovalResponseSchema,
   AgentQuestionResponseSchema,
+  ListPendingAgentQuestionsRequestSchema,
   ExtractAttachmentRequestSchema,
   MarketplaceBrowseRequestSchema,
   MarketplaceInstallRequestSchema,
@@ -46,6 +47,7 @@ import {
   type IpcResult,
   type Settings,
   type AgentEvent,
+  type AgentQuestionRequest,
   type ChatStartResult,
   type ChatMessage,
   type CompactRunResult,
@@ -119,6 +121,7 @@ import {
 } from '../agent/toolApproval'
 import {
   cancelPendingQuestions,
+  listPendingAgentQuestions,
   registerQuestionSender,
   resolveAgentQuestion
 } from '../agent/agentQuestion'
@@ -565,6 +568,19 @@ export function registerIpc(): void {
       return failFrom(err, IPC.agentQuestionResponse)
     }
   })
+
+  ipcMain.handle(
+    IPC.agentQuestionListPending,
+    async (event, raw): Promise<IpcResult<AgentQuestionRequest[]>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const { runId } = ListPendingAgentQuestionsRequestSchema.parse(raw)
+        return ok(listPendingAgentQuestions(runId))
+      } catch (err) {
+        return failFrom(err, IPC.agentQuestionListPending)
+      }
+    }
+  )
 
   ipcMain.handle(
     IPC.attachmentExtract,

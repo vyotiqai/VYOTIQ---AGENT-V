@@ -13,6 +13,7 @@ const pending = new Map<
     reject: (err: Error) => void
     runId: string
     invokeId?: number
+    request: AgentQuestionRequest
   }
 >()
 
@@ -22,11 +23,27 @@ function abortQuestionError(): Error {
   return err
 }
 
+/**
+ * Register (or replace) the window that receives question prompts for a run.
+ * Re-pushes any still-pending questions so a remounted renderer can show cards.
+ */
 export function registerQuestionSender(runId: string, sender: QuestionSender): () => void {
   senders.set(runId, sender)
+  for (const entry of pending.values()) {
+    if (entry.runId === runId) sender(entry.request)
+  }
   return () => {
     if (senders.get(runId) === sender) senders.delete(runId)
   }
+}
+
+/** Pending question payloads still waiting on the user for this run. */
+export function listPendingAgentQuestions(runId: string): AgentQuestionRequest[] {
+  const out: AgentQuestionRequest[] = []
+  for (const entry of pending.values()) {
+    if (entry.runId === runId) out.push(entry.request)
+  }
+  return out
 }
 
 /** Returns false when the request is unknown, e.g. the run was already cancelled. */
@@ -89,7 +106,8 @@ export function askQuestionThroughRenderer(
       resolve: settle,
       reject,
       runId: request.runId,
-      invokeId
+      invokeId,
+      request
     })
     signal.addEventListener('abort', onAbort, { once: true })
     sender(request)

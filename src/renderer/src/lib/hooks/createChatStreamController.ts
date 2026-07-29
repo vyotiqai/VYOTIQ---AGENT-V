@@ -1872,6 +1872,13 @@ export function createChatStreamController(
   const handleQuestionRequest = (request: AgentQuestionRequest): void => {
     if (closedRuns.has(request.runId)) return
     if (runId && request.runId !== runId) return
+    if (
+      state.items.some(
+        (item) => item.kind === 'question' && item.question.requestId === request.requestId
+      )
+    ) {
+      return
+    }
 
     const questionItem: Extract<UiItem, { kind: 'question' }> = {
       kind: 'question',
