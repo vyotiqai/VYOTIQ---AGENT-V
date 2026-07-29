@@ -117,4 +117,4 @@ VITE_SENTRY_DSN=https://<key>@o<org>.ingest.sentry.io/<project>
 
 ## Scope (kept lean)
 
-Tools: `read` · `list_dir` · `glob` · `grep` · `search` · `edit` · `multi_edit` · `delete` · `todo_write` · `web_fetch` · `web_search` · `browser_navigate` · `browser_snapshot` · `browser_click` · `browser_type` · `subagent` · `terminal` · `memory_list` · `memory_read` · `memory_write` (no terminal panel).
+Tools: `read` · `list_dir` · `glob` · `grep` · `search` · `edit` · `str_replace` · `multi_edit` · `delete` · `todo_write` · `web_fetch` · `web_search` · `browser_navigate` · `browser_snapshot` · `browser_click` · `browser_type` · `subagent` · `terminal` · `git_status` · `git_diff` · `diagnostics` · `memory_list` · `memory_read` · `memory_write` (no terminal panel).
