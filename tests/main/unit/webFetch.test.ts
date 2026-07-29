@@ -48,6 +48,8 @@ describe('isSyncBlockedUrl', () => {
     expect(isSyncBlockedUrl('http://127.0.0.1/')).toBe(true)
     expect(isSyncBlockedUrl('http://localhost/')).toBe(true)
     expect(isSyncBlockedUrl('http://192.168.0.1/')).toBe(true)
+    expect(isSyncBlockedUrl('http://2130706433/')).toBe(true)
+    expect(isSyncBlockedUrl('http://127.1/')).toBe(true)
     expect(isSyncBlockedUrl('file:///etc/passwd')).toBe(true)
     expect(isSyncBlockedUrl('not a url')).toBe(true)
   })

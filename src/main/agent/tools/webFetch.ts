@@ -56,6 +56,11 @@ export async function assertPublicUrl(raw: string): Promise<URL> {
     return url
   }
 
+  // Decimal/hex IPv4 forms that `isIP()` does not classify (e.g. 2130706433 → 127.0.0.1).
+  if (isPrivateIpv4(host) || isPrivateIpv6(host)) {
+    throw new Error(`Refusing to fetch a private or loopback address: ${url.hostname}`)
+  }
+
   const resolved = await resolveHost(host, { all: true, verbatim: true })
   if (resolved.length === 0) {
     throw new Error(`Could not resolve host: ${host}`)
@@ -90,6 +95,8 @@ export function isSyncBlockedUrl(raw: string): boolean {
   const literalVersion = isIP(host)
   if (literalVersion === 4) return isPrivateIpv4(host)
   if (literalVersion === 6) return isPrivateIpv6(host)
+  // Alternate IPv4 encodings (decimal/hex) that `isIP()` misses.
+  if (isPrivateIpv4(host) || isPrivateIpv6(host)) return true
   return false
 }
 

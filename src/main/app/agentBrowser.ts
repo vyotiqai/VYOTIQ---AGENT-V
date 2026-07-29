@@ -55,12 +55,30 @@ function attachAgentSecurity(wc: WebContents): void {
   })
 
   // Sync reject private/loopback/non-http(s) on in-window navigations and redirects.
-  // Full DNS SSRF is re-checked after load in navigateUrl.
   const blockPrivateNav = (event: Electron.Event, url: string): void => {
     if (isSyncBlockedUrl(url)) event.preventDefault()
   }
   wc.on('will-navigate', blockPrivateNav)
   wc.on('will-redirect', blockPrivateNav)
+
+  // Full DNS SSRF after any load (navigate, click, form submit, meta refresh).
+  wc.on('did-finish-load', () => {
+    void enforcePublicPage(wc)
+  })
+}
+
+/** Blank the page if the settled URL is private/loopback (async DNS). */
+async function enforcePublicPage(wc: WebContents): Promise<void> {
+  if (wc.isDestroyed()) return
+  const url = wc.getURL()
+  if (!url || url === 'about:blank' || url.startsWith('chrome-error://')) return
+  try {
+    await assertPublicUrl(url)
+  } catch {
+    if (wc.isDestroyed()) return
+    void wc.loadURL('about:blank')
+    emitCurrent({ snapshotDataUrl: null })
+  }
 }
 
 function ensureWindow(): BrowserWindow {
