@@ -213,6 +213,49 @@ function isPrivateResolvedAddress(address: string): boolean {
   return true
 }
 
+type LookupAddress = { address: string; family: 4 | 6 }
+type LookupCallback = (
+  err: NodeJS.ErrnoException | null,
+  address: string | LookupAddress[],
+  family?: number
+) => void
+
+/**
+ * Custom `http(s).request` lookup that pins to already-validated public IPs.
+ * Node 20+ Happy Eyeballs calls lookup with `{ all: true }` and expects an
+ * array of `{ address, family }` — returning a bare string yields
+ * `Invalid IP address: undefined`.
+ */
+export function createPinnedLookup(addresses: string[]): NonNullable<RequestOptions['lookup']> {
+  const entries: LookupAddress[] = []
+  for (const address of addresses) {
+    if (isPrivateResolvedAddress(address)) continue
+    const version = isIP(address)
+    if (version !== 4 && version !== 6) continue
+    entries.push({ address, family: version })
+  }
+  // Prefer IPv4 for the single-address path (broader compatibility).
+  const preferred = entries.find((e) => e.family === 4) ?? entries[0]
+  if (!preferred) {
+    throw new Error('Refusing to fetch a private or loopback address')
+  }
+
+  return ((_hostname, options, callback) => {
+    const opts =
+      typeof options === 'object' && options !== null
+        ? (options as { all?: boolean })
+        : ({} as { all?: boolean })
+    const cb: LookupCallback =
+      typeof options === 'function' ? (options as LookupCallback) : (callback as LookupCallback)
+
+    if (opts.all) {
+      cb(null, entries)
+      return
+    }
+    cb(null, preferred.address, preferred.family)
+  }) as NonNullable<RequestOptions['lookup']>
+}
+
 function decodeEntities(text: string): string {
   return text
     .replace(/&nbsp;/g, ' ')
@@ -355,13 +398,12 @@ async function fetchPinnedPublic(
   signal: AbortSignal,
   headers?: Record<string, string>
 ): Promise<Response> {
-  const publicAddrs = addresses.filter((a) => !isPrivateResolvedAddress(a))
-  if (publicAddrs.length === 0) {
+  let lookup: NonNullable<RequestOptions['lookup']>
+  try {
+    lookup = createPinnedLookup(addresses)
+  } catch {
     throw new Error(`Refusing to fetch a private or loopback address: ${url.hostname}`)
   }
-  // Prefer IPv4 for broader compatibility; fall back to first public address.
-  const pinnedIp = publicAddrs.find((a) => isIP(a) === 4) ?? publicAddrs[0]
-  const family = isIP(pinnedIp) === 6 ? 6 : 4
 
   const defaultPort = url.protocol === 'https:' ? 443 : 80
   const port = url.port ? Number(url.port) : defaultPort
@@ -377,9 +419,7 @@ async function fetchPinnedPublic(
     path: `${url.pathname}${url.search}`,
     method: 'GET',
     headers: requestHeaders,
-    lookup: (_hostname, _opts, cb) => {
-      cb(null, pinnedIp, family)
-    }
+    lookup
   }
 
   const lib = url.protocol === 'https:' ? https : http
@@ -515,14 +555,14 @@ function downloadPinnedHop(
   signal: AbortSignal,
   maxBytes: number
 ): Promise<DownloadHopResult> {
-  const publicAddrs = addresses.filter((a) => !isPrivateResolvedAddress(a))
-  if (publicAddrs.length === 0) {
+  let lookup: NonNullable<RequestOptions['lookup']>
+  try {
+    lookup = createPinnedLookup(addresses)
+  } catch {
     return Promise.reject(
       new Error(`Refusing to fetch a private or loopback address: ${url.hostname}`)
     )
   }
-  const pinnedIp = publicAddrs.find((a) => isIP(a) === 4) ?? publicAddrs[0]
-  const family = isIP(pinnedIp) === 6 ? 6 : 4
   const defaultPort = url.protocol === 'https:' ? 443 : 80
   const port = url.port ? Number(url.port) : defaultPort
   const lib = url.protocol === 'https:' ? https : http
@@ -536,9 +576,7 @@ function downloadPinnedHop(
         path: `${url.pathname}${url.search}`,
         method: 'GET',
         headers: { host: url.host, accept: '*/*' },
-        lookup: (_hostname, _opts, cb) => {
-          cb(null, pinnedIp, family)
-        }
+        lookup
       },
       (incoming) => {
         const status = incoming.statusCode ?? 0

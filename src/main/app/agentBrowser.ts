@@ -98,30 +98,11 @@ function attachTabView(tab: BrowserTab): void {
 }
 
 function applyActiveViewBounds(): void {
-  const main = getMainWindow()
   for (const tab of tabs.values()) {
     if (isTabDestroyed(tab)) continue
     const active = tab.id === activeTabId && tabs.size > 0
-    if (!active) {
-      tab.view.setVisible(false)
-      tab.view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
-      continue
-    }
-
-    let bounds = embedBounds
-    if ((!bounds || bounds.width < 1 || bounds.height < 1) && main && !main.isDestroyed()) {
-      // Fallback until the renderer reports the viewport slot — right ~42% of content.
-      // setBounds is relative to contentView (origin 0,0), not screen coordinates.
-      const [contentW, contentH] = main.getContentSize()
-      const width = Math.max(280, Math.round(contentW * 0.42))
-      bounds = {
-        x: Math.max(0, contentW - width),
-        y: 0,
-        width,
-        height: contentH
-      }
-    }
-    if (!bounds || bounds.width < 1 || bounds.height < 1) {
+    const bounds = embedBounds
+    if (!active || !bounds || bounds.width < 1 || bounds.height < 1) {
       tab.view.setVisible(false)
       tab.view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
       continue
@@ -1122,7 +1103,7 @@ export function closeAgentBrowser(): void {
   }
   tabs.clear()
   activeTabId = null
-  embedBounds = null
+  // Keep embedBounds — the chat panel is always visible and will host the next tab.
   pushState({
     open: false,
     url: '',

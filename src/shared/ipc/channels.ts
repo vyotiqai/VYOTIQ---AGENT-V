@@ -39,6 +39,8 @@ export const IPC = {
   browserBack: 'browser:back',
   browserForward: 'browser:forward',
   browserSetBounds: 'browser:setBounds',
+  browserNavigate: 'browser:navigate',
+  browserReload: 'browser:reload',
   gitStatus: 'git:status',
   gitCommit: 'git:commit',
   windowMinimize: 'window:minimize',

@@ -149,6 +149,8 @@ export interface VyotiqApi {
   browserSetBounds: (
     bounds: { x: number; y: number; width: number; height: number } | null
   ) => Promise<IpcResult<true>>
+  browserNavigate: (url: string) => Promise<IpcResult<boolean>>
+  browserReload: () => Promise<IpcResult<boolean>>
   openLogsDir: () => Promise<IpcResult<true>>
   getLogsPath: () => Promise<IpcResult<string>>
   telemetryStatus: () => Promise<IpcResult<TelemetryStatus>>

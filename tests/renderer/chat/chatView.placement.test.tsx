@@ -2,12 +2,17 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { ChatView } from '@renderer/features/chat/ChatView'
 import { COMPOSER_DOCK_FADE_PX } from '@renderer/lib/utils/layout'
 
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
+  try {
+    localStorage.removeItem('vyotiq.browserPanelOpen')
+  } catch {
+    /* ignore */
+  }
   // The docked composer asks the main process about git as soon as it mounts.
   Object.defineProperty(window, 'vyotiq', {
     configurable: true,
@@ -19,7 +24,9 @@ beforeEach(() => {
         data: { open: false, url: '', title: '' }
       }),
       onBrowserState: vi.fn().mockReturnValue(() => undefined),
-      browserSetBounds: vi.fn().mockResolvedValue({ ok: true, data: true })
+      browserSetBounds: vi.fn().mockResolvedValue({ ok: true, data: true }),
+      browserNavigate: vi.fn().mockResolvedValue({ ok: true, data: true }),
+      browserReload: vi.fn().mockResolvedValue({ ok: true, data: true })
     }
   })
   class ResizeObserverStub {
@@ -72,6 +79,19 @@ const baseProps = {
 }
 
 describe('ChatView composer placement', () => {
+  it('shows a side rail that opens the browser panel', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+
+    expect(document.querySelector('[data-chat-side-rail]')).toBeTruthy()
+    expect(document.querySelector('[data-agent-browser-panel]')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /Show browser panel/i }))
+    expect(document.querySelector('[data-agent-browser-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-agent-browser-viewport]')).toBeTruthy()
+    expect(screen.getByText('No page loaded')).toBeTruthy()
+    expect(screen.getByPlaceholderText('Search or enter URL')).toBeTruthy()
+  })
+
   it('renders a single hero composer in empty state without dock gutter', () => {
     render(<ChatView {...baseProps} items={[]} />)
 

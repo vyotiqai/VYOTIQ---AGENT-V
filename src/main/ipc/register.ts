@@ -109,7 +109,7 @@ import { runAgent, createRunId } from '../agent/loop'
 import { compactRunNow, CompactionUnavailableError } from '../agent/compactRun'
 import { undoWrites, resolveWrites, getWriteCheckpointMeta } from '../agent/checkpoints'
 import { resolveRunDir } from '@main/storage/paths'
-import { focusAgentBrowser, closeAgentBrowser, getAgentBrowserState, selectBrowserTab, browserGoBack, browserGoForward, setAgentBrowserBounds } from '@main/app/agentBrowser'
+import { focusAgentBrowser, closeAgentBrowser, getAgentBrowserState, selectBrowserTab, browserGoBack, browserGoForward, setAgentBrowserBounds, navigateUrl } from '@main/app/agentBrowser'
 import { extractAttachment } from '../attachments/extract'
 import {
   cancelPendingApprovals,
@@ -1258,6 +1258,30 @@ export function registerIpc(): void {
       return ok(await browserGoForward())
     } catch (err) {
       return failFrom(err, IPC.browserForward)
+    }
+  })
+
+  ipcMain.handle(IPC.browserNavigate, async (event, raw): Promise<IpcResult<boolean>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const url = typeof raw === 'string' ? raw : (raw as { url?: string })?.url
+      if (!url || typeof url !== 'string') return fail('URL required')
+      await navigateUrl(url)
+      return ok(true)
+    } catch (err) {
+      return failFrom(err, IPC.browserNavigate)
+    }
+  })
+
+  ipcMain.handle(IPC.browserReload, async (event): Promise<IpcResult<boolean>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const state = getAgentBrowserState()
+      if (!state.url) return fail('No active page')
+      await navigateUrl(state.url)
+      return ok(true)
+    } catch (err) {
+      return failFrom(err, IPC.browserReload)
     }
   })
 
