@@ -1,6 +1,6 @@
 import { basename, normalize } from 'path'
 import type { AgentInteractionMode } from '../../../shared/ipc'
-import { parseMcpToolName, getMcpReadOnlyHint } from '../mcp'
+import { parseMcpToolName } from '../mcp'
 import { isParallelSafeTool } from './classify'
 
 /** Built-in tools allowed in Ask mode (read-only / parallel-safe). */
@@ -12,10 +12,9 @@ export const ASK_SAFE_BUILTIN = new Set([
   'list_dir',
   'web_fetch',
   'web_search',
+  // Browse-only: click/type can submit forms and mutate live sites.
   'browser_navigate',
   'browser_snapshot',
-  'browser_click',
-  'browser_type',
   'memory_list',
   'memory_read',
   'subagent',
@@ -71,12 +70,13 @@ export function isBuiltinAllowedInMode(mode: AgentInteractionMode, name: string)
 }
 
 /**
- * MCP tools in Ask/Plan: only when the server declared readOnlyHint.
- * (Hint is still untrusted for parallel/approval — mode filter only.)
+ * MCP tools in Ask/Plan: never allowed.
+ * Server `readOnlyHint` is untrusted (same stance as parallel/approval); with
+ * default toolApproval off it would otherwise gate destructive MCP tools.
  */
-export function isMcpAllowedInMode(mode: AgentInteractionMode, fullName: string): boolean {
+export function isMcpAllowedInMode(mode: AgentInteractionMode, _fullName: string): boolean {
   if (mode === 'agent') return true
-  return getMcpReadOnlyHint(fullName) === true
+  return false
 }
 
 export function filterToolDefsForMode<T extends { name: string }>(
@@ -107,7 +107,7 @@ export function assertToolAllowedInMode(
     if (!isMcpAllowedInMode(mode, name)) {
       return {
         ok: false,
-        error: `${mode === 'ask' ? 'Ask' : 'Plan'} mode only allows MCP tools marked read-only. "${name}" is not allowed.`
+        error: `${mode === 'ask' ? 'Ask' : 'Plan'} mode does not allow MCP tools. Switch to Agent mode to use "${name}".`
       }
     }
     return { ok: true }
@@ -139,12 +139,7 @@ export function assertToolAllowedInMode(
  * Ask-safe tools are normally parallel-safe. Exception: agent-browser tools share
  * one BrowserWindow and must stay serial while remaining Ask-readable.
  */
-const ASK_SAFE_SERIAL_OK = new Set([
-  'browser_navigate',
-  'browser_snapshot',
-  'browser_click',
-  'browser_type'
-])
+const ASK_SAFE_SERIAL_OK = new Set(['browser_navigate', 'browser_snapshot'])
 
 export function askSafeAlignsWithParallelSafe(): boolean {
   for (const name of ASK_SAFE_BUILTIN) {

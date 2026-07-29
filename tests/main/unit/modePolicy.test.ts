@@ -59,17 +59,24 @@ describe('modePolicy', () => {
     expect(isPlanArtifactPath('src/app.ts')).toBe(false)
   })
 
-  it('filterToolDefsForMode drops mutating tools in Ask', () => {
+  it('filterToolDefsForMode drops mutating tools and all MCP in Ask', () => {
     const defs = [
       { name: 'read' },
       { name: 'edit' },
-      { name: 'mcp__srv__tool' }
+      { name: 'mcp__srv__tool' },
+      { name: 'browser_click' },
+      { name: 'browser_navigate' }
     ]
     setMcpReadOnlyHintsForTests({ 'mcp__srv__tool': true })
     const ask = filterToolDefsForMode('ask', defs)
-    expect(ask.map((d) => d.name)).toEqual(['read', 'mcp__srv__tool'])
-    setMcpReadOnlyHintsForTests({ 'mcp__srv__tool': false })
-    expect(filterToolDefsForMode('ask', defs).map((d) => d.name)).toEqual(['read'])
+    expect(ask.map((d) => d.name)).toEqual(['read', 'browser_navigate'])
+  })
+
+  it('Ask mode denies browser_click and browser_type', () => {
+    expect(isBuiltinAllowedInMode('ask', 'browser_click')).toBe(false)
+    expect(isBuiltinAllowedInMode('ask', 'browser_type')).toBe(false)
+    expect(isBuiltinAllowedInMode('ask', 'browser_navigate')).toBe(true)
+    expect(assertToolAllowedInMode('ask', 'browser_click', { selector: 'button' }).ok).toBe(false)
   })
 
   it('modeSectionMarkdown is null for agent', () => {

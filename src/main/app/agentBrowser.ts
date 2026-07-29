@@ -11,7 +11,8 @@ const DEFAULT_NAV_TIMEOUT_MS = 30_000
 const MAX_NAV_TIMEOUT_MS = 60_000
 const DEFAULT_SNAPSHOT_CHARS = 40_000
 const SNAPSHOT_JPEG_QUALITY = 55
-const MAX_PREVIEW_BYTES = 350_000
+const MAX_PREVIEW_BYTES = 150_000
+const PREVIEW_MAX_WIDTH = 960
 
 export type AgentBrowserState = {
   open: boolean
@@ -23,6 +24,17 @@ export type AgentBrowserState = {
 
 let browserWin: BrowserWindow | null = null
 let lastState: AgentBrowserState = { open: false, url: '', title: '', snapshotDataUrl: null }
+/** Serialize navigate/click/type/snapshot across concurrent runs sharing one window. */
+let browserOpChain: Promise<void> = Promise.resolve()
+
+function withBrowserLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = browserOpChain.then(fn, fn)
+  browserOpChain = run.then(
+    () => undefined,
+    () => undefined
+  )
+  return run
+}
 
 function pushState(partial: Partial<AgentBrowserState>): void {
   lastState = { ...lastState, ...partial }
@@ -181,6 +193,13 @@ export async function navigateUrl(
   rawUrl: string,
   opts: { signal?: AbortSignal; timeoutMs?: number } = {}
 ): Promise<string> {
+  return withBrowserLock(() => navigateUrlUnlocked(rawUrl, opts))
+}
+
+async function navigateUrlUnlocked(
+  rawUrl: string,
+  opts: { signal?: AbortSignal; timeoutMs?: number } = {}
+): Promise<string> {
   const url = await assertPublicUrl(rawUrl)
   throwIfAborted(opts.signal)
 
@@ -224,6 +243,16 @@ export async function snapshotPage(
     runDir?: string
   } = {}
 ): Promise<string> {
+  return withBrowserLock(() => snapshotPageUnlocked(opts))
+}
+
+async function snapshotPageUnlocked(
+  opts: {
+    signal?: AbortSignal
+    maxChars?: number
+    runDir?: string
+  } = {}
+): Promise<string> {
   throwIfAborted(opts.signal)
   const win = requireOpenWindow()
 
@@ -235,7 +264,7 @@ export async function snapshotPage(
     `(() => {
       const title = document.title || ''
       const body = (document.body && (document.body.innerText || document.body.textContent)) || ''
-      return (title ? title + '\\n\\n' : '') + String(body).slice(0, 200000)
+      return (title ? title + '\\n\\n' : '') + String(body).slice(0, ${maxChars})
     })()`,
     true
   )
@@ -244,7 +273,11 @@ export async function snapshotPage(
 
   let imageNote = ''
   try {
-    const image = await win.webContents.capturePage()
+    let image = await win.webContents.capturePage()
+    const size = image.getSize()
+    if (size.width > PREVIEW_MAX_WIDTH) {
+      image = image.resize({ width: PREVIEW_MAX_WIDTH, quality: 'better' })
+    }
     const jpeg = image.toJPEG(SNAPSHOT_JPEG_QUALITY)
     if (opts.runDir) {
       const dir = join(opts.runDir, 'browser')
@@ -319,6 +352,13 @@ export async function clickSelector(
   selector: string,
   opts: { signal?: AbortSignal; button?: 'left' | 'right' | 'middle' } = {}
 ): Promise<string> {
+  return withBrowserLock(() => clickSelectorUnlocked(selector, opts))
+}
+
+async function clickSelectorUnlocked(
+  selector: string,
+  opts: { signal?: AbortSignal; button?: 'left' | 'right' | 'middle' } = {}
+): Promise<string> {
   throwIfAborted(opts.signal)
   const sel = String(selector ?? '').trim()
   if (!sel) throw new Error('selector is required')
@@ -355,6 +395,18 @@ const MAX_TYPE_CHARS = 4_000
 
 /** Type into the focused element, optionally focusing a CSS selector first. */
 export async function typeText(
+  text: string,
+  opts: {
+    signal?: AbortSignal
+    selector?: string
+    clear?: boolean
+    pressEnter?: boolean
+  } = {}
+): Promise<string> {
+  return withBrowserLock(() => typeTextUnlocked(text, opts))
+}
+
+async function typeTextUnlocked(
   text: string,
   opts: {
     signal?: AbortSignal
@@ -414,14 +466,9 @@ export async function typeText(
     win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' })
   }
 
-  for (const char of value) {
-    throwIfAborted(opts.signal)
-    if (char === '\n' || char === '\r') {
-      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' })
-      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
-      continue
-    }
-    win.webContents.sendInputEvent({ type: 'char', keyCode: char })
+  // Bulk insert avoids thousands of per-character sendInputEvent calls.
+  if (value.length > 0) {
+    win.webContents.insertText(value)
   }
 
   if (opts.pressEnter) {
@@ -459,4 +506,5 @@ export function getAgentBrowserState(): AgentBrowserState {
 export function resetAgentBrowserForTests(): void {
   browserWin = null
   lastState = { open: false, url: '', title: '', snapshotDataUrl: null }
+  browserOpChain = Promise.resolve()
 }
