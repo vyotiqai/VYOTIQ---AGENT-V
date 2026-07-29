@@ -262,6 +262,29 @@ describe('ipc schemas', () => {
     ).toBe('c1')
     expect(
       AgentEventSchema.parse({
+        type: 'terminal_output_delta',
+        runId: 'r1',
+        toolCallId: 't1',
+        text: 'hello\n',
+        stream: 'stdout'
+      })
+    ).toEqual({
+      type: 'terminal_output_delta',
+      runId: 'r1',
+      toolCallId: 't1',
+      text: 'hello\n',
+      stream: 'stdout'
+    })
+    expect(
+      AgentEventSchema.parse({
+        type: 'terminal_output_delta',
+        runId: 'r1',
+        toolCallId: 't1',
+        text: 'err\n'
+      }).stream
+    ).toBeUndefined()
+    expect(
+      AgentEventSchema.parse({
         type: 'subagent_context_usage',
         runId: 'r1',
         parentToolCallId: 'c1',

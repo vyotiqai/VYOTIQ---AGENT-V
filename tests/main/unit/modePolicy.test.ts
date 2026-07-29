@@ -82,6 +82,17 @@ describe('modePolicy', () => {
     expect(assertToolAllowedInMode('ask', 'browser_click', { selector: 'button' }).ok).toBe(false)
   })
 
+  it('Ask mode allows wait/history/tabs and denies press_key/select_option', () => {
+    expect(isBuiltinAllowedInMode('ask', 'browser_tabs')).toBe(true)
+    expect(isBuiltinAllowedInMode('ask', 'browser_back')).toBe(true)
+    expect(isBuiltinAllowedInMode('ask', 'browser_forward')).toBe(true)
+    expect(isBuiltinAllowedInMode('ask', 'browser_wait_for_selector')).toBe(true)
+    expect(isBuiltinAllowedInMode('ask', 'browser_wait_for_url')).toBe(true)
+    expect(isBuiltinAllowedInMode('ask', 'mcp_list_tools')).toBe(true)
+    expect(isBuiltinAllowedInMode('ask', 'browser_press_key')).toBe(false)
+    expect(isBuiltinAllowedInMode('ask', 'browser_select_option')).toBe(false)
+  })
+
   it('modeSectionMarkdown is null for agent', () => {
     expect(modeSectionMarkdown('agent')).toBeNull()
     expect(modeSectionMarkdown('ask')).toContain('Ask mode')

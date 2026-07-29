@@ -20,4 +20,36 @@ describe('createChatStreamController', () => {
     controller.reset()
     expect(controller.collapsedTurnIndices).toEqual([])
   })
+
+  it('appends terminal_output_delta into a running terminal tool row', () => {
+    const controller = createChatStreamController({ workspacePath: '/ws', runId: 'r1' })
+
+    controller.handleEvent({
+      type: 'tool_start',
+      runId: 'r1',
+      toolCallId: 'term-1',
+      name: 'terminal',
+      summary: 'echo hi'
+    })
+    controller.handleEvent({
+      type: 'terminal_output_delta',
+      runId: 'r1',
+      toolCallId: 'term-1',
+      text: 'hi\n',
+      stream: 'stdout'
+    })
+    controller.handleEvent({
+      type: 'terminal_output_delta',
+      runId: 'r1',
+      toolCallId: 'term-1',
+      text: 'boom\n',
+      stream: 'stderr'
+    })
+
+    const tool = controller.items.find((item) => item.kind === 'tool' && item.id === 'term-1')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind !== 'tool') return
+    expect(tool.tool.status).toBe('running')
+    expect(tool.tool.content).toBe('hi\n\nstderr:\nboom\n')
+  })
 })
