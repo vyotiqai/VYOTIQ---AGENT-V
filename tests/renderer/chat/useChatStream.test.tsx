@@ -1815,6 +1815,134 @@ describe('useChatStream', () => {
     expect(result.current.error).toBe('approval expired')
   })
 
+  it('keeps approval visible when respondToolApproval returns data false', async () => {
+    const respondToolApproval = vi.fn().mockResolvedValue({ ok: true, data: false })
+    // @ts-expect-error test bridge
+    window.vyotiq.respondToolApproval = respondToolApproval
+
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('edit')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        toolCallId: 'c1',
+        name: 'edit',
+        summary: 'a.ts'
+      })
+      result.current.handleApprovalRequest({
+        requestId: 'req-stale',
+        runId: 'run-1',
+        toolCallId: 'c1',
+        name: 'edit',
+        summary: 'a.ts',
+        mutating: true
+      })
+    })
+
+    await act(async () => {
+      await expect(result.current.respondToApproval('req-stale', 'once')).rejects.toThrow(
+        /not accepted/
+      )
+    })
+
+    expect(
+      result.current.items.some((i) => i.kind === 'tool' && i.approval?.requestId === 'req-stale')
+    ).toBe(true)
+  })
+
+  it('clears question only after respondAgentQuestion succeeds with data true', async () => {
+    const respondAgentQuestion = vi.fn().mockResolvedValue({ ok: true, data: true })
+    // @ts-expect-error test bridge
+    window.vyotiq.respondAgentQuestion = respondAgentQuestion
+
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('ask')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      result.current.handleQuestionRequest({
+        requestId: 'q-1',
+        runId: 'run-1',
+        toolCallId: 'tq1',
+        question: 'Pick one?',
+        options: ['A', 'B']
+      })
+    })
+
+    expect(result.current.items.some((i) => i.kind === 'question')).toBe(true)
+
+    await act(async () => {
+      await result.current.respondToQuestion('q-1', ['A'])
+    })
+
+    expect(respondAgentQuestion).toHaveBeenCalledWith('q-1', ['A'])
+    expect(result.current.items.some((i) => i.kind === 'question')).toBe(false)
+  })
+
+  it('keeps question visible when respondAgentQuestion returns data false', async () => {
+    const respondAgentQuestion = vi.fn().mockResolvedValue({ ok: true, data: false })
+    // @ts-expect-error test bridge
+    window.vyotiq.respondAgentQuestion = respondAgentQuestion
+
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('ask')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      result.current.handleQuestionRequest({
+        requestId: 'q-stale',
+        runId: 'run-1',
+        toolCallId: 'tq1',
+        question: 'Still there?'
+      })
+    })
+
+    await act(async () => {
+      await expect(result.current.respondToQuestion('q-stale', ['yes'])).rejects.toThrow(
+        /not accepted/
+      )
+    })
+
+    expect(
+      result.current.items.some(
+        (i) => i.kind === 'question' && i.question.requestId === 'q-stale'
+      )
+    ).toBe(true)
+  })
+
+  it('keeps pending question cards across stream_reset', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('ask')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      result.current.handleQuestionRequest({
+        requestId: 'q-keep',
+        runId: 'run-1',
+        toolCallId: 'tq1',
+        question: 'Survive retry?'
+      })
+      handler?.({ type: 'stream_reset', runId: 'run-1', step: 1 })
+    })
+
+    expect(
+      result.current.items.some(
+        (i) => i.kind === 'question' && i.question.requestId === 'q-keep'
+      )
+    ).toBe(true)
+  })
+
   it('uses contentRunId for lazy tool loads after syncFromDisk clears runId', async () => {
     const loadToolResult = vi.fn().mockResolvedValue({
       ok: true,

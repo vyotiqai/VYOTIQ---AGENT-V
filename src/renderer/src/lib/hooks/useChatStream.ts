@@ -73,6 +73,8 @@ export function useChatStream(workspacePath: string | null) {
     loadToolContent: controller.loadToolContent.bind(controller),
     toggleTurnCollapsed: controller.toggleTurnCollapsed.bind(controller),
     handleApprovalRequest: controller.handleApprovalRequest.bind(controller),
-    respondToApproval: controller.respondToApproval.bind(controller)
+    respondToApproval: controller.respondToApproval.bind(controller),
+    handleQuestionRequest: controller.handleQuestionRequest.bind(controller),
+    respondToQuestion: controller.respondToQuestion.bind(controller)
   }
 }

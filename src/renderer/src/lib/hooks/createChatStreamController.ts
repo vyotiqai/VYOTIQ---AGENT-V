@@ -281,12 +281,10 @@ function pruneOrphanDeltaToolRows(
       return false
     }
 
-    // Real id from a delta that the final assistant_message dropped.
-    if (toolCalls && toolCalls.length > 0) {
-      changed = true
-      return false
-    }
-    return true
+    // Real id from a delta that the final assistant_message dropped (including
+    // text-only steps where toolCalls is empty/absent).
+    changed = true
+    return false
   })
   return changed ? next : items
 }
