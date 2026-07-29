@@ -5,14 +5,23 @@ import { IPC } from '../../shared/channels'
 import { assertPublicUrl, isSyncBlockedUrl } from '@main/agent/tools/webFetch'
 import { getMainWindow } from '@main/app/window'
 import { isAbortError } from '../../shared/errors'
+import {
+  formatInteractiveRefs,
+  parseBrowserTarget,
+  type BrowserElementRef
+} from './agentBrowserRefs'
 
 const PARTITION = 'persist:vyotiq-agent-browser'
 const DEFAULT_NAV_TIMEOUT_MS = 30_000
 const MAX_NAV_TIMEOUT_MS = 60_000
 const DEFAULT_SNAPSHOT_CHARS = 40_000
+const MAX_INTERACTIVE_REFS = 80
 const SNAPSHOT_JPEG_QUALITY = 55
 const MAX_PREVIEW_BYTES = 150_000
 const PREVIEW_MAX_WIDTH = 960
+
+/** Last snapshot interactive refs keyed by id (`e1`, `e2`, …). */
+let lastRefs = new Map<string, BrowserElementRef>()
 
 export type AgentBrowserState = {
   open: boolean
@@ -230,6 +239,7 @@ async function navigateUrlUnlocked(
     throw err
   }
 
+  lastRefs = new Map()
   emitCurrent({ snapshotDataUrl: null })
   const title = win.webContents.getTitle()
   return [`Navigated to ${finalUrl}`, `Title: ${title || '(none)'}`].join('\n')
@@ -260,16 +270,110 @@ async function snapshotPageUnlocked(
   const url = win.webContents.getURL()
   const title = win.webContents.getTitle()
 
-  const pageText: string = await win.webContents.executeJavaScript(
+  type SnapshotPayload = {
+    text: string
+    viewport: { w: number; h: number }
+    items: Array<{ selector: string; tag: string; role: string; name: string }>
+  }
+
+  const payload = (await win.webContents.executeJavaScript(
     `(() => {
+      const cssEscape = (value) => {
+        if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(value)
+        return String(value).replace(/([ !"#$%&'()*+,./:;<=>?@[\\\\\\]^\`{|}~])/g, '\\\\$1')
+      }
+      const cssPath = (el) => {
+        if (el.id && document.querySelectorAll('#' + cssEscape(el.id)).length === 1) {
+          return '#' + cssEscape(el.id)
+        }
+        const testId = el.getAttribute('data-testid')
+        if (testId && document.querySelectorAll('[data-testid="' + testId.replace(/"/g, '\\\\"') + '"]').length === 1) {
+          return '[data-testid="' + testId.replace(/"/g, '\\\\"') + '"]'
+        }
+        const parts = []
+        let node = el
+        while (node && node.nodeType === 1 && parts.length < 6) {
+          const parent = node.parentElement
+          if (!parent) {
+            parts.unshift(node.tagName.toLowerCase())
+            break
+          }
+          const tag = node.tagName.toLowerCase()
+          const siblings = Array.from(parent.children).filter((c) => c.tagName === node.tagName)
+          const idx = siblings.indexOf(node) + 1
+          parts.unshift(siblings.length > 1 ? tag + ':nth-of-type(' + idx + ')' : tag)
+          if (parent === document.body || parent === document.documentElement) {
+            parts.unshift(parent.tagName.toLowerCase())
+            break
+          }
+          node = parent
+        }
+        return parts.join(' > ')
+      }
+      const visible = (el) => {
+        const r = el.getBoundingClientRect()
+        if (r.width <= 0 || r.height <= 0) return false
+        const style = window.getComputedStyle(el)
+        if (style.visibility === 'hidden' || style.display === 'none') return false
+        return true
+      }
+      const roleOf = (el) => {
+        const explicit = el.getAttribute('role')
+        if (explicit) return explicit
+        const tag = el.tagName.toLowerCase()
+        if (tag === 'a') return 'link'
+        if (tag === 'button') return 'button'
+        if (tag === 'input') return el.getAttribute('type') === 'submit' ? 'button' : 'textbox'
+        if (tag === 'textarea') return 'textbox'
+        if (tag === 'select') return 'combobox'
+        if (el.isContentEditable) return 'textbox'
+        return tag
+      }
+      const nameOf = (el) => {
+        const labelled = el.getAttribute('aria-label')
+          || el.getAttribute('placeholder')
+          || el.getAttribute('name')
+          || el.getAttribute('title')
+          || (el.labels && el.labels[0] && el.labels[0].innerText)
+          || (typeof el.value === 'string' ? el.value : '')
+          || el.innerText
+          || ''
+        return String(labelled).replace(/\\s+/g, ' ').trim().slice(0, 80)
+      }
+      const selector = 'a[href], button, input:not([type="hidden"]), select, textarea, summary, [role="button"], [role="link"], [role="textbox"], [role="checkbox"], [role="radio"], [role="menuitem"], [contenteditable="true"]'
+      const items = []
+      for (const el of document.querySelectorAll(selector)) {
+        if (!visible(el)) continue
+        items.push({
+          selector: cssPath(el),
+          tag: el.tagName,
+          role: roleOf(el),
+          name: nameOf(el)
+        })
+        if (items.length >= ${MAX_INTERACTIVE_REFS}) break
+      }
       const title = document.title || ''
       const body = (document.body && (document.body.innerText || document.body.textContent)) || ''
-      return (title ? title + '\\n\\n' : '') + String(body).slice(0, ${maxChars})
+      const text = (title ? title + '\\n\\n' : '') + String(body)
+      return {
+        text,
+        viewport: { w: window.innerWidth || 0, h: window.innerHeight || 0 },
+        items
+      }
     })()`,
     true
-  )
+  )) as SnapshotPayload
 
   throwIfAborted(opts.signal)
+
+  const refs: BrowserElementRef[] = (payload?.items ?? []).map((item, i) => ({
+    id: `e${i + 1}`,
+    selector: item.selector,
+    tag: item.tag,
+    role: item.role,
+    name: item.name
+  }))
+  lastRefs = new Map(refs.map((r) => [r.id, r]))
 
   let imageNote = ''
   try {
@@ -296,8 +400,23 @@ async function snapshotPageUnlocked(
     emitCurrent({ snapshotDataUrl: null })
   }
 
-  const body = String(pageText ?? '').slice(0, maxChars)
-  return [`URL: ${url}`, `Title: ${title || '(none)'}`, '', body].join('\n') + imageNote
+  const bodyBudget = Math.max(500, maxChars - 2_000)
+  const body = String(payload?.text ?? '').slice(0, bodyBudget)
+  const viewport = payload?.viewport
+  const viewportLine =
+    viewport && viewport.w > 0
+      ? `Viewport: ${viewport.w}x${viewport.h}`
+      : 'Viewport: (unknown)'
+  const interactive = [
+    'Interactive elements (use @eN with browser_click / browser_type):',
+    formatInteractiveRefs(refs)
+  ].join('\n')
+
+  return (
+    [`URL: ${url}`, `Title: ${title || '(none)'}`, viewportLine, '', interactive, '', body].join(
+      '\n'
+    ) + imageNote
+  )
 }
 
 function requireOpenWindow(): BrowserWindow {
@@ -316,11 +435,26 @@ type ElementHit = {
 }
 
 async function resolveSelector(win: BrowserWindow, selector: string): Promise<ElementHit> {
+  const target = parseBrowserTarget(selector)
+  let css = target.kind === 'css' ? target.selector : ''
+  if (target.kind === 'ref') {
+    const ref = lastRefs.get(target.id)
+    if (!ref) {
+      throw new Error(
+        `Unknown snapshot ref @${target.id}. Call browser_snapshot first and use a listed @eN ref.`
+      )
+    }
+    css = ref.selector
+  }
+
   const hit = (await win.webContents.executeJavaScript(
     `(() => {
-      const el = document.querySelector(${JSON.stringify(selector)})
+      const el = document.querySelector(${JSON.stringify(css)})
       if (!el) return null
       el.scrollIntoView({ block: 'center', inline: 'nearest' })
+      if (typeof el.focus === 'function') {
+        try { el.focus({ preventScroll: true }) } catch { el.focus() }
+      }
       const r = el.getBoundingClientRect()
       if (r.width <= 0 || r.height <= 0) return null
       const label = (
@@ -342,7 +476,11 @@ async function resolveSelector(win: BrowserWindow, selector: string): Promise<El
   )) as ElementHit | null
 
   if (!hit) {
-    throw new Error(`No visible element matched selector: ${selector}`)
+    throw new Error(
+      target.kind === 'ref'
+        ? `Snapshot ref @${target.id} no longer matches a visible element (css=${css})`
+        : `No visible element matched selector: ${selector}`
+    )
   }
   return hit
 }
@@ -459,9 +597,10 @@ async function typeTextUnlocked(
   throwIfAborted(opts.signal)
 
   if (opts.clear) {
-    // Select-all then delete (works across platforms for most inputs).
-    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: ['control'] })
-    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: ['control'] })
+    // Select-all then delete (meta on macOS, control elsewhere).
+    const selectMod = process.platform === 'darwin' ? 'meta' : 'control'
+    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: [selectMod] })
+    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: [selectMod] })
     win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' })
     win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' })
   }
@@ -495,6 +634,7 @@ export function closeAgentBrowser(): void {
     browserWin.close()
   }
   browserWin = null
+  lastRefs = new Map()
   pushState({ open: false, url: '', title: '', snapshotDataUrl: null })
 }
 
@@ -506,5 +646,6 @@ export function getAgentBrowserState(): AgentBrowserState {
 export function resetAgentBrowserForTests(): void {
   browserWin = null
   lastState = { open: false, url: '', title: '', snapshotDataUrl: null }
+  lastRefs = new Map()
   browserOpChain = Promise.resolve()
 }

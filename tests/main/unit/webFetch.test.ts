@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   assertPublicUrl,
   isSyncBlockedUrl,
   resetDnsLookupForTests,
   setDnsLookupForTests,
+  setPublicFetchForTests,
   toolWebFetch
 } from '@main/agent/tools/webFetch'
 
@@ -11,6 +12,7 @@ const PUBLIC_IP = '93.184.216.34'
 
 afterEach(() => {
   resetDnsLookupForTests()
+  setPublicFetchForTests(null)
   vi.restoreAllMocks()
 })
 
@@ -61,25 +63,20 @@ describe('isSyncBlockedUrl', () => {
 })
 
 describe('toolWebFetch redirects', () => {
-  const originalFetch = globalThis.fetch
-
-  beforeEach(() => {
-    globalThis.fetch = originalFetch
-  })
-
   it('rejects redirects to private hosts', async () => {
-    globalThis.fetch = vi.fn(async () => {
+    const fetchMock = vi.fn(async () => {
       return new Response(null, {
         status: 302,
         headers: { location: 'http://127.0.0.1:11434/' }
       })
-    }) as typeof fetch
+    })
+    setPublicFetchForTests(fetchMock)
 
     await expect(toolWebFetch(`https://${PUBLIC_IP}/`)).rejects.toThrow(/private or loopback/)
   })
 
   it('follows safe redirects and validates each hop', async () => {
-    globalThis.fetch = vi
+    const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
         new Response(null, {
@@ -92,11 +89,12 @@ describe('toolWebFetch redirects', () => {
           status: 200,
           headers: { 'content-type': 'text/html' }
         })
-      ) as typeof fetch
+      )
+    setPublicFetchForTests(fetchMock)
 
     const out = await toolWebFetch(`https://${PUBLIC_IP}/start`)
     expect(out).toContain(`# https://${PUBLIC_IP}/final`)
     expect(out).toContain('hello')
-    expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 })

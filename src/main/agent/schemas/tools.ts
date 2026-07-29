@@ -237,7 +237,10 @@ const browserSnapshotArgs = z.object({
 })
 
 const browserClickArgs = z.object({
-  selector: z.string().min(1).describe('CSS selector of the element to click.'),
+  selector: z
+    .string()
+    .min(1)
+    .describe('CSS selector or snapshot ref (@e12) from the latest browser_snapshot.'),
   button: z
     .enum(['left', 'right', 'middle'])
     .describe('Mouse button (default left)')
@@ -249,7 +252,7 @@ const browserTypeArgs = z.object({
   selector: z
     .string()
     .min(1)
-    .describe('Optional CSS selector to focus/click before typing')
+    .describe('Optional CSS selector or snapshot ref (@e12) to focus before typing')
     .optional(),
   clear: z.boolean().describe('Select-all and delete before typing (default false)').optional(),
   pressEnter: z.boolean().describe('Press Enter after typing (default false)').optional()
@@ -386,17 +389,17 @@ const TOOL_REGISTRY = {
   },
   browser_snapshot: {
     description:
-      'Capture the current agent-browser page as accessibility text (and a screenshot for the UI). Call browser_navigate first.',
+      'Capture the current agent-browser page: interactive element refs (@eN), viewport, page text, and a UI screenshot. Call browser_navigate first; prefer @eN refs with browser_click / browser_type.',
     schema: browserSnapshotArgs
   },
   browser_click: {
     description:
-      'Click an element in the agent browser by CSS selector. Call browser_navigate first; use browser_snapshot to inspect the page.',
+      'Click an element in the agent browser by CSS selector or snapshot ref (@e12). Call browser_navigate first; use browser_snapshot to list refs.',
     schema: browserClickArgs
   },
   browser_type: {
     description:
-      'Type text into the agent browser. Optionally focus a CSS selector first; can clear existing text and press Enter.',
+      'Type text into the agent browser. Optionally focus a CSS selector or snapshot ref (@e12) first; can clear existing text and press Enter.',
     schema: browserTypeArgs
   },
   subagent: {

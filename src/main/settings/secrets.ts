@@ -172,8 +172,20 @@ export function getMcpAuthToken(serverId: string): string | null {
   return decryptBlob(encrypted)
 }
 
+/** True when an encrypted MCP bearer blob exists (does not decrypt). */
 export function hasMcpAuthToken(serverId: string): boolean {
-  return getMcpAuthToken(serverId) != null
+  const id = serverId.trim()
+  if (!id) return false
+  const encrypted = readFile()[mcpAuthKey(id)]
+  return typeof encrypted === 'string' && encrypted.length > 0
+}
+
+/** True when an encrypted MCP OAuth blob exists (does not decrypt). */
+export function hasStoredMcpOAuthBlob(serverId: string): boolean {
+  const id = serverId.trim()
+  if (!id) return false
+  const encrypted = readFile()[mcpOauthKey(id)]
+  return typeof encrypted === 'string' && encrypted.length > 0
 }
 
 /** Rename stored MCP auth when a server id changes. */
