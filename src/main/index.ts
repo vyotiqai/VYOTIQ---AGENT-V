@@ -7,6 +7,7 @@ import { closeAgentBrowser } from '@main/app/agentBrowser'
 import { registerIpc } from './ipc/register'
 import { shutdownMcpServers, syncMcpServers } from '@main/agent/mcp'
 import { resolveEffectiveMcpServers, syncMarketplaceMcpIntoSettings } from '@main/marketplace'
+import { ensureDefaultSemanticMcp } from '@main/marketplace/ensureDefaultSemanticMcp'
 import { getSettings } from '@main/settings/settings'
 import { migrateLegacySessions } from '@main/storage/migrations/migrateSessions'
 import { migrateWorkspaceRuns } from './storage/migrateWorkspaceRuns'
@@ -72,6 +73,11 @@ if (!gotLock) {
     }
     registerIpc()
     try {
+      void ensureDefaultSemanticMcp().then(() => {
+        void syncMcpServers(resolveEffectiveMcpServers()).catch((err) => {
+          logger.warn('MCP sync after default semantic install failed', { scope: 'main', err })
+        })
+      })
       syncMarketplaceMcpIntoSettings()
     } catch (err) {
       logger.warn('Marketplace MCP settings sync failed', { scope: 'main', err })

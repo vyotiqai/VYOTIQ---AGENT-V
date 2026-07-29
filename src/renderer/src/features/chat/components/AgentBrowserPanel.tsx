@@ -2,7 +2,13 @@ import { useEffect, useState } from 'react'
 import { cn } from '@renderer/lib/ui/cn'
 import type { AgentBrowserState } from '@shared/ipc'
 
-const EMPTY: AgentBrowserState = { open: false, url: '', title: '', snapshotDataUrl: null }
+const EMPTY: AgentBrowserState = {
+  open: false,
+  url: '',
+  title: '',
+  snapshotDataUrl: null,
+  navigating: false
+}
 
 export function AgentBrowserPanel({ className }: { className?: string }) {
   const [state, setState] = useState<AgentBrowserState>(EMPTY)
@@ -24,7 +30,8 @@ export function AgentBrowserPanel({ className }: { className?: string }) {
 
   if (!state.open && !state.snapshotDataUrl) return null
 
-  const label = state.title?.trim() || state.url || 'Agent browser'
+  const title = state.title?.trim() || 'Agent browser'
+  const url = state.url?.trim() || ''
 
   return (
     <div
@@ -34,11 +41,23 @@ export function AgentBrowserPanel({ className }: { className?: string }) {
       )}
       data-agent-browser-panel
     >
-      <div className="flex min-w-0 items-center gap-2 px-2.5 py-1.5 text-[11px]">
-        <span className="shrink-0 font-medium text-fg">Browser</span>
-        <span className="min-w-0 flex-1 truncate text-muted" title={state.url || undefined}>
-          {label}
-        </span>
+      <div className="flex min-w-0 items-start gap-2 px-2.5 py-1.5 text-[11px]">
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="shrink-0 font-medium text-fg">Browser</span>
+            <span className="min-w-0 flex-1 truncate text-fg" title={title}>
+              {title}
+            </span>
+            {state.navigating ? (
+              <span className="shrink-0 text-muted">Loading…</span>
+            ) : null}
+          </div>
+          {url ? (
+            <div className="mt-0.5 truncate text-muted" title={url}>
+              {url}
+            </div>
+          ) : null}
+        </div>
         <button
           type="button"
           className="shrink-0 rounded-lg border border-border px-1.5 py-0.5 text-fg transition-colors hover:bg-surface-2"
@@ -69,8 +88,8 @@ export function AgentBrowserPanel({ className }: { className?: string }) {
         >
           <img
             src={state.snapshotDataUrl}
-            alt={state.title || 'Browser snapshot'}
-            className="max-h-40 w-full object-cover object-top"
+            alt={title}
+            className="max-h-56 w-full object-contain object-top"
           />
         </button>
       ) : null}

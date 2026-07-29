@@ -1,6 +1,6 @@
 import { basename, normalize } from 'path'
 import type { AgentInteractionMode } from '../../../shared/ipc'
-import { parseMcpToolName } from '../mcp'
+import { getMcpReadOnlyHint, parseMcpToolName } from '../mcp'
 import { isParallelSafeTool } from './classify'
 
 /** Built-in tools allowed in Ask mode (read-only / parallel-safe). */
@@ -12,9 +12,10 @@ export const ASK_SAFE_BUILTIN = new Set([
   'list_dir',
   'web_fetch',
   'web_search',
-  // Browse-only: click/type can submit forms and mutate live sites.
+  // Browse-only: click/type/fill can submit forms and mutate live sites.
   'browser_navigate',
   'browser_snapshot',
+  'browser_scroll',
   'memory_list',
   'memory_read',
   'subagent',
@@ -42,7 +43,8 @@ export function modeSectionMarkdown(mode: AgentInteractionMode): string | null {
       return [
         '## Mode: Ask',
         '',
-        'You are in Ask mode. Investigate and answer using read-only tools only.',
+        'You are in Ask mode. Investigate and answer using read-only tools only',
+        '(built-ins plus MCP tools that declare readOnlyHint).',
         'Do not edit files, delete paths, run shell commands, or write memory.',
         'If the user needs changes, explain what you would do and suggest switching to Agent mode.'
       ].join('\n')
@@ -50,7 +52,8 @@ export function modeSectionMarkdown(mode: AgentInteractionMode): string | null {
       return [
         '## Mode: Plan',
         '',
-        'You are in Plan mode. Explore the codebase with read-only tools, maintain todos via `todo_write`,',
+        'You are in Plan mode. Explore the codebase with read-only tools (and read-only MCP),',
+        'maintain todos via `todo_write`,',
         'and write or refine only `plan.md` and `contract.md` (run plan artifacts — not product source).',
         'Do not edit application code, delete files, or run the terminal.',
         'End with a clear plan the user can approve by switching to Agent mode.'
@@ -70,13 +73,12 @@ export function isBuiltinAllowedInMode(mode: AgentInteractionMode, name: string)
 }
 
 /**
- * MCP tools in Ask/Plan: never allowed.
- * Server `readOnlyHint` is untrusted (same stance as parallel/approval); with
- * default toolApproval off it would otherwise gate destructive MCP tools.
+ * MCP tools in Ask/Plan: only when the server declared `readOnlyHint: true`.
+ * Hint is still untrusted for parallel/approval exemption (see classify.ts).
  */
-export function isMcpAllowedInMode(mode: AgentInteractionMode, _fullName: string): boolean {
+export function isMcpAllowedInMode(mode: AgentInteractionMode, fullName: string): boolean {
   if (mode === 'agent') return true
-  return false
+  return getMcpReadOnlyHint(fullName) === true
 }
 
 export function filterToolDefsForMode<T extends { name: string }>(
@@ -107,7 +109,7 @@ export function assertToolAllowedInMode(
     if (!isMcpAllowedInMode(mode, name)) {
       return {
         ok: false,
-        error: `${mode === 'ask' ? 'Ask' : 'Plan'} mode does not allow MCP tools. Switch to Agent mode to use "${name}".`
+        error: `${mode === 'ask' ? 'Ask' : 'Plan'} mode only allows MCP tools with readOnlyHint. "${name}" is not read-only (or hint unknown). Switch to Agent mode.`
       }
     }
     return { ok: true }
@@ -139,7 +141,11 @@ export function assertToolAllowedInMode(
  * Ask-safe tools are normally parallel-safe. Exception: agent-browser tools share
  * one BrowserWindow and must stay serial while remaining Ask-readable.
  */
-const ASK_SAFE_SERIAL_OK = new Set(['browser_navigate', 'browser_snapshot'])
+const ASK_SAFE_SERIAL_OK = new Set([
+  'browser_navigate',
+  'browser_snapshot',
+  'browser_scroll'
+])
 
 export function askSafeAlignsWithParallelSafe(): boolean {
   for (const name of ASK_SAFE_BUILTIN) {

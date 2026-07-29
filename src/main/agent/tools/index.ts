@@ -310,6 +310,34 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
         : 'active element'
     return toolOk('browser_type', target, content)
   },
+  browser_scroll: async (_workspace, args, signal) => {
+    throwIfAborted(signal)
+    const { scrollPage } = await import('@main/app/agentBrowser')
+    const content = await scrollPage({
+      signal,
+      selector: typeof args.selector === 'string' ? args.selector : undefined,
+      deltaX: typeof args.deltaX === 'number' ? args.deltaX : undefined,
+      deltaY: typeof args.deltaY === 'number' ? args.deltaY : undefined
+    })
+    throwIfAborted(signal)
+    const target =
+      typeof args.selector === 'string' && args.selector.trim()
+        ? args.selector.trim()
+        : `Δ(${Number(args.deltaX) || 0},${Number(args.deltaY) || 0})`
+    return toolOk('browser_scroll', target, content)
+  },
+  browser_fill: async (_workspace, args, signal) => {
+    throwIfAborted(signal)
+    const selector = String(args.selector ?? '')
+    const value = String(args.value ?? '')
+    const { fillSelector } = await import('@main/app/agentBrowser')
+    const content = await fillSelector(selector, value, {
+      signal,
+      pressEnter: args.pressEnter === true
+    })
+    throwIfAborted(signal)
+    return toolOk('browser_fill', selector, content)
+  },
   subagent: async (workspace, args, signal, context) => {
     throwIfAborted(signal)
     const task = String(args.task ?? '')
@@ -333,11 +361,42 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     return toolOk('subagent', summary, outcome.report)
   },
   terminal: async (workspace, args, signal) => {
-    const command = String(args.command ?? '')
-    const requested =
-      typeof args.timeoutMs === 'number' ? args.timeoutMs : 60_000
-    const timeoutMs = Math.min(TERMINAL_MAX_TIMEOUT_MS, Math.max(1, requested))
+    const sessionId =
+      typeof args.session_id === 'string' && args.session_id.trim()
+        ? args.session_id.trim()
+        : ''
+    const command = typeof args.command === 'string' ? args.command : ''
     const shell = getSettings().terminalShell ?? 'auto'
+    const pattern = typeof args.pattern === 'string' ? args.pattern : undefined
+    const useSessionApi = Boolean(sessionId) || typeof args.block_until_ms === 'number'
+
+    if (useSessionApi) {
+      const { startBackgroundTerminal, pollTerminalSession } = await import('./terminalSessions')
+      const blockUntilMs =
+        typeof args.block_until_ms === 'number' ? args.block_until_ms : sessionId ? 30_000 : 0
+      const content = sessionId
+        ? await pollTerminalSession({
+            sessionId,
+            blockUntilMs,
+            pattern,
+            signal
+          })
+        : await startBackgroundTerminal({
+            workspaceRoot: workspace,
+            command,
+            signal,
+            shell,
+            pattern,
+            blockUntilMs
+          })
+      const summary = (command || sessionId).slice(0, 80)
+      const ok = terminalResultOk(command || 'session', content)
+      if (ok) return toolOk('terminal', summary, content)
+      return toolFail('terminal', summary, content)
+    }
+
+    const requested = typeof args.timeoutMs === 'number' ? args.timeoutMs : 60_000
+    const timeoutMs = Math.min(TERMINAL_MAX_TIMEOUT_MS, Math.max(1, requested))
     const content = await toolTerminal(workspace, command, signal, { timeoutMs, shell })
     const summary = command.slice(0, 80)
     const ok = terminalResultOk(command, content)

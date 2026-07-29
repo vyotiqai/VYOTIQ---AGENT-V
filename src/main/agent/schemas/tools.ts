@@ -66,20 +66,45 @@ const searchArgs = z.object({
     .optional()
 })
 
-const terminalArgs = z.object({
-  command: z
-    .string()
-    .describe(
-      'Shell command to run at workspace root. Shell comes from Settings → Agent → Terminal shell (auto prefers PowerShell on Windows when available; cmd blocks common Unix builtins). Prefer shell-native commands for the active shell.'
-    ),
-  timeoutMs: z
-    .number()
-    .int()
-    .min(1)
-    .max(TERMINAL_MAX_TIMEOUT_MS)
-    .describe(`Timeout in ms (default 60000, max ${TERMINAL_MAX_TIMEOUT_MS})`)
-    .optional()
-})
+const terminalArgs = z
+  .object({
+    command: z
+      .string()
+      .describe(
+        'Shell command to run at workspace root. Required to start; omit when polling an existing session_id. Shell comes from Settings → Agent → Terminal shell.'
+      )
+      .optional(),
+    session_id: z
+      .string()
+      .min(1)
+      .describe('Poll/await an existing background terminal session')
+      .optional(),
+    block_until_ms: z
+      .number()
+      .int()
+      .min(0)
+      .max(TERMINAL_MAX_TIMEOUT_MS)
+      .describe(
+        'How long to wait before returning (default: full timeout for foreground; use 0 to start background immediately). When polling, wait up to this many ms for exit or pattern.'
+      )
+      .optional(),
+    pattern: z
+      .string()
+      .describe('Optional regex matched against combined stdout+stderr; return early when matched')
+      .optional(),
+    timeoutMs: z
+      .number()
+      .int()
+      .min(1)
+      .max(TERMINAL_MAX_TIMEOUT_MS)
+      .describe(
+        `Foreground timeout in ms when block_until_ms is omitted (default 60000, max ${TERMINAL_MAX_TIMEOUT_MS})`
+      )
+      .optional()
+  })
+  .refine((v) => Boolean(v.command?.trim()) || Boolean(v.session_id?.trim()), {
+    message: 'Provide command to start a shell, or session_id to poll one'
+  })
 
 const globArgs = z.object({
   pattern: z
@@ -237,7 +262,10 @@ const browserSnapshotArgs = z.object({
 })
 
 const browserClickArgs = z.object({
-  selector: z.string().min(1).describe('CSS selector of the element to click.'),
+  selector: z
+    .string()
+    .min(1)
+    .describe('CSS selector or snapshot ref (@e12) from the latest browser_snapshot.'),
   button: z
     .enum(['left', 'right', 'middle'])
     .describe('Mouse button (default left)')
@@ -249,10 +277,29 @@ const browserTypeArgs = z.object({
   selector: z
     .string()
     .min(1)
-    .describe('Optional CSS selector to focus/click before typing')
+    .describe('Optional CSS selector or snapshot ref (@e12) to focus before typing')
     .optional(),
   clear: z.boolean().describe('Select-all and delete before typing (default false)').optional(),
   pressEnter: z.boolean().describe('Press Enter after typing (default false)').optional()
+})
+
+const browserScrollArgs = z.object({
+  selector: z
+    .string()
+    .min(1)
+    .describe('Optional CSS selector or @eN ref to scroll into view')
+    .optional(),
+  deltaX: z.number().describe('Horizontal scroll delta in pixels').optional(),
+  deltaY: z.number().describe('Vertical scroll delta in pixels').optional()
+})
+
+const browserFillArgs = z.object({
+  selector: z
+    .string()
+    .min(1)
+    .describe('CSS selector or snapshot ref (@e12) of an input, textarea, or contenteditable.'),
+  value: z.string().describe('Full value to set (replaces existing content).'),
+  pressEnter: z.boolean().describe('Press Enter after filling (default false)').optional()
 })
 
 const strReplaceArgs = z.object({
@@ -386,18 +433,28 @@ const TOOL_REGISTRY = {
   },
   browser_snapshot: {
     description:
-      'Capture the current agent-browser page as accessibility text (and a screenshot for the UI). Call browser_navigate first.',
+      'Capture the current agent-browser page: interactive element refs (@eN), viewport, page text, and a UI screenshot. Call browser_navigate first; prefer @eN refs with browser_click / browser_type.',
     schema: browserSnapshotArgs
   },
   browser_click: {
     description:
-      'Click an element in the agent browser by CSS selector. Call browser_navigate first; use browser_snapshot to inspect the page.',
+      'Click an element in the agent browser by CSS selector or snapshot ref (@e12). Call browser_navigate first; use browser_snapshot to list refs.',
     schema: browserClickArgs
   },
   browser_type: {
     description:
-      'Type text into the agent browser. Optionally focus a CSS selector first; can clear existing text and press Enter.',
+      'Type text into the agent browser. Optionally focus a CSS selector or snapshot ref (@e12) first; can clear existing text and press Enter.',
     schema: browserTypeArgs
+  },
+  browser_scroll: {
+    description:
+      'Scroll the agent browser: pass a selector/@eN to scroll into view, or deltaX/deltaY to scroll the page.',
+    schema: browserScrollArgs
+  },
+  browser_fill: {
+    description:
+      'Set the full value of an input/textarea/contenteditable (React-friendly). Prefer over browser_type when replacing a field. Uses @eN refs from browser_snapshot.',
+    schema: browserFillArgs
   },
   subagent: {
     description:
@@ -405,7 +462,8 @@ const TOOL_REGISTRY = {
     schema: subagentArgs
   },
   terminal: {
-    description: 'Run a shell command with cwd at the workspace root. Output is capped.',
+    description:
+      'Run a shell command with cwd at the workspace root. Output is capped. Use block_until_ms: 0 to start in the background (returns session_id); poll with session_id + block_until_ms / pattern.',
     schema: terminalArgs
   },
   memory_list: {
