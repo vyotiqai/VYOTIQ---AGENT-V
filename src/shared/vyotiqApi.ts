@@ -146,6 +146,9 @@ export interface VyotiqApi {
   browserSelectTab: (tabId: string) => Promise<IpcResult<boolean>>
   browserBack: () => Promise<IpcResult<boolean>>
   browserForward: () => Promise<IpcResult<boolean>>
+  browserSetBounds: (
+    bounds: { x: number; y: number; width: number; height: number } | null
+  ) => Promise<IpcResult<true>>
   openLogsDir: () => Promise<IpcResult<true>>
   getLogsPath: () => Promise<IpcResult<string>>
   telemetryStatus: () => Promise<IpcResult<TelemetryStatus>>

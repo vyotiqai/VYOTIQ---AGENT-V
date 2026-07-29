@@ -347,82 +347,81 @@ export function ChatView({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <h1 ref={headingRef} tabIndex={-1} className="sr-only">
-          Vyotiq chat
-        </h1>
+      <div className="flex min-h-0 min-w-0 flex-1">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <h1 ref={headingRef} tabIndex={-1} className="sr-only">
+            Vyotiq chat
+          </h1>
 
-        {showHero ? (
-          <div
-            className={cn(
-              'flex min-h-0 flex-1 flex-col items-center justify-center',
-              CHAT_GUTTER
-            )}
-            role="status"
-          >
-            {bannerError ? (
-              <Alert
-                className={cn('mb-4 w-full', CHAT_COLUMN_MAX)}
-                onDismiss={onDismissError}
-              >
-                {bannerError}
-              </Alert>
-            ) : null}
+          {showHero ? (
             <div
               className={cn(
-                'flex w-full flex-col items-center gap-3 animate-fade-in',
-                CHAT_COLUMN_MAX
+                'flex min-h-0 flex-1 flex-col items-center justify-center',
+                CHAT_GUTTER
               )}
-              data-composer-hero
+              role="status"
             >
+              {bannerError ? (
+                <Alert
+                  className={cn('mb-4 w-full', CHAT_COLUMN_MAX)}
+                  onDismiss={onDismissError}
+                >
+                  {bannerError}
+                </Alert>
+              ) : null}
+              <div
+                className={cn(
+                  'flex w-full flex-col items-center gap-3 animate-fade-in',
+                  CHAT_COLUMN_MAX
+                )}
+                data-composer-hero
+              >
+                <MemoComposer
+                  key={`composer:${surfaceKey}`}
+                  {...composerProps}
+                  variant="hero"
+                  className="w-full"
+                />
+              </div>
+            </div>
+          ) : (
+            <div ref={stageRef} className="relative flex min-h-0 flex-1 flex-col" data-chat-stage>
+              <TranscriptPane
+                itemsStore={itemsStore}
+                items={items}
+                pendingRun={pendingRun}
+                running={running}
+                transcriptLoading={transcriptLoading}
+                dockReservePx={dockReservePx}
+                restoreScrollTop={restoreScrollTop}
+                scrollRestoreToken={scrollRestoreToken}
+                onScrollTopChange={onScrollTopChange}
+                onLoadToolContent={onLoadToolContent}
+                onThinkingToggle={onThinkingToggle}
+                onToolToggle={onToolToggle}
+                onGroupToggle={onGroupToggle}
+                onTurnToggle={onTurnToggle}
+                onApprovalDecision={onApprovalDecision}
+                collapsedTurns={collapsedTurns}
+                showThinking={showThinking}
+                mcpServerNames={mcpServerNames}
+                surfaceKey={surfaceKey}
+                canUndoWrites={canUndoWrites}
+                undoBusy={undoBusy}
+                onUndoWrites={onUndoWrites}
+                writeFileResolutions={writeFileResolutions}
+                onKeepWriteFile={onKeepWriteFile}
+                onDiscardWriteFile={onDiscardWriteFile}
+                onKeepAllWrites={onKeepAllWrites}
+              />
+
               <MemoComposer
                 key={`composer:${surfaceKey}`}
                 {...composerProps}
-                variant="hero"
-                className="w-full"
-              />
-            </div>
-          </div>
-        ) : (
-          <div ref={stageRef} className="relative flex min-h-0 flex-1 flex-col" data-chat-stage>
-            <TranscriptPane
-              itemsStore={itemsStore}
-              items={items}
-              pendingRun={pendingRun}
-              running={running}
-              transcriptLoading={transcriptLoading}
-              dockReservePx={dockReservePx}
-              restoreScrollTop={restoreScrollTop}
-              scrollRestoreToken={scrollRestoreToken}
-              onScrollTopChange={onScrollTopChange}
-              onLoadToolContent={onLoadToolContent}
-              onThinkingToggle={onThinkingToggle}
-              onToolToggle={onToolToggle}
-              onGroupToggle={onGroupToggle}
-              onTurnToggle={onTurnToggle}
-              onApprovalDecision={onApprovalDecision}
-              collapsedTurns={collapsedTurns}
-              showThinking={showThinking}
-              mcpServerNames={mcpServerNames}
-              surfaceKey={surfaceKey}
-              canUndoWrites={canUndoWrites}
-              undoBusy={undoBusy}
-              onUndoWrites={onUndoWrites}
-              writeFileResolutions={writeFileResolutions}
-              onKeepWriteFile={onKeepWriteFile}
-              onDiscardWriteFile={onDiscardWriteFile}
-              onKeepAllWrites={onKeepAllWrites}
-            />
-
-            <MemoComposer
-              key={`composer:${surfaceKey}`}
-              {...composerProps}
-              variant="dock"
-              bannerError={bannerError}
-              onDismissError={onDismissError}
-              leading={
-                <div className="flex flex-col gap-2">
-                  <AgentBrowserPanel />
+                variant="dock"
+                bannerError={bannerError}
+                onDismissError={onDismissError}
+                leading={
                   <ChatGitLeading
                     itemsStore={itemsStore}
                     items={items}
@@ -430,20 +429,21 @@ export function ChatView({
                     running={running}
                     enabled
                   />
-                </div>
-              }
-              trailing={
-                <ChatGitTrailing
-                  itemsStore={itemsStore}
-                  items={items}
-                  workspacePath={workspacePath}
-                  running={running}
-                  enabled
-                />
-              }
-            />
-          </div>
-        )}
+                }
+                trailing={
+                  <ChatGitTrailing
+                    itemsStore={itemsStore}
+                    items={items}
+                    workspacePath={workspacePath}
+                    running={running}
+                    enabled
+                  />
+                }
+              />
+            </div>
+          )}
+        </div>
+        <AgentBrowserPanel />
       </div>
     </div>
   )

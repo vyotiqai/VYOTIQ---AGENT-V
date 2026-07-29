@@ -12,7 +12,15 @@ beforeEach(() => {
   Object.defineProperty(window, 'vyotiq', {
     configurable: true,
     writable: true,
-    value: { gitStatus: vi.fn().mockResolvedValue({ ok: true, data: null }) }
+    value: {
+      gitStatus: vi.fn().mockResolvedValue({ ok: true, data: null }),
+      browserGetState: vi.fn().mockResolvedValue({
+        ok: true,
+        data: { open: false, url: '', title: '' }
+      }),
+      onBrowserState: vi.fn().mockReturnValue(() => undefined),
+      browserSetBounds: vi.fn().mockResolvedValue({ ok: true, data: true })
+    }
   })
   class ResizeObserverStub {
     private readonly cb: ResizeObserverCallback

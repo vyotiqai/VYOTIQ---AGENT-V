@@ -109,7 +109,7 @@ import { runAgent, createRunId } from '../agent/loop'
 import { compactRunNow, CompactionUnavailableError } from '../agent/compactRun'
 import { undoWrites, resolveWrites, getWriteCheckpointMeta } from '../agent/checkpoints'
 import { resolveRunDir } from '@main/storage/paths'
-import { focusAgentBrowser, closeAgentBrowser, getAgentBrowserState, selectBrowserTab, browserGoBack, browserGoForward } from '@main/app/agentBrowser'
+import { focusAgentBrowser, closeAgentBrowser, getAgentBrowserState, selectBrowserTab, browserGoBack, browserGoForward, setAgentBrowserBounds } from '@main/app/agentBrowser'
 import { extractAttachment } from '../attachments/extract'
 import {
   cancelPendingApprovals,
@@ -1260,6 +1260,34 @@ export function registerIpc(): void {
       return failFrom(err, IPC.browserForward)
     }
   })
+
+  ipcMain.handle(
+    IPC.browserSetBounds,
+    async (
+      event,
+      raw
+    ): Promise<IpcResult<true>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        if (raw == null) {
+          setAgentBrowserBounds(null)
+          return ok(true)
+        }
+        const bounds = raw as { x?: unknown; y?: unknown; width?: unknown; height?: unknown }
+        const x = Number(bounds.x)
+        const y = Number(bounds.y)
+        const width = Number(bounds.width)
+        const height = Number(bounds.height)
+        if (![x, y, width, height].every((n) => Number.isFinite(n))) {
+          return fail('Invalid browser bounds')
+        }
+        setAgentBrowserBounds({ x, y, width, height })
+        return ok(true)
+      } catch (err) {
+        return failFrom(err, IPC.browserSetBounds)
+      }
+    }
+  )
 
   ipcMain.handle(IPC.getSystemTheme, async (event): Promise<IpcResult<boolean>> => {
     if (!senderOk(event)) return fail('Invalid sender')

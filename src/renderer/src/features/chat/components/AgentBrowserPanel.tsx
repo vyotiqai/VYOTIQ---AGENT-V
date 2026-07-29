@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { cn } from '@renderer/lib/ui/cn'
 import type { AgentBrowserState } from '@shared/ipc'
 
@@ -6,32 +6,64 @@ const EMPTY: AgentBrowserState = {
   open: false,
   url: '',
   title: '',
-  snapshotDataUrl: null,
   navigating: false,
   tabs: [],
   canGoBack: false,
   canGoForward: false
 }
 
+/**
+ * Side chrome + layout slot for the main-process WebContentsView.
+ * The live page is drawn by Electron over `data-agent-browser-viewport`.
+ */
 export function AgentBrowserPanel({ className }: { className?: string }) {
   const [state, setState] = useState<AgentBrowserState>(EMPTY)
+  const viewportRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let cancelled = false
-    void window.vyotiq.browserGetState().then((res) => {
+    void window.vyotiq.browserGetState?.().then((res) => {
       if (cancelled || !res.ok) return
       setState(res.data)
     })
-    const unsub = window.vyotiq.onBrowserState((next) => {
+    const unsub = window.vyotiq.onBrowserState?.((next) => {
       if (!cancelled) setState(next)
     })
     return () => {
       cancelled = true
-      unsub()
+      unsub?.()
     }
   }, [])
 
-  if (!state.open && !state.snapshotDataUrl) return null
+  useLayoutEffect(() => {
+    const el = viewportRef.current
+    if (!state.open || !el) {
+      void window.vyotiq.browserSetBounds?.(null)
+      return undefined
+    }
+
+    const report = (): void => {
+      const r = el.getBoundingClientRect()
+      void window.vyotiq.browserSetBounds?.({
+        x: Math.round(r.x),
+        y: Math.round(r.y),
+        width: Math.round(r.width),
+        height: Math.round(r.height)
+      })
+    }
+
+    report()
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(report) : null
+    ro?.observe(el)
+    window.addEventListener('resize', report)
+    return () => {
+      ro?.disconnect()
+      window.removeEventListener('resize', report)
+      void window.vyotiq.browserSetBounds?.(null)
+    }
+  }, [state.open, state.tabs?.length, state.url])
+
+  if (!state.open) return null
 
   const title = state.title?.trim() || 'Agent browser'
   const url = state.url?.trim() || ''
@@ -40,7 +72,7 @@ export function AgentBrowserPanel({ className }: { className?: string }) {
   return (
     <div
       className={cn(
-        'overflow-hidden rounded-xl border border-border bg-surface shadow-sm',
+        'flex h-full w-[min(48vw,560px)] shrink-0 flex-col border-l border-border bg-surface',
         className
       )}
       data-agent-browser-panel
@@ -67,7 +99,7 @@ export function AgentBrowserPanel({ className }: { className?: string }) {
           ))}
         </div>
       ) : null}
-      <div className="flex min-w-0 items-start gap-2 px-2.5 py-1.5 text-[11px]">
+      <div className="flex min-w-0 items-start gap-2 border-b border-border px-2.5 py-1.5 text-[11px]">
         <div className="flex shrink-0 items-center gap-1">
           <button
             type="button"
@@ -114,8 +146,9 @@ export function AgentBrowserPanel({ className }: { className?: string }) {
           onClick={() => {
             void window.vyotiq.browserFocus()
           }}
+          title="Focus page"
         >
-          Show
+          Focus
         </button>
         <button
           type="button"
@@ -127,22 +160,11 @@ export function AgentBrowserPanel({ className }: { className?: string }) {
           Close
         </button>
       </div>
-      {state.snapshotDataUrl ? (
-        <button
-          type="button"
-          className="block w-full border-t border-border bg-surface-2/40 p-0 text-left"
-          onClick={() => {
-            void window.vyotiq.browserFocus()
-          }}
-          title="Show live browser"
-        >
-          <img
-            src={state.snapshotDataUrl}
-            alt={title}
-            className="max-h-56 w-full object-contain object-top"
-          />
-        </button>
-      ) : null}
+      <div
+        ref={viewportRef}
+        className="min-h-0 flex-1 bg-surface-2/30"
+        data-agent-browser-viewport
+      />
     </div>
   )
 }
