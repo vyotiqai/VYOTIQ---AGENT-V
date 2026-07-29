@@ -1344,6 +1344,13 @@ describe('useChatStream', () => {
       id: 'unknown-id',
       tool: { name: 'read', summary: 'b.ts', status: 'done', content: 'b-body' }
     })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'done' })
+    })
+    expect(
+      result.current.items.filter((i) => i.kind === 'tool' && i.tool.status === 'running')
+    ).toHaveLength(0)
   })
 
   it('FIFO-completes the oldest same-name row when tool_result id and summary are ambiguous', async () => {
@@ -1390,6 +1397,13 @@ describe('useChatStream', () => {
       id: 'r2',
       tool: { name: 'read', summary: 'file.ts', status: 'running' }
     })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'done' })
+    })
+    expect(
+      result.current.items.filter((i) => i.kind === 'tool' && i.tool.status === 'running')
+    ).toHaveLength(0)
   })
 
   it('exposes pendingRun while chatStart is in flight', async () => {
@@ -1884,6 +1898,50 @@ describe('useChatStream', () => {
     expect(
       result.current.items.some((i) => i.kind === 'tool' && i.approval?.requestId === 'req-stale')
     ).toBe(true)
+  })
+
+  it('clears pending question cards when a run is cancelled', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('ask')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      result.current.handleQuestionRequest({
+        requestId: 'q-cancel',
+        runId: 'run-1',
+        toolCallId: 'tq1',
+        question: 'Still waiting?'
+      })
+      handler?.({ type: 'status', runId: 'run-1', status: 'cancelled' })
+    })
+
+    expect(result.current.items.some((i) => i.kind === 'question')).toBe(false)
+  })
+
+  it('shows a question card without a prior ask_question tool row', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('ask')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      result.current.handleQuestionRequest({
+        requestId: 'q-orphan',
+        runId: 'run-1',
+        toolCallId: 'tq-missing',
+        question: 'No tool row yet?'
+      })
+    })
+
+    expect(
+      result.current.items.some(
+        (i) => i.kind === 'question' && i.question.requestId === 'q-orphan'
+      )
+    ).toBe(true)
+    expect(result.current.items.some((i) => i.kind === 'tool')).toBe(false)
   })
 
   it('clears question only after respondAgentQuestion succeeds with data true', async () => {

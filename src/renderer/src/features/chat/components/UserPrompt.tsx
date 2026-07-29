@@ -1,10 +1,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { FileChip, ImageChip, MarkdownContent, cn } from '@renderer/lib/ui'
-import { USER_PROMPT_SURFACE } from '@renderer/lib/utils/layout'
+import { FileChip, ImageChip, MarkdownContent, balanceIncompleteMarkdown, cn } from '@renderer/lib/ui'
+import { TOOL_BODY_CLAMP_PX, USER_PROMPT_SURFACE } from '@renderer/lib/utils/layout'
 import type { UserItem } from '../utils/transcriptRows'
-
-/** Past this height a prompt crowds out the reply it belongs to. */
-const CLAMP_HEIGHT_PX = 168
 
 /** Drop consecutive duplicate paragraphs (common when prompts are pasted twice). */
 function dedupePromptParagraphs(content: string): string {
@@ -31,15 +28,15 @@ export function UserPrompt({
   const bodyRef = useRef<HTMLDivElement>(null)
   const [overflows, setOverflows] = useState(false)
   const [expanded, setExpanded] = useState(false)
-  const content = useMemo(
-    () => (item.content ? dedupePromptParagraphs(item.content) : ''),
-    [item.content]
-  )
+  const content = useMemo(() => {
+    if (!item.content) return ''
+    return balanceIncompleteMarkdown(dedupePromptParagraphs(item.content))
+  }, [item.content])
 
   useLayoutEffect(() => {
     const el = bodyRef.current
     if (!el) return
-    setOverflows(el.scrollHeight > CLAMP_HEIGHT_PX + 8)
+    setOverflows(el.scrollHeight > TOOL_BODY_CLAMP_PX + 8)
   }, [content])
 
   const clamped = overflows && !expanded
@@ -50,7 +47,7 @@ export function UserPrompt({
         <div
           ref={bodyRef}
           className={cn('relative overflow-hidden', clamped && 'mask-fade-bottom')}
-          style={clamped ? { maxHeight: CLAMP_HEIGHT_PX } : undefined}
+          style={clamped ? { maxHeight: TOOL_BODY_CLAMP_PX } : undefined}
         >
           <MarkdownContent content={content} />
         </div>

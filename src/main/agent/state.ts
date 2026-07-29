@@ -365,7 +365,6 @@ export function loadEvents(
   return parseEventsFromText(text, inferredRunId, options)
 }
 
-/** Non-blocking events load for IPC / UI restore (Electron: do not block main). */
 export async function loadEventsAsync(
   dir: string,
   runId?: string,
@@ -374,21 +373,106 @@ export async function loadEventsAsync(
   const p = join(dir, 'events.jsonl')
   if (!existsSync(p)) return []
   const inferredRunId = runId ?? basename(dir)
-  try {
-    const limit = options?.limit
-    const text =
-      limit != null && limit > 0
-        ? readFileTailSync(p, eventsTailByteBudget(limit))
-        : await readFile(p, 'utf8')
-    return parseEventsFromText(text, inferredRunId, options)
-  } catch (err) {
-    logger.warn('Failed to read events.jsonl', { scope: 'state', runId: inferredRunId, err })
-    return []
-  }
+  const limit = options?.limit
+  const text =
+    limit != null && limit > 0
+      ? readFileTailSync(p, eventsTailByteBudget(limit))
+      : await readFile(p, 'utf8')
+  return parseEventsFromText(text, inferredRunId, options)
 }
 
 /** Default UI restore bound — full history stays on disk. */
 export const LOAD_EVENTS_UI_LIMIT = 500
+
+const CRITICAL_HYDRATION_TYPES = new Set([
+  'writes_checkpoint',
+  'incomplete',
+  'error',
+  'status',
+  'mode_changed'
+])
+
+/**
+ * Walk events.jsonl from the end and keep the latest row of each hydration-critical
+ * type. Avoids losing writes_checkpoint / terminal status / mode when the UI tail
+ * cap drops older lines.
+ */
+function collectLatestCriticalEvents(text: string, inferredRunId: string): PersistedEvent[] {
+  const found = new Map<string, PersistedEvent>()
+  const lines = text.split('\n')
+  for (let index = lines.length - 1; index >= 0; index--) {
+    if (found.size >= CRITICAL_HYDRATION_TYPES.size) break
+    const line = lines[index]
+    if (!line) continue
+    try {
+      const json: unknown = JSON.parse(line)
+      const parsed = PersistedEventSchema.safeParse(json)
+      if (!parsed.success) continue
+      const row = normalizePersistedEvent(parsed.data, inferredRunId)
+      const event = row.event
+      if (!event || typeof event !== 'object') continue
+      const type = (event as { type?: unknown }).type
+      if (typeof type !== 'string' || !CRITICAL_HYDRATION_TYPES.has(type)) continue
+      if (type === 'status') {
+        const status = (event as { status?: unknown }).status
+        if (status !== 'done' && status !== 'cancelled' && status !== 'error') continue
+      }
+      if (!found.has(type)) found.set(type, row)
+    } catch {
+      // skip bad line
+    }
+  }
+  return [...found.values()]
+}
+
+function mergeCriticalHydrationEvents(
+  uiEvents: PersistedEvent[],
+  critical: PersistedEvent[]
+): PersistedEvent[] {
+  if (critical.length === 0) return uiEvents
+  const out = [...uiEvents]
+  for (const crit of critical) {
+    const event = crit.event
+    if (!event || typeof event !== 'object') continue
+    const type = (event as { type?: unknown }).type
+    if (typeof type !== 'string') continue
+    const already = out.some((row) => {
+      const ev = row.event
+      if (!ev || typeof ev !== 'object') return false
+      if ((ev as { type?: unknown }).type !== type) return false
+      if (type === 'writes_checkpoint') {
+        return (
+          (ev as { checkpointId?: unknown }).checkpointId ===
+          (event as { checkpointId?: unknown }).checkpointId
+        )
+      }
+      return true
+    })
+    if (!already) out.push(crit)
+  }
+  return out
+}
+
+/**
+ * UI restore: last N events plus hydration-critical rows from a wider trailing
+ * window so writes_checkpoint / mode_changed / terminal status survive long runs.
+ */
+export async function loadEventsForHydrationAsync(
+  dir: string,
+  runId?: string,
+  options?: { limit?: number }
+): Promise<PersistedEvent[]> {
+  const p = join(dir, 'events.jsonl')
+  if (!existsSync(p)) return []
+  const inferredRunId = runId ?? basename(dir)
+  const limit = options?.limit ?? LOAD_EVENTS_UI_LIMIT
+  const uiEvents = await loadEventsAsync(dir, inferredRunId, { limit })
+  // Wider than the UI line cap so a checkpoint just outside the 500-event window
+  // still hydrates Keep/Discard without loading the entire history.
+  const criticalText = readFileTailSync(p, eventsTailByteBudget(Math.max(limit * 10, 2000)))
+  const critical = collectLatestCriticalEvents(criticalText, inferredRunId)
+  return mergeCriticalHydrationEvents(uiEvents, critical)
+}
 
 export function loadEventsForRun(
   workspacePath: string,
@@ -407,7 +491,7 @@ export async function loadEventsForRunAsync(
 ): Promise<PersistedEvent[]> {
   const dir = resolveRunDir(workspacePath, runId)
   if (!existsSync(join(dir, 'events.jsonl'))) return []
-  return loadEventsAsync(dir, runId, options)
+  return loadEventsForHydrationAsync(dir, runId, options)
 }
 
 const RUN_LIST_CAP = 30

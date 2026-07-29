@@ -28,10 +28,10 @@ describe('AskQuestionCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Submit answer' }))
 
     expect(onSubmit).toHaveBeenCalledWith('q1', ['A'])
-    expect(await screen.findByRole('button', { name: 'Submit answer' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'Answered' })).toBeTruthy()
   })
 
-  it('stays idle when onSubmit is missing', () => {
+  it('disables submit when onSubmit is missing', () => {
     render(
       <AskQuestionCard
         question={{
@@ -45,10 +45,9 @@ describe('AskQuestionCard', () => {
     fireEvent.change(screen.getByPlaceholderText('Your answer…'), {
       target: { value: 'hello' }
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Submit answer' }))
 
     expect(screen.getByRole('button', { name: 'Submit answer' }).hasAttribute('disabled')).toBe(
-      false
+      true
     )
   })
 

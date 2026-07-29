@@ -4,6 +4,9 @@ import { app } from 'electron'
 import log from 'electron-log/main'
 import { logger, setLoggerBackend, type LogFields, type LogLevel } from '../../shared/logger'
 import { initSentryMain, captureExceptionMain } from './sentry'
+import { isIgnorablePipeError } from './pipeErrors'
+
+export { isIgnorablePipeError } from './pipeErrors'
 
 export function logsDirectory(): string {
   return join(app.getPath('userData'), 'logs')
@@ -32,7 +35,10 @@ export function initMainLogging(): void {
   log.transports.file.resolvePathFn = (): string => join(logsDir, 'vyotiq.log')
   log.transports.file.maxSize = 5 * 1024 * 1024 // 5 MB then rotate
   log.transports.file.level = isDev ? 'debug' : 'info'
-  log.transports.console.level = isDev ? 'debug' : 'warn'
+  // Console writes to a closed pipe raise EPIPE; packaged / non-TTY runs skip console.
+  const consoleWritable =
+    isDev && Boolean(process.stdout?.writable) && process.stdout.isTTY !== false
+  log.transports.console.level = consoleWritable ? 'debug' : false
 
   setLoggerBackend({
     log: (level, message, fields) => {
@@ -51,14 +57,24 @@ export function initMainLogging(): void {
   })
 
   // Optional Sentry (DSN + telemetryEnabled). Safe no-op when gated off.
+  // crashReporter is started earlier in main/index.ts (before ready).
   initSentryMain()
 
   installProcessHandlers()
   logger.info('Logging initialized', { scope: 'main', logsDir })
 }
 
+function swallowStreamPipeError(err: Error): void {
+  if (isIgnorablePipeError(err)) return
+}
+
 function installProcessHandlers(): void {
+  process.stdout?.on?.('error', swallowStreamPipeError)
+  process.stderr?.on?.('error', swallowStreamPipeError)
+
   process.on('uncaughtException', (err) => {
+    // Logging an EPIPE via console transport re-triggers write → infinite storm.
+    if (isIgnorablePipeError(err)) return
     logger.fatal('Uncaught exception', {
       scope: 'main',
       code: 'UNCAUGHT',
@@ -67,6 +83,7 @@ function installProcessHandlers(): void {
   })
 
   process.on('unhandledRejection', (reason) => {
+    if (isIgnorablePipeError(reason)) return
     logger.fatal('Unhandled rejection', {
       scope: 'main',
       code: 'UNCAUGHT',
@@ -83,10 +100,18 @@ export function attachWebContentsCrashLogging(
   webContents: Electron.WebContents
 ): void {
   webContents.on('render-process-gone', (_event, details) => {
+    let crashDumpsPath: string | undefined
+    try {
+      crashDumpsPath = app.getPath('crashDumps')
+    } catch {
+      crashDumpsPath = undefined
+    }
     logger.error('Renderer process gone', {
       scope: 'main',
+      code: 'RENDERER_CRASH',
       reason: details.reason,
-      exitCode: details.exitCode
+      exitCode: details.exitCode,
+      ...(crashDumpsPath ? { crashDumpsPath } : {})
     })
   })
   webContents.on('unresponsive', () => {

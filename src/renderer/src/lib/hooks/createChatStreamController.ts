@@ -301,6 +301,27 @@ function closeTrailingGroupIfIdle(items: UiItem[], endedAt = Date.now()): UiItem
   return closeOpenGroupTimings(items, endedAt)
 }
 
+/** Force-fail any tool still marked running (terminal status / interrupted turn). */
+function failRunningTools(
+  items: UiItem[],
+  reason: 'Cancelled' | 'Interrupted' | 'Stopped'
+): UiItem[] {
+  let changed = false
+  const next = items.map((item) => {
+    if (item.kind !== 'tool' || item.tool.status !== 'running') return item
+    changed = true
+    return {
+      ...item,
+      tool: {
+        ...item.tool,
+        status: 'fail' as const,
+        content: item.tool.content ?? reason
+      }
+    }
+  })
+  return changed ? next : items
+}
+
 function isPendingToolId(id: string): boolean {
   return id.startsWith('pending_')
 }
@@ -510,6 +531,15 @@ function writeCheckpointFromPersisted(events: PersistedEvent[]): WriteCheckpoint
         files
       }
     }
+  }
+  return null
+}
+
+function modeFromPersisted(events: PersistedEvent[]): AgentInteractionMode | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]?.event
+    if (!isAgentEvent(event)) continue
+    if (event.type === 'mode_changed') return event.mode
   }
   return null
 }
@@ -1213,31 +1243,58 @@ export function createChatStreamController(
             event.toolCallId
           )
         )
-      } else if (
-        !items.some(
-          (item) =>
-            item.kind === 'tool' &&
-            item.tool.status === 'running' &&
-            item.tool.name === event.name
-        )
-      ) {
-        // No live same-name row to complete — create one (hydrate / late result).
-        nextItems = appendTool(
-          items,
-          {
-            kind: 'tool' as const,
-            id: event.toolCallId,
-            tool: {
+      } else if (existingIdx < 0) {
+        // findToolResultRowIndex should have matched any same-name running row
+        // (summary, then FIFO). If it still missed, complete the oldest same-name
+        // runner instead of appending a second row that leaves the original spinning.
+        const runningSame = runningToolIndices(items).filter((idx) => {
+          const item = items[idx]
+          return item.kind === 'tool' && item.tool.name === event.name
+        })
+        if (runningSame.length > 0) {
+          const idx = runningSame[0]!
+          const row = items[idx]
+          if (row?.kind === 'tool') {
+            nextItems = replaceAt(
+              items,
+              idx,
+              withCanonicalToolId(
+                {
+                  ...row,
+                  approval: undefined,
+                  toolExpanded: row.toolExpanded === false ? false : undefined,
+                  tool: {
+                    ...row.tool,
+                    name: event.name,
+                    summary: event.summary,
+                    status: event.ok ? 'done' : 'fail',
+                    content: event.content ?? row.tool.content,
+                    contentTruncated: event.contentTruncated ?? row.tool.contentTruncated
+                  }
+                },
+                event.toolCallId
+              )
+            )
+          }
+        } else {
+          // No live same-name row to complete — create one (hydrate / late result).
+          nextItems = appendTool(
+            items,
+            {
+              kind: 'tool' as const,
               id: event.toolCallId,
-              name: event.name,
-              summary: event.summary,
-              status: event.ok ? 'done' : 'fail',
-              content: event.content,
-              contentTruncated: event.contentTruncated
-            }
-          },
-          state.runStartedAt
-        )
+              tool: {
+                id: event.toolCallId,
+                name: event.name,
+                summary: event.summary,
+                status: event.ok ? 'done' : 'fail',
+                content: event.content,
+                contentTruncated: event.contentTruncated
+              }
+            },
+            state.runStartedAt
+          )
+        }
       }
       const nextMessages = appendToolResult(
         state.messages,
@@ -1436,25 +1493,20 @@ export function createChatStreamController(
           ...(event.status === 'error' && !state.error
             ? { error: lastRunErrorMessage ?? 'Run failed' }
             : {}),
-          items: clearApprovals(closeOpenGroupTimings(state.items)).map((item) => {
-            if (item.kind === 'message' && (item.streaming || item.thinkingStreaming)) {
-              return { ...item, streaming: false, thinkingStreaming: false }
-            }
-            if (item.kind === 'tool' && item.tool.status === 'running') {
-              const interrupted =
+          items: clearQuestions(
+            clearApprovals(
+              failRunningTools(
+                closeOpenGroupTimings(state.items),
                 event.status === 'cancelled'
                   ? 'Cancelled'
                   : event.status === 'error'
                     ? 'Interrupted'
                     : 'Stopped'
-              return {
-                ...item,
-                tool: {
-                  ...item.tool,
-                  status: 'fail' as const,
-                  content: item.tool.content ?? interrupted
-                }
-              }
+              )
+            )
+          ).map((item) => {
+            if (item.kind === 'message' && (item.streaming || item.thinkingStreaming)) {
+              return { ...item, streaming: false, thinkingStreaming: false }
             }
             return item
           })
@@ -1594,9 +1646,11 @@ export function createChatStreamController(
       return false
     }
     let events: PersistedEvent[] = []
+    let eventsLoadError: string | null = null
     if (window.vyotiq.loadRunEvents) {
       const eventsRes = await window.vyotiq.loadRunEvents(workspacePath, id)
       if (eventsRes.ok) events = eventsRes.data
+      else eventsLoadError = eventsRes.error
     }
     const kept = messagesForNextTurn(res.data.messages)
     assistantId = null
@@ -1605,8 +1659,11 @@ export function createChatStreamController(
     contentRunId = id
     awaitingRun = false
     pendingCancel = false
+    const mode = modeFromPersisted(events)
+    if (mode) onAgentModeChange?.(mode)
     patch({
       ...hydrateFromDisk(kept, events),
+      ...(eventsLoadError ? { error: eventsLoadError } : {}),
       runId: null,
       pendingRun: false,
       running: false,
@@ -1681,6 +1738,8 @@ export function createChatStreamController(
     activeInvokeId = null
     usageTotals = emptyStepUsageTotals()
     toolContentCache.clear()
+    const mode = modeFromPersisted(rows)
+    if (mode) onAgentModeChange?.(mode)
     patch({
       ...hydrateFromDisk(kept, rows),
       collapsedTurnIndices: []
@@ -1769,13 +1828,20 @@ export function createChatStreamController(
       return
     }
     let events: PersistedEvent[] = []
+    let eventsLoadError: string | null = null
     if (window.vyotiq.loadRunEvents) {
       const eventsRes = await window.vyotiq.loadRunEvents(workspacePath, id)
       if (closedRuns.has(id) || disposed) return
       if (eventsRes.ok) events = eventsRes.data
+      else eventsLoadError = eventsRes.error
     }
     const kept = messagesForNextTurn(res.data.messages)
-    patch(hydrateFromDisk(kept, events))
+    const mode = modeFromPersisted(events)
+    if (mode) onAgentModeChange?.(mode)
+    patch({
+      ...hydrateFromDisk(kept, events),
+      ...(eventsLoadError ? { error: eventsLoadError } : {})
+    })
   }
 
   const setToolExpanded = (toolCallId: string, expanded: boolean): void => {
@@ -1872,14 +1938,9 @@ export function createChatStreamController(
   const handleQuestionRequest = (request: AgentQuestionRequest): void => {
     if (closedRuns.has(request.runId)) return
     if (runId && request.runId !== runId) return
-    if (
-      state.items.some(
-        (item) => item.kind === 'question' && item.question.requestId === request.requestId
-      )
-    ) {
-      return
-    }
 
+    // Always surface a question card — even with no prior tool_start row — so a
+    // lost/late push cannot leave the run parked with only a non-interactive tool.
     const questionItem: Extract<UiItem, { kind: 'question' }> = {
       kind: 'question',
       id: `question:${request.requestId}`,
@@ -1892,6 +1953,13 @@ export function createChatStreamController(
         ...(request.allowCustom === false ? { allowCustom: false } : {})
       },
       at: new Date().toISOString()
+    }
+    const existingIdx = state.items.findIndex(
+      (item) => item.kind === 'question' && item.question.requestId === request.requestId
+    )
+    if (existingIdx >= 0) {
+      patch({ items: replaceAt(state.items, existingIdx, questionItem) })
+      return
     }
     patch({ items: [...state.items, questionItem] })
   }
@@ -1980,6 +2048,22 @@ export function createChatStreamController(
         toolCallId,
         err: toLogErr(res.error)
       })
+      const idx = findToolRowIndex(state.items, toolCallId)
+      const item = idx >= 0 ? state.items[idx] : undefined
+      if (item?.kind === 'tool') {
+        const notice = "Couldn't load full output."
+        patch({
+          items: replaceAt(state.items, idx, {
+            ...item,
+            tool: {
+              ...item.tool,
+              content: item.tool.content ? `${item.tool.content}\n\n${notice}` : notice,
+              // Stop expand retries from looping on a permanent failure.
+              contentTruncated: false
+            }
+          })
+        })
+      }
       return null
     }
     patchToolContent(toolCallId, res.data.content)

@@ -644,8 +644,34 @@ export function MessageList({
       if (row.kind === 'text' && row.item.streaming) return 'Assistant is responding'
       if (row.kind === 'thinking' && row.item.thinkingStreaming) return 'Assistant is thinking'
     }
+    // When thinking rows are hidden or the turn is collapsed, the timeline still
+    // shows phase via deriveRunActivity — keep aria-live in sync with that.
+    for (let i = allRows.length - 1; i >= 0; i--) {
+      const row = allRows[i]
+      if (row?.kind !== 'turn' || !row.span.activity) continue
+      const phase = row.span.activity
+      switch (phase.kind) {
+        case 'thinking':
+          return 'Assistant is thinking'
+        case 'writing':
+          return 'Assistant is responding'
+        case 'planning':
+        case 'working':
+          return 'Assistant is working'
+        case 'tool':
+          return `Assistant is using ${phase.label}`
+        case 'awaiting_approval':
+          return 'Waiting for tool approval'
+        case 'awaiting_question':
+          return 'Waiting for your answer'
+        default: {
+          const _exhaustive: never = phase
+          return _exhaustive
+        }
+      }
+    }
     return ''
-  }, [displayRows])
+  }, [displayRows, allRows])
 
   const rowsContentRevision = useMemo(
     () => transcriptRowsContentRevision(displayRows),

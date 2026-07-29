@@ -3,6 +3,7 @@ import {
   cancelPendingApprovals,
   createApprovalGate,
   isToolGated,
+  listPendingToolApprovals,
   registerApprovalSender,
   resetToolApprovalForTests,
   resolveToolApproval
@@ -198,5 +199,34 @@ describe('createApprovalGate', () => {
 
     resolveToolApproval({ requestId: requests[1]!.requestId, decision: 'once' })
     expect((await newVerdict).allowed).toBe(true)
+  })
+
+  it('lists pending approvals for remount restore', async () => {
+    const seen: ToolApprovalRequest[] = []
+    registerApprovalSender('run-1', (request) => {
+      seen.push(request)
+    })
+    const gate = createApprovalGate({
+      runId: 'run-1',
+      mode: 'mutating',
+      workspaceAllowlist: [],
+      signal: new AbortController().signal
+    })
+
+    const verdict = gate.authorize(WRITE)
+    await Promise.resolve()
+    expect(listPendingToolApprovals('run-1')).toHaveLength(1)
+    expect(listPendingToolApprovals('run-1')[0]!.name).toBe('edit')
+    expect(listPendingToolApprovals('other')).toEqual([])
+
+    // Re-registering re-pushes still-pending approvals.
+    registerApprovalSender('run-1', (request) => {
+      seen.push(request)
+    })
+    expect(seen).toHaveLength(2)
+
+    expect(resolveToolApproval({ requestId: seen[0]!.requestId, decision: 'once' })).toBe(true)
+    await expect(verdict).resolves.toEqual({ allowed: true })
+    expect(listPendingToolApprovals('run-1')).toEqual([])
   })
 })

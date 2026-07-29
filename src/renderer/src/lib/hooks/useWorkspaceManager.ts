@@ -41,6 +41,19 @@ async function restorePendingQuestions(
     controller.handleQuestionRequest(request)
   }
 }
+
+/** Rehydrate tool-approval cards after remount while main is still waiting. */
+async function restorePendingApprovals(
+  controller: ChatStreamController,
+  runId: string
+): Promise<void> {
+  if (!window.vyotiq?.listPendingToolApprovals) return
+  const res = await window.vyotiq.listPendingToolApprovals(runId)
+  if (!res.ok) return
+  for (const request of res.data) {
+    controller.handleApprovalRequest(request)
+  }
+}
 const ORPHAN_SYNC_DEBOUNCE_MS = 600
 const OPEN_RUN_TAB_LIMIT = 10
 /** Cap orphan IPC buffers for runIds not yet mapped to a controller. */
@@ -56,6 +69,38 @@ const ORPHAN_DROPPABLE_TYPES = new Set<AgentEvent['type']>([
 const ORPHAN_DELTA_TYPES = new Set<AgentEvent['type']>(['text_delta', 'thinking_delta'])
 const UI_PERSIST_DEBOUNCE_MS = 300
 const LIST_RUNS_DEBOUNCE_MS = 300
+
+/**
+ * Under orphan backpressure, fold the oldest stream delta into a later same-type
+ * delta so token text is preserved instead of discarded.
+ */
+function coalesceOldestOrphanDelta(buffered: AgentEvent[]): boolean {
+  const dropIdx = buffered.findIndex((ev) => ORPHAN_DELTA_TYPES.has(ev.type))
+  if (dropIdx < 0) return false
+  const victim = buffered[dropIdx]!
+  for (let i = dropIdx + 1; i < buffered.length; i++) {
+    const next = buffered[i]!
+    if (next.type !== victim.type) continue
+    if (victim.type === 'text_delta' && next.type === 'text_delta') {
+      buffered[i] = { ...next, text: victim.text + next.text }
+      buffered.splice(dropIdx, 1)
+      return true
+    }
+    if (victim.type === 'thinking_delta' && next.type === 'thinking_delta') {
+      if (
+        victim.step !== undefined &&
+        next.step !== undefined &&
+        victim.step !== next.step
+      ) {
+        continue
+      }
+      buffered[i] = { ...next, text: victim.text + next.text }
+      buffered.splice(dropIdx, 1)
+      return true
+    }
+  }
+  return false
+}
 
 /** @internal Exported for tests. */
 export const WORKSPACE_MANAGER_LIMITS = {
@@ -305,7 +350,7 @@ export function useWorkspaceManager() {
       const droppableIdx = buffered.findIndex((ev) => ORPHAN_DROPPABLE_TYPES.has(ev.type))
       if (droppableIdx >= 0) {
         buffered.splice(droppableIdx, 1)
-      } else {
+      } else if (!coalesceOldestOrphanDelta(buffered)) {
         // Prefer freeing a stream delta over dropping tool/terminal/status chrome.
         const deltaIdx = buffered.findIndex((ev) => ORPHAN_DELTA_TYPES.has(ev.type))
         if (deltaIdx >= 0) buffered.splice(deltaIdx, 1)
@@ -471,6 +516,7 @@ export function useWorkspaceManager() {
       if (runId) {
         registerRunId(runId, workspacePath)
         void restorePendingQuestions(controller, runId)
+        void restorePendingApprovals(controller, runId)
       }
       return controller
     },
@@ -553,7 +599,24 @@ export function useWorkspaceManager() {
         if (window.vyotiq.loadRunEvents) {
           const eventsRes = await window.vyotiq.loadRunEvents(workspacePath, runId)
           if (!stillCurrent()) return
-          if (eventsRes.ok) events = eventsRes.data
+          if (eventsRes.ok) {
+            events = eventsRes.data
+          } else {
+            logger.warn('loadRunEvents failed on restore', {
+              scope: 'runs',
+              correlationId: runId,
+              err: eventsRes.error
+            })
+            setContexts((prev) => {
+              const ctx = prev[workspacePath]
+              if (!ctx) return prev
+              return {
+                ...prev,
+                [workspacePath]: { ...ctx, runsError: eventsRes.error }
+              }
+            })
+            bump()
+          }
         }
         if (!stillCurrent()) return
         ctrl.hydrateTranscript(res.data.messages, events)

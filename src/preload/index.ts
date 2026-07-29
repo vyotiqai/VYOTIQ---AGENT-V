@@ -68,6 +68,8 @@ const api: VyotiqApi = {
   },
   respondToolApproval: (requestId, decision) =>
     ipcRenderer.invoke(IPC.toolApprovalResponse, { requestId, decision }),
+  listPendingToolApprovals: (runId) =>
+    ipcRenderer.invoke(IPC.toolApprovalListPending, { runId }),
   onAgentQuestionRequest: (handler) => {
     const listener = (_: IpcRendererEvent, raw: unknown): void => {
       const parsed = AgentQuestionRequestSchema.safeParse(raw)

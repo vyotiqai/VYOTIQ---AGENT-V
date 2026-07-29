@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { cn } from '@renderer/lib/ui'
 import { Icon } from '@renderer/lib/icons'
 import type { UiItem } from '@shared/transcript'
+import { isProminentTool } from '../toolUi'
 import { TerminalBody } from '../toolUi/bodies/TerminalBody'
 import type { ToolItem } from '../utils/transcriptRows'
 import { useFullToolContent } from './useFullToolContent'
@@ -62,6 +63,7 @@ function TerminalPanelEntry({
 
 /**
  * Docked panel showing recent terminal tool output from the chat transcript.
+ * Matches transcript prominence: read-only commands stay in activity rows only.
  */
 export function TerminalPanel({
   items,
@@ -80,6 +82,7 @@ export function TerminalPanel({
       const item = items[i]
       if (!item || !isToolItem(item)) continue
       if (item.tool.name !== 'terminal') continue
+      if (!isProminentTool(item.tool.name, item.tool.argsPreview)) continue
       out.push(item)
       if (out.length >= 8) break
     }

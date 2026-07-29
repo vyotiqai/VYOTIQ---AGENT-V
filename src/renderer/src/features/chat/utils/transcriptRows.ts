@@ -169,7 +169,9 @@ export function buildTranscriptRows(
     const showContent = Boolean(
       cleanedContent && !duplicatesReasoning({ ...assistant, content: cleanedContent })
     )
-    if (!includeThinking && assistant.thinkingStreaming) {
+    if (assistant.thinkingStreaming && !showThinking) {
+      // Timeline/aria still show Thinking while the block is hidden (setting off
+      // or streaming before meaningful text arrives).
       hiddenThinkingStreamingTurns.add(Math.max(turnIndex, 0))
     }
     // A row with nothing to show must not split the stretch around it, or the

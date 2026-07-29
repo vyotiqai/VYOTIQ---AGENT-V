@@ -6,12 +6,14 @@ let started = false
 export function initCrashReporter(): void {
   if (started) return
   try {
+    // Prefer before app.ready. uploadToServer:false still stores Crashpad minidumps.
+    // Do not set ignoreSystemCrashHandler — it can suppress useful OS/Crashpad handling.
     crashReporter.start({
       productName: 'Vyotiq',
       companyName: 'Vyotiq',
+      submitURL: '',
       uploadToServer: false,
-      compress: true,
-      ignoreSystemCrashHandler: true
+      compress: true
     })
     started = true
   } catch {

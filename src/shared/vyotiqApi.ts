@@ -104,6 +104,7 @@ export interface VyotiqApi {
     requestId: string,
     decision: ToolApprovalDecision
   ) => Promise<IpcResult<boolean>>
+  listPendingToolApprovals: (runId: string) => Promise<IpcResult<ToolApprovalRequest[]>>
   onAgentQuestionRequest: (handler: (request: AgentQuestionRequest) => void) => () => void
   respondAgentQuestion: (
     requestId: string,

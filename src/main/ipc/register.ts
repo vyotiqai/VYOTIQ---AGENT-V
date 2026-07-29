@@ -28,6 +28,7 @@ import {
   ToolApprovalResponseSchema,
   AgentQuestionResponseSchema,
   ListPendingAgentQuestionsRequestSchema,
+  ListPendingToolApprovalsRequestSchema,
   ExtractAttachmentRequestSchema,
   MarketplaceBrowseRequestSchema,
   MarketplaceInstallRequestSchema,
@@ -48,6 +49,7 @@ import {
   type Settings,
   type AgentEvent,
   type AgentQuestionRequest,
+  type ToolApprovalRequest,
   type ChatStartResult,
   type ChatMessage,
   type CompactRunResult,
@@ -116,6 +118,7 @@ import { focusAgentBrowser, closeAgentBrowser, getAgentBrowserState, selectBrows
 import { extractAttachment } from '../attachments/extract'
 import {
   cancelPendingApprovals,
+  listPendingToolApprovals,
   registerApprovalSender,
   resolveToolApproval
 } from '../agent/toolApproval'
@@ -558,6 +561,19 @@ export function registerIpc(): void {
       return failFrom(err, IPC.toolApprovalResponse)
     }
   })
+
+  ipcMain.handle(
+    IPC.toolApprovalListPending,
+    async (event, raw): Promise<IpcResult<ToolApprovalRequest[]>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const { runId } = ListPendingToolApprovalsRequestSchema.parse(raw)
+        return ok(listPendingToolApprovals(runId))
+      } catch (err) {
+        return failFrom(err, IPC.toolApprovalListPending)
+      }
+    }
+  )
 
   ipcMain.handle(IPC.agentQuestionResponse, async (event, raw): Promise<IpcResult<boolean>> => {
     if (!senderOk(event)) return fail('Invalid sender')

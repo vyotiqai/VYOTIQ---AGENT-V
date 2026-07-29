@@ -17,6 +17,7 @@ import {
   interruptOrphanRunsForWorkspaces
 } from '@main/workspace/workspaces'
 import { initMainLogging } from './logging/init'
+import { initCrashReporter } from './logging/crashReporter'
 import { logger } from '../shared/logger'
 import { IPC } from '../shared/channels'
 
@@ -28,6 +29,16 @@ try {
   app.commandLine.appendSwitch('disable-gpu-shader-disk-cache')
 } catch {
   // getPath can fail in odd launch contexts; ignore
+}
+
+// Crashpad must start before any renderer is created; prefer before ready.
+initCrashReporter()
+
+// Windows: Chromium network/renderer cascade crashes have been observed at
+// startup (Network service gone → RENDERER_CRASH). Prefer software GL until
+// a Crashpad dump identifies a different root cause.
+if (process.platform === 'win32') {
+  app.disableHardwareAcceleration()
 }
 
 const gotLock = app.requestSingleInstanceLock()

@@ -445,6 +445,13 @@ export const ToolApprovalResponseSchema = z.object({
 })
 export type ToolApprovalResponse = z.infer<typeof ToolApprovalResponseSchema>
 
+export const ListPendingToolApprovalsRequestSchema = z.object({
+  runId: RunIdSchema
+})
+export type ListPendingToolApprovalsRequest = z.infer<
+  typeof ListPendingToolApprovalsRequestSchema
+>
+
 /**
  * A structured question waiting on the user. The loop is parked on this request,
  * so the renderer must answer it or cancel the run.

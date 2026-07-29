@@ -1118,7 +1118,11 @@ export async function* runAgent(input: {
         mcpToolPolicies,
         emitLiveEvent: (ev: AgentEvent) => {
           liveEvents.push(ev)
-          if (ev.type === 'subagent_update' || ev.type === 'subagent_context_usage') {
+          if (
+            ev.type === 'subagent_update' ||
+            ev.type === 'subagent_context_usage' ||
+            ev.type === 'mode_changed'
+          ) {
             appendEvent(runDir!, ev)
           }
           if (ev.type === 'tool_result') {

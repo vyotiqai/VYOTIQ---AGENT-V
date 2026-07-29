@@ -54,7 +54,9 @@ export const AskQuestionCard = memo(function AskQuestionCard({
   }
 
   const busy = phase !== 'idle'
-  const canSubmit = answers.length > 0 && !busy
+  const canSubmit = Boolean(onSubmit) && answers.length > 0 && !busy
+  const submitLabel =
+    phase === 'pending' ? 'Sending…' : phase === 'done' ? 'Answered' : 'Submit answer'
 
   return (
     <div
@@ -113,7 +115,7 @@ export const AskQuestionCard = memo(function AskQuestionCard({
           className="rounded-md border border-accent bg-accent px-2 py-1 text-xs text-accent-fg vy-transition hover:opacity-90 disabled:opacity-[var(--vy-disabled-opacity)]"
           onClick={submit}
         >
-          {phase === 'pending' ? 'Sending…' : 'Submit answer'}
+          {submitLabel}
         </button>
       </div>
     </div>

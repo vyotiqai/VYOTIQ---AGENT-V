@@ -21,6 +21,7 @@ const pending = new Map<
     reject: (err: Error) => void
     runId: string
     invokeId?: number
+    request: ToolApprovalRequest
   }
 >()
 
@@ -30,11 +31,27 @@ function abortApprovalError(): Error {
   return err
 }
 
+/**
+ * Register (or replace) the window that receives approval prompts for a run.
+ * Re-pushes any still-pending approvals so a remounted renderer can show cards.
+ */
 export function registerApprovalSender(runId: string, sender: ApprovalSender): () => void {
   senders.set(runId, sender)
+  for (const entry of pending.values()) {
+    if (entry.runId === runId) sender(entry.request)
+  }
   return () => {
     if (senders.get(runId) === sender) senders.delete(runId)
   }
+}
+
+/** Pending approval payloads still waiting on the user for this run. */
+export function listPendingToolApprovals(runId: string): ToolApprovalRequest[] {
+  const out: ToolApprovalRequest[] = []
+  for (const entry of pending.values()) {
+    if (entry.runId === runId) out.push(entry.request)
+  }
+  return out
 }
 
 /** Returns false when the request is unknown, e.g. the run was already cancelled. */
@@ -131,7 +148,8 @@ function askThroughRenderer(
       resolve: settle,
       reject,
       runId: request.runId,
-      invokeId
+      invokeId,
+      request
     })
     signal.addEventListener('abort', onAbort, { once: true })
     sender(request)

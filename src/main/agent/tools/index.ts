@@ -113,18 +113,46 @@ function toolFail(
 }
 
 function logToolFailure(name: string, err: unknown): void {
-  const fields = {
-    scope: 'tools' as const,
-    code: 'TOOL_EXEC' as const,
+  const fields: {
+    scope: 'tools'
+    code: 'TOOL_EXEC'
+    tool: string
+    err: unknown
+    kind?: string
+  } = {
+    scope: 'tools',
+    code: 'TOOL_EXEC',
     tool: name,
     err
   }
+  const kind = toolFailureKind(err)
+  if (kind) fields.kind = kind
   const summary = logErrorSummary(err, 'TOOL_EXEC')
+  const line = kind
+    ? `Tool execution failed: ${summary} (${kind})`
+    : `Tool execution failed: ${summary}`
   if (isExpectedToolError(formatError(err))) {
-    logger.warn(`Tool execution failed: ${summary}`, fields)
+    logger.warn(line, fields)
   } else {
-    logger.error(`Tool execution failed: ${summary}`, fields)
+    logger.error(line, fields)
   }
+}
+
+/** Stable, path-free classifier for tool failures (safe for structured logs). */
+function toolFailureKind(err: unknown): string | undefined {
+  if (!(err instanceof Error)) return undefined
+  const message = err.message ?? ''
+  if (/^File not found/i.test(message)) return 'not_found'
+  if (/^Not a file/i.test(message)) return 'not_a_file'
+  if (/Path is a directory/i.test(message)) return 'is_directory'
+  if (/Binary file detected/i.test(message)) return 'binary'
+  if (/File too large/i.test(message)) return 'too_large'
+  if (/Path escapes workspace/i.test(message)) return 'path_escape'
+  if (/Failed to parse tool arguments/i.test(message)) return 'bad_args'
+  if (err.name === 'AbortError') return 'aborted'
+  const code = (err as Error & { code?: unknown }).code
+  if (typeof code === 'string') return code
+  return undefined
 }
 
 export function terminalResultOk(command: string, content: string): boolean {
@@ -256,11 +284,13 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
   multi_edit: (workspace, args, signal, context) => {
     throwIfAborted(signal)
     const edits = (Array.isArray(args.edits) ? args.edits : []) as MultiEditEntry[]
-    const cp = getWriteCheckpoint(context.runDir)
-    if (cp) {
-      for (const edit of edits) {
-        if (typeof edit.path === 'string' && edit.path.trim()) {
-          cp.recordPrior(edit.path, 'write')
+    if (!context.skipWriteCheckpoint) {
+      const cp = getWriteCheckpoint(context.runDir)
+      if (cp) {
+        for (const edit of edits) {
+          if (typeof edit.path === 'string' && edit.path.trim()) {
+            cp.recordPrior(edit.path, 'write')
+          }
         }
       }
     }

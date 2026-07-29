@@ -46,6 +46,13 @@ export function useChatStream(workspacePath: string | null) {
   }, [controller])
 
   useEffect(() => {
+    if (!window.vyotiq?.onAgentQuestionRequest) return
+    return window.vyotiq.onAgentQuestionRequest((request) => {
+      controllerRef.current?.handleQuestionRequest(request)
+    })
+  }, [controller])
+
+  useEffect(() => {
     return () => controllerRef.current?.dispose()
   }, [])
 

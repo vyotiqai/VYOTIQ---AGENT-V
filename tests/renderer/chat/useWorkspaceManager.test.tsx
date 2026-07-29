@@ -700,10 +700,10 @@ describe('useWorkspaceManager', () => {
     expect(assistant?.kind).toBe('message')
     if (assistant?.kind !== 'message') return
 
-    expect(assistant.content).not.toContain('[0]')
-    expect(assistant.content).toContain(`[${overflow}]`)
-    expect(assistant.content).toContain(`[${ORPHAN_EVENT_BUFFER_MAX + overflow - 1}]`)
-    expect(assistant.content.startsWith(`[${overflow}]`)).toBe(true)
+    // Overflow coalesces older text_delta chunks into later ones — no token loss.
+    for (let i = 0; i < ORPHAN_EVENT_BUFFER_MAX + overflow; i++) {
+      expect(assistant.content).toContain(`[${i}]`)
+    }
   })
 
   it('keeps terminal orphan events when the buffer overflows with text deltas', async () => {
