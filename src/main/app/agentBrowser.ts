@@ -1117,19 +1117,46 @@ export function closeAgentBrowser(): void {
 
 export type BrowserClearKind = 'history' | 'cookies' | 'cache' | 'all'
 
+function clearTabNavigationHistory(): void {
+  for (const tab of tabs.values()) {
+    if (isTabDestroyed(tab)) continue
+    const wc = tab.view.webContents
+    try {
+      if (wc.navigationHistory && typeof wc.navigationHistory.clear === 'function') {
+        wc.navigationHistory.clear()
+      } else if (typeof wc.clearHistory === 'function') {
+        wc.clearHistory()
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  emitCurrent()
+}
+
 /** Clear storage/cache for the agent-browser partition only. */
 export async function clearAgentBrowserData(
   kind: BrowserClearKind
 ): Promise<{ cleared: BrowserClearKind }> {
   const ses = session.fromPartition(PARTITION)
   if (kind === 'history' || kind === 'all') {
-    // Electron has no per-partition browsingHistory API; closing tabs resets
-    // in-memory navigation stacks. App-level Recents are cleared in the renderer.
-    closeAgentBrowser()
+    // Reset in-tab navigation stacks without destroying live tabs.
+    // App-level Recents are cleared in the renderer.
+    clearTabNavigationHistory()
   }
-  if (kind === 'cookies' || kind === 'all') {
+  if (kind === 'cookies') {
+    await ses.clearStorageData({ storages: ['cookies'] })
+  } else if (kind === 'all') {
     await ses.clearStorageData({
-      storages: ['cookies', 'localstorage', 'indexdb', 'shadercache', 'serviceworkers', 'cachestorage', 'filesystem']
+      storages: [
+        'cookies',
+        'localstorage',
+        'indexdb',
+        'shadercache',
+        'serviceworkers',
+        'cachestorage',
+        'filesystem'
+      ]
     })
   }
   if (kind === 'cache' || kind === 'all') {
@@ -1143,8 +1170,22 @@ export async function takeBrowserScreenshot(opts: {
   runDir: string
   tabId?: string
 }): Promise<{ path: string }> {
-  await snapshotPage({ runDir: opts.runDir, tabId: opts.tabId })
-  return { path: join(opts.runDir, 'browser', 'snapshot.jpg') }
+  return withBrowserLock(async () => {
+    const tab = requireTab(opts.tabId)
+    activateTab(tab)
+    const wc = tabContents(tab)
+    let image = await wc.capturePage()
+    const size = image.getSize()
+    if (size.width > PREVIEW_MAX_WIDTH) {
+      image = image.resize({ width: PREVIEW_MAX_WIDTH, quality: 'better' })
+    }
+    const jpeg = image.toJPEG(SNAPSHOT_JPEG_QUALITY)
+    const dir = join(opts.runDir, 'browser')
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    const path = join(dir, 'snapshot.jpg')
+    writeFileSync(path, jpeg)
+    return { path }
+  })
 }
 
 export function getAgentBrowserState(): AgentBrowserState {

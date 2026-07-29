@@ -78,7 +78,11 @@ export function AgentBrowserPanel({
 
   useEffect(() => {
     const url = state.url?.trim() || ''
-    if (!url || url === 'about:blank' || url === lastRecordedUrl.current) return
+    if (!url || url === 'about:blank') {
+      lastRecordedUrl.current = ''
+      return
+    }
+    if (url === lastRecordedUrl.current) return
     lastRecordedUrl.current = url
     setRecents(recordBrowserVisit(url, state.title ?? ''))
   }, [state.url, state.title])
@@ -205,19 +209,32 @@ export function AgentBrowserPanel({
           break
         }
         case 'clear-history':
-          void window.vyotiq.browserClearBrowsingData?.({ kind: 'history' }).then(() => {
+          void window.vyotiq.browserClearBrowsingData?.({ kind: 'history' }).then((res) => {
+            if (!res?.ok) {
+              setStatusMsg(res && !res.ok ? res.error : 'Failed to clear history')
+              return
+            }
             clearBrowserRecents()
+            lastRecordedUrl.current = ''
             setRecents([])
             setStatusMsg('Browsing history cleared')
           })
           break
         case 'clear-cookies':
-          void window.vyotiq.browserClearBrowsingData?.({ kind: 'cookies' }).then(() => {
+          void window.vyotiq.browserClearBrowsingData?.({ kind: 'cookies' }).then((res) => {
+            if (!res?.ok) {
+              setStatusMsg(res && !res.ok ? res.error : 'Failed to clear cookies')
+              return
+            }
             setStatusMsg('Cookies cleared')
           })
           break
         case 'clear-cache':
-          void window.vyotiq.browserClearBrowsingData?.({ kind: 'cache' }).then(() => {
+          void window.vyotiq.browserClearBrowsingData?.({ kind: 'cache' }).then((res) => {
+            if (!res?.ok) {
+              setStatusMsg(res && !res.ok ? res.error : 'Failed to clear cache')
+              return
+            }
             setStatusMsg('Cache cleared')
           })
           break
@@ -281,21 +298,12 @@ export function AgentBrowserPanel({
           <polyline points="9 18 15 12 9 6" />
         </NavIconButton>
         <NavIconButton
-          label={state.navigating ? 'Stop' : 'Reload'}
+          label="Reload"
           disabled={!hasPage}
           onClick={() => void window.vyotiq.browserReload?.()}
         >
-          {state.navigating ? (
-            <>
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </>
-          ) : (
-            <>
-              <polyline points="23 4 23 10 17 10" />
-              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-            </>
-          )}
+          <polyline points="23 4 23 10 17 10" />
+          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
         </NavIconButton>
 
         <div className="relative min-w-0 flex-1" ref={historyRef}>

@@ -123,6 +123,38 @@ describe('ChatView composer placement', () => {
     expect(document.querySelector('[data-changes-panel]')).toBeNull()
   })
 
+  it('does not steal Terminal when browser state keeps reporting open', () => {
+    let browserHandler: ((state: { open: boolean; url: string; title: string }) => void) | null =
+      null
+    Object.defineProperty(window, 'vyotiq', {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(window.vyotiq as object),
+        browserGetState: vi.fn().mockResolvedValue({
+          ok: true,
+          data: { open: true, url: 'https://example.com', title: 'Example' }
+        }),
+        onBrowserState: vi.fn((handler: typeof browserHandler) => {
+          browserHandler = handler
+          return () => {
+            browserHandler = null
+          }
+        })
+      }
+    })
+
+    localStorage.setItem('vyotiq.rightPanel', 'terminal')
+    render(<ChatView {...baseProps} items={[]} />)
+
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-agent-browser-panel]')).toBeNull()
+
+    browserHandler?.({ open: true, url: 'https://example.com/x', title: 'Example' })
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-agent-browser-panel]')).toBeNull()
+  })
+
   it('shows Recents in the empty browser panel when history exists', () => {
     localStorage.setItem(
       'vyotiq.browserRecents',

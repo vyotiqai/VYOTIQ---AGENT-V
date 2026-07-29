@@ -307,22 +307,41 @@ export function ChatView({
 
   useEffect(() => {
     let cancelled = false
+    let wasOpen = false
     void window.vyotiq.browserGetState?.().then((res) => {
       if (cancelled || !res.ok) return
-      setBrowserActive(Boolean(res.data.open))
-      if (res.data.open) setRightPanel('browser')
+      wasOpen = Boolean(res.data.open)
+      setBrowserActive(wasOpen)
+      // Only auto-open on first load when no panel preference is restored yet.
+      // Do not override a persisted Terminal/Files/Changes selection.
     })
     const unsub = window.vyotiq.onBrowserState?.((next) => {
       if (cancelled) return
-      setBrowserActive(Boolean(next.open))
-      // Auto-open so a live page is not hidden behind a closed rail.
-      if (next.open) setRightPanel('browser')
+      const open = Boolean(next.open)
+      setBrowserActive(open)
+      // Rising edge only: agent just opened a page — show the browser panel
+      // without stealing an already-selected Terminal/Files/Changes panel.
+      if (open && !wasOpen) {
+        setActiveRightPanel((current) => {
+          if (current === 'terminal' || current === 'files' || current === 'changes') {
+            return current
+          }
+          try {
+            localStorage.setItem(RIGHT_PANEL_KEY, 'browser')
+            localStorage.setItem(BROWSER_PANEL_OPEN_KEY, '1')
+          } catch {
+            /* ignore */
+          }
+          return 'browser'
+        })
+      }
+      wasOpen = open
     })
     return () => {
       cancelled = true
       unsub?.()
     }
-  }, [setRightPanel])
+  }, [])
 
   // Transcript scrolls behind the floating composer, so it has to reserve the
   // dock height plus the fade painted above it (not included in offsetHeight).
