@@ -16,7 +16,7 @@ import { logger } from '../../shared/logger'
 import { canonicalizeWorkspacePath, workspacePathsEqual } from '../../shared/workspacePath'
 import { cleanupLegacyHarnessArtifacts } from '../agent/harness'
 import { interruptOrphanRuns } from '../agent/state'
-import { clearSettingsCacheForTests, readLegacyWorkspacePath } from '@main/settings/settings'
+import { readLegacyWorkspacePath } from '@main/settings/settings'
 import { atomicWriteJson } from '../storage/atomicWrite'
 import { ensureWorkspaceStorage, workspaceId } from '../storage/paths'
 import { migrateLegacySessions } from '@main/storage/migrations/migrateSessions'
@@ -54,14 +54,6 @@ export function defaultWorkspacesState(): WorkspacesState {
 function writeWorkspacesAtomic(state: WorkspacesState): void {
   const validated = WorkspacesStateSchema.parse(state)
   atomicWriteJson(workspacesPath(), validated)
-  workspacesCache = validated
-}
-
-let workspacesCache: WorkspacesState | null = null
-
-/** Drop in-memory workspaces cache (tests / external file edits). */
-export function clearWorkspacesCacheForTests(): void {
-  workspacesCache = null
 }
 
 function registerWorkspaceId(
@@ -237,21 +229,18 @@ function ensureUiState(state: WorkspacesState, path: string): WorkspacesState {
 }
 
 export function readWorkspacesState(): WorkspacesState {
-  if (workspacesCache) return workspacesCache
   const p = workspacesPath()
   if (!existsSync(p)) {
     const initial = migrateLegacyWorkspacePath(defaultWorkspacesState())
-    writeWorkspacesAtomic(initial)
-    return workspacesCache!
+    if (!existsSync(p)) writeWorkspacesAtomic(initial)
+    return initial
   }
   try {
     const raw = JSON.parse(readFileSync(p, 'utf8')) as unknown
     if (typeof raw === 'object' && raw !== null && (raw as { version?: number }).version === 1) {
-      const upgraded = normalizeActivePath(
-        migrateLegacyWorkspacePath(upgradeWorkspacesStateV1(raw as Record<string, unknown>))
-      )
+      const upgraded = upgradeWorkspacesStateV1(raw as Record<string, unknown>)
       writeWorkspacesAtomic(upgraded)
-      return workspacesCache!
+      return normalizeActivePath(migrateLegacyWorkspacePath(upgraded))
     }
     const parsed = WorkspacesStateSchema.safeParse(raw)
     if (!parsed.success) {
@@ -262,16 +251,14 @@ export function readWorkspacesState(): WorkspacesState {
         )
       )
       writeWorkspacesAtomic(recovered)
-      return workspacesCache!
+      return recovered
     }
-    const next = normalizeActivePath(migrateLegacyWorkspacePath(parsed.data))
-    workspacesCache = next
-    return next
+    return normalizeActivePath(migrateLegacyWorkspacePath(parsed.data))
   } catch (err) {
     logger.warn('Failed to read workspaces.json; resetting', { scope: 'workspaces', err })
     const reset = migrateLegacyWorkspacePath(defaultWorkspacesState())
     writeWorkspacesAtomic(reset)
-    return workspacesCache!
+    return reset
   }
 }
 
@@ -407,9 +394,6 @@ export function patchWorkspacesState(patch: Partial<WorkspacesState>): Workspace
 
 /** Test helper — remove workspaces.json */
 export function resetWorkspacesForTests(): void {
-  workspacesCache = null
-  // Legacy migration reads settings; drop that cache so disk edits in tests are visible.
-  clearSettingsCacheForTests()
   const p = workspacesPath()
   if (existsSync(p)) {
     try {

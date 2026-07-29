@@ -1,10 +1,5 @@
 import { lookup as dnsLookup } from 'dns/promises'
-import { mkdirSync, writeFileSync } from 'fs'
-import * as http from 'http'
-import * as https from 'https'
 import { isIP } from 'net'
-import { dirname } from 'path'
-import type { IncomingMessage, RequestOptions } from 'http'
 
 export const WEB_FETCH_MAX_BYTES = 2 * 1024 * 1024
 export const WEB_FETCH_DEFAULT_TIMEOUT_MS = 20_000
@@ -32,17 +27,6 @@ export function resetDnsLookupForTests(): void {
 
 /** Hosts that resolve inside the machine or the local network are never fetched. */
 export async function assertPublicUrl(raw: string): Promise<URL> {
-  const { url } = await resolvePublicUrl(raw)
-  return url
-}
-
-/**
- * Resolve a public http(s) URL and return the validated public addresses so
- * callers can pin the TCP connect (DNS-rebinding resistant).
- */
-export async function resolvePublicUrl(
-  raw: string
-): Promise<{ url: URL; addresses: string[] }> {
   let url: URL
   try {
     url = new URL(raw)
@@ -63,13 +47,13 @@ export async function resolvePublicUrl(
     if (isPrivateIpv4(host)) {
       throw new Error(`Refusing to fetch a private or loopback address: ${url.hostname}`)
     }
-    return { url, addresses: [host] }
+    return url
   }
   if (literalVersion === 6) {
     if (isPrivateIpv6(host)) {
       throw new Error(`Refusing to fetch a private or loopback address: ${url.hostname}`)
     }
-    return { url, addresses: [host] }
+    return url
   }
 
   // Decimal/hex IPv4 forms that `isIP()` does not classify (e.g. 2130706433 → 127.0.0.1).
@@ -81,15 +65,13 @@ export async function resolvePublicUrl(
   if (resolved.length === 0) {
     throw new Error(`Could not resolve host: ${host}`)
   }
-  const addresses: string[] = []
   for (const entry of resolved) {
     if (isPrivateResolvedAddress(entry.address)) {
       throw new Error(`Refusing to fetch a private or loopback address: ${host}`)
     }
-    addresses.push(entry.address)
   }
 
-  return { url, addresses }
+  return url
 }
 
 /**
@@ -317,8 +299,12 @@ async function fetchWithValidatedRedirects(
   let currentUrl = startUrl
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    const { url: validated, addresses } = await resolvePublicUrl(currentUrl.href)
-    const res = await publicFetchImpl(validated, addresses, signal, headers)
+    const validated = await assertPublicUrl(currentUrl.href)
+    const res = await fetch(validated, {
+      signal,
+      redirect: 'manual',
+      headers: headers ?? { accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5' }
+    })
 
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get('location')
@@ -336,106 +322,6 @@ async function fetchWithValidatedRedirects(
   }
 
   throw new Error(`Too many redirects while fetching ${startUrl.href}`)
-}
-
-type PublicFetchImpl = (
-  url: URL,
-  addresses: string[],
-  signal: AbortSignal,
-  headers?: Record<string, string>
-) => Promise<Response>
-
-/**
- * Connect using a DNS result already proven public so a second lookup cannot
- * rebind to a private address mid-request (SNI/Host still use the hostname).
- */
-async function fetchPinnedPublic(
-  url: URL,
-  addresses: string[],
-  signal: AbortSignal,
-  headers?: Record<string, string>
-): Promise<Response> {
-  const publicAddrs = addresses.filter((a) => !isPrivateResolvedAddress(a))
-  if (publicAddrs.length === 0) {
-    throw new Error(`Refusing to fetch a private or loopback address: ${url.hostname}`)
-  }
-  // Prefer IPv4 for broader compatibility; fall back to first public address.
-  const pinnedIp = publicAddrs.find((a) => isIP(a) === 4) ?? publicAddrs[0]
-  const family = isIP(pinnedIp) === 6 ? 6 : 4
-
-  const defaultPort = url.protocol === 'https:' ? 443 : 80
-  const port = url.port ? Number(url.port) : defaultPort
-  const requestHeaders: Record<string, string> = {
-    ...(headers ?? { accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5' }),
-    host: url.host
-  }
-
-  const options: RequestOptions = {
-    protocol: url.protocol,
-    hostname: url.hostname,
-    port,
-    path: `${url.pathname}${url.search}`,
-    method: 'GET',
-    headers: requestHeaders,
-    lookup: (_hostname, _opts, cb) => {
-      cb(null, pinnedIp, family)
-    }
-  }
-
-  const lib = url.protocol === 'https:' ? https : http
-
-  return await new Promise<Response>((resolve, reject) => {
-    const req = lib.request(options, (incoming: IncomingMessage) => {
-      const chunks: Buffer[] = []
-      let total = 0
-      incoming.on('data', (chunk: Buffer | string) => {
-        const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk
-        total += buf.byteLength
-        if (total <= MAX_BYTES) chunks.push(buf)
-      })
-      incoming.on('end', () => {
-        const body = Buffer.concat(chunks).subarray(0, MAX_BYTES)
-        const headerInit: Record<string, string> = {}
-        for (const [key, value] of Object.entries(incoming.headers)) {
-          if (value == null) continue
-          headerInit[key] = Array.isArray(value) ? value.join(', ') : value
-        }
-        resolve(
-          new Response(body, {
-            status: incoming.statusCode ?? 0,
-            statusText: incoming.statusMessage ?? '',
-            headers: headerInit
-          })
-        )
-      })
-      incoming.on('error', reject)
-    })
-
-    const onAbort = (): void => {
-      req.destroy(new Error('Aborted'))
-    }
-    if (signal.aborted) {
-      onAbort()
-      reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }))
-      return
-    }
-    signal.addEventListener('abort', onAbort, { once: true })
-    req.on('error', (err) => {
-      signal.removeEventListener('abort', onAbort)
-      reject(err)
-    })
-    req.on('close', () => {
-      signal.removeEventListener('abort', onAbort)
-    })
-    req.end()
-  })
-}
-
-let publicFetchImpl: PublicFetchImpl = fetchPinnedPublic
-
-/** Test helper — inject fetch for redirect / network tests. */
-export function setPublicFetchForTests(next: PublicFetchImpl | null): void {
-  publicFetchImpl = next ?? fetchPinnedPublic
 }
 
 /** Stop reading once the cap is hit rather than buffering an unbounded body. */
@@ -469,89 +355,4 @@ export async function fetchPublicResponse(
   const { response, finalUrl } = await fetchWithValidatedRedirects(startUrl, signal, headers)
   const body = await readCapped(response, MAX_BYTES)
   return { response, finalUrl, body }
-}
-
-/** Download a public URL to disk with DNS pinning (no web_fetch byte cap). */
-export async function downloadPublicUrlToFile(
-  rawUrl: string,
-  destPath: string,
-  signal?: AbortSignal,
-  maxBytes = 100 * 1024 * 1024
-): Promise<void> {
-  const { url, addresses } = await resolvePublicUrl(rawUrl)
-  const publicAddrs = addresses.filter((a) => !isPrivateResolvedAddress(a))
-  if (publicAddrs.length === 0) {
-    throw new Error(`Refusing to fetch a private or loopback address: ${url.hostname}`)
-  }
-  const pinnedIp = publicAddrs.find((a) => isIP(a) === 4) ?? publicAddrs[0]
-  const family = isIP(pinnedIp) === 6 ? 6 : 4
-  const defaultPort = url.protocol === 'https:' ? 443 : 80
-  const port = url.port ? Number(url.port) : defaultPort
-  const lib = url.protocol === 'https:' ? https : http
-  const abortSignal = signal ?? AbortSignal.timeout(60_000)
-
-  await new Promise<void>((resolve, reject) => {
-    const req = lib.request(
-      {
-        protocol: url.protocol,
-        hostname: url.hostname,
-        port,
-        path: `${url.pathname}${url.search}`,
-        method: 'GET',
-        headers: { host: url.host, accept: '*/*' },
-        lookup: (_hostname, _opts, cb) => {
-          cb(null, pinnedIp, family)
-        }
-      },
-      (incoming) => {
-        if ((incoming.statusCode ?? 0) >= 300 && (incoming.statusCode ?? 0) < 400) {
-          reject(new Error(`Unexpected redirect downloading ${url.href}`))
-          incoming.resume()
-          return
-        }
-        if ((incoming.statusCode ?? 0) < 200 || (incoming.statusCode ?? 0) >= 300) {
-          reject(new Error(`Download failed: HTTP ${incoming.statusCode}`))
-          incoming.resume()
-          return
-        }
-        const chunks: Buffer[] = []
-        let total = 0
-        incoming.on('data', (chunk: Buffer | string) => {
-          const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk
-          total += buf.byteLength
-          if (total > maxBytes) {
-            req.destroy()
-            reject(new Error(`Download exceeded ${maxBytes} bytes`))
-            return
-          }
-          chunks.push(buf)
-        })
-        incoming.on('end', () => {
-          try {
-            mkdirSync(dirname(destPath), { recursive: true })
-            writeFileSync(destPath, Buffer.concat(chunks))
-            resolve()
-          } catch (err) {
-            reject(err)
-          }
-        })
-        incoming.on('error', reject)
-      }
-    )
-    const onAbort = (): void => {
-      req.destroy(new Error('Aborted'))
-    }
-    if (abortSignal.aborted) {
-      onAbort()
-      reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }))
-      return
-    }
-    abortSignal.addEventListener('abort', onAbort, { once: true })
-    req.on('error', (err) => {
-      abortSignal.removeEventListener('abort', onAbort)
-      reject(err)
-    })
-    req.on('close', () => abortSignal.removeEventListener('abort', onAbort))
-    req.end()
-  })
 }

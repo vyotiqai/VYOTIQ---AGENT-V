@@ -16,7 +16,6 @@ import {
   getMcpAuthToken,
   hasMcpAuthToken,
   hasMcpOAuthState,
-  hasStoredMcpOAuthBlob,
   setMcpAuthToken,
   clearMcpOAuthState
 } from '../../settings/secrets'
@@ -78,17 +77,6 @@ const sessions = new Map<string, McpSession>()
 const connectErrors = new Map<string, string>()
 const sessionConfigKeys = new Map<string, string>()
 const mcpReadOnlyHints = new Map<string, boolean>()
-/** Full MCP tool name → definition (kept in sync with `sessions`). */
-const toolsByName = new Map<string, ToolDefinition>()
-
-function rebuildToolsByNameIndex(): void {
-  toolsByName.clear()
-  for (const session of sessions.values()) {
-    for (const tool of session.tools) {
-      toolsByName.set(tool.name, tool)
-    }
-  }
-}
 
 /** Skip re-attempting a failed connect with the same config until cooldown expires. */
 const CONNECT_RETRY_COOLDOWN_MS = 60_000
@@ -124,7 +112,7 @@ export function mcpServerConfigKey(
   // that don't mock Electron from touching safeStorage).
   const authPresent =
     server.id && (transport === 'http' || transport === 'sse')
-      ? hasMcpAuthToken(server.id) || hasStoredMcpOAuthBlob(server.id)
+      ? hasMcpAuthToken(server.id) || hasMcpOAuthState(server.id)
       : false
   return JSON.stringify({
     transport,
@@ -408,7 +396,6 @@ export async function connectMcpServer(server: McpServer): Promise<void> {
       }
     })
     sessions.set(server.id, { client, transport, tools })
-    rebuildToolsByNameIndex()
     sessionConfigKeys.set(server.id, mcpServerConfigKey(server))
     connectErrors.delete(server.id)
     logger.info('MCP server connected', {
@@ -455,7 +442,6 @@ export async function disconnectMcpServer(serverId: string): Promise<void> {
     mcpReadOnlyHints.delete(tool.name)
   }
   sessions.delete(serverId)
-  rebuildToolsByNameIndex()
   sessionConfigKeys.delete(serverId)
   connectErrors.delete(serverId)
 }
@@ -548,7 +534,11 @@ export function listMcpToolDefinitions(): ToolDefinition[] {
 }
 
 export function getMcpToolDefinition(fullName: string): ToolDefinition | undefined {
-  return toolsByName.get(fullName)
+  for (const session of sessions.values()) {
+    const found = session.tools.find((t) => t.name === fullName)
+    if (found) return found
+  }
+  return undefined
 }
 
 export async function invokeMcpTool(

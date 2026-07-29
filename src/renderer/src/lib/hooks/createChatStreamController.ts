@@ -1116,32 +1116,32 @@ export function createChatStreamController(
         existingIdx >= 0 && items[existingIdx].kind === 'tool' ? items[existingIdx] : undefined
       if (existing?.kind === 'tool') {
         patch({
-          items: replaceAt(
-            items,
-            existingIdx,
-            withCanonicalToolId(
-              {
-                ...existing,
-                at: existing.at ?? toolAt,
-                toolExpanded:
-                  event.name === 'subagent'
-                    ? existing.toolExpanded === false
-                      ? false
-                      : true
-                    : existing.toolExpanded,
-                tool: withPresentationLock(
+          items: items.map((item, i) =>
+            i === existingIdx && item.kind === 'tool'
+              ? withCanonicalToolId(
                   {
-                    ...existing.tool,
-                    name: event.name,
-                    summary: event.summary,
-                    status: 'running' as const
+                    ...item,
+                    at: item.at ?? toolAt,
+                    toolExpanded:
+                      event.name === 'subagent'
+                        ? item.toolExpanded === false
+                          ? false
+                          : true
+                        : item.toolExpanded,
+                    tool: withPresentationLock(
+                      {
+                        ...item.tool,
+                        name: event.name,
+                        summary: event.summary,
+                        status: 'running' as const
+                      },
+                      event.name,
+                      item.tool.argsPreview
+                    )
                   },
-                  event.name,
-                  existing.tool.argsPreview
+                  event.toolCallId
                 )
-              },
-              event.toolCallId
-            )
+              : item
           )
         })
       } else {
@@ -1179,27 +1179,27 @@ export function createChatStreamController(
         existingIdx >= 0 && items[existingIdx].kind === 'tool' ? items[existingIdx] : undefined
       let nextItems = items
       if (existing?.kind === 'tool') {
-        nextItems = replaceAt(
-          items,
-          existingIdx,
-          withCanonicalToolId(
-            {
-              ...existing,
-              // The call is settled, so any prompt it was waiting on is moot.
-              approval: undefined,
-              // Drop auto-expand so finished bodies collapse; user toggle still wins via false.
-              toolExpanded: existing.toolExpanded === false ? false : undefined,
-              tool: {
-                ...existing.tool,
-                name: event.name,
-                summary: event.summary,
-                status: event.ok ? 'done' : 'fail',
-                content: event.content ?? existing.tool.content,
-                contentTruncated: event.contentTruncated ?? existing.tool.contentTruncated
-              }
-            },
-            event.toolCallId
-          )
+        nextItems = items.map((item, i) =>
+          i === existingIdx && item.kind === 'tool'
+            ? withCanonicalToolId(
+                {
+                  ...item,
+                  // The call is settled, so any prompt it was waiting on is moot.
+                  approval: undefined,
+                  // Drop auto-expand so finished bodies collapse; user toggle still wins via false.
+                  toolExpanded: item.toolExpanded === false ? false : undefined,
+                  tool: {
+                    ...item.tool,
+                    name: event.name,
+                    summary: event.summary,
+                    status: event.ok ? 'done' : 'fail',
+                    content: event.content ?? item.tool.content,
+                    contentTruncated: event.contentTruncated ?? item.tool.contentTruncated
+                  }
+                },
+                event.toolCallId
+              )
+            : item
         )
       } else if (
         !items.some(

@@ -14,18 +14,12 @@ import { logger } from '../../shared/logger'
 
 const EMPTY_INDEX: MarketplaceIndex = { schemaVersion: 1, items: [] }
 
-let marketplaceIndexCache: MarketplaceIndex | null = null
-
 export function readMarketplaceIndex(): MarketplaceIndex {
-  if (marketplaceIndexCache) {
-    return { schemaVersion: marketplaceIndexCache.schemaVersion, items: [...marketplaceIndexCache.items] }
-  }
   const path = marketplaceIndexPath()
   if (!existsSync(path)) return { ...EMPTY_INDEX, items: [] }
   try {
     const raw = JSON.parse(readFileSync(path, 'utf8')) as unknown
-    marketplaceIndexCache = MarketplaceIndexSchema.parse(raw)
-    return { schemaVersion: marketplaceIndexCache.schemaVersion, items: [...marketplaceIndexCache.items] }
+    return MarketplaceIndexSchema.parse(raw)
   } catch (err) {
     logger.warn('Marketplace index unreadable; treating as empty', {
       scope: 'marketplace',
@@ -38,9 +32,7 @@ export function readMarketplaceIndex(): MarketplaceIndex {
 export function writeMarketplaceIndex(index: MarketplaceIndex): void {
   mkdirSync(dirname(marketplaceIndexPath()), { recursive: true })
   mkdirSync(marketplaceRoot(), { recursive: true })
-  const parsed = MarketplaceIndexSchema.parse(index)
-  atomicWriteJson(marketplaceIndexPath(), parsed)
-  marketplaceIndexCache = parsed
+  atomicWriteJson(marketplaceIndexPath(), MarketplaceIndexSchema.parse(index))
 }
 
 export function upsertInstalledItem(item: MarketplaceInstalledItem): MarketplaceIndex {

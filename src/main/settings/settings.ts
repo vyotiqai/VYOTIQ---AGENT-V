@@ -12,14 +12,6 @@ function settingsPath(): string {
 
 function writeSettings(next: Settings): void {
   atomicWriteJson(settingsPath(), next)
-  settingsCache = next
-}
-
-let settingsCache: Settings | null = null
-
-/** Drop in-memory settings cache (tests / external file edits). */
-export function clearSettingsCacheForTests(): void {
-  settingsCache = null
 }
 
 function normalizeSettings(data: Settings): Settings {
@@ -52,12 +44,8 @@ export function readLegacyWorkspacePath(): string | null {
 }
 
 export function getSettings(): Settings {
-  if (settingsCache) return settingsCache
   const p = settingsPath()
-  if (!existsSync(p)) {
-    settingsCache = { ...DEFAULT_SETTINGS }
-    return settingsCache
-  }
+  if (!existsSync(p)) return { ...DEFAULT_SETTINGS }
   try {
     const raw = JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>
     const parsed = SettingsSchema.safeParse({
@@ -77,8 +65,7 @@ export function getSettings(): Settings {
           ;(merged as Record<string, unknown>)[key] = field.data
         }
       }
-      settingsCache = normalizeSettings(merged)
-      return settingsCache
+      return normalizeSettings(merged)
     }
     const data = normalizeSettings(parsed.data)
     if (data.ollamaBaseUrl !== parsed.data.ollamaBaseUrl) {
@@ -108,12 +95,10 @@ export function getSettings(): Settings {
         })
       }
     }
-    settingsCache = data
-    return settingsCache
+    return data
   } catch (err) {
     logger.warn('Failed to read settings', { scope: 'settings', code: 'SETTINGS', err })
-    settingsCache = { ...DEFAULT_SETTINGS }
-    return settingsCache
+    return { ...DEFAULT_SETTINGS }
   }
 }
 

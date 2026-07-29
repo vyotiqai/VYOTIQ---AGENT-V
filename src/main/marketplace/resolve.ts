@@ -72,27 +72,6 @@ export function invalidateMcpResolveCache(): void {
   sessionMapCache = null
 }
 
-/**
- * Cheap fingerprint for skipping redundant per-step MCP sync when nothing
- * about settings / marketplace / open workspaces changed.
- */
-export function mcpSessionMapFingerprint(): string {
-  const state = readWorkspacesState()
-  const openPaths = state.openPaths ?? []
-  const overrideFp = openPaths
-    .map((path) => {
-      const override = findWorkspaceSettingsOverride(state, path)
-      return `${path}:${overridesFingerprint(override?.marketplaceOverrides ?? null)}`
-    })
-    .join('|')
-  return [
-    settingsMcpFingerprint(),
-    marketplaceIndexFingerprint(),
-    openPaths.join(','),
-    overrideFp
-  ].join('::')
-}
-
 /** @internal */
 export function clearMcpResolveCacheForTests(): void {
   invalidateMcpResolveCache()
@@ -260,13 +239,23 @@ export function resolveEffectiveMcpServers(
  * when no workspaces are registered.
  */
 export function resolveMcpServersForSessionMap(): McpServer[] {
-  const fingerprint = mcpSessionMapFingerprint()
+  const state = readWorkspacesState()
+  const openPaths = state.openPaths ?? []
+  const overrideFp = openPaths
+    .map((path) => {
+      const override = findWorkspaceSettingsOverride(state, path)
+      return `${path}:${overridesFingerprint(override?.marketplaceOverrides ?? null)}`
+    })
+    .join('|')
+  const fingerprint = [
+    settingsMcpFingerprint(),
+    marketplaceIndexFingerprint(),
+    openPaths.join(','),
+    overrideFp
+  ].join('::')
   if (sessionMapCache?.fingerprint === fingerprint) {
     return sessionMapCache.servers.map((s) => ({ ...s }))
   }
-
-  const state = readWorkspacesState()
-  const openPaths = state.openPaths ?? []
 
   if (openPaths.length === 0) {
     const servers = resolveEffectiveMcpServers().filter((s) => s.enabled)

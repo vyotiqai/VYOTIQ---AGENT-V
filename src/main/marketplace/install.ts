@@ -1,18 +1,16 @@
 import {
   cpSync,
   existsSync,
-  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
-  realpathSync,
   renameSync,
   rmSync,
   writeFileSync
 } from 'fs'
 import { tmpdir } from 'os'
-import { basename, dirname, extname, join, resolve, sep } from 'path'
+import { basename, dirname, extname, join, resolve } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import {
@@ -41,7 +39,6 @@ import { remoteMcpIdFromUrl, headersWithoutAuthorization } from '../../shared/ut
 import { setMcpAuthToken } from '../settings/secrets'
 import { synthesizeVyotiqMcpManifest } from './mcpImport'
 import { withCompatibleUvxArgs } from '../agent/mcp/uvxCompat'
-import { assertPublicUrl, downloadPublicUrlToFile } from '../agent/tools/webFetch'
 
 const execFileAsync = promisify(execFile)
 
@@ -95,41 +92,23 @@ export function detectPackageAt(root: string): DetectedPackage {
   throw new Error('Not a Vyotiq package (need vyotiq.mcp.json, vyotiq.plugin.json, or skill.md)')
 }
 
-/**
- * Reject zip-slip / symlink escapes after extract. Throws and leaves callers to
- * clean up the temp tree.
- */
-function assertExtractContained(destDir: string): void {
-  const root = realpathSync(destDir)
-  const rootPrefix = root.endsWith(sep) ? root : root + sep
-  const walk = (dir: string): void => {
-    for (const name of readdirSync(dir)) {
-      const full = join(dir, name)
-      const st = lstatSync(full)
-      if (st.isSymbolicLink()) {
-        throw new Error(`Archive extract rejected symlink: ${name}`)
-      }
-      const real = realpathSync(full)
-      if (real !== root && !real.startsWith(rootPrefix)) {
-        throw new Error(`Archive extract escaped destination: ${name}`)
-      }
-      if (st.isDirectory()) walk(full)
-    }
-  }
-  walk(destDir)
-}
-
 async function extractArchive(archivePath: string, destDir: string): Promise<void> {
   mkdirSync(destDir, { recursive: true })
   const ext = extname(archivePath).toLowerCase()
-  // Prefer tar/libarchive for zip and tgz — it refuses `..` / absolute entry paths.
-  // Avoid Expand-Archive / unzip which do not enforce zip-slip containment.
   if (ext === '.zip') {
-    await execFileAsync('tar', ['-xf', archivePath, '-C', destDir])
-  } else {
-    await execFileAsync('tar', ['-xzf', archivePath, '-C', destDir])
+    if (process.platform === 'win32') {
+      await execFileAsync('powershell.exe', [
+        '-NoProfile',
+        '-Command',
+        `Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' -DestinationPath '${destDir.replace(/'/g, "''")}' -Force`
+      ])
+    } else {
+      await execFileAsync('unzip', ['-o', archivePath, '-d', destDir])
+    }
+    return
   }
-  assertExtractContained(destDir)
+  // .tgz / .tar.gz
+  await execFileAsync('tar', ['-xzf', archivePath, '-C', destDir])
 }
 
 function findPackageRoot(extractedDir: string): string {
@@ -155,7 +134,11 @@ function findPackageRoot(extractedDir: string): string {
 }
 
 async function downloadToFile(url: string, destPath: string): Promise<void> {
-  await downloadPublicUrlToFile(url, destPath)
+  const res = await fetch(url, { signal: AbortSignal.timeout(60_000) })
+  if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`)
+  const buf = Buffer.from(await res.arrayBuffer())
+  mkdirSync(dirname(destPath), { recursive: true })
+  writeFileSync(destPath, buf)
 }
 
 function copyPackageIntoStore(srcRoot: string, id: string, version: string): string {
