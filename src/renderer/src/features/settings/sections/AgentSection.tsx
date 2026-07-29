@@ -197,6 +197,21 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
       </SettingsRow>
 
       <SettingsRow
+        title="Diagnostics command"
+        description="Optional override for the diagnostics tool typecheck. Leave blank to auto-detect (package scripts or tsc). Global setting."
+      >
+        <Input
+          className="w-full max-w-md"
+          placeholder="e.g. pnpm typecheck"
+          disabled={form.formLocked}
+          value={form.settings.diagnosticsCommand ?? ''}
+          onChange={(e) => {
+            void form.runUpdate({ diagnosticsCommand: e.target.value })
+          }}
+        />
+      </SettingsRow>
+
+      <SettingsRow
         title="Auto-promote memory"
         description="Write compaction facts into workspace memory."
       >

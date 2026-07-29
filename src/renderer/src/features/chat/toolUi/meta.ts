@@ -29,9 +29,9 @@ const EDIT_TOOLS = new Set([
   'delete',
   'todo_write'
 ])
-const SEARCH_TOOLS = new Set(['search', 'grep', 'glob', 'web_fetch'])
+const SEARCH_TOOLS = new Set(['search', 'grep', 'glob', 'web_fetch', 'git_status', 'git_diff'])
 const BROWSE_TOOLS = new Set(['list_dir', 'memory_list'])
-const COMMAND_TOOLS = new Set(['terminal', 'subagent'])
+const COMMAND_TOOLS = new Set(['terminal', 'subagent', 'diagnostics'])
 
 const CATEGORY_LABELS: Record<ToolCategory, { running: string; done: string }> = {
   file: { running: 'Reading', done: 'Read' },
@@ -132,7 +132,10 @@ const TOOL_ICON_BY_NAME: Record<string, IconName> = {
   terminal: 'terminal',
   memory_list: 'memory',
   memory_read: 'memory',
-  memory_write: 'memory'
+  memory_write: 'memory',
+  git_status: 'branch',
+  git_diff: 'branch',
+  diagnostics: 'scanSearch'
 }
 
 export function toolIconName(name: string): IconName {

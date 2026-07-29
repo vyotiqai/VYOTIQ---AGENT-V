@@ -658,17 +658,24 @@ export async function* runAgent(input: {
         modelInfo,
         settings.compactionTriggerRatio
       )
-      const providerInput = assembled.estimatedTokens
+      // Prefer prior-step provider input tokens for the meter when context did not shrink.
+      // After compaction/trim, lastUsage was reset to the estimate above.
+      const priorProviderInput =
+        lastUsage?.inputTokens && lastUsage.inputTokens > 0 ? lastUsage.inputTokens : undefined
+      const usingProviderMeter =
+        priorProviderInput != null &&
+        !assembled.contextShrunk &&
+        compaction?.summary === priorSummary
       const contextUsageEv: AgentEvent = {
         type: 'context_usage',
         runId,
         step,
         estimatedTokens: assembled.estimatedTokens,
-        inputTokens: providerInput,
+        inputTokens: usingProviderMeter ? priorProviderInput : assembled.estimatedTokens,
         contextWindow,
         contentWindow: effectiveContentWindow,
         compactionTrigger,
-        source: 'estimate',
+        source: usingProviderMeter ? 'provider' : 'estimate',
         ...(assembled.overflow ? { overflow: true } : {}),
         layers: assembled.layers
       }
@@ -1207,8 +1214,16 @@ export async function* runAgent(input: {
     // events buffered when a follow-up turn starts immediately.
     if (runDir) {
       if (!checkpointFlushed) {
-        finalizeWriteCheckpoint(runDir)
+        const meta = finalizeWriteCheckpoint(runDir)
         checkpointFlushed = true
+        if (meta) {
+          appendEvent(runDir, {
+            type: 'writes_checkpoint',
+            runId,
+            checkpointId: meta.id,
+            files: meta.files
+          })
+        }
       }
       await flushMessageAppends(runDir)
       await flushEventAppends(runDir)

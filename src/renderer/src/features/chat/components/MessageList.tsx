@@ -20,6 +20,7 @@ import {
   transcriptRowFingerprint,
   type TranscriptRow
 } from '../utils/transcriptRows'
+import { collectTurnFileDiffs } from '../utils/turnFileDiffs'
 import { ChangeSummary } from './ChangeSummary'
 import { MessageFooter } from './MessageFooter'
 import { ThinkingBlock } from './ThinkingBlock'
@@ -40,7 +41,10 @@ const LINE_PX = 22
  * Collapsed Thought/Read stay near disclosure height (~44–52). Text/user/card
  * must not under-estimate — that stacks absolute rows on top of each other.
  */
-export function estimateTranscriptRowSize(row: TranscriptRow | undefined): number {
+export function estimateTranscriptRowSize(
+  row: TranscriptRow | undefined,
+  opts?: { changesDiffExpanded?: boolean }
+): number {
   if (!row) return 48
   switch (row.kind) {
     case 'turn':
@@ -90,7 +94,11 @@ export function estimateTranscriptRowSize(row: TranscriptRow | undefined): numbe
       return 56
     }
     case 'changes':
-      return 56
+      return (
+        56 +
+        row.files.length * 28 +
+        (opts?.changesDiffExpanded ? TOOL_BODY_CLAMP_PX : 0)
+      )
     case 'approval':
       return 120
     default: {
@@ -213,7 +221,9 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   writeFileResolutions,
   onKeepWriteFile,
   onDiscardWriteFile,
-  onKeepAllWrites
+  onKeepAllWrites,
+  fileDiffs,
+  onDiffExpandChange
 }: {
   row: TranscriptRow
   onImageClick: (url: string, label: string) => void
@@ -233,6 +243,8 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   onKeepWriteFile?: (path: string) => void | Promise<unknown>
   onDiscardWriteFile?: (path: string) => void | Promise<unknown>
   onKeepAllWrites?: () => void | Promise<unknown>
+  fileDiffs?: ReadonlyMap<string, import('../toolUi').DiffLine[]>
+  onDiffExpandChange?: (hasExpanded: boolean) => void
 }) {
   if (row.kind === 'user') {
     return <UserPrompt item={row.item} onImageClick={onImageClick} />
@@ -276,6 +288,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
     return (
       <ChangeSummary
         files={row.files}
+        fileDiffs={fileDiffs}
         fileResolutions={writeFileResolutions}
         canResolve={canUndoWrites}
         resolveBusy={undoBusy}
@@ -283,6 +296,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
         onDiscardFile={onDiscardWriteFile}
         onKeepAll={onKeepAllWrites}
         onDiscardAll={onUndoWrites}
+        onDiffExpandChange={onDiffExpandChange}
       />
     )
   }
@@ -427,6 +441,9 @@ export function MessageList({
       return shouldRenderThinking(row.item.thinking, row.item.thinkingStreaming)
     })
   }, [allRows, collapsedTurnSet, showThinking])
+
+  const turnFileDiffs = useMemo(() => collectTurnFileDiffs(allRows), [allRows])
+  const [expandedDiffRowIds, setExpandedDiffRowIds] = useState<Set<string>>(() => new Set())
 
   const nearBottomPx = nearBottomThreshold(dockReservePx)
   const nearBottomPxRef = useRef(nearBottomPx)
@@ -616,8 +633,13 @@ export function MessageList({
   const getItemKey = useCallback((index: number) => displayRows[index]?.id ?? index, [displayRows])
 
   const estimateSize = useCallback(
-    (index: number) => estimateTranscriptRowSize(displayRows[index]),
-    [displayRows]
+    (index: number) => {
+      const row = displayRows[index]
+      return estimateTranscriptRowSize(row, {
+        changesDiffExpanded: row?.kind === 'changes' && expandedDiffRowIds.has(row.id)
+      })
+    },
+    [displayRows, expandedDiffRowIds]
   )
 
   const measureElementHeight = useCallback((element: Element) => {
@@ -715,6 +737,19 @@ export function MessageList({
       onKeepWriteFile={onKeepWriteFile}
       onDiscardWriteFile={onDiscardWriteFile}
       onKeepAllWrites={onKeepAllWrites}
+      fileDiffs={row.kind === 'changes' ? turnFileDiffs.get(row.turnIndex) : undefined}
+      onDiffExpandChange={
+        row.kind === 'changes'
+          ? (hasExpanded) => {
+              setExpandedDiffRowIds((prev) => {
+                const next = new Set(prev)
+                if (hasExpanded) next.add(row.id)
+                else next.delete(row.id)
+                return next
+              })
+            }
+          : undefined
+      }
     />
   )
 

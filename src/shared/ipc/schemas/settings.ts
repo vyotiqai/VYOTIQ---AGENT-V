@@ -134,8 +134,6 @@ export const SettingsSchema = z.object({
    * Empty = auto-detect from package.json scripts / tsc.
    */
   diagnosticsCommand: z.string().default(''),
-  /** Default composer mode for new workspaces (Ask / Plan / Agent). */
-  agentMode: AgentInteractionModeSchema.default('agent'),
   /** When set, sub-agents use this provider instead of `provider`. */
   subagentProvider: ProviderIdSchema.optional(),
   /** When set, sub-agents use this model instead of `model`. */
@@ -165,7 +163,6 @@ export const DEFAULT_SETTINGS: Settings = {
   toolApproval: DEFAULT_TOOL_APPROVAL,
   terminalShell: 'auto',
   diagnosticsCommand: '',
-  agentMode: 'agent',
   marketplace: DEFAULT_MARKETPLACE_SETTINGS
 }
 

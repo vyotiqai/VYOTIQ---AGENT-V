@@ -144,4 +144,34 @@ describe('write checkpoints', () => {
     expect(result.fullyResolved).toBe(true)
     expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('changed\n')
   })
+
+  it('auto-keeps prior unresolved checkpoint when a newer write turn finalizes', () => {
+    const first = beginWriteCheckpoint(runDir, workspace)
+    first.recordPrior('a.txt', 'write')
+    writeFileSync(join(workspace, 'a.txt'), 'turn1\n', 'utf8')
+    const meta1 = finalizeWriteCheckpoint(runDir)
+    expect(meta1).not.toBeNull()
+
+    writeFileSync(join(workspace, 'b.txt'), 'seed\n', 'utf8')
+    const second = beginWriteCheckpoint(runDir, workspace)
+    second.recordPrior('b.txt', 'write')
+    writeFileSync(join(workspace, 'b.txt'), 'turn2\n', 'utf8')
+    const meta2 = finalizeWriteCheckpoint(runDir)
+    expect(meta2).not.toBeNull()
+
+    // Prior turn is no longer actionable.
+    expect(() =>
+      resolveWrites(runDir, workspace, { checkpointId: meta1!.id, action: 'discard' })
+    ).toThrow(/already resolved/)
+    // Disk from turn 1 remains (auto-keep, not discard).
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('turn1\n')
+    // Latest turn still actionable.
+    const discarded = resolveWrites(runDir, workspace, {
+      checkpointId: meta2!.id,
+      action: 'discard',
+      paths: ['b.txt']
+    })
+    expect(discarded.discarded).toEqual(['b.txt'])
+    expect(readFileSync(join(workspace, 'b.txt'), 'utf8')).toBe('seed\n')
+  })
 })

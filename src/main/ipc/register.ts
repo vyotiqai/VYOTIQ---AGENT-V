@@ -7,6 +7,7 @@ import {
   CompactRunRequestSchema,
   UndoWritesRequestSchema,
   ResolveWritesRequestSchema,
+  ReadRunArtifactRequestSchema,
   SetSettingsRequestSchema,
   SetSecretRequestSchema,
   ClearSecretRequestSchema,
@@ -49,6 +50,7 @@ import {
   type CompactRunResult,
   type UndoWritesResult,
   type ResolveWritesResult,
+  type ReadRunArtifactResult,
   type ListRunsResult,
   type RunSummary,
   type SecretsStatus,
@@ -62,7 +64,7 @@ import {
   type GitCommitResult
 } from '../../shared/ipc'
 import { resolveOllamaListBaseUrl } from '../../shared/providers'
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync } from 'fs'
 import { formatError, AppError, isAbortError } from '../../shared/errors'
 import { logger, logErrorSummary } from '../../shared/logger'
 import { pickWorkspace } from '@main/workspace/workspace'
@@ -104,7 +106,7 @@ import {
 import { ChatEventBatcher, getChatEventBatchStats, resetChatEventBatchStats } from './streamBatch'
 import { runAgent, createRunId } from '../agent/loop'
 import { compactRunNow, CompactionUnavailableError } from '../agent/compactRun'
-import { undoWrites, resolveWrites } from '../agent/checkpoints'
+import { undoWrites, resolveWrites, getWriteCheckpointMeta } from '../agent/checkpoints'
 import { resolveRunDir } from '@main/storage/paths'
 import { extractAttachment } from '../attachments/extract'
 import {
@@ -130,7 +132,8 @@ import {
   loadToolResultContent,
   deleteRun,
   renameRun,
-  runExists
+  runExists,
+  appendEvent
 } from '../agent/state'
 import {
   getWorkspaces,
@@ -142,7 +145,7 @@ import {
   findWorkspaceSettingsOverride
 } from '@main/workspace/workspaces'
 import { canonicalizeWorkspacePath, workspacePathsEqual } from '../../shared/workspacePath'
-import { relative, isAbsolute } from 'path'
+import { relative, isAbsolute, join } from 'path'
 import { commitAll, readGitStatus } from '@main/git/git'
 import { applyTitleBarTheme } from '@main/app/window'
 import { logsDirectory } from '../logging/init'
@@ -205,6 +208,23 @@ function failFrom(err: unknown, channel: string, correlationId?: string): IpcRes
     })
   }
   return fail(message)
+}
+
+/** Persist Keep/Discard/Undo into events.jsonl so reload hydrates resolution state. */
+function persistWriteCheckpointEvent(
+  runDir: string,
+  runId: string,
+  checkpointId: string
+): void {
+  const meta = getWriteCheckpointMeta(runDir, checkpointId)
+  if (!meta) return
+  appendEvent(runDir, {
+    type: 'writes_checkpoint',
+    runId,
+    checkpointId: meta.id,
+    undone: Boolean(meta.undone || meta.resolved),
+    files: meta.files
+  })
 }
 
 export function registerIpc(): void {
@@ -576,6 +596,7 @@ export function registerIpc(): void {
       }
       const runDir = resolveRunDir(req.workspacePath, req.runId)
       const result = undoWrites(runDir, req.workspacePath, req.checkpointId)
+      persistWriteCheckpointEvent(runDir, req.runId, result.checkpointId)
       logger.info('Undid agent writes', {
         scope: 'ipc',
         correlationId: req.runId,
@@ -605,6 +626,7 @@ export function registerIpc(): void {
           action: req.action,
           paths: req.paths
         })
+        persistWriteCheckpointEvent(runDir, req.runId, result.checkpointId)
         logger.info('Resolved agent writes', {
           scope: 'ipc',
           correlationId: req.runId,
@@ -617,6 +639,26 @@ export function registerIpc(): void {
         return ok(result)
       } catch (err) {
         return failFrom(err, IPC.runsResolveWrites)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    IPC.runsReadArtifact,
+    async (event, raw): Promise<IpcResult<ReadRunArtifactResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = ReadRunArtifactRequestSchema.parse(raw)
+        if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+        const runDir = resolveRunDir(req.workspacePath, req.runId)
+        const filePath = join(runDir, req.name)
+        if (!existsSync(filePath)) {
+          return ok({ name: req.name, exists: false, content: null })
+        }
+        const content = readFileSync(filePath, 'utf8')
+        return ok({ name: req.name, exists: true, content })
+      } catch (err) {
+        return failFrom(err, IPC.runsReadArtifact)
       }
     }
   )

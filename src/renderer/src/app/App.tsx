@@ -265,46 +265,15 @@ export function App() {
     }
   }, [activeWorkspace, activeRunId])
 
-  const onUndoWrites = useCallback(async () => {
-    if (!activeWorkspace || !activeRunId) {
-      setSettingsError('Undo is unavailable.')
-      return
-    }
-    if (chat.running) {
-      setSettingsError('Stop the run before undoing agent writes.')
-      return
-    }
-    setUndoBusy(true)
-    try {
-      const checkpointId = chat.writeCheckpoint?.undone
-        ? undefined
-        : chat.writeCheckpoint?.checkpointId
-      const res = await window.vyotiq.undoWrites(activeWorkspace, activeRunId, checkpointId)
-      if (!res.ok) {
-        setSettingsError(res.error)
-        return
-      }
-      chatActionsRef.current?.markWriteCheckpointUndone?.(res.data.checkpointId)
-      setSettingsError(null)
-      logger.info('Undid agent writes', {
-        scope: 'chat',
-        checkpointId: res.data.checkpointId,
-        restored: res.data.restored.length
-      })
-    } finally {
-      setUndoBusy(false)
-    }
-  }, [activeWorkspace, activeRunId, chat.running, chat.writeCheckpoint])
-
   const resolveAgentWrites = useCallback(
-    async (action: 'keep' | 'discard', paths?: string[]) => {
+    async (action: 'keep' | 'discard', paths?: string[]): Promise<boolean> => {
       if (!activeWorkspace || !activeRunId) {
         setSettingsError('Keep/Discard is unavailable.')
-        return
+        return false
       }
       if (chat.running) {
         setSettingsError('Stop the run before resolving agent writes.')
-        return
+        return false
       }
       const checkpointId = chat.writeCheckpoint?.undone
         ? undefined
@@ -320,16 +289,21 @@ export function App() {
         })
         if (!res.ok) {
           setSettingsError(res.error)
-          return
+          return false
         }
         chatActionsRef.current?.applyWriteCheckpointResolution?.(res.data)
         setSettingsError(null)
+        return true
       } finally {
         setUndoBusy(false)
       }
     },
     [activeWorkspace, activeRunId, chat.running, chat.writeCheckpoint]
   )
+
+  const onUndoWrites = useCallback(async (): Promise<boolean> => {
+    return resolveAgentWrites('discard')
+  }, [resolveAgentWrites])
 
   const onKeepWriteFile = useCallback(
     (path: string) => resolveAgentWrites('keep', [path]),
@@ -356,14 +330,19 @@ export function App() {
 
   const slashHandlersValue = useMemo(
     () => ({
-      onCompact: () => {
-        void onCompactContext()
+      onCompact: async () => {
+        const result = await onCompactContext()
+        if (!result.ok) {
+          setSettingsError(result.message)
+          return false
+        }
+        setSettingsError(null)
+        return true
       },
-      onUndoWrites: () => {
-        void onUndoWrites()
-      },
-      onSetAgentMode: (mode) => {
+      onUndoWrites: () => onUndoWrites(),
+      onSetAgentMode: (mode: import('@shared/ipc').AgentInteractionMode) => {
         setAgentMode(mode)
+        return true
       },
       onOpenMarketplace: (mcpServerId?: string) => {
         setMarketplaceFocusServerId(mcpServerId ?? null)
@@ -375,7 +354,7 @@ export function App() {
       onCreateRule: async (title?: string) => {
         if (!activeWorkspace) {
           setSettingsError('Open a workspace to create a rule.')
-          return
+          return false
         }
         const res = await window.vyotiq.slashCommandsCreateRule({
           workspacePath: activeWorkspace,
@@ -383,13 +362,14 @@ export function App() {
         })
         if (!res.ok) {
           setSettingsError(res.error)
-          return
+          return false
         }
         setSettingsError(null)
         logger.info('Created workspace rule', {
           scope: 'slash',
           path: res.data.relativePath
         })
+        return true
       },
       onMarketplaceAction: async (packageId: string, intent: 'install' | 'enable') => {
         if (intent === 'enable') {
@@ -716,6 +696,10 @@ export function App() {
             onChatSettingsChange={onChatSettingsChange}
             agentMode={activeContext?.ui.agentMode ?? 'agent'}
             onAgentModeChange={setAgentMode}
+            onContinueInAgent={() => {
+              setAgentMode('agent')
+              setComposerDraft('Implement the approved plan in plan.md.')
+            }}
             onSend={onChatSend}
             onStop={onChatStop}
             onDismissError={onDismissChatBanner}

@@ -42,6 +42,8 @@ describe('modePolicy', () => {
       }).ok
     ).toBe(true)
     expect(assertToolAllowedInMode('plan', 'terminal', { command: 'echo' }).ok).toBe(false)
+    expect(assertToolAllowedInMode('plan', 'multi_edit', { edits: [] }).ok).toBe(false)
+    expect(assertToolAllowedInMode('plan', 'delete', { path: 'x' }).ok).toBe(false)
   })
 
   it('Agent mode allows all built-ins', () => {

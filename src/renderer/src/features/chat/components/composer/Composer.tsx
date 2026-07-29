@@ -9,6 +9,7 @@ import { ComposerTextarea } from './ComposerTextarea'
 import { ComposerToolbar, type ComposerVariant } from './ComposerToolbar'
 import { ComposerAttachments } from './ComposerAttachments'
 import { ComposerStatus } from './ComposerStatus'
+import { PlanHandoff } from './PlanHandoff'
 import { useComposerDraft } from './useComposerDraft'
 import { useComposerImages, MAX_IMAGES } from './useComposerImages'
 import { useComposerFiles, ATTACHMENT_ACCEPT, MAX_FILES, isImageFile } from './useComposerFiles'
@@ -54,6 +55,8 @@ export function Composer({
   runNotice,
   incomplete,
   onContinue,
+  onContinueInAgent,
+  activeRunId,
   contextUsage,
   metaStore,
   onCompactContext,
@@ -97,6 +100,8 @@ export function Composer({
   runNotice?: string | null
   incomplete?: import('@renderer/lib/hooks/createChatStreamController').IncompleteTurnState | null
   onContinue?: () => void
+  onContinueInAgent?: () => void
+  activeRunId?: string | null
   contextUsage?: import('./ContextMeter').ContextUsageState | null
   /** Prefer over contextUsage prop so meter patches do not re-render Composer. */
   metaStore?: import('../../chatStores').ChatMetaStore
@@ -197,8 +202,15 @@ export function Composer({
       const outcome = await executeSlashResolveResult(res.data, {
         ...slashHandlers,
         onCompact: async () => {
-          if (slashHandlers?.onCompact) await slashHandlers.onCompact()
-          else if (onCompactContext) await onCompactContext()
+          if (slashHandlers?.onCompact) {
+            const r = await slashHandlers.onCompact()
+            return r !== false
+          }
+          if (onCompactContext) {
+            const r = await onCompactContext()
+            return typeof r === 'object' && r && 'ok' in r ? r.ok !== false : r !== false
+          }
+          return true
         }
       })
 
@@ -216,6 +228,7 @@ export function Composer({
         await slash.reload()
         return false
       }
+      if (outcome === 'failed') return false
       return true
     },
     [workspacePath, slashHandlers, onCompactContext, onSend, slash]
@@ -421,7 +434,18 @@ export function Composer({
             onClick={syncCursor}
             onKeyUp={syncCursor}
             placeholder={
-              composerPlaceholder ?? (hasTranscript ? 'Send follow-up' : 'Send a message')
+              composerPlaceholder ??
+              (agentMode === 'ask'
+                ? hasTranscript
+                  ? 'Ask a follow-up (read-only)'
+                  : 'Ask about the codebase (read-only)'
+                : agentMode === 'plan'
+                  ? hasTranscript
+                    ? 'Refine the plan…'
+                    : 'Describe what to plan…'
+                  : hasTranscript
+                    ? 'Send follow-up'
+                    : 'Send a message')
             }
             disabled={locked}
             aria-expanded={slash.open}
@@ -502,6 +526,17 @@ export function Composer({
           onContinue={onContinue}
           running={running}
         />
+
+        {onContinueInAgent ? (
+          <PlanHandoff
+            className={isDock ? 'pointer-events-auto mt-1' : 'mt-1'}
+            workspacePath={workspacePath}
+            runId={activeRunId}
+            agentMode={agentMode}
+            running={running}
+            onContinueInAgent={onContinueInAgent}
+          />
+        ) : null}
 
         {isDock ? trailing : null}
 

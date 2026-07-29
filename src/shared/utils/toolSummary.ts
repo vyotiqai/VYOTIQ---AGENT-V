@@ -30,7 +30,10 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   terminal: { running: 'Running', done: 'Ran' },
   memory_list: { running: 'Listing memory', done: 'Listed memory' },
   memory_read: { running: 'Reading memory', done: 'Read memory' },
-  memory_write: { running: 'Writing memory', done: 'Wrote memory' }
+  memory_write: { running: 'Writing memory', done: 'Wrote memory' },
+  git_status: { running: 'Checking git', done: 'Git status' },
+  git_diff: { running: 'Diffing', done: 'Git diff' },
+  diagnostics: { running: 'Checking', done: 'Diagnostics' }
 }
 
 export function parseMcpToolDisplay(

@@ -247,6 +247,8 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     type: z.literal('writes_checkpoint'),
     ...eventBase,
     checkpointId: z.string().min(1),
+    /** True after Keep all / Discard all / Undo fully resolves the checkpoint. */
+    undone: z.boolean().optional(),
     files: z.array(
       z.object({
         path: z.string().min(1),
@@ -384,6 +386,24 @@ export const ResolveWritesResultSchema = z.object({
   fullyResolved: z.boolean()
 })
 export type ResolveWritesResult = z.infer<typeof ResolveWritesResultSchema>
+
+/** Run-dir artifacts Plan mode may edit (`plan.md` / `contract.md`). */
+export const RunArtifactNameSchema = z.enum(['plan.md', 'contract.md'])
+export type RunArtifactName = z.infer<typeof RunArtifactNameSchema>
+
+export const ReadRunArtifactRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  runId: RunIdSchema,
+  name: RunArtifactNameSchema
+})
+export type ReadRunArtifactRequest = z.infer<typeof ReadRunArtifactRequestSchema>
+
+export const ReadRunArtifactResultSchema = z.object({
+  name: RunArtifactNameSchema,
+  exists: z.boolean(),
+  content: z.string().nullable()
+})
+export type ReadRunArtifactResult = z.infer<typeof ReadRunArtifactResultSchema>
 
 /**
  * A gated tool call waiting on the user. The loop is parked on this request, so

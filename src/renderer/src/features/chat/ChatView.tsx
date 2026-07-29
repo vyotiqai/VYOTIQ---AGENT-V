@@ -152,6 +152,7 @@ export function ChatView({
   onChatSettingsChange,
   agentMode = 'agent',
   onAgentModeChange = () => {},
+  onContinueInAgent,
   onSend,
   onStop,
   onDismissError,
@@ -218,6 +219,7 @@ export function ChatView({
   onChatSettingsChange: (patch: ChatSettingsPatch) => void
   agentMode?: AgentInteractionMode
   onAgentModeChange?: (mode: AgentInteractionMode) => void
+  onContinueInAgent?: () => void
   onSend: (
     text: string,
     images?: string[],
@@ -311,6 +313,8 @@ export function ChatView({
     runNotice,
     incomplete,
     onContinue,
+    onContinueInAgent,
+    activeRunId,
     contextUsage: metaStore ? undefined : contextUsage,
     metaStore,
     onCompactContext,

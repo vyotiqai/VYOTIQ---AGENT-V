@@ -7,6 +7,7 @@ import type {
   CompactRunResult,
   UndoWritesResult,
   ResolveWritesResult,
+  ReadRunArtifactResult,
   GitCommitResult,
   GitStatus,
   IpcResult,
@@ -91,6 +92,11 @@ export interface VyotiqApi {
     action: 'keep' | 'discard'
     paths?: string[]
   }) => Promise<IpcResult<ResolveWritesResult>>
+  readRunArtifact: (payload: {
+    workspacePath: string
+    runId: string
+    name: 'plan.md' | 'contract.md'
+  }) => Promise<IpcResult<ReadRunArtifactResult>>
   onChatEvent: (handler: (event: AgentEvent) => void) => () => void
   onToolApprovalRequest: (handler: (request: ToolApprovalRequest) => void) => () => void
   respondToolApproval: (

@@ -4,8 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
-  statSync,
-  writeFileSync
+  statSync
 } from 'fs'
 import { dirname, join, relative } from 'path'
 import { randomUUID } from 'crypto'
@@ -81,6 +80,14 @@ function loadMeta(runDir: string, id: string): WriteCheckpointMeta | null {
   } catch {
     return null
   }
+}
+
+/** Read checkpoint meta for IPC persistence / hydration. */
+export function getWriteCheckpointMeta(
+  runDir: string,
+  checkpointId: string
+): WriteCheckpointMeta | null {
+  return loadMeta(runDir, checkpointId)
 }
 
 function saveMeta(runDir: string, meta: WriteCheckpointMeta): void {
@@ -201,7 +208,25 @@ export function finalizeWriteCheckpoint(runDir: string): WriteCheckpointMeta | n
   const session = activeSessions.get(runDir)
   activeSessions.delete(runDir)
   if (!session) return null
-  return session.finalize()
+  const meta = session.finalize()
+  // Latest turn owns Keep/Discard UI; auto-keep older unresolved checkpoints so
+  // they cannot linger on disk with no actionable card.
+  if (meta) keepPriorUnresolvedCheckpoints(runDir, meta.id)
+  return meta
+}
+
+/** Mark earlier unresolved checkpoints as kept when a newer write turn completes. */
+function keepPriorUnresolvedCheckpoints(runDir: string, currentId: string): void {
+  const index = loadIndex(runDir)
+  for (const entry of index.checkpoints) {
+    if (entry.id === currentId) continue
+    const meta = loadMeta(runDir, entry.id)
+    if (!meta || meta.undone || meta.resolved) continue
+    for (const file of meta.files) {
+      if (!file.resolved) file.resolved = 'kept'
+    }
+    markCheckpointFullyResolved(runDir, meta)
+  }
 }
 
 /** Drop an open session without persisting (e.g. tests). */

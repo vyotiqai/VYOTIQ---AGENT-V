@@ -488,15 +488,18 @@ function writeCheckpointFromPersisted(events: PersistedEvent[]): WriteCheckpoint
     const event = events[i]?.event
     if (!isAgentEvent(event)) continue
     if (event.type === 'writes_checkpoint') {
+      const files = event.files.map((f) => ({
+        path: f.path,
+        action: f.action,
+        undoable: f.undoable,
+        ...(f.resolved ? { resolved: f.resolved } : {})
+      }))
+      const fullyResolved =
+        files.length > 0 && files.every((f) => Boolean(f.resolved) || !f.undoable)
       return {
         checkpointId: event.checkpointId,
-        undone: false,
-        files: event.files.map((f) => ({
-          path: f.path,
-          action: f.action,
-          undoable: f.undoable,
-          ...(f.resolved ? { resolved: f.resolved } : {})
-        }))
+        undone: event.undone === true || fullyResolved,
+        files
       }
     }
   }
@@ -1312,16 +1315,19 @@ export function createChatStreamController(
         runNotice: 'Context summarized to stay within the model window.'
       })
     } else if (event.type === 'writes_checkpoint') {
+      const files = event.files.map((f) => ({
+        path: f.path,
+        action: f.action,
+        undoable: f.undoable,
+        ...(f.resolved ? { resolved: f.resolved } : {})
+      }))
+      const fullyResolved =
+        files.length > 0 && files.every((f) => Boolean(f.resolved) || !f.undoable)
       patch({
         writeCheckpoint: {
           checkpointId: event.checkpointId,
-          undone: false,
-          files: event.files.map((f) => ({
-            path: f.path,
-            action: f.action,
-            undoable: f.undoable,
-            ...(f.resolved ? { resolved: f.resolved } : {})
-          }))
+          undone: event.undone === true || fullyResolved,
+          files
         }
       })
     } else if (event.type === 'step_usage') {

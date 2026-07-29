@@ -179,8 +179,10 @@ export async function readGitDiff(
 ): Promise<{ ok: true; content: string } | { ok: false; error: string }> {
   if (!isGitRepo(cwd)) return { ok: false, error: 'Not a git repository' }
 
+  const hasCommits =
+    (await gitQuiet(['rev-parse', '--verify', 'HEAD'], cwd, READ_TIMEOUT_MS)) != null
   const args = ['diff', '--no-color', '--no-ext-diff']
-  if (opts.staged) args.push('--cached')
+  if (opts.staged || !hasCommits) args.push('--cached')
   if (opts.path?.trim()) {
     args.push('--', opts.path.trim())
   }
@@ -189,7 +191,10 @@ export async function readGitDiff(
     const stdout = await git(args, cwd, READ_TIMEOUT_MS)
     const text = stdout.trimEnd()
     if (!text) {
-      return { ok: true, content: opts.staged ? '(no staged changes)' : '(no unstaged changes)' }
+      return {
+        ok: true,
+        content: opts.staged || !hasCommits ? '(no staged changes)' : '(no unstaged changes)'
+      }
     }
     if (text.length <= DIFF_CAP_CHARS) return { ok: true, content: text }
     return {

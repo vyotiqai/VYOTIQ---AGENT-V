@@ -33,7 +33,8 @@ function defaultUiState(): WorkspaceUiState {
     openRunIds: [],
     scrollTop: 0,
     scrollTopByRunId: {},
-    composerDraft: ''
+    composerDraft: '',
+    agentMode: 'agent'
   }
 }
 

@@ -340,7 +340,9 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
       let ok = false
       try {
         const result = await executeTool(call.name, call.arguments, options.workspace, options.signal, {
-          depth: options.depth + 1
+          depth: options.depth + 1,
+          // Sub-agents are investigation-only; keep the execute gate aligned.
+          agentMode: 'ask'
         })
         content = result.content
         ok = result.ok

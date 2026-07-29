@@ -264,14 +264,18 @@ describe('buildTranscriptRows', () => {
     }
   })
 
-  it('does not repeat a single edit that already has its own card', () => {
+  it('adds a Files Changed summary for a single edit (Keep/Discard home)', () => {
     const only = tool('e1', 'edit')
     only.tool.argsPreview = JSON.stringify({ path: 'src/a.ts', contents: 'x\n' })
     const rows = buildTranscriptRows([
       { kind: 'message', id: 'u1', role: 'user', content: 'edit it' },
       only
     ])
-    expect(rows.some((row) => row.kind === 'changes')).toBe(false)
+    const changes = rows.find((row) => row.kind === 'changes')
+    expect(changes?.kind).toBe('changes')
+    if (changes?.kind === 'changes') {
+      expect(changes.files).toEqual([{ path: 'src/a.ts', added: 1, removed: 0 }])
+    }
   })
 
   it('adds up repeated edits to the same file', () => {

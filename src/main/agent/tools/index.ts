@@ -19,6 +19,8 @@ import { toolWebFetch } from './webFetch'
 import { isFindstrNoMatchContent, isDirMissingPathContent, toolTerminal, TERMINAL_MAX_TIMEOUT_MS } from './terminal'
 import { runSubagent, SubagentDepthError, type SubagentContextUsage } from '../subagent'
 import { toolMemoryList, toolMemoryRead, toolMemoryWrite } from './memory'
+import { toolGitDiffAsync, toolGitStatusAsync } from './gitHelpers'
+import { toolDiagnosticsAsync } from './diagnostics'
 import { getSettings } from '@main/settings/settings'
 import { getWriteCheckpoint } from '../checkpoints'
 import {
@@ -44,6 +46,8 @@ export type ToolExecutionContext = {
   depth?: number
   /** Ask / Plan / Agent mode for this invoke. */
   agentMode?: AgentInteractionMode
+  /** Skip write-checkpoint priors (Plan run artifacts are not workspace writes). */
+  skipWriteCheckpoint?: boolean
   /** Live progress from a long-running tool, surfaced under its transcript row. */
   onProgress?: (update: { kind: 'text' | 'thinking' | 'tool' | 'done'; text: string }) => void
   /** Per-step context fill for nested sub-agents. */
@@ -132,7 +136,9 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
   edit: (workspace, args, signal, context) => {
     throwIfAborted(signal)
     const path = String(args.path ?? '')
-    getWriteCheckpoint(context.runDir)?.recordPrior(path, 'write')
+    if (!context.skipWriteCheckpoint) {
+      getWriteCheckpoint(context.runDir)?.recordPrior(path, 'write')
+    }
     const contents = typeof args.contents === 'string' ? args.contents : undefined
     const diff = typeof args.diff === 'string' ? args.diff : undefined
     const content = toolEdit(workspace, path, contents, diff)
@@ -196,7 +202,9 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
   str_replace: (workspace, args, signal, context) => {
     throwIfAborted(signal)
     const path = String(args.path ?? '')
-    getWriteCheckpoint(context.runDir)?.recordPrior(path, 'write')
+    if (!context.skipWriteCheckpoint) {
+      getWriteCheckpoint(context.runDir)?.recordPrior(path, 'write')
+    }
     const content = toolStrReplace(
       workspace,
       path,
@@ -285,6 +293,34 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const contents = typeof args.contents === 'string' ? args.contents : ''
     const content = toolMemoryWrite(workspace, path, contents)
     return toolOk('memory_write', path, content)
+  },
+  git_status: async (workspace, _args, signal) => {
+    throwIfAborted(signal)
+    const content = await toolGitStatusAsync(workspace)
+    throwIfAborted(signal)
+    return toolOk('git_status', 'git status', content)
+  },
+  git_diff: async (workspace, args, signal) => {
+    throwIfAborted(signal)
+    const path = typeof args.path === 'string' ? args.path : undefined
+    const staged = args.staged === true
+    const result = await toolGitDiffAsync(workspace, { path, staged })
+    throwIfAborted(signal)
+    const summary = path ? `git diff ${path}` : staged ? 'git diff --staged' : 'git diff'
+    // Match git_status: non-repo is informative ok content, not a hard tool failure.
+    if (!result.ok && result.content === 'Not a git repository') {
+      return toolOk('git_diff', summary, result.content)
+    }
+    if (!result.ok) return toolFail('git_diff', summary, result.content)
+    return toolOk('git_diff', summary, result.content)
+  },
+  diagnostics: async (workspace, args, signal) => {
+    throwIfAborted(signal)
+    const kind = args.kind === 'lint' ? 'lint' : 'typecheck'
+    const result = await toolDiagnosticsAsync(workspace, kind, signal)
+    throwIfAborted(signal)
+    if (!result.ok) return toolFail('diagnostics', kind, result.content)
+    return toolOk('diagnostics', kind, result.content)
   }
 }
 
@@ -367,12 +403,13 @@ export async function executeTool(
   }
   const handler = BUILTIN_HANDLERS[name as AgentToolName]
 
-  // Plan mode: write plan.md / contract.md into the run directory, not the workspace.
+  // Plan mode: read/write plan.md / contract.md in the run directory, not the workspace.
   let effectiveWorkspace = workspace
   let effectiveArgs = args
+  let effectiveContext = context
   if (
     agentMode === 'plan' &&
-    (name === 'edit' || name === 'str_replace') &&
+    (name === 'edit' || name === 'str_replace' || name === 'read') &&
     typeof args.path === 'string' &&
     isPlanArtifactPath(args.path)
   ) {
@@ -381,10 +418,13 @@ export async function executeTool(
     }
     effectiveWorkspace = context.runDir
     effectiveArgs = { ...args, path: basename(args.path.replace(/\\/g, '/')) }
+    if (name === 'edit' || name === 'str_replace') {
+      effectiveContext = { ...context, skipWriteCheckpoint: true }
+    }
   }
 
   try {
-    return await handler(effectiveWorkspace, effectiveArgs, signal, context)
+    return await handler(effectiveWorkspace, effectiveArgs, signal, effectiveContext)
   } catch (err) {
     if (isAbortError(err)) {
       logger.warn('Tool aborted', { scope: 'tools', tool: name })

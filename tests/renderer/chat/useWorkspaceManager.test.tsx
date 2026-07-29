@@ -354,7 +354,8 @@ describe('useWorkspaceManager', () => {
       openRunIds: [],
       scrollTop: 0,
       scrollTopByRunId: {},
-      composerDraft: 'hello'
+      composerDraft: 'hello',
+      agentMode: 'agent'
     })
 
     updateWorkspaceUiState.mockClear()

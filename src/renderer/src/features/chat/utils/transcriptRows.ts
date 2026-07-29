@@ -318,10 +318,8 @@ function turnToolItems(row: TranscriptRow): ToolItem[] {
 }
 
 /**
- * Close a turn that touched several files with a rollup of what changed.
- *
- * A single edit already has its own card right there in the transcript, so the
- * rollup only earns its space once the edits are spread across the turn.
+ * Close a turn that touched files with a rollup of what changed.
+ * Always emit when writes occurred so Keep/Discard has a home (single-file too).
  */
 function withChangeSummaries(rows: TranscriptRow[]): TranscriptRow[] {
   const out: TranscriptRow[] = []
