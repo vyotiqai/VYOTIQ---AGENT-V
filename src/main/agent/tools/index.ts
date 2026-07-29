@@ -24,12 +24,17 @@ import { toolGitDiffAsync, toolGitStatusAsync } from './gitHelpers'
 import { toolDiagnosticsAsync } from './diagnostics'
 import { getSettings } from '@main/settings/settings'
 import { getWriteCheckpoint } from '../checkpoints'
+import { resolveInsideWorkspace } from '@main/workspace/safePath'
+import { commitAll } from '@main/git/git'
 import {
   assertToolAllowedInMode,
-  isPlanArtifactPath
+  isPlanArtifactPath,
+  isRunContractPath,
+  isRunPlanPath
 } from './modePolicy'
 import type { AgentEvent, AgentInteractionMode, AgentQuestionRequest } from '../../../shared/ipc'
-import { basename } from 'path'
+import { basename, join } from 'path'
+import { existsSync } from 'fs'
 import { randomUUID } from 'crypto'
 import { askQuestionThroughRenderer } from '../agentQuestion'
 
@@ -710,6 +715,13 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const pattern = typeof args.pattern === 'string' ? args.pattern : undefined
     const useSessionApi = Boolean(sessionId) || typeof args.block_until_ms === 'number'
     const onOutput = context.onTerminalOutput
+    const workingDirectory =
+      typeof args.working_directory === 'string' && args.working_directory.trim()
+        ? args.working_directory.trim()
+        : ''
+    const cwd = workingDirectory
+      ? resolveInsideWorkspace(workspace, workingDirectory)
+      : workspace
 
     if (useSessionApi) {
       const { startBackgroundTerminal, pollTerminalSession } = await import('./terminalSessions')
@@ -725,6 +737,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
           })
         : await startBackgroundTerminal({
             workspaceRoot: workspace,
+            cwd,
             command,
             signal,
             shell,
@@ -740,7 +753,12 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
 
     const requested = typeof args.timeoutMs === 'number' ? args.timeoutMs : 60_000
     const timeoutMs = Math.min(TERMINAL_MAX_TIMEOUT_MS, Math.max(1, requested))
-    const content = await toolTerminal(workspace, command, signal, { timeoutMs, shell, onOutput })
+    const content = await toolTerminal(workspace, command, signal, {
+      timeoutMs,
+      shell,
+      cwd,
+      onOutput
+    })
     const summary = command.slice(0, 80)
     const ok = terminalResultOk(command, content)
     if (ok) return toolOk('terminal', summary, content)
@@ -782,6 +800,27 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     }
     if (!result.ok) return toolFail('git_diff', summary, result.content)
     return toolOk('git_diff', summary, result.content)
+  },
+  git_commit: async (workspace, args, signal) => {
+    throwIfAborted(signal)
+    const message = String(args.message ?? '').trim()
+    if (!message) return toolFail('git_commit', 'git commit', 'Commit message is required')
+    const push = args.push === true
+    try {
+      const outcome = await commitAll(workspace, message, push)
+      throwIfAborted(signal)
+      const summary = push ? 'git commit + push' : 'git commit'
+      const content = [
+        outcome.detail,
+        `committed: ${outcome.committed}`,
+        `pushed: ${outcome.pushed}`,
+        `message: ${message}`
+      ].join('\n')
+      return toolOk('git_commit', summary, content)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return toolFail('git_commit', 'git commit', msg)
+    }
   },
   diagnostics: async (workspace, args, signal) => {
     throwIfAborted(signal)
@@ -872,23 +911,57 @@ export async function executeTool(
   }
   const handler = BUILTIN_HANDLERS[name as AgentToolName]
 
-  // Plan mode: read/write plan.md / contract.md in the run directory, not the workspace.
+  // Remap run artifacts to the run directory (not the workspace root):
+  // Plan: plan.md + contract.md; Agent: contract.md + existing plan.md.
   let effectiveWorkspace = workspace
   let effectiveArgs = args
   let effectiveContext = context
-  if (
-    agentMode === 'plan' &&
-    (name === 'edit' || name === 'str_replace' || name === 'read') &&
-    typeof args.path === 'string' &&
-    isPlanArtifactPath(args.path)
-  ) {
-    if (!context.runDir) {
-      return toolFail(name, summary, 'Plan artifacts require an active run directory')
+
+  const shouldRemapPath = (pathArg: string): boolean => {
+    if (!pathArg) return false
+    if (agentMode === 'plan' && isPlanArtifactPath(pathArg)) return true
+    if (agentMode === 'agent' && isRunContractPath(pathArg)) return true
+    if (
+      agentMode === 'agent' &&
+      isRunPlanPath(pathArg) &&
+      context.runDir &&
+      existsSync(join(context.runDir, 'plan.md'))
+    ) {
+      return true
     }
-    effectiveWorkspace = context.runDir
-    effectiveArgs = { ...args, path: basename(args.path.replace(/\\/g, '/')) }
-    if (name === 'edit' || name === 'str_replace') {
+    return false
+  }
+
+  if (name === 'multi_edit' && Array.isArray(args.edits)) {
+    const edits = args.edits as Array<Record<string, unknown>>
+    let anyRemap = false
+    const remapped = edits.map((edit) => {
+      const p = typeof edit.path === 'string' ? edit.path : ''
+      if (!shouldRemapPath(p)) return edit
+      anyRemap = true
+      return { ...edit, path: basename(p.replace(/\\/g, '/')) }
+    })
+    if (anyRemap) {
+      if (!context.runDir) {
+        return toolFail(name, summary, 'Run artifacts require an active run directory')
+      }
+      effectiveWorkspace = context.runDir
+      effectiveArgs = { ...args, edits: remapped }
       effectiveContext = { ...context, skipWriteCheckpoint: true }
+    }
+  } else {
+    const pathArg = typeof args.path === 'string' ? args.path : ''
+    const remapRunArtifact =
+      (name === 'edit' || name === 'str_replace' || name === 'read') && shouldRemapPath(pathArg)
+    if (remapRunArtifact) {
+      if (!context.runDir) {
+        return toolFail(name, summary, 'Run artifacts require an active run directory')
+      }
+      effectiveWorkspace = context.runDir
+      effectiveArgs = { ...args, path: basename(pathArg.replace(/\\/g, '/')) }
+      if (name === 'edit' || name === 'str_replace') {
+        effectiveContext = { ...context, skipWriteCheckpoint: true }
+      }
     }
   }
 

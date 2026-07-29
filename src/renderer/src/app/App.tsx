@@ -694,7 +694,9 @@ export function App() {
             onAgentModeChange={setAgentMode}
             onContinueInAgent={() => {
               setAgentMode('agent')
-              setComposerDraft('Implement the approved plan in plan.md.')
+              setComposerDraft(
+                'Implement the approved plan from plan.md (run artifact — read plan.md to load it).'
+              )
             }}
             onSend={onChatSend}
             onStop={onChatStop}

@@ -213,7 +213,7 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
 
       <SettingsRow
         title="Auto-promote memory"
-        description="Write compaction facts into workspace memory."
+        description="Write compaction facts into workspace memory (.vyotiq/memory/)."
       >
         <label className="inline-flex items-center gap-2 text-xs text-secondary">
           <input
@@ -228,6 +228,26 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
           />
           {form.agentMemoryAutoPromote ? 'On' : 'Off'}
         </label>
+      </SettingsRow>
+
+      <SettingsRow
+        title="Workspace rules"
+        description="Loaded from AGENTS.md, CLAUDE.md, .cursorrules, .cursor/rules/, and .vyotiq/rules/. File-backed — edit on disk or create via /create-rule in chat."
+      >
+        <p className="m-0 max-w-md text-xs text-secondary">
+          Rules with <code className="text-[11px]">alwaysApply: false</code> stay
+          requestable (slash) and are not auto-injected.
+        </p>
+      </SettingsRow>
+
+      <SettingsRow
+        title="Memory files"
+        description="Long-term memory lives under .vyotiq/memory/ (index.md, state.md, notes/). Use memory_* tools in Agent mode, or enable auto-promote above."
+      >
+        <p className="m-0 max-w-md text-xs text-secondary">
+          Memory is not embedding RAG — durable facts are plain markdown files in the
+          workspace.
+        </p>
       </SettingsRow>
     </>
   )

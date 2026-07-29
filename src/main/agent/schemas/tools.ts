@@ -36,11 +36,11 @@ const editArgs = z
     path: z.string().describe('File path inside the workspace'),
     contents: z
       .string()
-      .describe('Full file contents to write (prefer for new/small files)')
+      .describe('Full file contents to write (prefer for new/small files). Mutually exclusive with diff.')
       .optional(),
     diff: z
       .string()
-      .describe('Unified diff with @@ hunks to apply instead of full contents')
+      .describe('Unified diff with @@ hunks (use when editing an existing file without rewriting it). Mutually exclusive with contents.')
       .optional()
   })
   .refine(
@@ -48,6 +48,10 @@ const editArgs = z
       typeof args.contents === 'string' ||
       (typeof args.diff === 'string' && args.diff.trim().length > 0),
     { message: 'edit requires contents or diff' }
+  )
+  .refine(
+    (args) => !(typeof args.contents === 'string' && typeof args.diff === 'string' && args.diff.trim()),
+    { message: 'edit accepts contents or diff, not both', path: ['diff'] }
   )
 
 const searchArgs = z.object({
@@ -72,6 +76,12 @@ const terminalArgs = z
       .string()
       .describe(
         'Shell command to run at workspace root. Required to start; omit when polling an existing session_id. Shell comes from Settings → Agent → Terminal shell.'
+      )
+      .optional(),
+    working_directory: z
+      .string()
+      .describe(
+        'Optional subdirectory inside the workspace for cwd (default: workspace root). Must resolve inside the workspace.'
       )
       .optional(),
     session_id: z
@@ -105,6 +115,14 @@ const terminalArgs = z
   .refine((v) => Boolean(v.command?.trim()) || Boolean(v.session_id?.trim()), {
     message: 'Provide command to start a shell, or session_id to poll one'
   })
+
+const gitCommitArgs = z.object({
+  message: z.string().min(1).describe('Commit message'),
+  push: z
+    .boolean()
+    .describe('Also push to origin after commit (default false)')
+    .optional()
+})
 
 const globArgs = z.object({
   pattern: z
@@ -504,22 +522,22 @@ const TOOL_REGISTRY = {
   },
   edit: {
     description:
-      'Create or overwrite a workspace file with full contents, or apply a unified diff.',
+      'Create/overwrite with contents (new or small files), or apply a unified diff. For one exact string change use str_replace; for several files use multi_edit.',
     schema: editArgs
   },
   search: {
     description:
-      'Quick combined filename-or-content lookup. Default: case-insensitive substring; set regex=true for case-insensitive regex. First hit per file.',
+      'Quick filename-or-content substring lookup (first hit per file). Prefer glob for path patterns and grep for every matching line.',
     schema: searchArgs
   },
   glob: {
     description:
-      'List workspace-relative paths matching a glob (**, *, ?, {a,b}). Gitignore-aware.',
+      'List workspace-relative paths matching a glob (**, *, ?, {a,b}). Prefer over search when you need paths only. Gitignore-aware.',
     schema: globArgs
   },
   grep: {
     description:
-      'Regex search across text file contents; every matching line with optional context. Default: case-insensitive.',
+      'Regex search across file contents with every matching line and optional context. Prefer over search when you need all hits or line numbers.',
     schema: grepArgs
   },
   list_dir: {
@@ -528,12 +546,12 @@ const TOOL_REGISTRY = {
   },
   multi_edit: {
     description:
-      'Apply several file edits atomically: if any edit fails to validate or match, no file is written.',
+      'Apply several file edits atomically (one entry per path). Prefer when changing multiple files; use str_replace for a single surgical change.',
     schema: multiEditArgs
   },
   str_replace: {
     description:
-      'Replace exact text in a workspace file. Prefer for surgical edits; use edit for new files or unified diffs.',
+      'Replace exact text in a file (unique old_string, or replace_all). Prefer for one surgical edit; use edit for new files or multi_edit for many files.',
     schema: strReplaceArgs
   },
   delete: {
@@ -654,7 +672,7 @@ const TOOL_REGISTRY = {
   },
   terminal: {
     description:
-      'Run a shell command with cwd at the workspace root. Output is capped. Use block_until_ms: 0 to start in the background (returns session_id); poll with session_id + block_until_ms / pattern.',
+      'Run a shell command with cwd at the workspace root (or working_directory under it). Output is capped. Use block_until_ms: 0 to start in the background (returns session_id); poll with session_id + block_until_ms / pattern.',
     schema: terminalArgs
   },
   memory_list: {
@@ -679,6 +697,11 @@ const TOOL_REGISTRY = {
   git_diff: {
     description: 'Unified git diff for the workspace (optional path; optional staged).',
     schema: gitDiffArgs
+  },
+  git_commit: {
+    description:
+      'Stage all changes and create a git commit (optional push). Agent-only; requires approval when enabled.',
+    schema: gitCommitArgs
   },
   diagnostics: {
     description:

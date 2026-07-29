@@ -378,9 +378,8 @@ export async function executeStepToolCalls(
   const messages: ChatMessage[] = []
   const events: AgentEvent[] = []
   let stepToolsOk = true
-  const parallelLimit = ctx.approval
-    ? 1
-    : (ctx.maxParallelReadTools ?? MAX_PARALLEL_READ_TOOLS)
+  // Approval gates individual tools; do not force all reads serial.
+  const parallelLimit = ctx.maxParallelReadTools ?? MAX_PARALLEL_READ_TOOLS
 
   const groups: ToolCall[][] = []
   let batch: ToolCall[] = []
@@ -425,9 +424,7 @@ export async function executeStepToolCalls(
     }
 
     const parallel =
-      !ctx.approval &&
-      group.length > 1 &&
-      group.every((c) => isParallelSafeTool(c.name))
+      group.length > 1 && group.every((c) => isParallelSafeTool(c.name))
     if (parallel) {
       const batchLimit = batchLimitFor(group[0]!.name)
       const batch = await runParallelBatch(group, ctx, batchLimit)

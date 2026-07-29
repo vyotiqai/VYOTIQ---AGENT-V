@@ -19,7 +19,7 @@ describe('toolsSchema', () => {
   it('covers every executable built-in with a short description', () => {
     const names = AGENT_TOOLS.map((t) => t.name).sort()
     expect(names).toEqual([...BUILTIN_TOOL_NAMES].sort())
-    expect(names.length).toBe(40)
+    expect(names.length).toBe(41)
 
     for (const tool of AGENT_TOOLS) {
       expect(tool.description.trim().length, `${tool.name} empty description`).toBeGreaterThan(0)
@@ -72,6 +72,7 @@ describe('harness tool catalog', () => {
   it('has Tool policy without a per-tool catalog', () => {
     const harnessPath = join(process.cwd(), 'resources', 'harness', 'default.md')
     const harness = readFileSync(harnessPath, 'utf8')
+    expect(harness).toContain('## Context')
     expect(harness).toContain('## Tool policy')
     expect(harness).toContain('mcp__<serverId>__<toolName>')
     expect(harness).toContain('<attachment')

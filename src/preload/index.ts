@@ -177,6 +177,7 @@ const api: VyotiqApi = {
   slashCommandsCreateRule: (payload) =>
     ipcRenderer.invoke(IPC.slashCommandsCreateRule, payload),
   slashCommandsOpenFile: (payload) => ipcRenderer.invoke(IPC.slashCommandsOpenFile, payload),
+  workspaceSuggestPaths: (payload) => ipcRenderer.invoke(IPC.workspaceSuggestPaths, payload),
   onSystemThemeChanged: (handler) => {
     const listener = (_: IpcRendererEvent, prefersDark: boolean): void => handler(prefersDark)
     ipcRenderer.on(IPC.themeChanged, listener)

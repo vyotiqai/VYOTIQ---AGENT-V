@@ -92,22 +92,45 @@ function findHunkStart(lines: string[], hunk: Hunk): number {
 
   if (matchesAt(lines, hunk.oldStart, expected)) return hunk.oldStart
 
-  const radius = 80
+  // Prefer declared line ± small radius only (avoid silent wrong-block applies).
+  const radius = 40
+  const nearMatches: number[] = []
   for (let d = 1; d <= radius; d++) {
-    if (matchesAt(lines, hunk.oldStart + d, expected)) return hunk.oldStart + d
-    if (matchesAt(lines, hunk.oldStart - d, expected)) return hunk.oldStart - d
+    if (matchesAt(lines, hunk.oldStart + d, expected)) nearMatches.push(hunk.oldStart + d)
+    if (matchesAt(lines, hunk.oldStart - d, expected)) nearMatches.push(hunk.oldStart - d)
+  }
+  if (nearMatches.length === 1) return nearMatches[0]
+  if (nearMatches.length > 1) {
+    throw new Error(
+      `Diff hunk near line ${hunk.oldStart + 1} matched ${nearMatches.length} locations; re-read the file and provide a more unique context`
+    )
   }
 
   if (expected.length === 0) {
     return Math.min(Math.max(0, hunk.oldStart), lines.length)
   }
 
+  const globalMatches: number[] = []
   for (let pos = 0; pos <= lines.length - expected.length; pos++) {
-    if (matchesAt(lines, pos, expected)) return pos
+    if (matchesAt(lines, pos, expected)) globalMatches.push(pos)
+  }
+  if (globalMatches.length === 1) return globalMatches[0]
+  if (globalMatches.length > 1) {
+    throw new Error(
+      `Diff hunk for line ${hunk.oldStart + 1} matched ${globalMatches.length} places in the file; add more unique context lines`
+    )
   }
 
+  const preview = expected
+    .slice(0, 3)
+    .map((l) => `  ${JSON.stringify(l.slice(0, 100))}`)
+    .join('\n')
+  const around = lines
+    .slice(Math.max(0, hunk.oldStart - 1), hunk.oldStart + 3)
+    .map((l, i) => `  L${hunk.oldStart + i}: ${JSON.stringify(l.slice(0, 100))}`)
+    .join('\n')
   throw new Error(
-    `Diff hunk failed to match near line ${hunk.oldStart + 1} (context/removal mismatch)`
+    `Diff hunk failed to match near line ${hunk.oldStart + 1} (context/removal mismatch).\nExpected:\n${preview}\nAround declared line:\n${around || '  (eof)'}`
   )
 }
 

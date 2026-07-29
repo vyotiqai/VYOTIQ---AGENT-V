@@ -131,11 +131,7 @@ export function useMarketplaceController({
 
   useEffect(() => {
     void reload()
-  }, [reload])
-
-  useEffect(() => {
-    void reload()
-  }, [settings.marketplace?.registryUrl]) // eslint-disable-line react-hooks/exhaustive-deps -- reload on registry URL change only
+  }, [reload, settings.marketplace?.registryUrl])
 
   useEffect(() => {
     const onCatalogRefreshed = (): void => {

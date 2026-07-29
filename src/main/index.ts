@@ -11,7 +11,7 @@ import { ensureDefaultSemanticMcp } from '@main/marketplace/ensureDefaultSemanti
 import { getSettings } from '@main/settings/settings'
 import { migrateLegacySessions } from '@main/storage/migrations/migrateSessions'
 import { migrateWorkspaceRuns } from './storage/migrateWorkspaceRuns'
-import { cleanupAllLegacyHarnessArtifacts } from '@main/agent/harness'
+import { purgeLegacyProjectHarness } from '@main/agent/harness'
 import {
   getWorkspaces,
   interruptOrphanRunsForWorkspaces
@@ -71,10 +71,14 @@ if (!gotLock) {
         })
       }
       const workspaces = getWorkspaces()
-      cleanupAllLegacyHarnessArtifacts([
-        ...workspaces.openPaths,
-        ...workspaces.recentPaths
-      ])
+      const seen = new Set<string>()
+      for (const root of [...workspaces.openPaths, ...workspaces.recentPaths]) {
+        if (!root) continue
+        const key = process.platform === 'win32' ? root.toLowerCase() : root
+        if (seen.has(key)) continue
+        seen.add(key)
+        purgeLegacyProjectHarness(root)
+      }
       const n = interruptOrphanRunsForWorkspaces(workspaces)
       if (n > 0) {
         logger.info(`Interrupted ${n} orphan run(s)`, { scope: 'main' })

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -17,14 +17,7 @@ vi.mock('electron', () => ({
   },
 }))
 
-import {
-  cleanupLegacyHarnessArtifacts,
-  cleanupAllLegacyHarnessArtifacts,
-  getHarnessPath,
-  loadHarness
-} from '@main/agent/harness'
-import { ensureWorkspaceStorage, workspaceMetaDir, workspaceId } from '@main/storage/paths'
-import { canonicalizeWorkspacePath } from '@shared/workspacePath'
+import { loadHarness, purgeLegacyProjectHarness } from '@main/agent/harness'
 
 describe('harness', () => {
   let workspace: string
@@ -33,7 +26,7 @@ describe('harness', () => {
     workspace = join(tmpdir(), `vyotiq-ws-harness-${process.pid}-${Date.now()}`)
     mkdirSync(workspace, { recursive: true })
     mkdirSync(join(appPath, 'resources', 'harness'), { recursive: true })
-    writeFileSync(getHarnessPath(), '# System harness\n', 'utf8')
+    writeFileSync(join(appPath, 'resources', 'harness', 'default.md'), '# System harness\n', 'utf8')
     mkdirSync(userData, { recursive: true })
   })
 
@@ -45,34 +38,21 @@ describe('harness', () => {
 
   it('loads only from bundled resources/harness/default.md', () => {
     expect(loadHarness()).toBe('# System harness\n')
-    expect(getHarnessPath()).toContain('resources')
-    expect(getHarnessPath()).toContain('harness')
   })
 
-  it('removes legacy project and userData harness copies', () => {
+  it('falls back when bundled harness is missing', () => {
+    rmSync(join(appPath, 'resources', 'harness'), { recursive: true, force: true })
+    expect(loadHarness()).toBe('You are Agent V, an agentic coding agent.')
+  })
+
+  it('purges legacy project harness copies', () => {
     const legacyDir = join(workspace, '.vyotiq')
     mkdirSync(legacyDir, { recursive: true })
     writeFileSync(join(legacyDir, 'harness.md'), '# Legacy project harness\n', 'utf8')
 
-    ensureWorkspaceStorage(workspace)
-    const id = workspaceId(canonicalizeWorkspacePath(workspace))
-    const userDataHarness = join(workspaceMetaDir(id), 'harness.md')
-    writeFileSync(userDataHarness, '# Legacy userData harness\n', 'utf8')
-
-    cleanupLegacyHarnessArtifacts(workspace)
+    purgeLegacyProjectHarness(workspace)
 
     expect(existsSync(join(legacyDir, 'harness.md'))).toBe(false)
-    expect(existsSync(userDataHarness)).toBe(false)
-    expect(readFileSync(getHarnessPath(), 'utf8')).toBe('# System harness\n')
-  })
-
-  it('cleanupAllLegacyHarnessArtifacts dedupes workspace paths', () => {
-    const legacyDir = join(workspace, '.vyotiq')
-    mkdirSync(legacyDir, { recursive: true })
-    writeFileSync(join(legacyDir, 'harness.md'), '# Legacy\n', 'utf8')
-
-    cleanupAllLegacyHarnessArtifacts([workspace, workspace])
-
-    expect(existsSync(join(legacyDir, 'harness.md'))).toBe(false)
+    expect(loadHarness()).toBe('# System harness\n')
   })
 })

@@ -80,6 +80,20 @@ describe('context budget + trim', () => {
     expect(subagent?.content).toBe(long)
   })
 
+  it('can trim subagent results under overflow pressure', () => {
+    const long = 'x'.repeat(20_000)
+    const msgs: ChatMessage[] = [
+      { role: 'user', content: 'a' },
+      { role: 'assistant', content: '', toolCalls: [{ id: '1', name: 'subagent', arguments: '{}' }] },
+      { role: 'tool', toolCallId: '1', toolName: 'subagent', content: long },
+      { role: 'assistant', content: '', toolCalls: [{ id: '2', name: 'read', arguments: '{}' }] },
+      { role: 'tool', toolCallId: '2', toolName: 'read', content: 'kept' }
+    ]
+    const trimmed = trimToolResults(msgs, 1, { trimSubagent: true })
+    const subagent = trimmed.find((m) => m.role === 'tool' && m.toolName === 'subagent')
+    expect(String(subagent?.content)).toContain('cleared')
+  })
+
   it('preserves recent user turns', () => {
     const msgs: ChatMessage[] = []
     for (let i = 0; i < 20; i++) {

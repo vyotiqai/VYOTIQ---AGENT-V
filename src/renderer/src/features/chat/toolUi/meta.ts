@@ -35,6 +35,17 @@ const SEARCH_TOOLS = new Set([
   'glob',
   'web_fetch',
   'web_search',
+  'mcp_list_tools',
+  'mcp_list_resources',
+  'mcp_read_resource',
+  'mcp_list_prompts',
+  'mcp_get_prompt',
+  'ask_question',
+  'switch_mode',
+  'git_status',
+  'git_diff'
+])
+const BROWSER_TOOLS = new Set([
   'browser_navigate',
   'browser_snapshot',
   'browser_click',
@@ -47,16 +58,7 @@ const SEARCH_TOOLS = new Set([
   'browser_wait_for_selector',
   'browser_wait_for_url',
   'browser_press_key',
-  'browser_select_option',
-  'mcp_list_tools',
-  'mcp_list_resources',
-  'mcp_read_resource',
-  'mcp_list_prompts',
-  'mcp_get_prompt',
-  'ask_question',
-  'switch_mode',
-  'git_status',
-  'git_diff'
+  'browser_select_option'
 ])
 const BROWSE_TOOLS = new Set(['list_dir', 'memory_list'])
 const COMMAND_TOOLS = new Set(['terminal', 'subagent', 'diagnostics'])
@@ -66,7 +68,8 @@ const CATEGORY_LABELS: Record<ToolCategory, { running: string; done: string }> =
   edit: { running: 'Editing', done: 'Edited' },
   search: { running: 'Searching', done: 'Searched' },
   command: { running: 'Running', done: 'Ran' },
-  browse: { running: 'Listing', done: 'Listed' }
+  browse: { running: 'Listing', done: 'Listed' },
+  browser: { running: 'Browsing', done: 'Browsed' }
 }
 
 const MIXED_LABELS = { running: 'Exploring', done: 'Explored' }
@@ -108,6 +111,7 @@ export function mcpToolCategory(toolName: string): ToolCategory {
 export function toolCategory(name: string): ToolCategory {
   if (FILE_TOOLS.has(name)) return 'file'
   if (EDIT_TOOLS.has(name)) return 'edit'
+  if (BROWSER_TOOLS.has(name)) return 'browser'
   if (SEARCH_TOOLS.has(name)) return 'search'
   if (BROWSE_TOOLS.has(name)) return 'browse'
   if (COMMAND_TOOLS.has(name)) return 'command'
@@ -184,6 +188,7 @@ const TOOL_ICON_BY_NAME: Record<string, IconName> = {
   memory_write: 'memory',
   git_status: 'branch',
   git_diff: 'branch',
+  git_commit: 'branch',
   diagnostics: 'scanSearch'
 }
 
@@ -192,4 +197,4 @@ export function toolIconName(name: string): IconName {
   return TOOL_ICON_BY_NAME[name] ?? 'file'
 }
 
-export { FILE_TOOLS, EDIT_TOOLS, SEARCH_TOOLS, BROWSE_TOOLS, COMMAND_TOOLS }
+export { FILE_TOOLS, EDIT_TOOLS, SEARCH_TOOLS, BROWSE_TOOLS, BROWSER_TOOLS, COMMAND_TOOLS }

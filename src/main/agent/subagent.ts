@@ -28,6 +28,7 @@ import {
   estimateTextTokens,
   prepareSubagentMessages
 } from './context'
+import { buildWorkspaceRulesSection } from './context/rules'
 
 /**
  * Investigation is what a sub-agent is for; anything that changes the workspace
@@ -76,6 +77,15 @@ Investigate the task you are given and finish with a single self-contained repor
 - Say plainly what you could not determine rather than guessing.
 
 The report is the only thing the parent agent sees, so it must stand on its own.`
+
+const SUBAGENT_RULES_MAX_CHARS = 64 * 1024
+
+function buildSubagentSystem(workspaceRules: string): string {
+  const rules = workspaceRules.trim()
+  if (!rules) return SUBAGENT_SYSTEM
+  const capped = rules.slice(0, SUBAGENT_RULES_MAX_CHARS)
+  return `${SUBAGENT_SYSTEM}\n\n${capped}${rules.length > capped.length ? '\n… (truncated)' : ''}`
+}
 
 export type SubagentUpdate = {
   kind: 'text' | 'thinking' | 'tool' | 'done'
@@ -173,7 +183,8 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
   )
   const tools = modelInfo.supportsTools === false ? [] : subagentToolDefs()
   const toolsJsonEstimate = tools.length ? estimateTextTokens(JSON.stringify(tools)) : 0
-  const overheadTokens = estimateSubagentOverheadTokens(SUBAGENT_SYSTEM, toolsJsonEstimate)
+  const system = buildSubagentSystem(await buildWorkspaceRulesSection(options.workspace))
+  const overheadTokens = estimateSubagentOverheadTokens(system, toolsJsonEstimate)
 
   const messages: ChatMessage[] = [
     {
@@ -231,7 +242,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
           model: modelId,
           messages: preparedMessages,
           tools,
-          system: SUBAGENT_SYSTEM,
+          system,
           signal: options.signal,
           apiKey,
           baseUrl,

@@ -9,7 +9,7 @@ import {
 } from '../utils/turnFileDiffs'
 
 /**
- * Docked panel showing a ChangeSummary for the latest agent write rollup.
+ * Docked panel for session write rollup: file list + Keep / Discard when available.
  */
 export function ChangesPanel({
   items,

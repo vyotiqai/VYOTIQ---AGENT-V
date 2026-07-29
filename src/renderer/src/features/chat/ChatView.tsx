@@ -1,12 +1,13 @@
 import type { Ref } from 'react'
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { MessageList } from './components/MessageList'
 import { AgentBrowserPanel } from './components/AgentBrowserPanel'
 import { ChangesPanel } from './components/ChangesPanel'
+import { PlanPanel } from './components/PlanPanel'
 import { ChatSideRail } from './components/ChatSideRail'
-import { FilesPanel } from './components/FilesPanel'
 import { TerminalPanel } from './components/TerminalPanel'
 import { Composer } from './components/composer'
+import { RunSessionProvider } from './RunSessionContext'
 import {
   ChatGitLeading,
   ChatGitTrailing,
@@ -34,7 +35,6 @@ export type { ChatItemsStore, ChatMetaStore } from './chatStores'
 const MemoComposer = memo(Composer)
 
 function TranscriptPane({
-  itemsStore,
   items,
   pendingRun,
   running,
@@ -54,6 +54,8 @@ function TranscriptPane({
   showThinking,
   mcpServerNames,
   surfaceKey,
+  workspacePath,
+  activeRunId,
   canUndoWrites,
   undoBusy,
   onUndoWrites,
@@ -63,7 +65,6 @@ function TranscriptPane({
   onDiscardWriteFile,
   onKeepAllWrites
 }: {
-  itemsStore?: ChatItemsStore
   items: UiItem[]
   pendingRun?: boolean
   running: boolean
@@ -83,6 +84,8 @@ function TranscriptPane({
   showThinking?: boolean
   mcpServerNames?: ReadonlyMap<string, string>
   surfaceKey: string
+  workspacePath: string | null
+  activeRunId: string | null
   canUndoWrites?: boolean
   undoBusy?: boolean
   onUndoWrites?: () => void | Promise<unknown>
@@ -92,38 +95,43 @@ function TranscriptPane({
   onDiscardWriteFile?: (path: string) => void | Promise<unknown>
   onKeepAllWrites?: () => void | Promise<unknown>
 }) {
-  const liveItems = useChatLiveItems(itemsStore, items)
+  const runSession = useMemo(
+    () => ({ workspacePath, runId: activeRunId }),
+    [workspacePath, activeRunId]
+  )
   return (
-    <MessageList
-      key={`transcript:${surfaceKey}`}
-      items={liveItems}
-      pendingRun={pendingRun}
-      running={running}
-      transcriptLoading={transcriptLoading}
-      reserveComposerSpace
-      dockReservePx={dockReservePx}
-      restoreScrollTop={restoreScrollTop}
-      scrollRestoreToken={scrollRestoreToken}
-      onScrollTopChange={onScrollTopChange}
-      onLoadToolContent={onLoadToolContent}
-      onThinkingToggle={onThinkingToggle}
-      onToolToggle={onToolToggle}
-      onGroupToggle={onGroupToggle}
-      onTurnToggle={onTurnToggle}
-      onApprovalDecision={onApprovalDecision}
-      onQuestionSubmit={onQuestionSubmit}
-      collapsedTurns={collapsedTurns}
-      showThinking={showThinking}
-      mcpServerNames={mcpServerNames}
-      canUndoWrites={canUndoWrites}
-      undoBusy={undoBusy}
-      onUndoWrites={onUndoWrites}
-      writeFileResolutions={writeFileResolutions}
-      writeResolvablePaths={writeResolvablePaths}
-      onKeepWriteFile={onKeepWriteFile}
-      onDiscardWriteFile={onDiscardWriteFile}
-      onKeepAllWrites={onKeepAllWrites}
-    />
+    <RunSessionProvider value={runSession}>
+      <MessageList
+        key={`transcript:${surfaceKey}`}
+        items={items}
+        pendingRun={pendingRun}
+        running={running}
+        transcriptLoading={transcriptLoading}
+        reserveComposerSpace
+        dockReservePx={dockReservePx}
+        restoreScrollTop={restoreScrollTop}
+        scrollRestoreToken={scrollRestoreToken}
+        onScrollTopChange={onScrollTopChange}
+        onLoadToolContent={onLoadToolContent}
+        onThinkingToggle={onThinkingToggle}
+        onToolToggle={onToolToggle}
+        onGroupToggle={onGroupToggle}
+        onTurnToggle={onTurnToggle}
+        onApprovalDecision={onApprovalDecision}
+        onQuestionSubmit={onQuestionSubmit}
+        collapsedTurns={collapsedTurns}
+        showThinking={showThinking}
+        mcpServerNames={mcpServerNames}
+        canUndoWrites={canUndoWrites}
+        undoBusy={undoBusy}
+        onUndoWrites={onUndoWrites}
+        writeFileResolutions={writeFileResolutions}
+        writeResolvablePaths={writeResolvablePaths}
+        onKeepWriteFile={onKeepWriteFile}
+        onDiscardWriteFile={onDiscardWriteFile}
+        onKeepAllWrites={onKeepAllWrites}
+      />
+    </RunSessionProvider>
   )
 }
 
@@ -270,9 +278,11 @@ export function ChatView({
   const [activeRightPanel, setActiveRightPanel] = useState<ChatRightPanelId | null>(() => {
     try {
       const raw = localStorage.getItem(RIGHT_PANEL_KEY)
-      if (raw === 'browser' || raw === 'terminal' || raw === 'files' || raw === 'changes') {
+      if (raw === 'browser' || raw === 'terminal' || raw === 'changes') {
         return raw
       }
+      // Legacy Files rail → Changes (list + Keep/Discard in one panel).
+      if (raw === 'files') return 'changes'
       // Migrate legacy browser-open preference.
       const legacy = localStorage.getItem(BROWSER_PANEL_OPEN_KEY)
       if (legacy === '1' || legacy === 'true') return 'browser'
@@ -310,17 +320,17 @@ export function ChatView({
       wasOpen = Boolean(res.data.open)
       setBrowserActive(wasOpen)
       // Only auto-open on first load when no panel preference is restored yet.
-      // Do not override a persisted Terminal/Files/Changes selection.
+      // Do not override a persisted Terminal/Changes selection.
     })
     const unsub = window.vyotiq?.onBrowserState?.((next) => {
       if (cancelled) return
       const open = Boolean(next.open)
       setBrowserActive(open)
       // Rising edge only: agent just opened a page — show the browser panel
-      // without stealing an already-selected Terminal/Files/Changes panel.
+      // without stealing an already-selected Terminal/Changes panel.
       if (open && !wasOpen) {
         setActiveRightPanel((current) => {
-          if (current === 'terminal' || current === 'files' || current === 'changes') {
+          if (current === 'terminal' || current === 'changes') {
             return current
           }
           try {
@@ -441,8 +451,7 @@ export function ChatView({
           ) : (
             <div ref={stageRef} className="relative flex min-h-0 flex-1 flex-col" data-chat-stage>
               <TranscriptPane
-                itemsStore={itemsStore}
-                items={items}
+                items={liveItems}
                 pendingRun={pendingRun}
                 running={running}
                 transcriptLoading={transcriptLoading}
@@ -461,6 +470,8 @@ export function ChatView({
                 showThinking={showThinking}
                 mcpServerNames={mcpServerNames}
                 surfaceKey={surfaceKey}
+                workspacePath={workspacePath}
+                activeRunId={activeRunId}
                 canUndoWrites={canUndoWrites}
                 undoBusy={undoBusy}
                 onUndoWrites={onUndoWrites}
@@ -513,9 +524,6 @@ export function ChatView({
             onLoadToolContent={onLoadToolContent}
           />
         ) : null}
-        {activeRightPanel === 'files' ? (
-          <FilesPanel items={liveItems} onClose={() => setRightPanel(null)} />
-        ) : null}
         {activeRightPanel === 'changes' ? (
           <ChangesPanel
             items={liveItems}
@@ -529,6 +537,9 @@ export function ChatView({
             onKeepAllWrites={onKeepAllWrites}
             onDiscardAllWrites={onUndoWrites}
           />
+        ) : null}
+        {activeRightPanel === 'plan' ? (
+          <PlanPanel onClose={() => setRightPanel(null)} />
         ) : null}
         <ChatSideRail
           activePanel={activeRightPanel}

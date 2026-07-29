@@ -57,6 +57,34 @@ describe('workspace rules', () => {
     expect(paths).toContain('.vyotiq/rules/ops.md')
   })
 
+  it('reads .cursorrules alongside AGENTS.md', async () => {
+    writeFileSync(join(workspace, '.cursorrules'), 'cursor root rules')
+    writeFileSync(join(workspace, 'AGENTS.md'), 'agent rules')
+
+    const files = await readWorkspaceRules(workspace)
+    expect(files.map((f) => f.path)).toEqual(['AGENTS.md', '.cursorrules'])
+  })
+
+  it('skips alwaysApply:false cursor rules from auto-injection', async () => {
+    mkdirSync(join(workspace, '.cursor', 'rules'), { recursive: true })
+    writeFileSync(
+      join(workspace, '.cursor', 'rules', 'requestable.mdc'),
+      ['---', 'alwaysApply: false', 'description: only on request', '---', '', 'secret rule'].join(
+        '\n'
+      )
+    )
+    writeFileSync(
+      join(workspace, '.cursor', 'rules', 'always.mdc'),
+      ['---', 'alwaysApply: true', '---', '', 'always on'].join('\n')
+    )
+
+    const files = await readWorkspaceRules(workspace)
+    const paths = files.map((f) => f.path)
+    expect(paths).toContain('.cursor/rules/always.mdc')
+    expect(paths).not.toContain('.cursor/rules/requestable.mdc')
+    expect(files.find((f) => f.path.endsWith('always.mdc'))?.content).toBe('always on')
+  })
+
   it('ignores files with unrelated extensions', async () => {
     mkdirSync(join(workspace, '.cursor', 'rules'), { recursive: true })
     writeFileSync(join(workspace, '.cursor', 'rules', 'notes.txt'), 'not a rule')

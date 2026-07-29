@@ -104,6 +104,17 @@ describe('scrubber', () => {
     expect(scrubString('X-Api-Key: super-secret-key-value')).toContain('[redacted]')
   })
 
+  it('redacts named tokens in text and URL query strings', () => {
+    const url = scrubString(
+      'GET https://api.example.com/v1?access_token=oauth-secret-value&x=1'
+    )
+    const bare = scrubString('token=plain-secret-value')
+    expect(url).toContain('[redacted]')
+    expect(url).not.toContain('oauth-secret-value')
+    expect(bare).toContain('[redacted]')
+    expect(bare).not.toContain('plain-secret-value')
+  })
+
   it('redacts JWTs and PEM blocks', () => {
     const jwt =
       'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturepad'
@@ -128,12 +139,16 @@ describe('scrubber', () => {
     const scrubbed = scrubValue({
       apiKey: 'sk-secret',
       accessToken: 'tok',
+      AccessToken: 'tok-legacy',
+      SESSION_TOKEN: 'session',
       dsn: 'https://key@o.ingest.sentry.io/1',
       path: '/Users/admin/ws/a.ts',
       ok: true
     }) as Record<string, unknown>
     expect(scrubbed.apiKey).toBe('[redacted]')
     expect(scrubbed.accessToken).toBe('[redacted]')
+    expect(scrubbed.AccessToken).toBe('[redacted]')
+    expect(scrubbed.SESSION_TOKEN).toBe('[redacted]')
     expect(scrubbed.dsn).toBe('[redacted]')
     expect(scrubbed.path).toBe('a.ts')
     expect(scrubbed.ok).toBe(true)

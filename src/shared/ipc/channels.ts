@@ -78,6 +78,7 @@ export const IPC = {
   slashCommandsResolve: 'slash-commands:resolve',
   slashCommandsCreateRule: 'slash-commands:createRule',
   slashCommandsOpenFile: 'slash-commands:openFile',
+  workspaceSuggestPaths: 'workspace:suggestPaths',
   themeChanged: 'theme:changed',
   getSystemTheme: 'theme:get-system'
 } as const

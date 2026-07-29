@@ -5,6 +5,7 @@ import {
   filterToolDefsForMode,
   isBuiltinAllowedInMode,
   isPlanArtifactPath,
+  isRunContractPath,
   modeSectionMarkdown
 } from '../../../src/main/agent/tools/modePolicy'
 import { setMcpReadOnlyHintsForTests } from '../../../src/main/agent/mcp'
@@ -25,9 +26,11 @@ describe('modePolicy', () => {
     expect(assertToolAllowedInMode('ask', 'edit', { path: 'a.ts', contents: 'x' }).ok).toBe(false)
   })
 
-  it('Plan mode allows todo_write and plan.md edits only', () => {
+  it('Plan mode allows todo_write and plan-artifact edits only', () => {
     expect(isBuiltinAllowedInMode('plan', 'todo_write')).toBe(true)
     expect(isBuiltinAllowedInMode('plan', 'edit')).toBe(true)
+    expect(isBuiltinAllowedInMode('plan', 'multi_edit')).toBe(true)
+    expect(isBuiltinAllowedInMode('plan', 'subagent')).toBe(false)
     expect(assertToolAllowedInMode('plan', 'edit', { path: 'plan.md', contents: '# Plan' }).ok).toBe(
       true
     )
@@ -42,7 +45,16 @@ describe('modePolicy', () => {
       }).ok
     ).toBe(true)
     expect(assertToolAllowedInMode('plan', 'terminal', { command: 'echo' }).ok).toBe(false)
-    expect(assertToolAllowedInMode('plan', 'multi_edit', { edits: [] }).ok).toBe(false)
+    expect(
+      assertToolAllowedInMode('plan', 'multi_edit', {
+        edits: [{ path: 'plan.md', contents: '# Plan' }]
+      }).ok
+    ).toBe(true)
+    expect(
+      assertToolAllowedInMode('plan', 'multi_edit', {
+        edits: [{ path: 'src/app.ts', contents: 'x' }]
+      }).ok
+    ).toBe(false)
     expect(assertToolAllowedInMode('plan', 'delete', { path: 'x' }).ok).toBe(false)
   })
 
@@ -57,6 +69,13 @@ describe('modePolicy', () => {
     expect(isPlanArtifactPath('./contract.md')).toBe(true)
     expect(isPlanArtifactPath('src/plan.md')).toBe(true)
     expect(isPlanArtifactPath('src/app.ts')).toBe(false)
+  })
+
+  it('isRunContractPath matches only contract.md', () => {
+    expect(isRunContractPath('contract.md')).toBe(true)
+    expect(isRunContractPath('./contract.md')).toBe(true)
+    expect(isRunContractPath('plan.md')).toBe(false)
+    expect(isRunContractPath('src/app.ts')).toBe(false)
   })
 
   it('filterToolDefsForMode keeps readOnlyHint MCP in Ask and drops mutating tools', () => {
@@ -82,6 +101,22 @@ describe('modePolicy', () => {
     expect(assertToolAllowedInMode('ask', 'browser_click', { selector: 'button' }).ok).toBe(false)
   })
 
+  it('Ask mode denies browser_fill', () => {
+    expect(isBuiltinAllowedInMode('ask', 'browser_fill')).toBe(false)
+    expect(assertToolAllowedInMode('ask', 'browser_fill', { selector: 'input', value: 'x' }).ok).toBe(
+      false
+    )
+  })
+
+  it('Ask mode denies diagnostics and terminal; Plan allows diagnostics', () => {
+    expect(isBuiltinAllowedInMode('ask', 'diagnostics')).toBe(false)
+    expect(isBuiltinAllowedInMode('plan', 'diagnostics')).toBe(true)
+    expect(assertToolAllowedInMode('ask', 'diagnostics', {}).ok).toBe(false)
+    expect(assertToolAllowedInMode('plan', 'diagnostics', {}).ok).toBe(true)
+    expect(isBuiltinAllowedInMode('ask', 'terminal')).toBe(false)
+    expect(isBuiltinAllowedInMode('plan', 'terminal')).toBe(false)
+  })
+
   it('Ask mode allows wait/history/tabs and denies press_key/select_option', () => {
     expect(isBuiltinAllowedInMode('ask', 'browser_tabs')).toBe(true)
     expect(isBuiltinAllowedInMode('ask', 'browser_back')).toBe(true)
@@ -95,9 +130,19 @@ describe('modePolicy', () => {
     expect(isBuiltinAllowedInMode('ask', 'browser_select_option')).toBe(false)
   })
 
-  it('modeSectionMarkdown is null for agent', () => {
-    expect(modeSectionMarkdown('agent')).toBeNull()
+  it('modeSectionMarkdown covers all modes', () => {
+    expect(modeSectionMarkdown('agent')).toContain('Agent mode')
     expect(modeSectionMarkdown('ask')).toContain('Ask mode')
     expect(modeSectionMarkdown('plan')).toContain('Plan mode')
+  })
+
+  it('Ask forbids diagnostics and terminal; Plan allows diagnostics', () => {
+    const ask = modeSectionMarkdown('ask')!
+    const plan = modeSectionMarkdown('plan')!
+    expect(ask).toMatch(/Do not edit files|Only avoid mutating/)
+    expect(ask).toMatch(/`diagnostics`/)
+    expect(ask).toMatch(/`terminal`/)
+    expect(plan).toMatch(/`diagnostics` is allowed/)
+    expect(plan).toMatch(/`terminal`/)
   })
 })

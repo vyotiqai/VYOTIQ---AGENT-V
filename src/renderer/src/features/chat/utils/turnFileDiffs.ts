@@ -118,7 +118,7 @@ export function collectSessionFileDiffs(items: UiItem[]): Map<string, DiffLine[]
   return out
 }
 
-/** Session-wide changed files with +/- counts (Files / Changes panels). */
+/** Session-wide changed files with +/- counts (Changes panel). */
 export function collectSessionChangedFiles(items: UiItem[]): ChangedFile[] {
   const totals = new Map<string, ChangedFile>()
   for (const item of items) {

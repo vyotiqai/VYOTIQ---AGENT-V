@@ -108,4 +108,4 @@ export const BROWSER_PANEL_OPEN_KEY = 'vyotiq.browserPanelOpen'
 /** localStorage key for which chat right panel is open. */
 export const RIGHT_PANEL_KEY = 'vyotiq.rightPanel'
 
-export type ChatRightPanelId = 'browser' | 'terminal' | 'files' | 'changes'
+export type ChatRightPanelId = 'browser' | 'terminal' | 'changes' | 'plan'

@@ -12,7 +12,8 @@ const API_KEY_PATTERNS: RegExp[] = [
   /\bgsk_[A-Za-z0-9_-]{8,}\b/g,
   /\bBearer\s+[A-Za-z0-9._\-+=/]{8,}/gi,
   /\b(?:Authorization|X-Api-Key)\s*[:=]\s*[^\s,;]+/gi,
-  /\bapi[_-]?key["']?\s*[:=]\s*["']?[^\s"',}]+/gi,
+  /\bapi[_-]?key["']?\s*[:=]\s*["']?[^\s"',}&}]+/gi,
+  /\b(?:access[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|token)["']?\s*[:=]\s*["']?[^\s"',}&}]+/gi,
   // Compact JWTs (header.payload.sig)
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g
 ]
@@ -61,18 +62,19 @@ const SENSITIVE_KEYS = new Set([
   'xapikey',
   'apikey',
   'api_key',
-  'apiKey',
   'key',
   'secret',
   'password',
   'token',
-  'accessToken',
+  'accesstoken',
   'access_token',
-  'refreshToken',
+  'refreshtoken',
   'refresh_token',
-  'clientSecret',
+  'sessiontoken',
+  'session_token',
+  'clientsecret',
   'client_secret',
-  'privateKey',
+  'privatekey',
   'private_key',
   'dsn',
   'cookie',
@@ -85,7 +87,7 @@ const SENSITIVE_KEYS = new Set([
   'image',
   'images',
   'url',
-  'dataUrl',
+  'dataurl',
   'data_url'
 ])
 

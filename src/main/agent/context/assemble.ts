@@ -42,7 +42,9 @@ function systemFingerprint(parts: {
   memoryIndex: string
   memoryState: string
   contract: string
+  plan: string
   modeSection?: string
+  sessionEnv?: string
   compactionSummary?: string
   loopHint?: string
   historyBudget: number
@@ -57,7 +59,9 @@ function systemFingerprint(parts: {
     parts.memoryIndex,
     parts.memoryState,
     parts.contract,
+    parts.plan,
     parts.modeSection ?? '',
+    parts.sessionEnv ?? '',
     parts.compactionSummary ?? '',
     parts.loopHint ?? '',
     String(parts.historyBudget),
@@ -75,23 +79,20 @@ function capText(text: string, maxTokens: number): string {
   return text.slice(0, maxChars) + '\n…'
 }
 
-/** Lower priority = drop first when capping. Execution contract is kept longest. */
+/** Lower priority = drop first when capping. Tool policy / work style kept longest. */
 function harnessSectionPriority(heading: string): number {
   const h = heading.toLowerCase()
-  if (h.includes('execution contract')) return 100
-  // Safety outranks Role — under budget pressure keep constraints over identity.
-  if (h.includes('safety')) return 85
-  if (h === 'role' || h.endsWith(' role')) return 80
-  // Cross-cutting tool policy (MCP / attachments / don't narrate) outranks loop.
-  if (h.includes('tool policy') || h.includes('tool')) return 55
-  if (h.includes('loop')) return 50
+  if (h.includes('tool')) return 100
+  if (h.includes('work style') || h.includes('workstyle')) return 90
+  if (h.includes('context')) return 80
+  if (h.includes('safety')) return 70
   if (h.includes('memory')) return 40
   return 20
 }
 
 /**
- * Cap harness text while preferring to keep Execution contract (+ Role/Safety) intact.
- * Drops lowest-priority ## sections first; only then truncates remaining text.
+ * Cap harness text by dropping lowest-priority ## sections first,
+ * then truncating what remains.
  */
 function capHarness(text: string, maxTokens: number): string {
   const maxChars = Math.max(200, maxTokens * 4)
@@ -139,7 +140,9 @@ function buildSystem(parts: {
   memoryIndex: string
   memoryState: string
   contract?: string
+  plan?: string
   modeSection?: string
+  sessionEnv?: string
   compaction?: CompactionRecord | null
   budgets: ReturnType<typeof allocateBudget>
   loopHint?: string
@@ -153,7 +156,9 @@ function buildSystem(parts: {
     memoryIndex: parts.memoryIndex,
     memoryState: parts.memoryState,
     contract: parts.contract ?? '',
+    plan: parts.plan ?? '',
     modeSection: parts.modeSection,
+    sessionEnv: parts.sessionEnv,
     compactionSummary:
       parts.compaction?.summary && !isTrimWatermarkCompaction(parts.compaction)
         ? parts.compaction.summary
@@ -169,7 +174,13 @@ function buildSystem(parts: {
   const sections: string[] = []
   sections.push(capHarness(parts.harness, parts.budgets.system))
   if (parts.modeSection?.trim()) {
-    sections.push(capText(parts.modeSection.trim(), Math.floor(parts.budgets.system * 0.2)))
+    // Mode instructions must survive budget pressure — do not cap aggressively.
+    sections.push(
+      capText(parts.modeSection.trim(), Math.max(400, Math.floor(parts.budgets.system * 0.35)))
+    )
+  }
+  if (parts.sessionEnv?.trim()) {
+    sections.push(capText(parts.sessionEnv.trim(), Math.floor(parts.budgets.system * 0.15)))
   }
   if (parts.skillsSection?.trim()) {
     sections.push(
@@ -187,7 +198,17 @@ function buildSystem(parts: {
     sections.push(capText(parts.rules.trim(), Math.floor(parts.budgets.system * 0.5)))
   }
   if (parts.contract?.trim()) {
-    sections.push(`## Run contract\n${capText(parts.contract.trim(), Math.floor(parts.budgets.system * 0.4))}`)
+    // createRun used to ship an H1 "# Run contract"; strip so we keep one wrapper heading.
+    const contractBody = parts.contract.trim().replace(/^#\s*Run contract\s*\r?\n+/i, '')
+    sections.push(
+      `## Run contract\n${capText(contractBody, Math.floor(parts.budgets.system * 0.4))}`
+    )
+  }
+  if (parts.plan?.trim()) {
+    const planBody = parts.plan.trim().replace(/^#\s*Plan\s*\r?\n+/i, '')
+    sections.push(
+      `## Plan\n${capText(planBody, Math.floor(parts.budgets.system * 0.4))}`
+    )
   }
   const mw = Math.floor(parts.budgets.memoryWorkspace / 3)
   sections.push(capText(parts.workspace, mw))
@@ -314,7 +335,7 @@ export async function assembleContext(
   let contextShrunk = false
 
   const estimateStarted = perfNow()
-  const systemDraft = buildSystem({
+  const systemParts = {
     harness: input.harness,
     workspace,
     rules,
@@ -323,10 +344,16 @@ export async function assembleContext(
     memoryIndex,
     memoryState,
     contract: input.contract,
+    plan: input.plan,
     modeSection: input.modeSection,
-    compaction,
+    sessionEnv: input.sessionEnv,
     budgets,
     loopHint: input.loopHint
+  }
+
+  const systemDraft = buildSystem({
+    ...systemParts,
+    compaction
   })
 
   let layers = computeLayers(systemDraft, messages, input.toolsJsonEstimate, input.model, budgets)
@@ -372,17 +399,8 @@ export async function assembleContext(
   messages = trimHistoryToBudget(messages, budgets.history, input.model)
 
   let system = buildSystem({
-    harness: input.harness,
-    workspace,
-    rules,
-    skillsSection: input.skillsSection,
-    pluginRulesSection: input.pluginRulesSection,
-    memoryIndex,
-    memoryState,
-    contract: input.contract,
-    compaction,
-    budgets,
-    loopHint: input.loopHint
+    ...systemParts,
+    compaction
   })
 
   layers = computeLayers(system, messages, input.toolsJsonEstimate, input.model, budgets)
@@ -394,17 +412,8 @@ export async function assembleContext(
     messages = trimHistoryToBudget(messages, Math.floor(budgets.history * 0.5), input.model)
     if (messages.length < priorLen) contextShrunk = true
     system = buildSystem({
-      harness: input.harness,
-      workspace,
-      rules,
-      skillsSection: input.skillsSection,
-      pluginRulesSection: input.pluginRulesSection,
-      memoryIndex,
-      memoryState,
-      contract: input.contract,
-      compaction,
-      budgets,
-      loopHint: input.loopHint
+      ...systemParts,
+      compaction
     })
     layers = computeLayers(system, messages, input.toolsJsonEstimate, input.model, budgets)
     estimated = totalFromLayers(layers)
@@ -433,22 +442,27 @@ export async function assembleContext(
           compaction = record
           contextShrunk = true
           system = buildSystem({
-            harness: input.harness,
-            workspace,
-            rules,
-            skillsSection: input.skillsSection,
-            pluginRulesSection: input.pluginRulesSection,
-            memoryIndex,
-            memoryState,
-            contract: input.contract,
-            compaction,
-            budgets,
-            loopHint: input.loopHint
+            ...systemParts,
+            compaction
           })
           layers = computeLayers(system, messages, input.toolsJsonEstimate, input.model, budgets)
           estimated = totalFromLayers(layers)
         }
       }
+    }
+
+    if (estimated > window) {
+      // Last-resort shrink before declaring overflow: drop thinking from the
+      // wire set, keep only the latest tool result, and stub oversized subagent bodies.
+      messages = stripThinkingForCompaction(messages)
+      messages = trimToolResults(messages, 1, { trimSubagent: true })
+      contextShrunk = true
+      system = buildSystem({
+        ...systemParts,
+        compaction
+      })
+      layers = computeLayers(system, messages, input.toolsJsonEstimate, input.model, budgets)
+      estimated = totalFromLayers(layers)
     }
 
     if (estimated > window) {

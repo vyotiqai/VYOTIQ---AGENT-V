@@ -10,7 +10,6 @@ import type {
 import { DEFAULT_SETTINGS } from '../../shared/ipc'
 import { contentDisplayText, contentToText } from '../../shared/ipc'
 import { ollamaOpenAiBaseUrl, seedModelsFor } from '../../shared/providers'
-import { idSuggestsVision } from './providers/normalize'
 import { formatError, isAbortError } from '../../shared/errors'
 import { logger, logErrorSummary } from '../../shared/logger'
 import { workspaceIdFromPath } from '../../shared/workspaceId'
@@ -70,7 +69,10 @@ import {
   createRun,
   loadCompaction,
   loadMessages,
+  loadStatus,
   readContractAsync,
+  readPlanAsync,
+  DEFAULT_PLAN_STUB,
   resumeRun,
   saveCompaction,
   syncMessagesAsync,
@@ -86,10 +88,33 @@ import { buildSkillsSection, loadEnabledSkills, loadPluginRules } from './skills
 import { beginWriteCheckpoint, finalizeWriteCheckpoint } from './checkpoints'
 import { isMcpToolPermitted } from '../../shared/utils/mcpToolPolicy'
 import { filterToolDefsForMode, modeSectionMarkdown } from './tools/modePolicy'
+import { resolveTerminalShell } from './tools/terminal'
 import { existsSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
 export { cancelRun, clearRunAbort, registerRunAbort, resetActiveRunsForTests }
+
+function buildSessionEnvSection(
+  mode: AgentInteractionMode,
+  terminalShellPref: string | undefined
+): string {
+  const shell = resolveTerminalShell(
+    (terminalShellPref as 'auto' | 'cmd' | 'powershell' | 'bash' | undefined) ?? 'auto'
+  )
+  const platform =
+    process.platform === 'win32'
+      ? 'Windows'
+      : process.platform === 'darwin'
+        ? 'macOS'
+        : process.platform
+  return [
+    '## Session',
+    `Date (UTC): ${new Date().toISOString()}`,
+    `OS: ${platform} (${process.platform} ${process.arch})`,
+    `Terminal shell: ${shell}`,
+    `Interaction mode: ${mode}`
+  ].join('\n')
+}
 
 function dedupeToolCalls(calls: ToolCall[]): ToolCall[] {
   const seen = new Map<string, ToolCall>()
@@ -102,10 +127,27 @@ function dedupeToolCalls(calls: ToolCall[]): ToolCall[] {
   return [...seen.values()]
 }
 
+/** True when the model wrote tool-shaped text instead of emitting real tool calls. */
+function assistantTextHadToolLeak(raw: string, scrubbed: string): boolean {
+  if (!raw.trim()) return false
+  if (raw.trim() === scrubbed.trim()) return false
+  return (
+    /\btool\s*\{/i.test(raw) ||
+    /^tool\s+[a-z_]+/im.test(raw) ||
+    raw.includes('DSML') ||
+    raw.includes('tool_calls')
+  )
+}
+
+const TOOL_LEAK_NUDGE =
+  'You wrote tool-shaped text in the assistant channel instead of issuing real tool calls. Call tools through the tools API — do not narrate them as plain text.'
+
 const INCOMPLETE_MESSAGES: Record<Exclude<IncompleteReason, never>, string> = {
   truncated: 'The model hit its output token limit before finishing this turn.',
   empty_response: 'The model returned an empty response.',
-  filtered: 'The provider stopped the response because of a content filter.'
+  filtered: 'The provider stopped the response because of a content filter.',
+  context_overflow:
+    'Context still exceeds the model window after compaction. Start a new chat or compact manually.'
 }
 
 /** True when two messages are the same role + normalized text (resume dedupe). */
@@ -122,9 +164,13 @@ function dedupeNewMessagesAgainstDisk(
   diskMessages: ChatMessage[],
   newMessages: ChatMessage[]
 ): ChatMessage[] {
-  if (diskMessages.length === 0 || newMessages.length === 0) return newMessages
-  if (messagesContentEqual(diskMessages[diskMessages.length - 1], newMessages[0])) {
-    return newMessages.slice(1)
+  const maxOverlap = Math.min(diskMessages.length, newMessages.length)
+  for (let count = maxOverlap; count > 0; count--) {
+    const diskStart = diskMessages.length - count
+    const matches = newMessages
+      .slice(0, count)
+      .every((message, index) => messagesContentEqual(diskMessages[diskStart + index]!, message))
+    if (matches) return newMessages.slice(count)
   }
   return newMessages
 }
@@ -292,6 +338,9 @@ export async function* runAgent(input: {
 
     if (input.resume) {
       runDir = resumeRun(workspace, runId)
+      const persisted = loadStatus(runDir)
+      // Prefer chatStart mode when the UI sent one; otherwise restore last run mode.
+      agentMode = input.mode ?? persisted?.mode ?? 'agent'
       const diskMessages = loadMessages(workspace, runId)
       // Always merge from durable disk history on resume so a stale client
       // payload cannot silently rewrite messages.jsonl.
@@ -308,21 +357,13 @@ export async function* runAgent(input: {
       for (const m of messages) appendMessage(runDir, m)
     }
 
+    writeStatus({ mode: agentMode })
     beginWriteCheckpoint(runDir, workspace)
 
     if (agentMode === 'plan') {
       const planPath = join(runDir, 'plan.md')
       if (!existsSync(planPath)) {
-        writeFileSync(
-          planPath,
-          [
-            '# Plan',
-            '',
-            '_Draft the plan here. Update as you learn. Do not edit product source in Plan mode._',
-            ''
-          ].join('\n'),
-          'utf8'
-        )
+        writeFileSync(planPath, DEFAULT_PLAN_STUB, 'utf8')
       }
     }
 
@@ -549,8 +590,10 @@ export async function* runAgent(input: {
 
     await refreshMcpToolsForStep()
     const failedToolKeys = new Map<string, number>()
-    let consecutiveToolFailureSteps = 0
+    let consecutiveToolFailureSteps = loadStatus(runDir)?.consecutiveToolFailureSteps ?? 0
+    let overflowRetryUsed = false
     let truncationContinues = 0
+    let toolLeakContinues = 0
     const MAX_TRUNCATION_CONTINUES = 2
 
     while (true) {
@@ -593,12 +636,15 @@ export async function* runAgent(input: {
 
       const priorSummary = compaction?.summary
       const contract = await readContractAsync(runDir)
+      const plan = await readPlanAsync(runDir)
       const assembled = await assembleContext({
         harness,
         messages,
         workspacePath: workspace,
         goal,
         contract,
+        plan: plan || undefined,
+        sessionEnv: buildSessionEnvSection(agentMode, settings.terminalShell),
         model: modelInfo,
         toolsJsonEstimate,
         lastUsage,
@@ -687,6 +733,126 @@ export async function* runAgent(input: {
       }
       appendEvent(runDir, contextUsageEv)
       yield contextUsageEv
+
+      if (assembled.overflow) {
+        if (!overflowRetryUsed) {
+          overflowRetryUsed = true
+          logger.warn('Context overflow — retrying once with aggressive keep-recent', {
+            scope: 'agent',
+            code: 'CONTEXT_OVERFLOW_RETRY',
+            correlationId: runId,
+            step,
+            estimatedTokens: assembled.estimatedTokens,
+            contentWindow: effectiveContentWindow
+          })
+          const retry = await assembleContext({
+            harness,
+            messages,
+            workspacePath: workspace,
+            goal,
+            contract,
+            plan: plan || undefined,
+            sessionEnv: buildSessionEnvSection(agentMode, settings.terminalShell),
+            model: modelInfo,
+            toolsJsonEstimate,
+            lastUsage,
+            priorCompaction: compaction,
+            keepRecentTurns: 2,
+            compactionTriggerRatio: Math.min(settings.compactionTriggerRatio, 0.5),
+            skillsSection,
+            pluginRulesSection,
+            modeSection: modeSectionMarkdown(agentMode) ?? undefined,
+            loopHint: combineLoopHints(
+              omittedMcpHint,
+              loopHintForConsecutiveFailures(consecutiveToolFailureSteps)
+            ),
+            providerId,
+            provider,
+            apiKey,
+            baseUrl,
+            signal: controller.signal
+          })
+          if (retry.contextShrunk) {
+            const retryDropped = Math.max(0, messages.length - retry.messages.length)
+            foldedMessages += retryDropped
+            messages = retry.messages
+            if (retry.compaction) {
+              compaction = { ...retry.compaction, foldedMessages }
+              const retryEv = emitCompaction(compaction)
+              if (retryEv) yield retryEv
+            }
+            lastUsage = { inputTokens: retry.estimatedTokens }
+          }
+          if (!retry.overflow) {
+            // Continue the step with the retried assembly by mutating local state
+            // used below — replace estimated tokens / layers via a second usage event.
+            const retryUsageEv: AgentEvent = {
+              type: 'context_usage',
+              runId,
+              step,
+              estimatedTokens: retry.estimatedTokens,
+              inputTokens: retry.estimatedTokens,
+              contextWindow,
+              contentWindow: effectiveContentWindow,
+              compactionTrigger,
+              source: 'estimate',
+              layers: retry.layers
+            }
+            appendEvent(runDir, retryUsageEv)
+            yield retryUsageEv
+            // Fall through to stream using retry.system / messages / tools path.
+            // assembleContext return is used via `assembled` below — rebind by continuing
+            // with Object.assign onto a let binding. Use system from retry.
+            Object.assign(assembled, retry)
+          } else {
+            const overflowEv: AgentEvent = {
+              type: 'incomplete',
+              runId,
+              reason: 'context_overflow',
+              step,
+              message: INCOMPLETE_MESSAGES.context_overflow
+            }
+            logger.warn('Stopping run: context still exceeds model window after overflow retry', {
+              scope: 'agent',
+              code: 'CONTEXT_OVERFLOW',
+              correlationId: runId,
+              step,
+              estimatedTokens: retry.estimatedTokens,
+              contentWindow: effectiveContentWindow
+            })
+            appendEvent(runDir, overflowEv)
+            yield overflowEv
+            yield* flushWriteCheckpoint()
+            yield { type: 'status', runId, status: 'done' }
+            writeStatus({ status: 'done' })
+            appendEvent(runDir, { type: 'status', runId, status: 'done' })
+            return
+          }
+        } else {
+          const overflowEv: AgentEvent = {
+            type: 'incomplete',
+            runId,
+            reason: 'context_overflow',
+            step,
+            message: INCOMPLETE_MESSAGES.context_overflow
+          }
+          logger.warn('Stopping run: context still exceeds model window after compaction', {
+            scope: 'agent',
+            code: 'CONTEXT_OVERFLOW',
+            correlationId: runId,
+            step,
+            estimatedTokens: assembled.estimatedTokens,
+            contentWindow: effectiveContentWindow
+          })
+          appendEvent(runDir, overflowEv)
+          yield overflowEv
+          yield* flushWriteCheckpoint()
+          yield { type: 'status', runId, status: 'done' }
+          writeStatus({ status: 'done' })
+          appendEvent(runDir, { type: 'status', runId, status: 'done' })
+          return
+        }
+      }
 
       let streamAttempt = 0
       let streamFinished = false
@@ -1022,6 +1188,29 @@ export async function* runAgent(input: {
           yield continueEv
           continue
         }
+
+        // Model narrated tools as text — nudge once and continue instead of marking done.
+        if (
+          !incomplete &&
+          toolLeakContinues < 1 &&
+          assistantTextHadToolLeak(assistantText, scrubbedAssistantText) &&
+          !controller.signal.aborted
+        ) {
+          toolLeakContinues += 1
+          logger.info('Nudge after tool-shaped assistant text leak', {
+            scope: 'agent',
+            correlationId: runId,
+            step
+          })
+          const nudge: ChatMessage = {
+            role: 'user',
+            content: TOOL_LEAK_NUDGE
+          }
+          messages.push(nudge)
+          appendMessage(runDir, nudge)
+          continue
+        }
+
         if (incomplete) {
           const incompleteEv: AgentEvent = {
             type: 'incomplete',
@@ -1113,6 +1302,7 @@ export async function* runAgent(input: {
         getAgentMode: () => agentMode,
         setAgentMode: (mode: AgentInteractionMode) => {
           agentMode = mode
+          writeStatus({ mode })
         },
         runEnabledMcpIds,
         mcpToolPolicies,
@@ -1175,8 +1365,10 @@ export async function* runAgent(input: {
       if (uniqueToolCalls.length > 0) {
         if (stepToolsOk) {
           consecutiveToolFailureSteps = 0
+          writeStatus({ consecutiveToolFailureSteps: 0 })
         } else {
           consecutiveToolFailureSteps++
+          writeStatus({ consecutiveToolFailureSteps })
         }
       }
 

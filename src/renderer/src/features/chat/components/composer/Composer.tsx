@@ -18,6 +18,8 @@ import { pickVisionFallback } from './composerModelUtils'
 import { useWorkspaceHotUi } from '@renderer/lib/hooks/workspaceHotUiStore'
 import { SlashCommandMenu } from './SlashCommandMenu'
 import { useSlashCommands } from './useSlashCommands'
+import { MentionMenu } from './MentionMenu'
+import { useComposerMentions } from './useComposerMentions'
 import {
   executeSlashResolveResult,
   type SlashClientHandlers
@@ -150,6 +152,24 @@ export function Composer({
     enabled: !locked && Boolean(hasWorkspace),
     onListError: slashHandlers?.onNotice
   })
+
+  const mentions = useComposerMentions({
+    workspacePath,
+    text: resolvedDraft,
+    cursor,
+    enabled: !locked && Boolean(hasWorkspace) && !slash.open
+  })
+
+  const onMentionAccept = useCallback(
+    (path: string) => {
+      const next = mentions.accept(path)
+      if (!next) return
+      onDraftChange?.(next.nextText)
+      setCursor(next.nextCursor)
+      mentions.dismiss()
+    },
+    [mentions, onDraftChange]
+  )
 
   const findCommandByTrigger = useCallback(
     (trigger: string): SlashCommandDescriptor | null => {
@@ -299,7 +319,16 @@ export function Composer({
     onSlashDismiss: slash.dismiss,
     onSlashAccept,
     onSlashSubmit,
-    findCommandByTrigger
+    findCommandByTrigger,
+    mentionMenuOpen: mentions.open,
+    mentionActivePath: mentions.paths[mentions.activeIndex] ?? null,
+    onMentionMove: (delta: number) => {
+      const len = mentions.paths.length
+      if (!len) return
+      mentions.setActiveIndex((i) => (i + delta + len) % len)
+    },
+    onMentionDismiss: mentions.dismiss,
+    onMentionAccept
   })
 
   const [refreshingCatalog, setRefreshingCatalog] = useState(false)
@@ -466,6 +495,17 @@ export function Composer({
             listId="slash-command-menu"
             loading={slash.loading}
             listError={slash.listError}
+          />
+
+          <MentionMenu
+            open={mentions.open}
+            paths={mentions.paths}
+            activeIndex={mentions.activeIndex}
+            onActiveIndexChange={mentions.setActiveIndex}
+            onPick={onMentionAccept}
+            onDismiss={mentions.dismiss}
+            anchorRef={taRef}
+            loading={mentions.loading}
           />
 
           <ComposerToolbar

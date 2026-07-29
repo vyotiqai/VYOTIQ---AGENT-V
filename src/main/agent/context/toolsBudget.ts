@@ -33,9 +33,13 @@ export function trimToolsToBudget(
   let kept = [...builtins]
   let estimate = kept.reduce((n, t) => n + estimateToolDefTokens(t), 0)
 
-  const sortedMcp = [...mcp].sort(
-    (a, b) => estimateToolDefTokens(a) - estimateToolDefTokens(b)
-  )
+  // Prefer code-review-graph MCP tools so structural search survives budget trim.
+  const pinnedMcp = mcp.filter((t) => /mcp__[^_]*code[-_]?review[-_]?graph__/i.test(t.name))
+  const otherMcp = mcp.filter((t) => !pinnedMcp.includes(t))
+  const sortedMcp = [
+    ...pinnedMcp.sort((a, b) => estimateToolDefTokens(a) - estimateToolDefTokens(b)),
+    ...otherMcp.sort((a, b) => estimateToolDefTokens(a) - estimateToolDefTokens(b))
+  ]
 
   for (const tool of sortedMcp) {
     const toolEst = estimateToolDefTokens(tool)

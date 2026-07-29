@@ -27,7 +27,12 @@ export function useComposerDraft({
   onSlashDismiss,
   onSlashAccept,
   onSlashSubmit,
-  findCommandByTrigger
+  findCommandByTrigger,
+  mentionMenuOpen,
+  mentionActivePath,
+  onMentionMove,
+  onMentionDismiss,
+  onMentionAccept
 }: {
   draft?: string
   onDraftChange?: (draft: string) => void
@@ -57,6 +62,11 @@ export function useComposerDraft({
     files: AttachedFile[]
   ) => boolean | void | Promise<boolean | void>
   findCommandByTrigger?: (trigger: string) => SlashCommandDescriptor | null
+  mentionMenuOpen?: boolean
+  mentionActivePath?: string | null
+  onMentionMove?: (delta: number) => void
+  onMentionDismiss?: () => void
+  onMentionAccept?: (path: string) => void
 }) {
   const [internalText, setInternalText] = useState('')
   const isDraftControlled = draft !== undefined && onDraftChange !== undefined
@@ -140,6 +150,31 @@ export function useComposerDraft({
         if (slashActiveCommand) {
           e.preventDefault()
           onSlashAccept?.(slashActiveCommand)
+          return
+        }
+      }
+    }
+
+    if (mentionMenuOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        onMentionMove?.(1)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        onMentionMove?.(-1)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        onMentionDismiss?.()
+        return
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+        if (mentionActivePath) {
+          e.preventDefault()
+          onMentionAccept?.(mentionActivePath)
           return
         }
       }

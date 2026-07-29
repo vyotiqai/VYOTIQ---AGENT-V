@@ -306,6 +306,24 @@ describe('MarkdownContent streaming', () => {
     expect(code).toBeTruthy()
     expect(code?.getAttribute('node')).toBeNull()
   })
+
+  it('renders no caret or markdown body when streaming with empty content', () => {
+    const { container } = render(<MarkdownContent content="" streaming />)
+    expect(container.querySelector('.markdown-body')).toBeNull()
+    expect(container.querySelector('.streaming-caret-inline')).toBeNull()
+  })
+
+  it('renders no caret or markdown body when streaming with whitespace-only content', () => {
+    const { container } = render(<MarkdownContent content={' \n'} streaming />)
+    expect(container.querySelector('.markdown-body')).toBeNull()
+    expect(container.querySelector('.streaming-caret-inline')).toBeNull()
+  })
+
+  it('never renders a streaming caret while text is streaming', () => {
+    const { container } = render(<MarkdownContent content="After an" streaming />)
+    expect(screen.getByText('After an')).toBeTruthy()
+    expect(container.querySelector('.streaming-caret-inline')).toBeNull()
+  })
 })
 
 describe('highlightCache bounds', () => {

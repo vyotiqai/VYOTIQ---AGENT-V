@@ -31,12 +31,15 @@ export const ASK_SAFE_BUILTIN = new Set([
   'memory_read',
   'subagent',
   'git_status',
-  'git_diff',
-  'diagnostics'
+  'git_diff'
+  // `diagnostics` spawns a shell — Plan-only (see PLAN_EXTRA / agent), not Ask.
 ])
 
-/** Plan mode also allows todos + plan-artifact edits. */
-const PLAN_EXTRA_BUILTIN = new Set(['todo_write', 'edit', 'str_replace'])
+/** Plan mode also allows todos + plan-artifact edits + diagnostics. */
+const PLAN_EXTRA_BUILTIN = new Set(['todo_write', 'edit', 'str_replace', 'multi_edit', 'diagnostics'])
+
+/** Built-ins allowed in Ask but not Plan (avoid nested research loops while planning). */
+const PLAN_EXCLUDED_BUILTIN = new Set(['subagent'])
 
 /** Allowed in every interaction mode (not read-only, but mode control). */
 const ALL_MODE_BUILTIN = new Set(['switch_mode'])
@@ -49,27 +52,51 @@ export function isPlanArtifactPath(pathArg: string): boolean {
   return PLAN_ARTIFACT_NAMES.has(base)
 }
 
+/** Run contract file — remapped to the run directory in Plan and Agent modes. */
+export function isRunContractPath(pathArg: string): boolean {
+  const base = basename(normalize(pathArg.replace(/\\/g, '/')))
+  return base === 'contract.md'
+}
+
+/** Run plan.md — remapped in Plan always; in Agent when a run plan artifact exists. */
+export function isRunPlanPath(pathArg: string): boolean {
+  const base = basename(normalize(pathArg.replace(/\\/g, '/')))
+  return base === 'plan.md'
+}
+
 export function modeSectionMarkdown(mode: AgentInteractionMode): string | null {
   switch (mode) {
     case 'agent':
-      return null
+      return [
+        '## Mode: Agent',
+        '',
+        'You are in Agent mode. You may edit files, run the `terminal` tool, write memory,',
+        'and use the full tools catalog (subject to user approval settings).',
+        'Writes are checkpointed for Keep/Discard; prefer non-destructive commands.',
+        'Follow the run contract; if an approved `## Plan` is present, implement it unless',
+        'the user redirects you. Use `ask_question` for ambiguous product decisions and',
+        '`switch_mode` if Ask or Plan fits better.'
+      ].join('\n')
     case 'ask':
       return [
         '## Mode: Ask',
         '',
-        'You are in Ask mode. Investigate and answer using read-only tools only',
-        '(built-ins plus MCP tools that declare readOnlyHint).',
-        'Do not edit files, delete paths, run shell commands, or write memory.',
+        'You are in Ask mode. Use read-only tools liberally to investigate and answer',
+        '(built-ins plus MCP tools that declare readOnlyHint). Only avoid mutating tools.',
+        'Do not edit files, delete paths, run the `terminal` tool, run `diagnostics`,',
+        'or write memory.',
         'If the user needs changes, explain what you would do and suggest switching to Agent mode.'
       ].join('\n')
     case 'plan':
       return [
         '## Mode: Plan',
         '',
-        'You are in Plan mode. Explore the codebase with read-only tools (and read-only MCP),',
-        'maintain todos via `todo_write`,',
-        'and write or refine only `plan.md` and `contract.md` (run plan artifacts — not product source).',
-        'Do not edit application code, delete files, or run the terminal.',
+        'You are in Plan mode. Explore with read-only tools (and read-only MCP),',
+        'update `plan.md` and `contract.md` incrementally (run plan artifacts — not product source),',
+        'and keep todos via `todo_write`. Prefer updating the injected `## Plan` rather than',
+        're-deriving it from scratch each turn.',
+        '`diagnostics` is allowed. Do not edit application code, delete files, run the `terminal`',
+        'tool, or spawn `subagent`.',
         'End with a clear plan the user can approve by switching to Agent mode.'
       ].join('\n')
     default: {
@@ -82,6 +109,7 @@ export function modeSectionMarkdown(mode: AgentInteractionMode): string | null {
 export function isBuiltinAllowedInMode(mode: AgentInteractionMode, name: string): boolean {
   if (mode === 'agent') return true
   if (ALL_MODE_BUILTIN.has(name)) return true
+  if (mode === 'plan' && PLAN_EXCLUDED_BUILTIN.has(name)) return false
   if (ASK_SAFE_BUILTIN.has(name)) return true
   if (mode === 'plan' && PLAN_EXTRA_BUILTIN.has(name)) return true
   return false
@@ -89,7 +117,8 @@ export function isBuiltinAllowedInMode(mode: AgentInteractionMode, name: string)
 
 /**
  * MCP tools in Ask/Plan: only when the server declared `readOnlyHint: true`.
- * Hint is still untrusted for parallel/approval exemption (see classify.ts).
+ * MCP tools with an explicit `readOnlyHint: true` may also run in parallel;
+ * the hint is still untrusted for approval exemption (see classify.ts).
  */
 export function isMcpAllowedInMode(mode: AgentInteractionMode, fullName: string): boolean {
   if (mode === 'agent') return true
@@ -144,6 +173,23 @@ export function assertToolAllowedInMode(
         ok: false,
         error:
           'Plan mode may only edit plan.md or contract.md (run plan artifacts). Switch to Agent mode to edit product code.'
+      }
+    }
+  }
+
+  if (mode === 'plan' && name === 'multi_edit') {
+    const edits = Array.isArray(args.edits) ? args.edits : []
+    for (const entry of edits) {
+      const path =
+        entry && typeof entry === 'object' && typeof (entry as { path?: unknown }).path === 'string'
+          ? (entry as { path: string }).path
+          : ''
+      if (!isPlanArtifactPath(path)) {
+        return {
+          ok: false,
+          error:
+            'Plan mode multi_edit may only target plan.md or contract.md. Switch to Agent mode to edit product code.'
+        }
       }
     }
   }

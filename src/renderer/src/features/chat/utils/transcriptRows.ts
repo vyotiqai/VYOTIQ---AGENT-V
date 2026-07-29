@@ -167,7 +167,8 @@ export function buildTranscriptRows(
       ? stripToolShapedAssistantTextForStream(assistant.content)
       : stripToolShapedAssistantText(assistant.content)
     const showContent = Boolean(
-      cleanedContent && !duplicatesReasoning({ ...assistant, content: cleanedContent })
+      cleanedContent?.trim() &&
+        !duplicatesReasoning({ ...assistant, content: cleanedContent })
     )
     if (assistant.thinkingStreaming && !showThinking) {
       // Timeline/aria still show Thinking while the block is hidden (setting off

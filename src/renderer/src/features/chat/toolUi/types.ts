@@ -3,7 +3,7 @@ import type { UiSubagentContextUsage, UiSubagentEntry, UiToolRow } from '@shared
 
 export type ToolPresentation = 'prominent' | 'compact'
 
-export type ToolCategory = 'file' | 'edit' | 'search' | 'command' | 'browse'
+export type ToolCategory = 'file' | 'edit' | 'search' | 'command' | 'browse' | 'browser'
 
 export type ToolBodyContext = {
   tool: UiToolRow

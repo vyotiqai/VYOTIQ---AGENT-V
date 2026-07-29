@@ -49,6 +49,28 @@ describe('buildTranscriptRows', () => {
     }
   })
 
+  it('does not emit a text row for whitespace-only streaming assistant content after tools', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'search' },
+      {
+        kind: 'tool',
+        id: 't1',
+        toolExpanded: false,
+        tool: { id: 't1', name: 'web_search', summary: 'Searching', status: 'running' }
+      },
+      {
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        content: ' \n',
+        streaming: true
+      }
+    ]
+    const rows = buildTranscriptRows(items)
+    expect(rows.some((row) => row.kind === 'text')).toBe(false)
+    expect(rows.some((row) => row.kind === 'activity')).toBe(true)
+  })
+
   it('breaks commands and edits out of a mixed batch into their own cards', () => {
     const rows = buildTranscriptRows([
       tool('r1', 'read'),

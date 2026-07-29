@@ -70,8 +70,12 @@ export type AssembleInput = {
   skillsSection?: string
   /** Enabled plugin rules section (pre-built markdown). */
   pluginRulesSection?: string
-  /** Ask / Plan mode overlay (null/omit for Agent). */
+  /** Ask / Plan / Agent mode overlay. */
   modeSection?: string
+  /** Approved or draft plan.md body (omit stub / empty). */
+  plan?: string
+  /** Fresh session env block (OS / date / shell / mode) — not workspace-cached. */
+  sessionEnv?: string
 }
 
 export type ContextLayerBreakdown = {

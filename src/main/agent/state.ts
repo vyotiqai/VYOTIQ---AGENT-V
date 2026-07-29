@@ -56,6 +56,50 @@ export async function readContractAsync(runDir: string): Promise<string> {
   }
 }
 
+const PLAN_STUB_MARKER = '_Draft the plan here.'
+
+export const DEFAULT_PLAN_STUB = [
+  '# Plan',
+  '',
+  `${PLAN_STUB_MARKER} Update as you learn. Do not edit product source in Plan mode.`,
+  '',
+  '## Goal',
+  '',
+  '## Approach',
+  '',
+  '## Files',
+  '',
+  '## Risks',
+  '',
+  '## Test plan',
+  '',
+  '## Open questions',
+  ''
+].join('\n')
+
+/** Approved/draft plan artifact; empty when missing or still the Plan-mode stub. */
+export async function readPlanAsync(runDir: string): Promise<string> {
+  const p = join(runDir, 'plan.md')
+  if (!existsSync(p)) return ''
+  try {
+    const text = (await readFile(p, 'utf8')).trim()
+    if (!text) return ''
+    if (text.includes(PLAN_STUB_MARKER)) {
+      const withoutStub = text
+        .replace(PLAN_STUB_MARKER, '')
+        .replace(/^#\s*Plan\s*/i, '')
+        .replace(/^##\s+(Goal|Approach|Files|Risks|Test plan|Open questions)\s*/gim, '')
+        .trim()
+      // Still mostly empty aside from the stub boilerplate.
+      if (withoutStub.replace(/[_*.\s]/g, '').length < 20) return ''
+    }
+    if (text.length <= CONTRACT_CAP) return text
+    return text.slice(0, CONTRACT_CAP) + '\n…'
+  } catch {
+    return ''
+  }
+}
+
 export function saveCompaction(runDir: string, record: CompactionRecord): void {
   const parsed = CompactionRecordSchema.safeParse(record)
   if (!parsed.success) {
@@ -103,8 +147,27 @@ export function resumeRun(workspacePath: string, runId: string): string {
   if (!existsSync(dir)) {
     throw new Error('Run not found')
   }
-  updateStatus(dir, { status: 'running', step: 0 })
+  // Close any unfinished tool pairing from a previous crash before continuing.
+  appendOrphanToolStubs(dir, runId)
+  const prior = loadStatus(dir)
+  updateStatus(dir, {
+    status: 'running',
+    // Keep prior step count across invokes (do not reset progress metadata).
+    step: prior?.step ?? 0
+  })
   return dir
+}
+
+export function loadStatus(dir: string): RunStatus | null {
+  const p = join(dir, 'status.json')
+  if (!existsSync(p)) return null
+  try {
+    const raw = JSON.parse(readFileSync(p, 'utf8')) as unknown
+    const parsed = RunStatusSchema.safeParse(raw)
+    return parsed.success ? parsed.data : null
+  } catch {
+    return null
+  }
 }
 
 export function syncMessages(dir: string, messages: ChatMessage[]): void {
@@ -131,8 +194,6 @@ export function createRun(workspacePath: string, runId: string, goal: string): s
   writeFileSync(
     join(dir, 'contract.md'),
     [
-      '# Run contract',
-      '',
       '## Goal',
       '',
       goalText,
@@ -141,7 +202,7 @@ export function createRun(workspacePath: string, runId: string, goal: string): s
       '',
       '- The goal above is satisfied (check outcomes: read results, command output, or user-visible success).',
       '- Or blockers are explained clearly and no further narrow retry will help.',
-      '- Update this file if the goal narrows mid-run.',
+      '- Update this file if scope or done-when changes.',
       ''
     ].join('\n'),
     'utf8'
@@ -151,7 +212,9 @@ export function createRun(workspacePath: string, runId: string, goal: string): s
     step: 0,
     updatedAt: new Date().toISOString(),
     goal: goalText.slice(0, 200),
-    workspacePath
+    workspacePath,
+    mode: 'agent',
+    consecutiveToolFailureSteps: 0
   }
   writeFileSync(join(dir, 'status.json'), JSON.stringify(status, null, 2), 'utf8')
   writeFileSync(join(dir, 'messages.jsonl'), '', 'utf8')

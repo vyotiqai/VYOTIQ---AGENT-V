@@ -70,7 +70,11 @@ export const RunStatusSchema = z.object({
   updatedAt: z.string(),
   error: z.string().optional(),
   goal: z.string().optional(),
-  workspacePath: z.string().optional()
+  workspacePath: z.string().optional(),
+  /** Last Ask / Plan / Agent mode for this run (survives resume). */
+  mode: AgentInteractionModeSchema.optional(),
+  /** Consecutive all-failure tool steps — restored across invokes. */
+  consecutiveToolFailureSteps: z.number().int().min(0).optional()
 })
 export type RunStatus = z.infer<typeof RunStatusSchema>
 
@@ -90,7 +94,8 @@ export type IpcResult<T> = { ok: true; data: T } | { ok: false; error: string }
 export const IncompleteReasonSchema = z.enum([
   'truncated',
   'empty_response',
-  'filtered'
+  'filtered',
+  'context_overflow'
 ])
 export type IncompleteReason = z.infer<typeof IncompleteReasonSchema>
 
@@ -401,8 +406,8 @@ export const ResolveWritesResultSchema = z.object({
 })
 export type ResolveWritesResult = z.infer<typeof ResolveWritesResultSchema>
 
-/** Run-dir artifacts Plan mode may edit (`plan.md` / `contract.md`). */
-export const RunArtifactNameSchema = z.enum(['plan.md', 'contract.md'])
+/** Run-dir artifacts readable via `runs:readArtifact`. */
+export const RunArtifactNameSchema = z.enum(['plan.md', 'contract.md', 'browser/snapshot.jpg'])
 export type RunArtifactName = z.infer<typeof RunArtifactNameSchema>
 
 export const ReadRunArtifactRequestSchema = z.object({

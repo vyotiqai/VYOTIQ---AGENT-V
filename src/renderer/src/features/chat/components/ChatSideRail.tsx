@@ -15,12 +15,17 @@ const RAIL_ITEMS: Array<{
     showLabel: 'Show terminal panel',
     hideLabel: 'Hide terminal panel'
   },
-  { id: 'files', icon: 'file', showLabel: 'Show files panel', hideLabel: 'Hide files panel' },
   {
     id: 'changes',
     icon: 'branch',
     showLabel: 'Show changes panel',
     hideLabel: 'Hide changes panel'
+  },
+  {
+    id: 'plan',
+    icon: 'listTodo',
+    showLabel: 'Show plan panel',
+    hideLabel: 'Hide plan panel'
   }
 ]
 

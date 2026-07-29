@@ -286,8 +286,9 @@ export function MarkdownContent({
     [streaming, content]
   )
   const blocks = useMemo(() => splitMarkdownBlocks(markdown), [markdown])
+  const hasVisibleContent = content.trim().length > 0
 
-  if (!content && !streaming) return null
+  if (!hasVisibleContent) return null
 
   return (
     <div
@@ -306,11 +307,6 @@ export function MarkdownContent({
           <MemoMarkdownBlock key={key} source={block} openFenceBody={blockOpenFence} />
         )
       })}
-      {streaming ? (
-        <span className="streaming-caret-inline" aria-hidden>
-          ▍
-        </span>
-      ) : null}
     </div>
   )
 }

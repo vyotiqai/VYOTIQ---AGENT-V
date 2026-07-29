@@ -49,7 +49,8 @@ const CATEGORY_COUNT_LABELS: Record<ToolGroupCategory, [singular: string, plural
   edit: ['edit', 'edits'],
   search: ['lookup', 'lookups'],
   command: ['command', 'commands'],
-  browse: ['directory', 'directories']
+  browse: ['directory', 'directories'],
+  browser: ['page', 'pages']
 }
 
 const CATEGORY_MIXED_VERBS: Record<ToolGroupCategory, { running: string; done: string }> = {
@@ -57,7 +58,8 @@ const CATEGORY_MIXED_VERBS: Record<ToolGroupCategory, { running: string; done: s
   edit: { running: 'editing', done: 'edited' },
   search: { running: 'searching', done: 'searched' },
   command: { running: 'running commands', done: 'ran commands' },
-  browse: { running: 'listing directories', done: 'listed directories' }
+  browse: { running: 'listing directories', done: 'listed directories' },
+  browser: { running: 'browsing', done: 'browsed' }
 }
 
 function capitalize(text: string): string {
@@ -78,11 +80,12 @@ function compositeMixedLabels(tools: ToolGroupNestedTool[]): { running: string; 
     edit: 0,
     search: 0,
     command: 0,
-    browse: 0
+    browse: 0,
+    browser: 0
   }
   for (const tool of tools) counts[tool.category] += 1
 
-  const order: ToolGroupCategory[] = ['file', 'browse', 'search', 'command', 'edit']
+  const order: ToolGroupCategory[] = ['file', 'browse', 'browser', 'search', 'command', 'edit']
   const active = order.filter((category) => counts[category] > 0)
   if (active.length === 0) return mixedGroupLabels()
   if (active.length === 1) return categoryLabels(active[0]!)
@@ -168,7 +171,8 @@ function summarizeCounts(tools: ToolGroupNestedTool[]): string {
     edit: 0,
     search: 0,
     command: 0,
-    browse: 0
+    browse: 0,
+    browser: 0
   }
   for (const tool of tools) counts[tool.category] += 1
 
@@ -192,6 +196,10 @@ function summarizeCounts(tools: ToolGroupNestedTool[]): string {
   if (counts.browse > 0) {
     const [s, p] = CATEGORY_COUNT_LABELS.browse
     parts.push(formatCount(counts.browse, s, p))
+  }
+  if (counts.browser > 0) {
+    const [s, p] = CATEGORY_COUNT_LABELS.browser
+    parts.push(formatCount(counts.browser, s, p))
   }
 
   if (parts.length === 0) return ''

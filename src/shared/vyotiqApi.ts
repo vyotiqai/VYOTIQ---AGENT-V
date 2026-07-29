@@ -96,7 +96,7 @@ export interface VyotiqApi {
   readRunArtifact: (payload: {
     workspacePath: string
     runId: string
-    name: 'plan.md' | 'contract.md'
+    name: 'plan.md' | 'contract.md' | 'browser/snapshot.jpg'
   }) => Promise<IpcResult<ReadRunArtifactResult>>
   onChatEvent: (handler: (event: AgentEvent) => void) => () => void
   onToolApprovalRequest: (handler: (request: ToolApprovalRequest) => void) => () => void
@@ -220,6 +220,11 @@ export interface VyotiqApi {
     workspacePath: string
     path: string
   }) => Promise<IpcResult<true>>
+  workspaceSuggestPaths: (payload: {
+    workspacePath: string
+    query?: string
+    maxResults?: number
+  }) => Promise<IpcResult<{ paths: string[] }>>
   getSystemTheme: () => Promise<IpcResult<boolean>>
   onSystemThemeChanged: (handler: (prefersDark: boolean) => void) => () => void
 }

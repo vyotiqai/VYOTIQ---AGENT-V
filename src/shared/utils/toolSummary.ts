@@ -52,6 +52,7 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   memory_write: { running: 'Writing memory', done: 'Wrote memory' },
   git_status: { running: 'Checking git', done: 'Git status' },
   git_diff: { running: 'Diffing', done: 'Git diff' },
+  git_commit: { running: 'Committing', done: 'Git commit' },
   diagnostics: { running: 'Checking', done: 'Diagnostics' },
   ask_question: { running: 'Asking', done: 'Asked' },
   switch_mode: { running: 'Switching mode', done: 'Switched mode' }
@@ -168,8 +169,13 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
     if (typeof key === 'string') return key
   }
   if (name === 'mcp_list_tools') {
-    const serverId = args.server_id
-    if (typeof serverId === 'string' && serverId.trim()) return truncate(serverId)
+    const serverId =
+      typeof args.serverId === 'string' && args.serverId.trim()
+        ? args.serverId
+        : typeof args.server_id === 'string' && args.server_id.trim()
+          ? args.server_id
+          : null
+    if (serverId) return truncate(serverId)
     return 'mcp'
   }
   if (name === 'mcp_list_resources' || name === 'mcp_list_prompts') {

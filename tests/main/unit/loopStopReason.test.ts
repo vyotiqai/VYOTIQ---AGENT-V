@@ -41,27 +41,29 @@ vi.mock('@main/settings/settings', () => ({
 vi.mock('@main/settings/secrets', () => ({ getSecret: () => null }))
 vi.mock('@main/agent/harness', () => ({ loadHarness: () => 'harness' }))
 
+const { streamChat, executeTool, assembleContext } = vi.hoisted(() => ({
+  streamChat: vi.fn(),
+  executeTool: vi.fn(),
+  assembleContext: vi.fn(async (input: { messages: unknown[] }) => ({
+    messages: input.messages,
+    system: 'system',
+    estimatedTokens: 100,
+    layers: { system: 10, history: 50, tools: 20, buffer: 20 },
+    contextShrunk: false,
+    overflow: false,
+    anthropicNative: undefined,
+    compaction: null
+  }))
+}))
+
 vi.mock('@main/agent/context', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@main/agent/context')>()
   return {
     ...actual,
-    assembleContext: async (input: { messages: unknown[] }) => ({
-      messages: input.messages,
-      system: 'system',
-      estimatedTokens: 100,
-      layers: { system: 10, history: 50, tools: 20, buffer: 20 },
-      contextShrunk: false,
-      anthropicNative: undefined,
-      compaction: null
-    }),
+    assembleContext: (...args: unknown[]) => assembleContext(...args),
     ensureMemoryLayout: () => undefined
   }
 })
-
-const { streamChat, executeTool } = vi.hoisted(() => ({
-  streamChat: vi.fn(),
-  executeTool: vi.fn()
-}))
 
 vi.mock('@main/agent/providers', () => ({
   getProvider: () => ({ id: 'ollama', listModels: async () => [], streamChat }),
@@ -118,6 +120,17 @@ describe('runAgent stop-reason classification', () => {
     resetActiveRunsForTests()
     streamChat.mockReset()
     executeTool.mockReset()
+    assembleContext.mockReset()
+    assembleContext.mockImplementation(async (input: { messages: unknown[] }) => ({
+      messages: input.messages,
+      system: 'system',
+      estimatedTokens: 100,
+      layers: { system: 10, history: 50, tools: 20, buffer: 20 },
+      contextShrunk: false,
+      overflow: false,
+      anthropicNative: undefined,
+      compaction: null
+    }))
   })
 
   afterEach(() => {
@@ -292,6 +305,59 @@ describe('runAgent stop-reason classification', () => {
   })
 })
 
+describe('runAgent context overflow', () => {
+  let workspace: string
+
+  beforeEach(() => {
+    workspace = join(tmpdir(), `vyotiq-overflow-ws-${process.pid}-${Date.now()}`)
+    mkdirSync(workspace, { recursive: true })
+    resetActiveRunsForTests()
+    streamChat.mockReset()
+    executeTool.mockReset()
+    assembleContext.mockReset()
+    assembleContext.mockImplementation(async (input: { messages: unknown[] }) => ({
+      messages: input.messages,
+      system: 'system',
+      estimatedTokens: 100,
+      layers: { system: 10, history: 50, tools: 20, buffer: 20 },
+      contextShrunk: false,
+      overflow: false,
+      anthropicNative: undefined,
+      compaction: null
+    }))
+  })
+
+  afterEach(() => {
+    if (existsSync(userData)) rmSync(userData, { recursive: true, force: true })
+    if (existsSync(workspace)) rmSync(workspace, { recursive: true, force: true })
+  })
+
+  it('stops before streaming when assembleContext reports overflow', async () => {
+    assembleContext.mockImplementation(async (input: { messages: unknown[] }) => ({
+      messages: input.messages,
+      system: 'system',
+      estimatedTokens: 200_000,
+      layers: { system: 10, history: 50, tools: 20, buffer: 20 },
+      contextShrunk: true,
+      overflow: true,
+      anthropicNative: undefined,
+      compaction: null
+    }))
+
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'should not stream' }
+      yield { type: 'done', stopReason: 'stop' }
+    })
+
+    const events = await collect('overflow-stop', workspace)
+
+    expect(events.find((e) => e.type === 'incomplete')?.reason).toBe('context_overflow')
+    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
+    expect(events.some((e) => e.type === 'text_delta')).toBe(false)
+    expect(streamChat).not.toHaveBeenCalled()
+  })
+})
+
 describe('runAgent partial persistence', () => {
   let workspace: string
 
@@ -301,6 +367,17 @@ describe('runAgent partial persistence', () => {
     resetActiveRunsForTests()
     streamChat.mockReset()
     executeTool.mockReset()
+    assembleContext.mockReset()
+    assembleContext.mockImplementation(async (input: { messages: unknown[] }) => ({
+      messages: input.messages,
+      system: 'system',
+      estimatedTokens: 100,
+      layers: { system: 10, history: 50, tools: 20, buffer: 20 },
+      contextShrunk: false,
+      overflow: false,
+      anthropicNative: undefined,
+      compaction: null
+    }))
   })
 
   afterEach(() => {

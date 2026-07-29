@@ -1,4 +1,6 @@
 /** Workspace-local reads safe to run concurrently (no file mutation). */
+import { getMcpReadOnlyHint } from '../mcp'
+
 const PARALLEL_SAFE_BUILTIN = new Set([
   'read',
   'search',
@@ -40,10 +42,13 @@ const SERIAL_APPROVAL_EXEMPT_BUILTIN = new Set(['ask_question', 'switch_mode'])
 
 /**
  * Built-in tools safe to run in parallel (no workspace mutation).
- * MCP tools are never parallel-safe — server `readOnlyHint` is untrusted.
+ * MCP tools with an explicit `readOnlyHint: true` may also run in parallel;
+ * the hint is still untrusted for approval exemption.
  */
 export function isParallelSafeTool(name: string): boolean {
-  return PARALLEL_SAFE_BUILTIN.has(name)
+  if (PARALLEL_SAFE_BUILTIN.has(name)) return true
+  if (name.startsWith('mcp__') && getMcpReadOnlyHint(name) === true) return true
+  return false
 }
 
 /**

@@ -1,6 +1,6 @@
 # Vyotiq Agent V
 
-Lean Electron desktop coding agent: natural-language harness, workspace tools, multi-provider chat, live context management, and file-backed long-term memory. Includes a built-in live agent browser (navigate, snapshot, click, type). No terminal UI, embedding RAG, or GitHub.
+Lean Electron desktop coding agent: natural-language harness, workspace tools, multi-provider chat, live context management, and file-backed long-term memory. Includes a built-in live agent browser (navigate, snapshot, click, type) and a docked terminal / changes side rail. No embedding RAG or GitHub.
 
 ## Stack
 
@@ -90,7 +90,7 @@ Project-local agent memory stays at `{workspace}/.vyotiq/memory/` only. The syst
 
 When adding or changing a built-in tool, update its argument schema, handler, and runtime limits/classification together. Keep the tool description as a short capability blurb; `tests/main/unit/toolsSchema.test.ts` checks registry/handler parity and the harness boundary.
 
-**Run file contract:** `messages.jsonl` is the canonical chat transcript (one JSON object per line: user/assistant/tool messages). `events.jsonl` is an append-only ops log (`status`, `step_usage`, `context_usage`, etc. with ISO `at` timestamps); full tool output is stored only in `messages.jsonl`. The UI rebuilds the chat timeline from `messages.jsonl` on reload and shows run telemetry in the Activity panel. Legacy session-only runs under `{userData}/sessions/` are migrated into the workspace AppData sessions folder on first startup.
+**Run file contract:** `messages.jsonl` is the canonical chat transcript (one JSON object per line: user/assistant/tool messages). `events.jsonl` is an append-only ops log (`status`, `step_usage`, `context_usage`, etc. with ISO `at` timestamps); full tool output is stored only in `messages.jsonl`. The UI rebuilds the chat timeline from `messages.jsonl` on reload and shows run telemetry in the composer context meter. Legacy session-only runs under `{userData}/sessions/` are migrated into the workspace AppData sessions folder on first startup.
 
 Copy `.env.example` → `.env` if you want an optional Sentry DSN locally (gitignored).
 
@@ -117,4 +117,4 @@ VITE_SENTRY_DSN=https://<key>@o<org>.ingest.sentry.io/<project>
 
 ## Scope (kept lean)
 
-Tools: `read` · `list_dir` · `glob` · `grep` · `search` · `edit` · `str_replace` · `multi_edit` · `delete` · `todo_write` · `web_fetch` · `web_search` · `browser_navigate` · `browser_snapshot` · `browser_scroll` · `browser_click` · `browser_type` · `browser_fill` · `browser_tabs` · `browser_back` · `browser_forward` · `browser_wait_for_selector` · `browser_wait_for_url` · `browser_press_key` · `browser_select_option` · `mcp_list_tools` · `subagent` · `terminal` · `git_status` · `git_diff` · `diagnostics` · `memory_list` · `memory_read` · `memory_write` (no terminal panel).
+Tools: `read` · `list_dir` · `glob` · `grep` · `search` · `edit` · `str_replace` · `multi_edit` · `delete` · `todo_write` · `web_fetch` · `web_search` · `browser_navigate` · `browser_snapshot` · `browser_scroll` · `browser_click` · `browser_type` · `browser_fill` · `browser_tabs` · `browser_back` · `browser_forward` · `browser_wait_for_selector` · `browser_wait_for_url` · `browser_press_key` · `browser_select_option` · `mcp_list_tools` · `mcp_list_resources` · `mcp_read_resource` · `mcp_list_prompts` · `mcp_get_prompt` · `subagent` · `ask_question` · `switch_mode` · `terminal` · `git_status` · `git_diff` · `git_commit` · `diagnostics` · `memory_list` · `memory_read` · `memory_write`. Side rail: Browser / Terminal / Changes / Plan panels.

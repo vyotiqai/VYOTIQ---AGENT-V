@@ -825,11 +825,25 @@ export async function invokeMcpTool(
     if (signal.aborted || isAbortError(err)) {
       throw new DOMException('Aborted', 'AbortError')
     }
-    // Drop the dead session so the next sync/refresh reconnects instead of
-    // leaving a forever-green "connected" status with failing tools.
-    connectErrors.set(serverId, formatError(err))
+    const message = formatError(err)
+    const transient =
+      /timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|network|temporarily/i.test(message)
+    if (transient) {
+      // Keep the session; model can retry. Permanent protocol errors still drop it.
+      connectErrors.set(serverId, message)
+      return {
+        ok: false,
+        summary,
+        content: `MCP invoke failed on "${serverId}" (session kept for retry): ${message}`
+      }
+    }
+    connectErrors.set(serverId, message)
     await disconnectMcpServer(serverId)
-    return { ok: false, summary, content: formatError(err) }
+    return {
+      ok: false,
+      summary,
+      content: `MCP invoke failed on "${serverId}" (disconnected; will reconnect on next sync): ${message}`
+    }
   }
 }
 

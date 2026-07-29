@@ -18,6 +18,7 @@ const resolveModelInfo = vi.hoisted(() =>
     supportsTools: true
   }))
 )
+const buildWorkspaceRulesSection = vi.hoisted(() => vi.fn(async () => ''))
 
 vi.mock('@main/agent/providers', () => ({
   getProvider: () => ({
@@ -34,6 +35,10 @@ vi.mock('@main/agent/modelResolve', () => ({
 
 vi.mock('@main/agent/tools', () => ({
   executeTool: (...args: unknown[]) => executeTool(...args)
+}))
+
+vi.mock('@main/agent/context/rules', () => ({
+  buildWorkspaceRulesSection: (...args: unknown[]) => buildWorkspaceRulesSection(...args)
 }))
 
 vi.mock('@main/settings/settings', () => ({
@@ -78,6 +83,8 @@ describe('runSubagent', () => {
       model: 'test-model'
     })
     resolveModelInfo.mockClear()
+    buildWorkspaceRulesSection.mockReset()
+    buildWorkspaceRulesSection.mockResolvedValue('')
   })
 
   it('returns the final report as the tool result', async () => {
@@ -296,6 +303,41 @@ describe('runSubagent', () => {
     for (const name of SUBAGENT_TOOLS) {
       expect(system).toContain(name)
     }
+  })
+
+  it('includes workspace rules in the child system prompt', async () => {
+    buildWorkspaceRulesSection.mockResolvedValue(
+      '## Workspace rules\n\n### AGENTS.md\nUse the project conventions.'
+    )
+    streamChat.mockImplementation(stream([{ type: 'text', text: 'done' }, { type: 'done' }]))
+
+    await runSubagent({
+      task: 'look around',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0
+    })
+
+    expect(buildWorkspaceRulesSection).toHaveBeenCalledWith('/ws')
+    const req = streamChat.mock.calls[0]![0] as { system?: string }
+    expect(req.system).toContain('### AGENTS.md')
+    expect(req.system).toContain('Use the project conventions.')
+  })
+
+  it('caps oversized workspace rules in the child system prompt', async () => {
+    buildWorkspaceRulesSection.mockResolvedValue(`${'x'.repeat(70_000)}TAIL`)
+    streamChat.mockImplementation(stream([{ type: 'text', text: 'done' }, { type: 'done' }]))
+
+    await runSubagent({
+      task: 'look around',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0
+    })
+
+    const req = streamChat.mock.calls[0]![0] as { system?: string }
+    expect(req.system).toContain('… (truncated)')
+    expect(req.system).not.toContain('TAIL')
   })
 
   it('runs tool calls and reports progress before the report', async () => {

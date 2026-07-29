@@ -299,9 +299,11 @@ function createTab(): BrowserTab {
   })
 
   view.webContents.on('did-navigate', () => {
+    tab.lastRefs = new Map()
     if (activeTabId === id) emitCurrent()
   })
   view.webContents.on('did-navigate-in-page', () => {
+    tab.lastRefs = new Map()
     if (activeTabId === id) emitCurrent()
   })
   view.webContents.on('page-title-updated', () => {
@@ -366,53 +368,75 @@ async function waitForLoad(
   wc: WebContents,
   signal: AbortSignal | undefined,
   timeoutMs: number
-): Promise<void> {
+): Promise<{ arm: () => void; checkIdle: () => void; done: Promise<void> }> {
   throwIfAborted(signal)
-  await new Promise<void>((resolve, reject) => {
-    let settled = false
-    const timer = setTimeout(() => {
-      finish(() => reject(new Error(`Navigation timed out after ${timeoutMs}ms`)))
-    }, timeoutMs)
+  let armed = false
+  let settled = false
+  let resolveDone!: () => void
+  let rejectDone!: (err: Error) => void
+  const done = new Promise<void>((resolve, reject) => {
+    resolveDone = resolve
+    rejectDone = reject
+  })
 
-    const onAbort = (): void => {
-      finish(() => {
-        const err = new Error('Aborted')
-        err.name = 'AbortError'
-        reject(err)
-      })
-    }
+  const timer = setTimeout(() => {
+    finish(() => rejectDone(new Error(`Navigation timed out after ${timeoutMs}ms`)))
+  }, timeoutMs)
 
-    const onDone = (): void => {
-      finish(() => resolve())
-    }
+  const onAbort = (): void => {
+    finish(() => {
+      const err = new Error('Aborted')
+      err.name = 'AbortError'
+      rejectDone(err)
+    })
+  }
 
-    const onFail = (
-      _event: Electron.Event,
-      errorCode: number,
-      errorDescription: string,
-      _validatedURL: string,
-      isMainFrame: boolean
-    ): void => {
-      if (!isMainFrame) return
-      // -3 is ABORTED (often from a superseding navigation).
-      if (errorCode === -3) return
-      finish(() => reject(new Error(errorDescription || `Navigation failed (${errorCode})`)))
-    }
+  const onDone = (): void => {
+    finish(() => resolveDone())
+  }
 
-    const finish = (fn: () => void): void => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      signal?.removeEventListener('abort', onAbort)
-      wc.removeListener('did-finish-load', onDone)
-      wc.removeListener('did-fail-load', onFail)
-      fn()
-    }
+  const onFail = (
+    _event: Electron.Event,
+    errorCode: number,
+    errorDescription: string,
+    _validatedURL: string,
+    isMainFrame: boolean
+  ): void => {
+    if (!isMainFrame) return
+    // -3 is ABORTED (often from a superseding navigation).
+    if (errorCode === -3) return
+    finish(() => rejectDone(new Error(errorDescription || `Navigation failed (${errorCode})`)))
+  }
 
+  const finish = (fn: () => void): void => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', onAbort)
+    wc.removeListener('did-finish-load', onDone)
+    wc.removeListener('did-fail-load', onFail)
+    wc.removeListener('did-stop-loading', onDone)
+    fn()
+  }
+
+  /** Attach listeners before loadURL so fast loads cannot race past us. */
+  const arm = (): void => {
+    if (armed) return
+    armed = true
     signal?.addEventListener('abort', onAbort, { once: true })
     wc.once('did-finish-load', onDone)
+    wc.once('did-stop-loading', onDone)
     wc.on('did-fail-load', onFail)
-  })
+  }
+
+  /** Call after loadURL — resolves if navigation already finished (cache hit). */
+  const checkIdle = (): void => {
+    if (armed && !settled && !wc.isLoading()) {
+      finish(() => resolveDone())
+    }
+  }
+
+  return { arm, checkIdle, done }
 }
 
 /** Navigate the agent browser to a public http(s) URL. */
@@ -441,9 +465,11 @@ async function navigateUrlUnlocked(
   emitCurrent({ navigating: true })
 
   try {
-    const loadPromise = waitForLoad(wc, opts.signal, timeoutMs)
-    void wc.loadURL(url.toString())
-    await loadPromise
+    const { arm, checkIdle, done } = await waitForLoad(wc, opts.signal, timeoutMs)
+    arm()
+    await wc.loadURL(url.toString())
+    checkIdle()
+    await done
   } catch (err) {
     emitCurrent({ navigating: false })
     if (isAbortError(err)) throw err
@@ -613,9 +639,9 @@ async function snapshotPageUnlocked(
       writeFileSync(join(dir, 'snapshot.jpg'), jpeg)
       imageNote = `\n\n[Screenshot saved under run browser/snapshot.jpg (${jpeg.length} bytes)]`
     }
-    // Live embed shows the page; JPEG is a run artifact only (no UI preview).
-  } catch {
-    // capture optional
+    // Live embed shows the page; JPEG is also loaded in the chat snapshot card.
+  } catch (err) {
+    imageNote = `\n\n[Screenshot capture failed: ${err instanceof Error ? err.message : String(err)}]`
   }
 
   const bodyBudget = Math.max(500, maxChars - 2_000)
@@ -654,7 +680,7 @@ type ElementHit = {
   css: string
 }
 
-const SETTLE_FALLBACK_MS = 400
+const SETTLE_FALLBACK_MS = 1_200
 const SETTLE_NAV_TIMEOUT_MS = 8_000
 
 async function settleAfterAction(
@@ -1312,11 +1338,13 @@ async function goHistoryUnlocked(
   if (dir === 'forward' && !flags.canGoForward) throw new Error('No forward history for this tab')
 
   emitCurrent({ navigating: true })
-  const loadPromise = waitForLoad(wc, opts.signal, DEFAULT_NAV_TIMEOUT_MS)
+  const { arm, checkIdle, done } = await waitForLoad(wc, opts.signal, DEFAULT_NAV_TIMEOUT_MS)
+  arm()
   if (dir === 'back') wc.goBack()
   else wc.goForward()
+  checkIdle()
   try {
-    await loadPromise
+    await done
   } catch (err) {
     emitCurrent({ navigating: false })
     throw err

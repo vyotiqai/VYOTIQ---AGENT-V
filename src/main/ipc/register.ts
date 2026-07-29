@@ -130,6 +130,7 @@ import {
 } from '../agent/agentQuestion'
 import { listProviderModels } from '../agent/providers'
 import { clearModelCache } from '../agent/providers/modelCache'
+import { collectWorkspaceFiles } from '../agent/tools/walk'
 import {
   chatCancelResult,
   listActiveRuns,
@@ -711,6 +712,14 @@ export function registerIpc(): void {
         if (!existsSync(filePath)) {
           return ok({ name: req.name, exists: false, content: null })
         }
+        if (req.name === 'browser/snapshot.jpg') {
+          const jpeg = readFileSync(filePath)
+          return ok({
+            name: req.name,
+            exists: true,
+            content: `data:image/jpeg;base64,${jpeg.toString('base64')}`
+          })
+        }
         const content = readFileSync(filePath, 'utf8')
         return ok({ name: req.name, exists: true, content })
       } catch (err) {
@@ -1204,6 +1213,39 @@ export function registerIpc(): void {
       return ok(true)
     } catch (err) {
       return failFrom(err, IPC.slashCommandsOpenFile)
+    }
+  })
+
+  ipcMain.handle(IPC.workspaceSuggestPaths, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = z
+        .object({
+          workspacePath: z.string().min(1),
+          query: z.string().optional(),
+          maxResults: z.number().int().min(1).max(50).optional()
+        })
+        .parse(raw ?? {})
+      if (!isOpenWorkspace(req.workspacePath)) {
+        return fail('Workspace is not open')
+      }
+      const maxResults = req.maxResults ?? 24
+      const query = (req.query ?? '').trim().toLowerCase().replace(/\\/g, '/')
+      const files = await collectWorkspaceFiles(req.workspacePath, 8_000)
+      const paths = files
+        .map((f) => f.rel.replace(/\\/g, '/'))
+        .filter((rel) => (query ? rel.toLowerCase().includes(query) : true))
+        .sort((a, b) => {
+          if (!query) return a.localeCompare(b)
+          const aBase = a.toLowerCase().includes(`/${query}`) || a.toLowerCase().startsWith(query)
+          const bBase = b.toLowerCase().includes(`/${query}`) || b.toLowerCase().startsWith(query)
+          if (aBase !== bBase) return aBase ? -1 : 1
+          return a.localeCompare(b)
+        })
+        .slice(0, maxResults)
+      return ok({ paths })
+    } catch (err) {
+      return failFrom(err, IPC.workspaceSuggestPaths)
     }
   })
 

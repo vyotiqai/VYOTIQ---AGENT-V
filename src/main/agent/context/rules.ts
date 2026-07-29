@@ -7,7 +7,7 @@ import { join, relative, sep } from 'path'
  * conventions in AGENTS.md expects the agent to follow them without being told
  * in every prompt, so they belong in the system prompt rather than the history.
  */
-const ROOT_FILES = ['AGENTS.md', 'CLAUDE.md']
+const ROOT_FILES = ['AGENTS.md', 'CLAUDE.md', '.cursorrules']
 const RULE_DIRS = [
   { dir: join('.cursor', 'rules'), extensions: ['.md', '.mdc'] },
   { dir: join('.vyotiq', 'rules'), extensions: ['.md'] }
@@ -20,6 +20,12 @@ const MAX_RULE_FILES = 24
 const MAX_DIR_DEPTH = 3
 
 export type RuleFile = { path: string; content: string }
+
+export type RuleFrontmatter = {
+  alwaysApply?: boolean
+  globs?: string[]
+  description?: string
+}
 
 type CacheEntry = { fingerprint: string; files: RuleFile[]; builtAt: number }
 
@@ -51,6 +57,53 @@ function fingerprintFor(workspacePath: string): string {
   return parts.join('|')
 }
 
+/**
+ * Parse Cursor-style YAML frontmatter from a rule file.
+ * Supports `alwaysApply`, `globs` (comma or YAML-list style), and `description`.
+ */
+export function parseRuleFrontmatter(raw: string): {
+  meta: RuleFrontmatter
+  body: string
+} {
+  const trimmed = raw.replace(/^\uFEFF/, '')
+  if (!trimmed.startsWith('---')) {
+    return { meta: {}, body: trimmed }
+  }
+  const end = trimmed.indexOf('\n---', 3)
+  if (end < 0) return { meta: {}, body: trimmed }
+  const fmBlock = trimmed.slice(3, end).trim()
+  let body = trimmed.slice(end + 4).replace(/^\r?\n/, '')
+  const meta: RuleFrontmatter = {}
+  for (const line of fmBlock.split(/\r?\n/)) {
+    const m = line.match(/^([A-Za-z][\w-]*)\s*:\s*(.*)$/)
+    if (!m) continue
+    const key = m[1]!
+    const value = m[2]!.trim()
+    if (key === 'alwaysApply') {
+      meta.alwaysApply = /^(true|yes|1)$/i.test(value)
+    } else if (key === 'description') {
+      meta.description = value.replace(/^["']|["']$/g, '')
+    } else if (key === 'globs') {
+      const inner = value.replace(/^\[|\]$/g, '')
+      meta.globs = inner
+        .split(',')
+        .map((s) => s.trim().replace(/^["']|["']$/g, ''))
+        .filter(Boolean)
+    }
+  }
+  return { meta, body: body.trim() }
+}
+
+/**
+ * Auto-inject when alwaysApply is true/absent.
+ * `alwaysApply: false` rules are requestable (slash /create-rule open) — skip auto-inject.
+ * Without active-file context, globs alone do not auto-inject when alwaysApply is false.
+ */
+export function shouldAutoInjectRule(meta: RuleFrontmatter): boolean {
+  if (meta.alwaysApply === false) return false
+  return true
+}
+
 async function readCapped(filePath: string): Promise<string | null> {
   try {
     const info = await stat(filePath)
@@ -61,6 +114,13 @@ async function readCapped(filePath: string): Promise<string | null> {
   } catch {
     return null
   }
+}
+
+function normalizeRuleContent(raw: string): string | null {
+  const { meta, body } = parseRuleFrontmatter(raw)
+  if (!shouldAutoInjectRule(meta)) return null
+  const content = body.trim()
+  return content || null
 }
 
 async function collectFromDir(
@@ -87,7 +147,9 @@ async function collectFromDir(
       continue
     }
     if (!extensions.some((ext) => entry.name.toLowerCase().endsWith(ext))) continue
-    const content = await readCapped(full)
+    const raw = await readCapped(full)
+    if (!raw) continue
+    const content = normalizeRuleContent(raw)
     if (content) {
       out.push({ path: relative(workspacePath, full).split(sep).join('/'), content })
     }
@@ -106,8 +168,10 @@ export async function readWorkspaceRules(workspacePath: string | null): Promise<
 
   const files: RuleFile[] = []
   for (const name of ROOT_FILES) {
-    const content = await readCapped(join(workspacePath, name))
-    if (content) files.push({ path: name, content })
+    const raw = await readCapped(join(workspacePath, name))
+    if (!raw) continue
+    // Root files have no Cursor frontmatter contract — inject as-is.
+    files.push({ path: name, content: raw })
   }
   for (const { dir, extensions } of RULE_DIRS) {
     await collectFromDir(workspacePath, join(workspacePath, dir), extensions, 0, files)

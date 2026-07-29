@@ -378,6 +378,8 @@ export type ToolTerminalOptions = {
   timeoutMs?: number
   /** Settings preference; resolved at spawn time. */
   shell?: TerminalShell
+  /** Absolute cwd already resolved inside the workspace (defaults to workspace root). */
+  cwd?: string
   /** Live stdout/stderr chunks for UI streaming (capped with the buffers). */
   onOutput?: (chunk: { text: string; stream: 'stdout' | 'stderr' }) => void
 }
@@ -393,6 +395,7 @@ export async function toolTerminal(
   const opts: ToolTerminalOptions =
     typeof timeoutMsOrOpts === 'number' ? { timeoutMs: timeoutMsOrOpts } : timeoutMsOrOpts
   const timeoutMs = opts.timeoutMs ?? 60_000
+  const cwd = opts.cwd ?? workspaceRoot
   const resolved = resolveTerminalShell(opts.shell ?? 'auto')
   const spec = terminalSpawnSpec(command, resolved)
 
@@ -437,7 +440,7 @@ export async function toolTerminal(
     }
 
     const child = spawn(spec.bin, spec.args, {
-      cwd: workspaceRoot,
+      cwd,
       env: sanitizedTerminalEnv(),
       windowsHide: true
     })

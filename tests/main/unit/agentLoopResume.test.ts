@@ -280,6 +280,39 @@ describe('runAgent session continuation', () => {
     expect(messages.at(-1)).toMatchObject({ role: 'assistant', content: 'listed' })
   })
 
+  it('dedupes the full persisted prefix of newMessages', async () => {
+    const runId = 'dedupe-prefix-resume'
+    const runDir = createRun(workspace, runId, 'goal')
+    appendMessage(runDir, { role: 'user', content: 'first replayed turn' })
+    appendMessage(runDir, { role: 'user', content: 'second replayed turn' })
+    await flushMessageAppends(runDir)
+
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'continued once' }
+    })
+    registerRunAbort(runId, workspace)
+
+    for await (const _ev of runAgent({
+      runId,
+      incremental: true,
+      newMessages: [
+        { role: 'user', content: 'first replayed turn' },
+        { role: 'user', content: 'second replayed turn' },
+        { role: 'user', content: 'new turn' }
+      ],
+      workspacePath: workspace,
+      resume: true
+    })) {
+      // drain
+    }
+
+    const messages = loadMessages(workspace, runId)
+    expect(messages.filter((m) => m.content === 'first replayed turn')).toHaveLength(1)
+    expect(messages.filter((m) => m.content === 'second replayed turn')).toHaveLength(1)
+    expect(messages.filter((m) => m.content === 'new turn')).toHaveLength(1)
+    expect(messages.at(-1)).toMatchObject({ role: 'assistant', content: 'continued once' })
+  })
+
   it('clamps a corrupt foldedMessages watermark so the latest turn stays visible', async () => {
     const runId = 'watermark-clamp'
     const runDir = createRun(workspace, runId, 'goal')

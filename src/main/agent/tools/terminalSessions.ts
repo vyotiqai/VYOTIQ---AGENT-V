@@ -86,6 +86,8 @@ function formatSession(session: TerminalSession): string {
 
 export type StartBackgroundTerminalOpts = {
   workspaceRoot: string
+  /** Absolute cwd inside workspace; defaults to workspaceRoot. */
+  cwd?: string
   command: string
   signal: AbortSignal
   shell?: TerminalShell
@@ -138,8 +140,9 @@ export async function startBackgroundTerminal(
     }
   }
 
+  const cwd = opts.cwd ?? opts.workspaceRoot
   const child = spawn(spec.bin, spec.args, {
-    cwd: opts.workspaceRoot,
+    cwd,
     env: sanitizedTerminalEnv(),
     windowsHide: true
   })

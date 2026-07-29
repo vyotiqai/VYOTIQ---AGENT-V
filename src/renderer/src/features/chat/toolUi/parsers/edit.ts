@@ -159,6 +159,12 @@ function diffLinesFromEditArgs(args: Record<string, unknown>): DiffLine[] {
   return out
 }
 
+/** Parse a unified diff string into preview lines (shared by edit + git_diff). */
+export function parseUnifiedDiff(diff: string): DiffLine[] {
+  if (!diff.trim()) return []
+  return diffLinesFromEditArgs({ diff })
+}
+
 export function parseDiffPreview(tool: UiToolRow): DiffLine[] {
   const args = parseArgsRecord(tool.argsPreview)
   const edits = args?.edits
