@@ -99,8 +99,8 @@ describe('runAgent effective workspace settings', () => {
     streamChat.mockReset()
     saveWorkspacesState({
       ...defaultWorkspacesState(),
-      openPaths: [],
-      activePath: null,
+      openPaths: [workspace],
+      activePath: workspace,
       recentPaths: [],
       settingsOverridesByPath: {
         [workspace]: {

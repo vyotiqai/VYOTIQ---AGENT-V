@@ -299,7 +299,7 @@ export function App() {
         setUndoBusy(false)
       }
     },
-    [activeWorkspace, activeRunId, chat.running, chat.writeCheckpoint]
+    [activeWorkspace, activeRunId, chat.running, chat.writeCheckpoint, setSettingsError]
   )
 
   const onUndoWrites = useCallback(async (): Promise<boolean> => {
@@ -430,7 +430,7 @@ export function App() {
         setSettingsError(message)
       }
     }),
-    [activeWorkspace, onCompactContext, onUndoWrites, setAgentMode]
+    [activeWorkspace, onCompactContext, onUndoWrites, setAgentMode, setSettingsError]
   )
 
   const operationalError = settingsError ?? workspaceError
@@ -468,11 +468,6 @@ export function App() {
     setSettingsError(null)
     clearWorkspaceError()
     chatActions?.clearError()
-  }
-
-  const onOpenRecent = (path: string): void => {
-    void addWorkspace(path)
-    setView('chat')
   }
 
   const onRenameRun = async (runId: string, goal: string): Promise<void> => {
@@ -654,10 +649,6 @@ export function App() {
       ) : (
         <ErrorBoundary title="Chat couldn't render" resetKey={chatSurfaceEpoch}>
           <ChatView
-            hasOpenWorkspaces={openWorkspaces.length > 0}
-            recentPaths={registry?.recentPaths ?? []}
-            needsWorkspaceForMigration={registry?.needsWorkspaceForMigration}
-            pendingMigrationCount={registry?.pendingMigrationCount}
             items={chat.items}
             itemsStore={{
               subscribeItems: chat.subscribeItems,
@@ -687,8 +678,6 @@ export function App() {
             activeRunId={chat.runId ?? activeContext?.activeRunId ?? null}
             transcriptLoading={chat.transcriptLoading}
             headingRef={chatHeadingRef}
-            onOpenRecent={onOpenRecent}
-            onAddWorkspace={onPickWorkspace}
             onProviderModel={onProviderModel}
             favoriteModels={settings.favoriteModels}
             recentModels={settings.recentModels}

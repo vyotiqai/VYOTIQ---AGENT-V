@@ -23,9 +23,6 @@ import {
   type SlashClientHandlers
 } from './slashCommandExecute'
 
-const HERO_HINT =
-  'Type / for commands — try /code-review, /compact, /create-rule'
-
 export function Composer({
   provider,
   model,
@@ -520,7 +517,6 @@ export function Composer({
 
         <ComposerStatus
           className={isDock ? 'pointer-events-auto' : undefined}
-          modelsWarning={modelsWarning}
           runNotice={runNotice}
           incomplete={incomplete}
           onContinue={onContinue}
@@ -539,12 +535,6 @@ export function Composer({
         ) : null}
 
         {isDock ? trailing : null}
-
-        {!isDock ? (
-          <p className="m-0 mt-4 text-center text-xs leading-relaxed tracking-[var(--vy-tracking)] text-muted">
-            {HERO_HINT}
-          </p>
-        ) : null}
       </div>
     </div>
   )

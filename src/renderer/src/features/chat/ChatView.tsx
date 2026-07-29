@@ -13,7 +13,6 @@ import {
   useChatLiveItems,
   useHasChatItems
 } from './components/ChatStreamLeaves'
-import { RecentsPicker } from './RecentsPicker'
 import type { UiItem } from '@shared/transcript'
 import type { AgentInteractionMode, ProviderId, ToolApprovalDecision } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
@@ -129,10 +128,6 @@ function TranscriptPane({
 }
 
 export function ChatView({
-  hasOpenWorkspaces,
-  recentPaths,
-  needsWorkspaceForMigration,
-  pendingMigrationCount,
   items,
   itemsStore,
   metaStore,
@@ -154,8 +149,6 @@ export function ChatView({
   activeRunId,
   transcriptLoading,
   headingRef,
-  onOpenRecent,
-  onAddWorkspace,
   onProviderModel,
   favoriteModels = [],
   recentModels = [],
@@ -196,10 +189,6 @@ export function ChatView({
   onDiscardWriteFile,
   onKeepAllWrites
 }: {
-  hasOpenWorkspaces: boolean
-  recentPaths: string[]
-  needsWorkspaceForMigration?: boolean
-  pendingMigrationCount?: number
   items: UiItem[]
   /** When set, transcript leaves subscribe so ChatView/Composer skip token patches. */
   itemsStore?: ChatItemsStore
@@ -223,8 +212,6 @@ export function ChatView({
   activeRunId: string | null
   transcriptLoading?: boolean
   headingRef?: Ref<HTMLHeadingElement>
-  onOpenRecent: (path: string) => void
-  onAddWorkspace: () => void
   onProviderModel: (provider: ProviderId, model: string) => void
   favoriteModels?: string[]
   recentModels?: string[]
@@ -410,28 +397,6 @@ export function ChatView({
     onCompactContext,
     composerPlaceholder: transcriptLoading ? 'Loading chat…' : undefined,
     slashHandlers
-  }
-
-  if (!hasOpenWorkspaces) {
-    return (
-      <div className="flex h-full min-h-0 flex-col">
-        <h1 ref={headingRef} tabIndex={-1} className="sr-only">
-          Vyotiq chat
-        </h1>
-        {bannerError ? (
-          <Alert className={cn('mx-5 mb-2 mt-2 sm:mx-8')} onDismiss={onDismissError}>
-            {bannerError}
-          </Alert>
-        ) : null}
-        <RecentsPicker
-          recentPaths={recentPaths}
-          needsWorkspaceForMigration={needsWorkspaceForMigration}
-          pendingMigrationCount={pendingMigrationCount}
-          onOpenRecent={onOpenRecent}
-          onAddWorkspace={onAddWorkspace}
-        />
-      </div>
-    )
   }
 
   return (

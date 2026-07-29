@@ -60,8 +60,6 @@ afterEach(() => {
 })
 
 const baseProps = {
-  hasOpenWorkspaces: true,
-  recentPaths: [],
   items: [],
   running: false,
   error: null,
@@ -81,8 +79,6 @@ const baseProps = {
     showThinking: true
   },
   onChatSettingsChange: vi.fn(),
-  onOpenRecent: vi.fn(),
-  onAddWorkspace: vi.fn(),
   onProviderModel: vi.fn(),
   onSend: vi.fn(),
   onStop: vi.fn()
@@ -110,14 +106,11 @@ describe('ChatView composer placement', () => {
     expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
     expect(screen.getByText('No terminal output yet')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: /Show files panel/i }))
-    expect(document.querySelector('[data-files-panel]')).toBeTruthy()
-    expect(document.querySelector('[data-terminal-panel]')).toBeNull()
-    expect(screen.getByText('No files changed')).toBeTruthy()
-
     fireEvent.click(screen.getByRole('button', { name: /Show changes panel/i }))
     expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-terminal-panel]')).toBeNull()
     expect(screen.getByText('No changes yet')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /files panel/i })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: /^Hide changes panel$/i }))
     expect(document.querySelector('[data-changes-panel]')).toBeNull()
@@ -179,8 +172,7 @@ describe('ChatView composer placement', () => {
     expect(composers).toHaveLength(1)
 
     expect(document.querySelector('[data-composer-hero]')).toBeTruthy()
-    expect(screen.getByText(/Type \/ for commands/i)).toBeTruthy()
-    expect(screen.getByText(/\/create-rule/)).toBeTruthy()
+    expect(screen.queryByText(/Type \/ for commands/i)).toBeNull()
 
     const composerRoot = composers[0].closest('.shrink-0')
     expect(composerRoot?.className).not.toMatch(/px-4/)
