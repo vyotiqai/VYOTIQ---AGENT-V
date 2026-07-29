@@ -27,7 +27,8 @@ export const ASK_SAFE_BUILTIN = new Set([
   'subagent',
   'git_status',
   'git_diff',
-  'diagnostics'
+  'diagnostics',
+  'read_lints'
 ])
 
 /** Plan mode also allows todos + plan-artifact edits. */

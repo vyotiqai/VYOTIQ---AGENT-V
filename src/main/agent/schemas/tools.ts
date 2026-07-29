@@ -442,6 +442,16 @@ const diagnosticsArgs = z.object({
     .optional()
 })
 
+const readLintsArgs = z.object({
+  paths: z
+    .array(z.string().min(1))
+    .min(1)
+    .max(40)
+    .describe(
+      'Workspace-relative files or directories to check. Runs eslint on those paths when available and filters typecheck diagnostics to them.'
+    )
+})
+
 const TOOL_REGISTRY = {
   read: {
     description:
@@ -602,6 +612,11 @@ const TOOL_REGISTRY = {
     description:
       'Run project typecheck or lint and return structured diagnostics when parseable.',
     schema: diagnosticsArgs
+  },
+  read_lints: {
+    description:
+      'Read file-scoped typecheck/lint diagnostics for specific workspace paths. Prefer after edits; use diagnostics for a full-project check.',
+    schema: readLintsArgs
   }
 } as const
 

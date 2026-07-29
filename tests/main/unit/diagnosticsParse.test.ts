@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { parseDiagnosticLines } from '../../../src/main/agent/tools/diagnostics'
+import {
+  filterDiagnosticsForPaths,
+  parseDiagnosticLines
+} from '../../../src/main/agent/tools/diagnostics'
 
 describe('parseDiagnosticLines', () => {
   it('parses tsc-style diagnostics', () => {
@@ -27,5 +30,24 @@ describe('parseDiagnosticLines', () => {
       severity: 'error',
       message: 'Missing semicolon'
     })
+  })
+})
+
+describe('filterDiagnosticsForPaths', () => {
+  it('keeps diagnostics for matching files and directory prefixes', () => {
+    const items = parseDiagnosticLines(
+      [
+        "src/app.ts(10,5): error TS2322: Type 'string' is not assignable to type 'number'.",
+        'src/b.ts(1,1): warning TS6133: unused.',
+        'lib/c.ts:2:1: error boom'
+      ].join('\n')
+    )
+    expect(filterDiagnosticsForPaths(items, ['src/app.ts']).map((d) => d.file)).toEqual([
+      'src/app.ts'
+    ])
+    expect(filterDiagnosticsForPaths(items, ['src']).map((d) => d.file)).toEqual([
+      'src/app.ts',
+      'src/b.ts'
+    ])
   })
 })

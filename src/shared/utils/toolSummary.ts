@@ -48,7 +48,8 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   memory_write: { running: 'Writing memory', done: 'Wrote memory' },
   git_status: { running: 'Checking git', done: 'Git status' },
   git_diff: { running: 'Diffing', done: 'Git diff' },
-  diagnostics: { running: 'Checking', done: 'Diagnostics' }
+  diagnostics: { running: 'Checking', done: 'Diagnostics' },
+  read_lints: { running: 'Reading lints', done: 'Lints' }
 }
 
 export function parseMcpToolDisplay(
@@ -115,6 +116,14 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
         )
         .filter((path): path is string => typeof path === 'string')
       if (paths.length) return truncate(paths.map((p) => formatPathLabel(p)).join(', '))
+    }
+  }
+  if (name === 'read_lints') {
+    const paths = args.paths
+    if (Array.isArray(paths)) {
+      const list = paths.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+      if (list.length === 1) return formatPathTarget(list[0]!)
+      if (list.length > 1) return `${list.length} paths`
     }
   }
   if (name === 'todo_write') {

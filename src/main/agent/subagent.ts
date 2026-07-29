@@ -44,6 +44,7 @@ export const SUBAGENT_TOOLS = [
   'git_status',
   'git_diff',
   'diagnostics',
+  'read_lints',
   'memory_read'
 ] as const
 
@@ -69,7 +70,7 @@ export const MAX_SUBAGENT_DEPTH = 1
 
 const SUBAGENT_SYSTEM = `You are a research sub-agent working inside a larger coding agent.
 
-You have read-only tools: read, search, glob, grep, list_dir. You cannot edit files or run commands.
+You have read-only tools: read, search, glob, grep, list_dir, web_fetch, git_status, git_diff, diagnostics, read_lints, memory_read. You cannot edit files or run shell commands.
 
 Investigate the task you are given and finish with a single self-contained report:
 - Answer the question directly in the first sentence.
