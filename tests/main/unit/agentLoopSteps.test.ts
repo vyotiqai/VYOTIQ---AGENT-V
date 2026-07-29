@@ -32,7 +32,6 @@ vi.mock('@main/settings/settings', () => ({
     provider: 'ollama',
     model: 'qwen2.5',
     ollamaBaseUrl: 'http://127.0.0.1:11434',
-    maxSteps: 2,
     theme: 'system',
     telemetryEnabled: false
   }),
@@ -95,7 +94,7 @@ vi.mock('@main/agent/tools', () => ({
 import { runAgent } from '@main/agent/loop'
 import { resetActiveRunsForTests } from '@main/agent/runRegistry'
 
-describe('runAgent max steps', () => {
+describe('runAgent steps', () => {
   let workspace: string
 
   beforeEach(() => {
@@ -111,7 +110,7 @@ describe('runAgent max steps', () => {
     if (existsSync(workspace)) rmSync(workspace, { recursive: true, force: true })
   })
 
-  it('exits with done when the last step completes tools successfully', async () => {
+  it('exits with done when tool steps complete successfully', async () => {
     let call = 0
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
       call += 1
@@ -120,18 +119,16 @@ describe('runAgent max steps', () => {
           type: 'tool_call',
           toolCall: { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }
         }
-      } else {
-        yield {
-          type: 'tool_call',
-          toolCall: { id: 'c2', name: 'read', arguments: '{"path":"b.ts"}' }
-        }
+        yield { type: 'done', stopReason: 'tool_calls' }
+        return
       }
-      yield { type: 'done' }
+      yield { type: 'text', text: 'Both files read.' }
+      yield { type: 'done', stopReason: 'end_turn' }
     })
     executeTool.mockResolvedValue({ ok: true, summary: 'file', content: 'body' })
 
     const runId = 'max-steps-done'
-    const events: Array<{ type: string; status?: string; code?: string }> = []
+    const events: Array<{ type: string; status?: string; code?: string; reason?: string }> = []
 
     for await (const ev of runAgent({
       runId,
@@ -141,14 +138,12 @@ describe('runAgent max steps', () => {
       events.push(ev)
     }
 
-    expect(events.some((e) => e.type === 'error' && e.code === 'AGENT_MAX_STEPS')).toBe(false)
     expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
 
     const eventsPath = join(resolveRunDir(workspace, runId), 'events.jsonl')
     const persisted = readFileSync(eventsPath, 'utf8')
     expect(persisted).toContain('"status":"done"')
     expect(persisted).toContain('"runId":"max-steps-done"')
-    expect(persisted).not.toContain('AGENT_MAX_STEPS')
   })
 
   it('emits step_usage when the provider reports token usage', async () => {
@@ -176,73 +171,5 @@ describe('runAgent max steps', () => {
     const eventsPath = join(resolveRunDir(workspace, runId), 'events.jsonl')
     expect(readFileSync(eventsPath, 'utf8')).toContain('"type":"step_usage"')
     expect(readFileSync(eventsPath, 'utf8')).toContain('"cachedInputTokens":900')
-  })
-
-  it('emits AGENT_MAX_STEPS when the final step has no successful tools', async () => {
-    let call = 0
-    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
-      call += 1
-      if (call === 1) {
-        yield {
-          type: 'tool_call',
-          toolCall: { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }
-        }
-      } else {
-        yield {
-          type: 'tool_call',
-          toolCall: { id: 'c2', name: 'read', arguments: 'not-json' }
-        }
-      }
-      yield { type: 'done' }
-    })
-    executeTool.mockResolvedValue({ ok: true, summary: 'file', content: 'body' })
-
-    const runId = 'max-steps-malformed'
-    const events: Array<{ type: string; status?: string; code?: string }> = []
-
-    for await (const ev of runAgent({
-      runId,
-      messages: [{ role: 'user', content: 'read files' }],
-      workspacePath: workspace
-    })) {
-      events.push(ev)
-    }
-
-    expect(events.some((e) => e.type === 'error' && e.code === 'AGENT_MAX_STEPS')).toBe(true)
-    expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
-  })
-
-  it('emits AGENT_MAX_STEPS when the final step tools fail', async () => {
-    let call = 0
-    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
-      call += 1
-      if (call === 1) {
-        yield {
-          type: 'tool_call',
-          toolCall: { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }
-        }
-      } else {
-        yield {
-          type: 'tool_call',
-          toolCall: { id: 'c2', name: 'read', arguments: '{"path":"bad.ts"}' }
-        }
-      }
-      yield { type: 'done' }
-    })
-    executeTool.mockResolvedValue({ ok: false, summary: 'missing', content: 'not found' })
-
-    const runId = 'max-steps-tool-fail'
-    const events: Array<{ type: string; status?: string; code?: string }> = []
-
-    for await (const ev of runAgent({
-      runId,
-      messages: [{ role: 'user', content: 'read files' }],
-      workspacePath: workspace
-    })) {
-      events.push(ev)
-    }
-
-    expect(events.some((e) => e.type === 'error' && e.code === 'AGENT_MAX_STEPS')).toBe(true)
-    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(false)
   })
 })

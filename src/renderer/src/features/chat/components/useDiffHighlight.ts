@@ -5,7 +5,7 @@ import {
   type CodeToken
 } from '@renderer/lib/markdown/markdownHighlight'
 import { useDocumentTheme } from '@renderer/lib/ui'
-import type { DiffLine } from '../utils/toolCardData'
+import type { DiffLine } from '../toolUi'
 
 /** Token lists keyed by index in the diff. A missing entry renders as plain text. */
 export type DiffTokens = ReadonlyMap<number, CodeToken[]>

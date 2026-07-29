@@ -1,0 +1,125 @@
+import { memo } from 'react'
+import { Icon } from '@renderer/lib/icons'
+import { cn } from '@renderer/lib/ui'
+import {
+  TOOL_CARD_BODY,
+  TOOL_CARD_HEADER,
+  TOOL_CARD_SURFACE,
+  TOOL_BODY_CLAMP_PX
+} from '@renderer/lib/utils/layout'
+import { DISCLOSURE_ROW } from '@renderer/lib/utils/layout'
+import { TextShimmer } from '../components/TextShimmer'
+
+export function ProminentChrome({
+  header,
+  body,
+  expanded,
+  hasBody,
+  running,
+  clampWhenCollapsed = true,
+  onToggle
+}: {
+  header: React.ReactNode
+  body: React.ReactNode
+  expanded: boolean
+  hasBody: boolean
+  running: boolean
+  /** When false, the collapsed preview is not height-clamped (e.g. task checklists). */
+  clampWhenCollapsed?: boolean
+  onToggle: () => void
+}) {
+  return (
+    <div className={cn(TOOL_CARD_SURFACE, 'w-full')}>
+      <button
+        type="button"
+        className={cn(
+          TOOL_CARD_HEADER,
+          'flex w-full items-center gap-2 text-left vy-transition',
+          hasBody && 'hover:bg-surface/60'
+        )}
+        onClick={onToggle}
+        aria-expanded={hasBody ? expanded : undefined}
+        disabled={!hasBody}
+      >
+        {header}
+        {hasBody ? (
+          <Icon
+            name="chevronRight"
+            size={14}
+            className={cn('ml-auto shrink-0 text-tertiary vy-transition', expanded && 'rotate-90')}
+          />
+        ) : null}
+      </button>
+      {hasBody && body ? (
+        <div
+          className={cn(TOOL_CARD_BODY, !expanded && clampWhenCollapsed && 'mask-fade-bottom')}
+          style={
+            !expanded && clampWhenCollapsed ? { maxHeight: TOOL_BODY_CLAMP_PX } : undefined
+          }
+        >
+          {body}
+        </div>
+      ) : null}
+      {!hasBody && running ? (
+        <div className="border-t border-border bg-surface px-3 py-2 text-[11px] text-tertiary">
+          <TextShimmer>Working…</TextShimmer>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+export const CompactRow = memo(function CompactRow({
+  title,
+  subtitle,
+  status,
+  expanded,
+  hasBody = true,
+  interrupted = false,
+  onToggle
+}: {
+  title: string
+  subtitle: string
+  status: 'running' | 'done' | 'fail'
+  expanded: boolean
+  hasBody?: boolean
+  interrupted?: boolean
+  onToggle: () => void
+}) {
+  return (
+    <button
+      type="button"
+      className={cn(DISCLOSURE_ROW, 'w-full text-left', !hasBody && 'cursor-default')}
+      aria-expanded={hasBody ? expanded : undefined}
+      disabled={!hasBody}
+      onClick={onToggle}
+    >
+      <span
+        className={cn(
+          'flex shrink-0 items-center gap-1.5 font-medium',
+          interrupted || status === 'fail' ? 'text-danger' : 'text-fg'
+        )}
+      >
+        {status === 'running' ? <TextShimmer>{title}</TextShimmer> : title}
+      </span>
+      {subtitle ? (
+        <span className="min-w-0 truncate text-tertiary" title={subtitle}>
+          {subtitle}
+        </span>
+      ) : null}
+      <span className="ml-auto flex shrink-0 items-center gap-1.5">
+        {interrupted ? <span className="text-danger">interrupted</span> : null}
+        {!interrupted && status === 'fail' ? (
+          <Icon name="warning" size={14} className="shrink-0 text-danger" />
+        ) : null}
+        {hasBody ? (
+          <Icon
+            name="chevronRight"
+            size={14}
+            className={cn('text-tertiary vy-transition', expanded && 'rotate-90')}
+          />
+        ) : null}
+      </span>
+    </button>
+  )
+})

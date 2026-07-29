@@ -63,7 +63,7 @@ describe('reasoning', () => {
         toolCalls: [{ id: 'c1', name: 'read', arguments: '{}' }]
       },
       { role: 'tool' as const, toolCallId: 'c1', toolName: 'read', content: 'ok' },
-      { role: 'tool' as const, toolCallId: 'c2', toolName: 'write', content: 'done' }
+      { role: 'tool' as const, toolCallId: 'c2', toolName: 'edit', content: 'done' }
     ]
     expect(trailingToolMessages(messages)).toHaveLength(2)
     expect(trailingToolMessages(messages).every((m) => m.role === 'tool')).toBe(true)

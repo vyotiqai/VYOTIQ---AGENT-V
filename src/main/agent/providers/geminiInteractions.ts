@@ -11,6 +11,7 @@ import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
+import { formatProviderHttpError } from './httpErrors'
 
 export function serializeToolArgs(value: unknown): string {
   if (value == null) return ''
@@ -109,7 +110,10 @@ export async function* streamGeminiInteractions(
     }
   }
 
-  if (req.tools.length) body.tools = toInteractionsTools(req.tools)
+  if (req.tools.length) {
+    body.tools = toInteractionsTools(req.tools)
+    body.tool_choice = req.toolChoice ?? 'auto'
+  }
   if (priorState?.interactionId) body.previous_interaction_id = priorState.interactionId
 
   const url = 'https://generativelanguage.googleapis.com/v1beta/interactions'
@@ -134,7 +138,7 @@ export async function* streamGeminiInteractions(
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     logProviderFailure('gemini', 'http', { status: res.status })
-    yield { type: 'error', error: `HTTP ${res.status}: ${text.slice(0, 400)}` }
+    yield { type: 'error', error: formatProviderHttpError(res.status, text, 'gemini') }
     return
   }
 

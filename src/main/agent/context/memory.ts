@@ -93,6 +93,8 @@ export async function readMemoryStateAsync(
   return readMemoryFileExcerptAsync(workspacePath, 'state.md', cap)
 }
 
+export const MEMORY_LIST_INDEX_EXCERPT = 1500
+
 export function listMemoryNotes(workspacePath: string): {
   indexExcerpt: string
   notes: string[]
@@ -110,7 +112,7 @@ export function listMemoryNotes(workspacePath: string): {
     notes = []
   }
   return {
-    indexExcerpt: readMemoryIndex(workspacePath, 1500),
+    indexExcerpt: readMemoryIndex(workspacePath, MEMORY_LIST_INDEX_EXCERPT),
     notes,
     hasState: existsSync(join(root, 'state.md'))
   }

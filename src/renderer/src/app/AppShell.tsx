@@ -6,12 +6,13 @@ import {
   type ReactElement,
   type ReactNode
 } from 'react'
-import { Sidebar } from './Sidebar'
+import { Sidebar } from './sidebar'
 import { BreakpointProvider, useIsDesktop } from '@renderer/lib/context/BreakpointProvider'
 import { useOverlayPanel } from '@renderer/lib/hooks/useOverlayPanel'
-import { useEscapeToClose } from '@renderer/lib/hooks/useEscapeToClose'
 import { usePersistedBoolean } from '@renderer/lib/hooks/usePersistedBoolean'
+import { getWorkspaceHotUi } from '@renderer/lib/hooks/workspaceHotUiStore'
 import type { RunSummary } from '@shared/ipc'
+import type { WorkspaceSidebarRuns } from './sidebar/types'
 import { SIDEBAR_COLLAPSED_KEY, TITLE_BAR_HEIGHT_PX } from '@renderer/lib/utils/layout'
 import { TitleBar } from './TitleBar'
 
@@ -19,6 +20,7 @@ function AppShellInner({
   view,
   workspacePath,
   openWorkspaces,
+  runsByWorkspacePath,
   activeRuns,
   runs,
   runsCapped,
@@ -26,15 +28,17 @@ function AppShellInner({
   onDismissRunsError,
   activeRunId,
   sessionQuery,
-  harnessActive,
   onSessionQuery,
   onOpenSettings,
+  onOpenMarketplace,
   onOpenChat,
-  onOpenHarness,
   onNewChat,
   onSelectRun,
+  onSelectRunInWorkspace,
   onRenameRun,
+  onRenameRunInWorkspace,
   onDeleteRun,
+  onDeleteRunInWorkspace,
   onSwitchWorkspace,
   onCloseWorkspace,
   onAddWorkspace,
@@ -42,25 +46,28 @@ function AppShellInner({
   children,
   loading
 }: {
-  view: 'chat' | 'settings'
+  view: 'chat' | 'settings' | 'marketplace'
   workspacePath: string | null
   openWorkspaces?: string[]
+  runsByWorkspacePath?: Record<string, WorkspaceSidebarRuns>
   activeRuns?: { runId: string; workspacePath: string }[]
   runs: RunSummary[]
   runsCapped?: boolean
   runsError?: string | null
-  onDismissRunsError?: () => void
+  onDismissRunsError?: (path?: string) => void
   activeRunId: string | null
   sessionQuery: string
-  harnessActive?: boolean
   onSessionQuery: (q: string) => void
   onOpenSettings: () => void
+  onOpenMarketplace: () => void
   onOpenChat: () => void
-  onOpenHarness: () => void
   onNewChat: () => void
   onSelectRun: (runId: string) => void
+  onSelectRunInWorkspace?: (path: string, runId: string) => void
   onRenameRun: (runId: string, goal: string) => void
+  onRenameRunInWorkspace?: (path: string, runId: string, goal: string) => void
   onDeleteRun: (runId: string) => void
+  onDeleteRunInWorkspace?: (path: string, runId: string) => void
   onSwitchWorkspace?: (path: string) => void
   onCloseWorkspace?: (path: string) => void
   onAddWorkspace?: () => void
@@ -136,8 +143,8 @@ function AppShellInner({
   }, [isDesktop])
 
   useEffect(() => {
-    if (!hasWorkspace && sessionQuery) onSessionQuery('')
-  }, [hasWorkspace, sessionQuery, onSessionQuery])
+    if (!hasWorkspace) onSessionQuery('')
+  }, [hasWorkspace, onSessionQuery])
 
   // Focus search after expand/drawer mount — single rAF is too early for the new tree.
   useEffect(() => {
@@ -168,11 +175,19 @@ function AppShellInner({
     }
   }, [sidebarCollapsed, drawerOpen, isDesktop, hasWorkspace, focusSearchInput])
 
-  useEscapeToClose(
-    () => onSessionQuery(''),
-    Boolean(sessionQuery.trim()) && !drawerOpen,
-    { deferToMenus: true, capture: true }
-  )
+  useEffect(() => {
+    if (drawerOpen) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      if (document.querySelector('[aria-expanded="true"][aria-haspopup]')) return
+      if (!getWorkspaceHotUi(workspacePath).sessionQuery.trim()) return
+      e.preventDefault()
+      e.stopPropagation()
+      onSessionQuery('')
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [drawerOpen, workspacePath, onSessionQuery])
 
   useOverlayPanel({
     open: drawerOpen,
@@ -226,10 +241,10 @@ function AppShellInner({
     activeRunId,
     sessionQuery,
     searchRef,
-    harnessActive,
     hasWorkspace,
     openPaths: openWorkspaces,
     activePath: workspacePath,
+    runsByWorkspacePath,
     activeRuns,
     onSwitchWorkspace,
     onCloseWorkspace,
@@ -237,12 +252,15 @@ function AppShellInner({
     workspaceHasBackgroundRun,
     onSessionQuery,
     onOpenSettings,
+    onOpenMarketplace,
     onOpenChat,
-    onOpenHarness,
     onNewChat,
     onSelectRun,
+    onSelectRunInWorkspace,
     onRenameRun,
+    onRenameRunInWorkspace,
     onDeleteRun,
+    onDeleteRunInWorkspace,
     onCloseDrawer: closeDrawer,
     onToggleSidebar
   }
@@ -251,7 +269,7 @@ function AppShellInner({
     <div className="flex h-full overflow-hidden bg-bg text-fg">
       {/* Mount only on desktop so searchRef is never bound to a hidden sibling. */}
       {isDesktop ? (
-        <div className="flex h-full min-h-0 shrink-0 self-stretch">
+        <div className="flex h-full min-h-0 shrink-0 flex-col overflow-hidden self-stretch">
           <Sidebar {...sidebarProps} collapsed={sidebarCollapsed} />
         </div>
       ) : null}
@@ -263,11 +281,12 @@ function AppShellInner({
           <div
             ref={drawerRef}
             id="app-nav-drawer"
-            className="absolute inset-x-0 bottom-0 z-drawer flex"
+            className="absolute inset-x-0 bottom-0 z-drawer flex outline-none"
             style={{ top: TITLE_BAR_HEIGHT_PX }}
             role="dialog"
             aria-modal="true"
             aria-label="Navigation"
+            tabIndex={-1}
           >
             <div
               className="absolute inset-0 bg-overlay animate-fade-in"
@@ -275,7 +294,7 @@ function AppShellInner({
               aria-hidden
               onClick={closeDrawer}
             />
-            <div className="relative z-sticky h-full animate-slide-in-left">
+            <div className="relative z-sticky h-full min-h-0 animate-slide-in-left">
               <Sidebar {...sidebarProps} variant="drawer" />
             </div>
           </div>

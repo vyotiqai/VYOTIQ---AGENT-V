@@ -24,6 +24,21 @@ import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
+import {
+  formatProviderHttpError,
+  parseOpenRouterAffordableOutputTokens
+} from './httpErrors'
+
+export function openAiCompatMessageReasoningDelta(
+  messageReasoning: string,
+  accumulated: string
+): string | null {
+  if (!messageReasoning || messageReasoning.length <= accumulated.length) return null
+  if (messageReasoning.startsWith(accumulated) && accumulated.length > 0) {
+    return messageReasoning.slice(accumulated.length) || null
+  }
+  return accumulated ? messageReasoning : messageReasoning
+}
 
 export type OpenAiCompatOptions = {
   defaultBaseUrl: string
@@ -197,7 +212,8 @@ export function parseOpenAiCompatUsage(raw: unknown): TokenUsage | undefined {
 async function fetchJson(
   url: string,
   headers: Record<string, string>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  providerId?: ProviderId
 ): Promise<unknown> {
   let res: Response
   try {
@@ -212,7 +228,7 @@ async function fetchJson(
     logProviderFailure('openai-compat', 'http', {
       status: res.status
     })
-    throw new Error(`HTTP ${res.status}: ${text.slice(0, 400)}`)
+    throw new Error(formatProviderHttpError(res.status, text, providerId))
   }
   return res.json()
 }
@@ -315,7 +331,7 @@ async function listOpenAiCompatModels(
     const openAiBase = `${host}/v1`
     let openAiErr: unknown
     try {
-      const data = await fetchJson(`${openAiBase}/models`, headers, signal)
+      const data = await fetchJson(`${openAiBase}/models`, headers, signal, providerId ?? 'ollama')
       let models = normalizeOpenAiStyleModels(data, {
         requireToolsParam: opts.requireToolsParam,
         providerId: providerId ?? 'ollama'
@@ -355,7 +371,7 @@ async function listOpenAiCompatModels(
       ? `${base}${listPath}?supported_parameters=tools`
       : `${base}${listPath}`
 
-  const data = await fetchJson(url, headers, signal)
+  const data = await fetchJson(url, headers, signal, providerId)
   return normalizeOpenAiStyleModels(data, {
     requireToolsParam: opts.requireToolsParam,
     providerId
@@ -469,7 +485,6 @@ export function createOpenAiCompatibleProvider(
       const raw = (req.baseUrl || opts.defaultBaseUrl).replace(/\/$/, '')
       const base = opts.ollamaVision ? `${normalizeOllamaHost(raw)}/v1` : raw
       const url = `${base}/chat/completions`
-      const body = buildOpenAiCompatBody(req, opts, id)
 
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
@@ -479,34 +494,62 @@ export function createOpenAiCompatibleProvider(
         headers.Authorization = `Bearer ${req.apiKey}`
       }
 
-      let res: Response
-      try {
-        res = await fetchWithRetry(url, {
-          method: 'POST',
-          headers,
-          signal: req.signal,
-          body: JSON.stringify(body)
-        })
-      } catch (err) {
-        if (req.signal.aborted) throw err
-        logProviderFailure(id, 'network', {})
-        yield { type: 'error', error: formatError(err) }
+      let maxOutputTokens = req.maxOutputTokens
+      let res: Response | undefined
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const body = buildOpenAiCompatBody({ ...req, maxOutputTokens }, opts, id)
+        try {
+          res = await fetchWithRetry(url, {
+            method: 'POST',
+            headers,
+            signal: req.signal,
+            body: JSON.stringify(body)
+          })
+        } catch (err) {
+          if (req.signal.aborted) throw err
+          logProviderFailure(id, 'network', {})
+          yield { type: 'error', error: formatError(err) }
+          return
+        }
+
+        if (res.ok) break
+
+        const text = await res.text().catch(() => '')
+        const affordable =
+          id === 'openrouter' && res.status === 402
+            ? parseOpenRouterAffordableOutputTokens(text)
+            : undefined
+        if (
+          attempt === 0 &&
+          affordable &&
+          (maxOutputTokens === undefined || affordable < maxOutputTokens)
+        ) {
+          maxOutputTokens = affordable
+          continue
+        }
+
+        logProviderFailure(id, 'http', { status: res.status })
+        yield { type: 'error', error: formatProviderHttpError(res.status, text, id) }
         return
       }
 
-      if (!res.ok) {
-        const text = await res.text().catch(() => '')
-        logProviderFailure(id, 'http', { status: res.status })
-        yield { type: 'error', error: `HTTP ${res.status}: ${text.slice(0, 400)}` }
-        return
-      }
+      if (!res?.ok) return
 
       const pending = new Map<number, ToolCall>()
       let lastUsage: TokenUsage | undefined
       let reasoningContent = ''
       let reasoningDetails: unknown
       let stopReason: StopReason | undefined
+      let thinkingDoneEmitted = false
       const drops = { dropped: 0 }
+
+      const emitThinkingDoneIfNeeded = function* (): Generator<StreamChunk, void, unknown> {
+        if (reasoningContent && !thinkingDoneEmitted) {
+          thinkingDoneEmitted = true
+          yield { type: 'thinking_done', text: reasoningContent }
+        }
+      }
 
       for await (const chunk of iterateSseJson(res, req.signal, drops)) {
         const usage = parseOpenAiCompatUsage(chunk.usage)
@@ -520,10 +563,8 @@ export function createOpenAiCompatibleProvider(
         const wholeCalls =
           (delta?.tool_calls as Array<Record<string, unknown>> | undefined) ??
           (message?.tool_calls as Array<Record<string, unknown>> | undefined)
-
-        if (typeof delta?.content === 'string' && delta.content) {
-          yield { type: 'text', text: delta.content }
-        }
+        const textContent =
+          typeof delta?.content === 'string' && delta.content ? delta.content : null
 
         const reasoningDelta =
           (typeof delta?.reasoning_content === 'string' ? delta.reasoning_content : undefined) ??
@@ -540,13 +581,20 @@ export function createOpenAiCompatibleProvider(
           (typeof message?.reasoning_content === 'string' ? message.reasoning_content : undefined) ??
           (typeof message?.reasoning === 'string' ? message.reasoning : undefined)
         if (messageReasoning) {
+          const delta = openAiCompatMessageReasoningDelta(messageReasoning, reasoningContent)
+          if (delta) {
+            yield { type: 'thinking_delta', text: delta }
+          }
           reasoningContent = messageReasoning
         }
         if (message?.reasoning_details !== undefined) {
           reasoningDetails = message.reasoning_details
         }
 
+        // Prefer tool deltas before text in the same SSE frame so the UI can
+        // paint tool chrome without a text-first flash.
         if (wholeCalls) {
+          yield* emitThinkingDoneIfNeeded()
           for (const tc of wholeCalls) {
             const index = typeof tc.index === 'number' ? tc.index : pending.size
             const fn = tc.function as { name?: string; arguments?: string } | undefined
@@ -589,6 +637,11 @@ export function createOpenAiCompatibleProvider(
           }
         }
 
+        if (textContent) {
+          yield* emitThinkingDoneIfNeeded()
+          yield { type: 'text', text: textContent }
+        }
+
         const finish = choices?.[0]?.finish_reason
         if (finish) stopReason = normalizeStopReason(finish)
         if (finish === 'tool_calls' && pending.size > 0) {
@@ -602,7 +655,7 @@ export function createOpenAiCompatibleProvider(
       for (const call of pending.values()) {
         yield { type: 'tool_call', toolCall: call }
       }
-      if (reasoningContent) {
+      if (reasoningContent && !thinkingDoneEmitted) {
         yield { type: 'thinking_done', text: reasoningContent }
       }
       yield {
@@ -630,8 +683,8 @@ export const openaiProvider: LlmProvider = {
   }),
   async *streamChat(req: ProviderChatRequest): AsyncGenerator<StreamChunk> {
     const useResponses =
-      req.modelInfo?.thinkingApi === 'responses' ||
-      (req.thinking?.enabled && /^(o[34]|gpt-5)/i.test(req.model))
+      req.thinking?.enabled === true &&
+      (req.modelInfo?.thinkingApi === 'responses' || /^(o[34]|gpt-5)/i.test(req.model))
     if (useResponses) {
       yield* streamOpenAiResponses(req)
       return

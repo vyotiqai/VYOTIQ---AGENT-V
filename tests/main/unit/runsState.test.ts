@@ -18,6 +18,7 @@ vi.mock('electron', () => ({
 
 import { flushEventAppends } from '@main/agent/eventAppendQueue'
 import { listRuns, interruptOrphanRuns, loadEvents, loadMessages, createRun, resumeRun, syncMessages } from '@main/agent/state'
+import { readTodos, toolTodoWrite } from '@main/agent/tools/todo'
 import { resolveRunDir } from '@main/storage/paths'
 import { registerRunAbort, clearRunAbort } from '@main/agent/runRegistry'
 
@@ -161,6 +162,82 @@ describe('listRuns / interruptOrphanRuns', () => {
       status: 'cancelled',
       runId: 'orphan-ws'
     })
+  })
+
+  it('writes tool_result stubs for unfinished tool calls on interrupt', async () => {
+    const runId = 'orphan-tools'
+    const dir = resolveRunDir(workspace, runId)
+    writeStatus(dir, {
+      status: 'running',
+      step: 2,
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      goal: 'left mid-tool',
+      workspacePath: workspace
+    })
+    syncMessages(dir, [
+      { role: 'user', content: 'audit' },
+      {
+        role: 'assistant',
+        content: 'launching',
+        toolCalls: [{ id: 'tc1', name: 'subagent', arguments: '{"prompt":"go"}' }]
+      }
+    ])
+
+    const count = interruptOrphanRuns([workspace])
+    expect(count).toBe(1)
+    await flushEventAppends(dir)
+
+    const messages = loadMessages(workspace, runId)
+    expect(messages).toContainEqual({
+      role: 'tool',
+      toolCallId: 'tc1',
+      toolName: 'subagent',
+      content: 'Cancelled',
+      ok: false
+    })
+
+    const events = loadEvents(dir, runId)
+    expect(events.some((row) => row.event.type === 'tool_result')).toBe(true)
+  })
+
+  it('cancels in-progress todo tasks on interrupt', async () => {
+    const runId = 'orphan-todo'
+    const dir = resolveRunDir(workspace, runId)
+    writeStatus(dir, {
+      status: 'running',
+      step: 2,
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      goal: 'left mid-todo',
+      workspacePath: workspace
+    })
+    syncMessages(dir, [
+      { role: 'user', content: 'audit' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'todo1', name: 'todo_write', arguments: '{}' }]
+      },
+      {
+        role: 'tool',
+        toolCallId: 'todo1',
+        toolName: 'todo_write',
+        content: '0/5 complete\n[~] Audit core library files\n[ ] Audit API routes'
+      }
+    ])
+    toolTodoWrite(dir, [
+      { id: '1', content: 'Audit core library files', status: 'in_progress' },
+      { id: '2', content: 'Audit API routes', status: 'pending' }
+    ])
+
+    const count = interruptOrphanRuns([workspace])
+    expect(count).toBe(1)
+    await flushEventAppends(dir)
+
+    const messages = loadMessages(workspace, runId)
+    const todoMessage = messages.find((message) => message.role === 'tool' && message.toolName === 'todo_write')
+    expect(todoMessage?.content).toContain('[-] Audit core library files')
+    expect(todoMessage?.content).not.toContain('[~]')
+    expect(readTodos(dir).find((todo) => todo.id === '1')?.status).toBe('cancelled')
   })
 
   it('does not interrupt runs that are still active in memory', () => {

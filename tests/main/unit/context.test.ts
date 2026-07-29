@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { allocateBudget, contextWindowFor } from '@main/agent/context/budget'
+import { allocateBudget, contentWindow, contextWindowFor, effectiveWindow } from '@main/agent/context/budget'
 import { estimateTextTokens, estimateMessagesTokens } from '@main/agent/context/estimate'
 import { trimToolResults } from '@main/agent/context/toolTrim'
 import { preserveRecentMessages } from '@main/agent/context/compact'
@@ -20,6 +20,19 @@ describe('context budget + trim', () => {
     expect(contextWindowFor(model)).toBe(100_000)
     const b = allocateBudget(model)
     expect(b.system + b.tools + b.memoryWorkspace + b.history + b.buffer).toBe(100_000)
+  })
+
+  it('contentWindow equals non-buffer shares (does not double-subtract buffer)', () => {
+    const model = {
+      id: 'x',
+      inputModalities: ['text'] as const,
+      outputModalities: ['text'] as const,
+      supportsTools: true,
+      supportsVision: false,
+      contextWindow: 100_000
+    }
+    expect(contentWindow(model)).toBe(effectiveWindow(model))
+    expect(contentWindow(model)).toBe(85_000)
   })
 
   it('estimates tokens heuristically', () => {
@@ -45,6 +58,26 @@ describe('context budget + trim', () => {
     const tools = trimmed.filter((m) => m.role === 'tool')
     expect(tools[0].content).toContain('cleared')
     expect(String(tools[1].content)).not.toContain('cleared')
+  })
+
+  it('preserves subagent reports from clearing and char trim', () => {
+    const long = 'x'.repeat(20_000)
+    const msgs: ChatMessage[] = [
+      { role: 'user', content: 'a' },
+      { role: 'assistant', content: '', toolCalls: [{ id: '1', name: 'read', arguments: '{}' }] },
+      { role: 'tool', toolCallId: '1', toolName: 'read', content: 'OLD'.repeat(100) },
+      { role: 'assistant', content: '', toolCalls: [{ id: '2', name: 'read', arguments: '{}' }] },
+      { role: 'tool', toolCallId: '2', toolName: 'read', content: 'OLD2'.repeat(100) },
+      { role: 'assistant', content: '', toolCalls: [{ id: '3', name: 'read', arguments: '{}' }] },
+      { role: 'tool', toolCallId: '3', toolName: 'read', content: 'NEW'.repeat(100) },
+      { role: 'assistant', content: '', toolCalls: [{ id: '4', name: 'subagent', arguments: '{}' }] },
+      { role: 'tool', toolCallId: '4', toolName: 'subagent', content: long },
+      { role: 'assistant', content: '', toolCalls: [{ id: '5', name: 'read', arguments: '{}' }] },
+      { role: 'tool', toolCallId: '5', toolName: 'read', content: 'NEWER'.repeat(100) }
+    ]
+    const trimmed = trimToolResults(msgs, 3)
+    const subagent = trimmed.find((m) => m.role === 'tool' && m.toolName === 'subagent')
+    expect(subagent?.content).toBe(long)
   })
 
   it('preserves recent user turns', () => {

@@ -1,10 +1,10 @@
-import { shell, app } from 'electron'
+import { app } from 'electron'
 import { existsSync, readFileSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { canonicalizeWorkspacePath } from '../../shared/workspacePath'
 import { workspaceId, workspaceMetaDir } from '../storage/paths'
 
-const FALLBACK_ONELINER = 'You are Vyotiq, a helpful coding agent.'
+const FALLBACK_ONELINER = 'You are Agent V, an agentic coding agent.'
 
 /** Bundled system harness — the only authoritative copy. */
 export function getHarnessPath(): string {
@@ -21,17 +21,6 @@ export function loadHarness(): string {
     return readFileSync(path, 'utf8')
   } catch {
     return FALLBACK_ONELINER
-  }
-}
-
-export async function openHarness(): Promise<void> {
-  const path = getHarnessPath()
-  if (!existsSync(path)) {
-    throw new Error(`Harness not found: ${path}`)
-  }
-  const err = await shell.openPath(path)
-  if (err) {
-    throw new Error(err)
   }
 }
 

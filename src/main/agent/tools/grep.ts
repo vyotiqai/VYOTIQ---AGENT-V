@@ -9,10 +9,14 @@ import {
   yieldToEventLoop
 } from './walk'
 
-const SCAN_CAP = 20_000
-const MAX_FILE_BYTES = 512 * 1024
+export const GREP_SCAN_CAP = 20_000
+export const GREP_MAX_FILE_BYTES = 512 * 1024
+const SCAN_CAP = GREP_SCAN_CAP
+const MAX_FILE_BYTES = GREP_MAX_FILE_BYTES
 const YIELD_EVERY_FILES = 32
-const MAX_LINE_CHARS = 400
+/** Matched line text clipped to this many characters in the report. */
+export const GREP_MAX_LINE_CHARS = 400
+const MAX_LINE_CHARS = GREP_MAX_LINE_CHARS
 
 export type GrepOptions = {
   /** Glob restricting which files are searched, e.g. `src/**\/*.ts`. */

@@ -75,6 +75,7 @@ settings/      # App settings + secrets
 storage/       # Paths, atomic write, migrations/
 ipc/           # register.ts
 agent/         # Agent loop, tools, providers
+marketplace/   # Catalog, install, resolve effective MCP/skills/plugins
 logging/
 ```
 
@@ -89,6 +90,20 @@ logging/
 
 `ChatView` renders **one** `Composer` and switches variant from transcript emptiness. Attachments and toolbar live inside `ComposerShell` (grid layout, not flex-wrap pill).
 
+### Slash commands
+
+Typing `/` in the composer opens a fuzzy-filtered autocomplete menu (`SlashCommandMenu`). Sources are merged in main (`src/main/agent/slashCommands/`):
+
+| Source | Examples | Resolve behavior |
+|--------|----------|------------------|
+| Built-ins | `/compact`, `/marketplace`, `/settings`, `/create-rule`, `/help` | Client actions (navigate / compact / create rule file) or send help text |
+| Marketplace skills | `/code-review` | Inject skill body + trailing text, then send (eager system-prompt skills unchanged) |
+| Workspace commands | `.vyotiq/commands/*.md`, `.cursor/commands/*.md` | Template send (`{{input}}` supported); Vyotiq wins collisions |
+| Workspace rules | existing `.vyotiq/rules` / `.cursor/rules` stems | Open file in the system editor |
+| MCP tools | connected `mcp__…` tools | Agent-mediated send hint (no direct JSON arg forms in v1) |
+
+Catalog skills that are not installed or disabled appear muted with Install/Enable CTAs. IPC: `slash-commands:list`, `slash-commands:resolve`, `slash-commands:createRule`, `slash-commands:openFile`.
+
 ## Tests
 
 Tests mirror source layout under `tests/`:
@@ -97,7 +112,7 @@ Tests mirror source layout under `tests/`:
 - `tests/main/unit/`, `integration/`, `e2e/` — main process
 - `tests/renderer/{composer,chat,settings,app}/` — renderer features
 
-Run: `npm run typecheck && npm test`
+Run: `pnpm typecheck && pnpm test`
 
 Coverage for agent context/tools: `pnpm test:coverage`
 
@@ -127,28 +142,44 @@ flowchart TB
 
 | Layer | Source |
 |-------|--------|
-| Harness | `resources/harness/default.md` |
+| Harness | `resources/harness/default.md` (role, contract, tool policy, loop, memory, safety) |
+| Tool definitions | `AGENT_TOOLS` from `schemas/tools.ts` (short capability descriptions) + MCP |
 | Contract | `sessions/{runId}/contract.md` (auto-injected) |
 | Workspace snapshot | Manifest detection + capped `git status` |
 | Memory index | `.vyotiq/memory/index.md` + `state.md` |
 | Compaction summary | `sessions/{runId}/compaction.json` (persisted) |
 
-Compaction triggers at `compactionTriggerRatio` of the model content window (15% buffer reserved). Token usage is estimated heuristically (`chars / 4`) and blended with provider-reported `inputTokens` when within 20% of the estimate. The composer shows a live context-window meter via `context_usage` events. Structured summaries may auto-promote into `.vyotiq/memory/` when `memoryAutoPromote` is enabled.
+Compaction triggers at `compactionTriggerRatio` of the model content window (15% buffer reserved). Text tokens are counted with `gpt-tokenizer` (BPE); large blobs fall back to `chars/4`. From step 2 onward, compaction and the context meter prefer provider-reported `inputTokens` when available (`Math.max(estimate, provider)` with a guard against inflated early readings). The composer shows a live context-window meter via `context_usage` events. Structured summaries may auto-promote into `.vyotiq/memory/` when `memoryAutoPromote` is enabled.
 
-Read-only tools (`read`, `search`, `memory_*` reads, read-only MCP) may execute in parallel (up to 4 concurrent). Mutating tools run serially.
+Read-only / parallel-safe **built-in** tools (`read`, `search`, `glob`, `grep`, `list_dir`, `web_fetch`, `web_search`, `memory_list`, `memory_read`, `subagent`, `git_status`, `git_diff`, `diagnostics`) may execute in parallel when tool approval is off: ordinary read/network calls allow up to 4 concurrent calls, while sub-agent loops allow up to 2. Mutating tools (`edit`, `str_replace`, `multi_edit`, `delete`, `terminal`, `todo_write`, `memory_write`) and the shared agent-browser tools (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`) run serially. When a tool-approval gate is active, all tools run serially so prompts do not stack. `web_fetch`, `web_search`, `browser_navigate`, `browser_snapshot`, `browser_click`, and `browser_type` are still gated in `mutating` approval mode (network egress). **MCP tools are never parallel-safe and are never approval-exempt via `readOnlyHint`** — the hint is not trusted. In `mutating`/`all` modes MCP tools still require approval unless the user allowlists that tool for the session or workspace.
+
+**Interaction modes (Ask / Plan / Agent):** Composer mode picker (also `/ask`, `/plan`, `/agent`). Ask exposes read-only built-ins (+ MCP tools with `readOnlyHint`); Plan adds `todo_write` and `edit`/`str_replace` only for run artifacts `plan.md` / `contract.md`; Agent is full tools. Mode is passed on `chatStart` and enforced by filtering tool defs plus a hard execute gate (`modePolicy.ts`). A short mode section is injected into the system prompt for Ask/Plan. After Plan drafts `plan.md`, the composer shows **Continue in Agent** (switches mode and prefills an implement prompt).
+
+Built-in tool descriptions are short capability blurbs in `TOOL_REGISTRY` (`src/main/agent/schemas/tools.ts`), not a harness catalog. Keep each description aligned with the handler, argument schema, limits, and classification; `tests/main/unit/toolsSchema.test.ts` enforces registry parity and the harness boundary. The harness keeps cross-cutting tool policy (MCP naming/approval, attachments, don’t narrate).
 
 ### MCP tools (`src/main/agent/mcp/`)
 
-User-configured stdio MCP servers (Settings → Advanced) expose namespaced tools: `mcp__{serverId}__{toolName}`. Main process spawns servers; tools merge with the seven built-ins at runtime.
+User-configured MCP servers expose namespaced tools: `mcp__{serverId}__{toolName}`. Transports: **stdio**, **HTTP (streamable)**, and **SSE**. Main process connects servers; tools merge with the **24** built-ins at runtime (`read`, `edit`, `str_replace`, `multi_edit`, `delete`, `search`, `glob`, `grep`, `list_dir`, `terminal`, `todo_write`, `web_fetch`, `web_search`, `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `subagent`, `memory_list`, `memory_read`, `memory_write`, `git_status`, `git_diff`, `diagnostics`). Server ids must not contain `__`.
+**Agent browser:** Dedicated Electron `BrowserWindow` with an isolated session (`persist:vyotiq-agent-browser`). `browser_navigate` loads public http(s) URLs (same SSRF policy as `web_fetch`, including sync block of private redirects/`will-navigate`, alternate IPv4 encodings, and a post-load `assertPublicUrl` check on every settled navigation — not only tool-driven navigate); `browser_snapshot` returns page text and stores a JPEG under `sessions/{runId}/browser/snapshot.jpg`; `browser_click` / `browser_type` drive CSS-selected elements via input events. A composer-adjacent panel shows the live URL/title, latest snapshot preview, and Show/Close controls (hydrates via `browser:getState` on mount).
+
+**Terminal shell:** Settings → Agent → **Terminal shell** (`auto` | `cmd` | `powershell` | `bash`). Default `auto` prefers PowerShell on Windows when `pwsh`/`powershell` is on PATH, else `cmd`. Unix `auto` keeps `$SHELL` / `/bin/sh`. Common Unix builtins are only blocked when the resolved shell is `cmd`.
+
+**Diagnostics:** `diagnostics` runs typecheck (default) or lint. Optional Settings → Agent → **Diagnostics command** overrides typecheck; otherwise package scripts (`typecheck` / `type-check` / `lint`) or `tsc`/`eslint` are used.
+
+**Write checkpoints:** Before successful `edit` / `multi_edit` / `str_replace` / `delete`, priors are snapshotted under `sessions/{runId}/checkpoints/`. At the end of each invoke, a `writes_checkpoint` event is emitted. The Files Changed card supports per-file **Keep** / **Discard** (and Keep all / Discard all) via `runs:resolveWrites`, expandable inline diffs from tool args, and `/undo` discards all unresolved paths via `runs:undoWrites`, while the run is idle.
+**Marketplace** (sidebar footer storefront → top-level Marketplace view): sole UI for MCP servers (stdio / HTTP / SSE), skills, and plugins. Home shows Discover / Featured / category sections from a **curated** catalog of installable packages only (official MCP reference servers — filesystem, memory, sequential-thinking via `npx`; fetch, git, time via `uvx` with `mcp<2` pinned for fetch/time SDK compatibility; plus code-review-graph via `uvx` — and Vyotiq skills such as code-review, docs, test-writing, refactor, commit-message, debug, pr-description, security-review, frontend-design, accessibility, api-design, and plugins such as devtools, shipping, quality, electron-app). Empty search results point users to Manage → Add for external MCPs outside the curated list. Cards highlight the package being viewed and show Enabled / Connected / Disabled from install + MCP status (not just “Installed”). Package detail lists nested MCP/skills and links installed packages into Manage. Manage installs, enables, and configures MCP. **Add** supports universal paste (GitHub URL, npm name, `npx`/`uvx` command, remote MCP URL, or Cursor-style `mcpServers` JSON) via detect → preview → add & connect (`src/main/marketplace/mcpImport.ts`), plus import from Cursor/Claude local configs; advanced forms remain for stdio/remote/git/npm/path. Git/npm installs of non-Vyotiq MCP repos synthesize a `vyotiq.mcp.json` when a launch command can be detected. Settings → **Registry** holds only the optional registry URL and remote-install acknowledgement. Packages install into `{userData}/marketplace/`. Marketplace MCP packages use `vyotiq.mcp.json`. Remote MCP supports Bearer tokens in OS secure storage and **Sign in with OAuth** (Authorization Code + PKCE). Per-server `allowedTools` / `deniedTools` filter which tools are exposed and invokable. When enabled, the local MCP client connects and tools load into the agent. Skills use `skill.md` (eager system-prompt injection). Plugins (`vyotiq.plugin.json`) atomically expand nested MCP + skills + rules when enabled.
+
+Effective MCP set for a run = configured (manual) entries + marketplace MCP packages + plugin-nested MCP, after workspace enable overrides (`src/main/marketplace/resolve.ts`).
 
 ### Run persistence
 
 Per-workspace runs live under AppData `workspaces/{workspaceId}/sessions/{runId}/`:
 
 - `messages.jsonl` — canonical chat transcript
-- `events.jsonl` — streamed agent events (including compaction, step budget)
+- `events.jsonl` — streamed agent events (including compaction)
 - `compaction.json` — last compaction record
 - `contract.md` — goal + done-when
+- `plan.md` — Plan-mode draft (created when mode is Plan; not auto-injected into context)
 - `status.json` — run status metadata
 
 Legacy `.vyotiq/runs/` folders are migrated into AppData on startup.
@@ -159,7 +190,7 @@ Follow-up turns use incremental IPC (`newMessages` + `runId`); main loads prior 
 
 ### Local logs
 
-- **Path:** `%APPDATA%/Vyotiq/logs/vyotiq.log` (Windows) — `userData/logs/vyotiq.log` via `electron-log`
+- **Path:** `%APPDATA%/vyotiq/logs/vyotiq.log` (Windows) — `userData/logs/vyotiq.log` via `electron-log`
 - **Rotation:** 5 MB per file, up to 5 archived copies (`vyotiq.log.old.<timestamp>`)
 - **Levels:** `debug` in dev, `info`+ in packaged builds; renderer logs forward to main over IPC
 - **API:** `logger.debug|info|warn|error|fatal|exception` in [`src/shared/logger.ts`](../src/shared/logger.ts) with `scope`, `correlationId`, `code`, `err` fields (scrubbed before disk)
@@ -178,7 +209,7 @@ Initialized only when **DSN is set at build time** and `settings.telemetryEnable
 
 ### Debugging checklist
 
-1. Reproduce the issue, then open **Settings → Logs** (or `%APPDATA%/Vyotiq/logs`)
+1. Reproduce the issue, then open **Settings → General → Open logs folder** (or `%APPDATA%/vyotiq/logs`)
 2. Search for `[error]` / `[fatal]` and the relevant `scope` (`ipc`, `agent`, `tools`, `chat`, `renderer`)
 3. Match `correlationId` to `runId` when debugging agent runs
 4. Enable **telemetry** in Settings only if you want events sent to Sentry (requires build-time DSN)

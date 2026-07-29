@@ -1,6 +1,7 @@
 import {
   Children,
   isValidElement,
+  memo,
   useEffect,
   useMemo,
   useState,
@@ -33,11 +34,94 @@ export function balanceIncompleteMarkdown(content: string): string {
   return balanceOutsideFences(content)
 }
 
+/**
+ * Split markdown into stable block units (paragraphs / fences / headings).
+ * Finished blocks keep stable identity so React.memo can skip them while the
+ * last block streams.
+ */
+export function splitMarkdownBlocks(source: string): string[] {
+  if (!source) return []
+  const blocks: string[] = []
+  let i = 0
+  const len = source.length
+  while (i < len) {
+    if (source.startsWith('```', i) || source.startsWith('~~~', i)) {
+      const fence = source.slice(i, i + 3)
+      const close = source.indexOf(`\n${fence}`, i + 3)
+      if (close < 0) {
+        blocks.push(source.slice(i))
+        break
+      }
+      const end = close + 1 + 3
+      const afterNewline = source[end] === '\n' ? end + 1 : end
+      blocks.push(source.slice(i, afterNewline))
+      i = afterNewline
+      continue
+    }
+    const nextBreak = source.indexOf('\n\n', i)
+    if (nextBreak < 0) {
+      blocks.push(source.slice(i))
+      break
+    }
+    blocks.push(source.slice(i, nextBreak + 2))
+    i = nextBreak + 2
+  }
+  return blocks.filter((b) => b.length > 0)
+}
+
+/** Max highlighted fence entries retained across the renderer session. */
+export const HIGHLIGHT_CACHE_MAX_ENTRIES = 200
+
 const highlightCache = new Map<string, string>()
+
+const remarkPlugins = [remarkGfm]
+const rehypePlugins: import('react-markdown').Options['rehypePlugins'] = [
+  [rehypeSanitize, markdownSanitizeSchema]
+]
 
 function highlightCacheKey(text: string, lang: string, theme: string): string {
   return `${theme}\0${lang}\0${text}`
 }
+
+/** FIFO-bounded set; exported helpers used by FencedCodeBlock and tests. */
+export function setHighlightCacheEntry(key: string, html: string): void {
+  if (highlightCache.has(key)) {
+    highlightCache.delete(key)
+  }
+  highlightCache.set(key, html)
+  while (highlightCache.size > HIGHLIGHT_CACHE_MAX_ENTRIES) {
+    const oldest = highlightCache.keys().next().value
+    if (oldest === undefined) break
+    highlightCache.delete(oldest)
+  }
+}
+
+export function getHighlightCacheEntry(key: string): string | undefined {
+  return highlightCache.get(key)
+}
+
+/** @internal Reset cache between tests. */
+export function clearHighlightCacheForTests(): void {
+  highlightCache.clear()
+}
+
+/** @internal */
+export function highlightCacheSizeForTests(): number {
+  return highlightCache.size
+}
+
+function scheduleIdle(cb: () => void, timeoutMs: number): () => void {
+  const w = typeof window !== 'undefined' ? window : null
+  if (w && typeof w.requestIdleCallback === 'function') {
+    const id = w.requestIdleCallback(() => cb(), { timeout: timeoutMs })
+    return () => w.cancelIdleCallback(id)
+  }
+  const id = globalThis.setTimeout(cb, Math.min(timeoutMs, 80))
+  return () => globalThis.clearTimeout(id)
+}
+
+const CODE_SHELL =
+  'overflow-x-auto rounded-md border border-border bg-surface font-mono text-[0.85em]'
 
 function FencedCodeBlock({
   text,
@@ -53,50 +137,53 @@ function FencedCodeBlock({
   const theme = useDocumentTheme()
   const cacheKey = highlightCacheKey(text, lang, theme)
   const [html, setHtml] = useState<string | null>(() =>
-    unstable ? null : (highlightCache.get(cacheKey) ?? null)
+    unstable ? null : (getHighlightCacheEntry(cacheKey) ?? null)
   )
 
   useEffect(() => {
     if (unstable) {
+      // Drop stale highlight while the fence is still growing; plain shell stays.
       setHtml(null)
       return
     }
-    const cached = highlightCache.get(cacheKey)
+    const cached = getHighlightCacheEntry(cacheKey)
     if (cached) {
       setHtml(cached)
       return
     }
-    let cancelled = false
+    // Invalidate any prior highlight so plain text matches `text` until ready.
+    // Unified shell keeps the bordered container — this is not an empty flash.
     setHtml(null)
-    void highlightCode(text, lang).then((result) => {
-      if (cancelled) return
-      const next = result ? sanitizeHighlightedHtml(result) : null
-      if (next) highlightCache.set(cacheKey, next)
-      setHtml(next)
-    })
+    let cancelled = false
+    const cancelIdle = scheduleIdle(() => {
+      void highlightCode(text, lang).then((result) => {
+        if (cancelled) return
+        const next = result ? sanitizeHighlightedHtml(result) : null
+        if (next) setHighlightCacheEntry(cacheKey, next)
+        setHtml(next)
+      })
+    }, 80)
     return () => {
       cancelled = true
+      cancelIdle()
     }
   }, [text, lang, unstable, theme, cacheKey])
-
-  if (html) {
-    return (
-      <div className="group/code relative my-2">
-        <CodeBlockCopyButton text={text} />
-        <div
-          className="overflow-x-auto rounded-md border border-border bg-surface font-mono text-[0.85em] [&>pre]:m-0 [&>pre]:overflow-x-auto [&>pre]:bg-transparent [&>pre]:p-3"
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
-      </div>
-    )
-  }
 
   return (
     <div className="group/code relative my-2">
       <CodeBlockCopyButton text={text} />
-      <pre className="overflow-x-auto rounded-md border border-border bg-surface p-3 font-mono text-[0.85em]">
-        <code className={cn('block', className)}>{text}</code>
-      </pre>
+      <div className={CODE_SHELL}>
+        {html ? (
+          <div
+            className="vy-transition [&>pre]:m-0 [&>pre]:overflow-x-auto [&>pre]:bg-transparent [&>pre]:p-3"
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
+        ) : (
+          <pre className="m-0 overflow-x-auto bg-transparent p-3">
+            <code className={cn('block', className)}>{text}</code>
+          </pre>
+        )}
+      </div>
     </div>
   )
 }
@@ -152,6 +239,21 @@ function buildMarkdownComponents(openFenceBody: string | null) {
   }
 }
 
+const MemoMarkdownBlock = memo(function MemoMarkdownBlock({
+  source,
+  openFenceBody
+}: {
+  source: string
+  openFenceBody: string | null
+}) {
+  const components = useMemo(() => buildMarkdownComponents(openFenceBody), [openFenceBody])
+  return (
+    <Markdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components}>
+      {source}
+    </Markdown>
+  )
+})
+
 export function MarkdownContent({
   content,
   streaming = false,
@@ -169,7 +271,7 @@ export function MarkdownContent({
     () => (streaming ? trailingOpenFenceBody(content) : null),
     [streaming, content]
   )
-  const components = useMemo(() => buildMarkdownComponents(openFenceBody), [openFenceBody])
+  const blocks = useMemo(() => splitMarkdownBlocks(markdown), [markdown])
 
   if (!content && !streaming) return null
 
@@ -180,14 +282,20 @@ export function MarkdownContent({
         className
       )}
     >
-      {markdown ? (
-        <Markdown
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={[[rehypeSanitize, markdownSanitizeSchema]]}
-          components={components}
-        >
-          {markdown}
-        </Markdown>
+      {blocks.map((block, index) => {
+        const isLast = index === blocks.length - 1
+        const blockOpenFence = streaming && isLast ? openFenceBody : null
+        // Stable keys so streaming deltas update `source` instead of remounting.
+        const key =
+          streaming && isLast ? `md-block-${index}-tail` : `md-block-${index}`
+        return (
+          <MemoMarkdownBlock key={key} source={block} openFenceBody={blockOpenFence} />
+        )
+      })}
+      {streaming ? (
+        <span className="streaming-caret-inline" aria-hidden>
+          ▍
+        </span>
       ) : null}
     </div>
   )

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import { IPC } from '../shared/channels'
-import { AgentEventSchema, ToolApprovalRequestSchema } from '../shared/ipc'
+import { AgentEventSchema, ToolApprovalRequestSchema, AgentBrowserStateSchema } from '../shared/ipc'
 import type { VyotiqApi } from '../shared/vyotiqApi'
 
 export type { HostPlatform, VyotiqApi } from '../shared/vyotiqApi'
@@ -30,6 +30,14 @@ const api: VyotiqApi = {
   chatCancel: (runId) => ipcRenderer.invoke(IPC.chatCancel, { runId }),
   chatCompact: (workspacePath, runId) =>
     ipcRenderer.invoke(IPC.chatCompact, { workspacePath, runId }),
+  undoWrites: (workspacePath, runId, checkpointId) =>
+    ipcRenderer.invoke(IPC.runsUndoWrites, {
+      workspacePath,
+      runId,
+      ...(checkpointId ? { checkpointId } : {})
+    }),
+  resolveWrites: (payload) => ipcRenderer.invoke(IPC.runsResolveWrites, payload),
+  readRunArtifact: (payload) => ipcRenderer.invoke(IPC.runsReadArtifact, payload),
   onChatEvent: (handler) => {
     const listener = (_: IpcRendererEvent, raw: unknown): void => {
       const parsed = AgentEventSchema.safeParse(raw)
@@ -81,7 +89,6 @@ const api: VyotiqApi = {
   gitStatus: (workspacePath) => ipcRenderer.invoke(IPC.gitStatus, { workspacePath }),
   gitCommit: (workspacePath, message, push) =>
     ipcRenderer.invoke(IPC.gitCommit, { workspacePath, message, push }),
-  openHarness: () => ipcRenderer.invoke(IPC.openHarness, {}),
   windowMinimize: () => ipcRenderer.invoke(IPC.windowMinimize),
   windowMaximize: () => ipcRenderer.invoke(IPC.windowMaximize),
   windowClose: () => ipcRenderer.invoke(IPC.windowClose),
@@ -93,12 +100,51 @@ const api: VyotiqApi = {
       ipcRenderer.removeListener(IPC.windowMaximizedChanged, listener)
     }
   },
+  onBrowserState: (handler) => {
+    const listener = (_: IpcRendererEvent, raw: unknown): void => {
+      const parsed = AgentBrowserStateSchema.safeParse(raw)
+      if (!parsed.success) return
+      handler(parsed.data)
+    }
+    ipcRenderer.on(IPC.browserState, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.browserState, listener)
+    }
+  },
+  browserGetState: () => ipcRenderer.invoke(IPC.browserGetState),
+  browserFocus: () => ipcRenderer.invoke(IPC.browserFocus),
+  browserClose: () => ipcRenderer.invoke(IPC.browserClose),
   openLogsDir: () => ipcRenderer.invoke(IPC.logsOpenDir),
   getLogsPath: () => ipcRenderer.invoke(IPC.logsGetPath),
   telemetryStatus: () => ipcRenderer.invoke(IPC.telemetryStatus),
-  mcpStatus: () => ipcRenderer.invoke(IPC.mcpStatus),
-  mcpRefresh: () => ipcRenderer.invoke(IPC.mcpRefresh),
+  mcpStatus: (payload) => ipcRenderer.invoke(IPC.mcpStatus, payload ?? {}),
+  mcpRefresh: (payload) => ipcRenderer.invoke(IPC.mcpRefresh, payload ?? {}),
+  mcpSetAuthToken: (serverId, token) =>
+    ipcRenderer.invoke(IPC.mcpSetAuthToken, { serverId, token }),
+  mcpClearAuthToken: (serverId) => ipcRenderer.invoke(IPC.mcpClearAuthToken, { serverId }),
+  mcpStartOAuth: (serverId) => ipcRenderer.invoke(IPC.mcpStartOAuth, { serverId }),
+  marketplaceListInstalled: () => ipcRenderer.invoke(IPC.marketplaceListInstalled),
+  marketplaceBrowse: (payload) => ipcRenderer.invoke(IPC.marketplaceBrowse, payload ?? {}),
+  marketplaceRefreshCatalog: () => ipcRenderer.invoke(IPC.marketplaceRefreshCatalog),
+  marketplaceInstall: (payload) => ipcRenderer.invoke(IPC.marketplaceInstall, payload),
+  marketplaceDetectMcp: (payload) => ipcRenderer.invoke(IPC.marketplaceDetectMcp, payload),
+  marketplaceApplyDetectedMcp: (payload) =>
+    ipcRenderer.invoke(IPC.marketplaceApplyDetectedMcp, payload),
+  marketplaceScanExternalMcp: (payload) =>
+    ipcRenderer.invoke(IPC.marketplaceScanExternalMcp, payload ?? {}),
+  marketplaceImportExternalMcp: (payload) =>
+    ipcRenderer.invoke(IPC.marketplaceImportExternalMcp, payload),
+  marketplaceUninstall: (id) => ipcRenderer.invoke(IPC.marketplaceUninstall, { id }),
+  marketplaceSetEnabled: (id, enabled) =>
+    ipcRenderer.invoke(IPC.marketplaceSetEnabled, { id, enabled }),
+  marketplacePickLocal: () => ipcRenderer.invoke(IPC.marketplacePickLocal),
+  marketplaceGetContents: (id) => ipcRenderer.invoke(IPC.marketplaceGetContents, { id }),
   getSystemTheme: () => ipcRenderer.invoke(IPC.getSystemTheme),
+  slashCommandsList: (payload) => ipcRenderer.invoke(IPC.slashCommandsList, payload ?? {}),
+  slashCommandsResolve: (payload) => ipcRenderer.invoke(IPC.slashCommandsResolve, payload),
+  slashCommandsCreateRule: (payload) =>
+    ipcRenderer.invoke(IPC.slashCommandsCreateRule, payload),
+  slashCommandsOpenFile: (payload) => ipcRenderer.invoke(IPC.slashCommandsOpenFile, payload),
   onSystemThemeChanged: (handler) => {
     const listener = (_: IpcRendererEvent, prefersDark: boolean): void => handler(prefersDark)
     ipcRenderer.on(IPC.themeChanged, listener)

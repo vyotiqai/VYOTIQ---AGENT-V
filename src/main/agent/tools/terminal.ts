@@ -1,8 +1,17 @@
-import { spawn } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
 import kill from 'tree-kill'
 import { assertInsideWorkspace } from '../../../shared/workspacePath'
+import type { TerminalShell } from '../../../shared/ipc'
+import { parseTerminalOutput } from '../../../shared/utils/terminalFormat'
 
-const MAX_OUTPUT = 64 * 1024
+/** stdout/stderr cap returned to the model (each stream). */
+export const TERMINAL_MAX_OUTPUT = 64 * 1024
+/** Upper bound for model-requested command timeouts (5 minutes). */
+export const TERMINAL_MAX_TIMEOUT_MS = 300_000
+const MAX_OUTPUT = TERMINAL_MAX_OUTPUT
+
+/** Resolved shell used for spawn (never `auto`). */
+export type ResolvedTerminalShell = 'cmd' | 'powershell' | 'bash' | 'unix'
 
 /** Unix tools that typically fail or mislead under Windows cmd.exe. */
 const UNIX_PRIMARY_ON_WINDOWS = new Set([
@@ -54,7 +63,7 @@ const UNIX_CMD_HINTS: Record<string, string> = {
   find: 'dir /s /b',
   cat: 'type',
   which: 'where',
-  pwd: 'cd',
+  pwd: 'echo %CD%',
   rm: 'del',
   cp: 'copy',
   mv: 'move',
@@ -65,10 +74,75 @@ const UNIX_CMD_HINTS: Record<string, string> = {
   zsh: 'cmd.exe builtins'
 }
 
+export function commandOnPath(bin: string): boolean {
+  const finder = process.platform === 'win32' ? 'where' : 'which'
+  const result = spawnSync(finder, [bin], {
+    encoding: 'utf8',
+    windowsHide: true,
+    env: process.env
+  })
+  return result.status === 0 && Boolean(result.stdout?.trim())
+}
+
 function unixShellInvocation(command: string): { bin: string; args: string[] } {
   const shell = process.env.SHELL?.trim()
   if (shell) return { bin: shell, args: ['-lc', command] }
   return { bin: '/bin/sh', args: ['-c', command] }
+}
+
+function powershellInvocation(command: string): { bin: string; args: string[] } {
+  const bin = commandOnPath('pwsh') ? 'pwsh' : 'powershell'
+  return {
+    bin,
+    args: ['-NoProfile', '-NonInteractive', '-Command', command]
+  }
+}
+
+function bashInvocation(command: string): { bin: string; args: string[] } {
+  return { bin: 'bash', args: ['-lc', command] }
+}
+
+/**
+ * Resolve settings preference to a concrete shell for this platform.
+ * Exported for tests.
+ */
+export function resolveTerminalShell(
+  preference: TerminalShell = 'auto',
+  platform: NodeJS.Platform = process.platform
+): ResolvedTerminalShell {
+  if (preference === 'cmd') return platform === 'win32' ? 'cmd' : 'unix'
+  if (preference === 'powershell') return 'powershell'
+  if (preference === 'bash') return 'bash'
+  // auto
+  if (platform !== 'win32') return 'unix'
+  if (commandOnPath('pwsh') || commandOnPath('powershell')) return 'powershell'
+  return 'cmd'
+}
+
+export type TerminalSpawnSpec = {
+  resolved: ResolvedTerminalShell
+  bin: string
+  args: string[]
+}
+
+/** Build spawn bin/args for a resolved shell. Exported for tests. */
+export function terminalSpawnSpec(
+  command: string,
+  resolved: ResolvedTerminalShell
+): TerminalSpawnSpec {
+  if (resolved === 'cmd') {
+    return { resolved, bin: 'cmd.exe', args: ['/c', command] }
+  }
+  if (resolved === 'powershell') {
+    const inv = powershellInvocation(command)
+    return { resolved, bin: inv.bin, args: inv.args }
+  }
+  if (resolved === 'bash') {
+    const inv = bashInvocation(command)
+    return { resolved, bin: inv.bin, args: inv.args }
+  }
+  const inv = unixShellInvocation(command)
+  return { resolved, bin: inv.bin, args: inv.args }
 }
 
 /** First executable token of a command (cmd-safe parsing). Exported for tests. */
@@ -93,25 +167,39 @@ export function lastPipelineCommandToken(command: string): string | null {
 }
 
 /**
- * On Windows, if the primary command is a common Unix builtin, return a helpful
- * failure message (no spawn). Otherwise null.
+ * On Windows cmd shell, if any pipeline stage's primary command is a common Unix builtin,
+ * return a helpful failure message (no spawn). Otherwise null.
  */
 export function unsupportedUnixOnWindowsMessage(command: string): string | null {
-  const token = primaryCommandToken(command)
-  if (!token || !UNIX_PRIMARY_ON_WINDOWS.has(token)) return null
+  const stages = command
+    .split('|')
+    .map((s) => primaryCommandToken(s.trim()))
+    .filter((t): t is string => Boolean(t))
+  const unixStages = stages.filter((t) => UNIX_PRIMARY_ON_WINDOWS.has(t))
+  if (!unixStages.length) return null
+  const token = unixStages[0]
   const equiv = UNIX_CMD_HINTS[token] ?? 'a cmd.exe-compatible command'
+  const stageNote =
+    unixStages.length > 1
+      ? ` Also blocked in pipeline: ${unixStages.slice(1).join(', ')}.`
+      : ''
   return [
     `Unsupported Unix command on Windows: "${token}".`,
-    'The terminal tool runs via cmd.exe, not bash.',
-    `Prefer cmd-safe commands (dir, findstr, where, type) — e.g. use "${equiv}" instead of "${token}".`,
-    'Do not use ls/grep/head/find/cat/which unless bash is available.',
+    'The terminal tool is using cmd.exe (Settings → Agent → Terminal shell).',
+    `Prefer cmd-safe commands (dir, findstr, where, type, echo %CD%) — e.g. use "${equiv}" instead of "${token}".${stageNote}`,
+    'Switch the shell to PowerShell or bash, or use cmd-compatible commands.',
     'exit_code: 1'
   ].join('\n')
 }
 
 /** Append Windows cmd hints when a pipeline stage used a Unix-only tool. */
-function appendWindowsCompatHint(command: string, content: string, exitCode: number | null): string {
-  if (process.platform !== 'win32') return content
+function appendWindowsCompatHint(
+  command: string,
+  content: string,
+  exitCode: number | null,
+  resolved: ResolvedTerminalShell
+): string {
+  if (resolved !== 'cmd') return content
   if (exitCode === 0 || exitCode === null) return content
   const stages = command
     .split('|')
@@ -123,7 +211,7 @@ function appendWindowsCompatHint(command: string, content: string, exitCode: num
     const equiv = UNIX_CMD_HINTS[t] ?? 'cmd.exe-compatible commands'
     return `"${t}" → try ${equiv}`
   })
-  return `${content}\n\n[Windows hint] cmd.exe does not support: ${hints.join('; ')}. Use dir, findstr, where, type, or PowerShell.`
+  return `${content}\n\n[Windows hint] cmd.exe does not support: ${hints.join('; ')}. Use dir, findstr, where, type, or switch Terminal shell to PowerShell.`
 }
 
 /**
@@ -145,31 +233,12 @@ export function isFindstrNoMatch(
   return stdout.trim().length === 0
 }
 
-/** Strip cwd header injected by toolTerminal before parsing exit metadata. */
-function stripTerminalCwdHeader(content: string): string {
-  return content.replace(/^cwd:.*\n\n?/m, '')
-}
-
 /** Parse terminal tool content for findstr no-match soft success. Exported for tests. */
 export function isFindstrNoMatchContent(command: string, content: string): boolean {
-  const body = stripTerminalCwdHeader(content)
-  const codeMatch = body.match(/exit_code:\s*(-?\d+)\b/)
-  if (!codeMatch) return false
-  const code = Number(codeMatch[1])
-  const stderrIdx = body.indexOf('stderr:\n')
-  let stdout = body
-  let stderr = ''
-  if (stderrIdx >= 0) {
-    stdout = body.slice(0, stderrIdx)
-    const after = body.slice(stderrIdx + 'stderr:\n'.length)
-    const exitIdx = after.search(/\nexit_code:\s*-?\d+\b/)
-    stderr = exitIdx >= 0 ? after.slice(0, exitIdx) : after.replace(/\nexit_code:\s*-?\d+\b.*$/s, '')
-  } else {
-    stdout = body.replace(/\n?exit_code:\s*-?\d+\b.*$/s, '')
-  }
-  // Strip our own soft-success annotation if present
-  stdout = stdout.replace(/^findstr: no matches\n?/m, '')
-  return isFindstrNoMatch(command, code, stdout, stderr)
+  const { stdout, stderr, exitCode } = parseTerminalOutput(content)
+  if (exitCode == null) return false
+  let cleanedStdout = stdout.replace(/^findstr: no matches\n?/m, '')
+  return isFindstrNoMatch(command, exitCode, cleanedStdout, stderr)
 }
 
 /**
@@ -194,23 +263,10 @@ export function isDirMissingPath(
 
 /** Parse terminal tool content for dir missing-path soft success. Exported for tests. */
 export function isDirMissingPathContent(command: string, content: string): boolean {
-  const body = stripTerminalCwdHeader(content)
-  const codeMatch = body.match(/exit_code:\s*(-?\d+)\b/)
-  if (!codeMatch) return false
-  const code = Number(codeMatch[1])
-  const stderrIdx = body.indexOf('stderr:\n')
-  let stdout = body
-  let stderr = ''
-  if (stderrIdx >= 0) {
-    stdout = body.slice(0, stderrIdx)
-    const after = body.slice(stderrIdx + 'stderr:\n'.length)
-    const exitIdx = after.search(/\nexit_code:\s*-?\d+\b/)
-    stderr = exitIdx >= 0 ? after.slice(0, exitIdx) : after.replace(/\nexit_code:\s*-?\d+\b.*$/s, '')
-  } else {
-    stdout = body.replace(/\n?exit_code:\s*-?\d+\b.*$/s, '')
-  }
-  stdout = stdout.replace(/^dir: path not found\n?/m, '')
-  return isDirMissingPath(command, code, stdout, stderr)
+  const { stdout, stderr, exitCode } = parseTerminalOutput(content)
+  if (exitCode == null) return false
+  const cleanedStdout = stdout.replace(/^dir: path not found\n?/m, '')
+  return isDirMissingPath(command, exitCode, cleanedStdout, stderr)
 }
 
 function formatTerminalOutput(
@@ -219,12 +275,14 @@ function formatTerminalOutput(
   stdout: string,
   stderr: string,
   code: number | null,
-  annotations: string[]
+  annotations: string[],
+  resolved: ResolvedTerminalShell
 ): string {
-  const isWin = process.platform === 'win32'
-  const dirMissing = isWin && isDirMissingPath(command, code, stdout, stderr)
+  const cmdSoft = resolved === 'cmd'
+  const dirMissing = cmdSoft && isDirMissingPath(command, code, stdout, stderr)
   let out = [
     `cwd: ${workspaceRoot}`,
+    `shell: ${resolved}`,
     '',
     ...annotations,
     stdout.slice(0, MAX_OUTPUT),
@@ -234,17 +292,82 @@ function formatTerminalOutput(
   ]
     .filter(Boolean)
     .join('\n')
-  out = appendWindowsCompatHint(command, out, code)
+  out = appendWindowsCompatHint(command, out, code, resolved)
   return out
+}
+
+/**
+ * Minimal env for child shells — omit parent secrets (API keys, tokens) that
+ * live on process.env in the Electron main process.
+ */
+export function sanitizedTerminalEnv(
+  source: NodeJS.ProcessEnv = process.env
+): Record<string, string> {
+  const keys = [
+    'PATH',
+    'Path',
+    'PATHEXT',
+    'HOME',
+    'USERPROFILE',
+    'USERNAME',
+    'USER',
+    'LOGNAME',
+    'TMP',
+    'TEMP',
+    'TMPDIR',
+    'LANG',
+    'LC_ALL',
+    'LC_CTYPE',
+    'TERM',
+    'ComSpec',
+    'COMSPEC',
+    'SystemRoot',
+    'SYSTEMROOT',
+    'SystemDrive',
+    'SYSTEMDRIVE',
+    'windir',
+    'WINDIR',
+    'NUMBER_OF_PROCESSORS',
+    'PROCESSOR_ARCHITECTURE',
+    'OS',
+    'SHELL',
+    'PWD',
+    'OLDPWD',
+    'HOMEBREW_PREFIX',
+    'HOMEBREW_CELLAR'
+  ]
+
+  const env: Record<string, string> = {}
+  for (const key of keys) {
+    const value = source[key]
+    if (typeof value === 'string' && value.length > 0) env[key] = value
+  }
+  // Ensure PATH exists even if the parent somehow lacks it.
+  if (!env.PATH && !env.Path) {
+    env.PATH = source.PATH ?? source.Path ?? ''
+  }
+  return env
+}
+
+export type ToolTerminalOptions = {
+  timeoutMs?: number
+  /** Settings preference; resolved at spawn time. */
+  shell?: TerminalShell
 }
 
 export async function toolTerminal(
   workspaceRoot: string,
   command: string,
   signal: AbortSignal,
-  timeoutMs = 60_000
+  timeoutMsOrOpts: number | ToolTerminalOptions = 60_000
 ): Promise<string> {
   assertInsideWorkspace(workspaceRoot, '.')
+
+  const opts: ToolTerminalOptions =
+    typeof timeoutMsOrOpts === 'number' ? { timeoutMs: timeoutMsOrOpts } : timeoutMsOrOpts
+  const timeoutMs = opts.timeoutMs ?? 60_000
+  const resolved = resolveTerminalShell(opts.shell ?? 'auto')
+  const spec = terminalSpawnSpec(command, resolved)
 
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
@@ -252,26 +375,45 @@ export async function toolTerminal(
       return
     }
 
-    const isWin = process.platform === 'win32'
-
-    if (isWin) {
+    if (resolved === 'cmd') {
       const unixHint = unsupportedUnixOnWindowsMessage(command)
       if (unixHint) {
-        resolve(`cwd: ${workspaceRoot}\n\n${unixHint}`)
+        resolve(`cwd: ${workspaceRoot}\nshell: cmd\n\n${unixHint}`)
         return
       }
     }
 
-    const unix = isWin ? null : unixShellInvocation(command)
-    const child = spawn(
-      isWin ? 'cmd.exe' : unix!.bin,
-      isWin ? ['/c', command] : unix!.args,
-      {
-        cwd: workspaceRoot,
-        env: process.env,
-        windowsHide: true
-      }
-    )
+    if (resolved === 'bash' && !commandOnPath('bash')) {
+      resolve(
+        [
+          `cwd: ${workspaceRoot}`,
+          'shell: bash',
+          '',
+          'bash was not found on PATH. Install Git Bash or set Terminal shell to auto/PowerShell/cmd.',
+          'exit_code: 1'
+        ].join('\n')
+      )
+      return
+    }
+
+    if (resolved === 'powershell' && !commandOnPath('pwsh') && !commandOnPath('powershell')) {
+      resolve(
+        [
+          `cwd: ${workspaceRoot}`,
+          'shell: powershell',
+          '',
+          'PowerShell was not found on PATH. Set Terminal shell to cmd or install PowerShell.',
+          'exit_code: 1'
+        ].join('\n')
+      )
+      return
+    }
+
+    const child = spawn(spec.bin, spec.args, {
+      cwd: workspaceRoot,
+      env: sanitizedTerminalEnv(),
+      windowsHide: true
+    })
 
     let stdout = ''
     let stderr = ''
@@ -313,10 +455,17 @@ export async function toolTerminal(
     })
 
     child.on('close', (code) => {
-      const findstrNoMatch = isWin && isFindstrNoMatch(command, code, stdout, stderr)
-      const out = formatTerminalOutput(workspaceRoot, command, stdout, stderr, code, [
-        findstrNoMatch ? 'findstr: no matches' : ''
-      ])
+      const findstrNoMatch =
+        resolved === 'cmd' && isFindstrNoMatch(command, code, stdout, stderr)
+      const out = formatTerminalOutput(
+        workspaceRoot,
+        command,
+        stdout,
+        stderr,
+        code,
+        [findstrNoMatch ? 'findstr: no matches' : ''],
+        resolved
+      )
       finish(() => resolve(out))
     })
   })

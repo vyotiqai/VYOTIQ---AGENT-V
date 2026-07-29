@@ -1,17 +1,18 @@
-import type { ChatMessage, CompactRunResult, ModelInfo, ProviderId } from '../../shared/ipc'
+import type { ChatMessage, CompactRunResult, ProviderId } from '../../shared/ipc'
 import { ollamaOpenAiBaseUrl } from '../../shared/domain/providers'
 import { DEFAULT_SETTINGS } from '../../shared/ipc'
-import { seedModelsFor } from '../../shared/providers'
-import { idSuggestsVision } from './providers/normalize'
 import { logger } from '../../shared/logger'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
-import { getSecret } from '@main/settings/secrets'
+import { getSecret, hasStoredSecretBlob, secretStatus } from '@main/settings/secrets'
 import { getSettings } from '@main/settings/settings'
 import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/workspace/workspaces'
-import { allocateBudget, contentWindow } from './context/budget'
+import { allocateBudget, contentWindow, contextWindowFor } from './context/budget'
 import { compactMessages, preserveRecentMessages } from './context/compact'
-import { KEEP_RECENT_TURNS } from './context/types'
-import { getProvider, listProviderModels } from './providers'
+import { estimateMessagesTokens } from './context/estimate'
+import { promoteCompactionToMemory } from './context/memoryPromote'
+import { isTrimWatermarkCompaction, KEEP_RECENT_TURNS } from './context/types'
+import { resolveModelInfo } from './modelResolve'
+import { getProvider } from './providers'
 import { loadCompaction, loadMessages, runExists, saveCompaction } from './state'
 import { resolveRunDir } from '@main/storage/paths'
 
@@ -22,34 +23,6 @@ const COMPACT_TIMEOUT_MS = 120_000
 const MIN_MESSAGES_TO_COMPACT = 4
 
 export class CompactionUnavailableError extends Error {}
-
-async function resolveModel(
-  providerId: ProviderId,
-  modelId: string,
-  apiKey: string | null,
-  baseUrl: string | undefined,
-  signal: AbortSignal
-): Promise<ModelInfo> {
-  try {
-    const listed = await listProviderModels({ provider: providerId, apiKey, baseUrl, signal })
-    const found = listed.models.find((m) => m.id === modelId)
-    if (found) return found
-  } catch {
-    // Falling back to the seed catalog is better than failing the compaction.
-  }
-  const seed = seedModelsFor(providerId).find((m) => m.id === modelId)
-  if (seed) return seed
-  return {
-    id: modelId,
-    displayName: modelId,
-    contextWindow: 128_000,
-    inputModalities: ['text'],
-    outputModalities: ['text'],
-    supportsTools: true,
-    supportsVision: idSuggestsVision(modelId),
-    supportsStructuredOutput: providerId !== 'ollama'
-  }
-}
 
 /**
  * Summarize a run's history on demand. Unlike automatic compaction this ignores
@@ -76,7 +49,14 @@ export async function compactRunNow(input: {
   const providerId: ProviderId = settings.provider
   const apiKey = providerId === 'ollama' ? null : getSecret(providerId)
   if (providerId !== 'ollama' && !apiKey) {
-    throw new CompactionUnavailableError(`API key for ${providerId} is not set.`)
+    const status = secretStatus()
+    const storedBlob = hasStoredSecretBlob(providerId)
+    const message = !status.encryptionAvailable
+      ? 'OS secure storage is unavailable. API keys cannot be decrypted on this system.'
+      : storedBlob
+        ? `API key for ${providerId} is stored but cannot be decrypted. Re-enter it in Settings or restore OS keychain access.`
+        : `API key for ${providerId} is not set.`
+    throw new CompactionUnavailableError(message)
   }
 
   const existing = loadCompaction(runDir)
@@ -92,7 +72,7 @@ export async function compactRunNow(input: {
   const signal = AbortSignal.timeout(COMPACT_TIMEOUT_MS)
   const provider = getProvider(providerId)
   const baseUrl = providerId === 'ollama' ? ollamaOpenAiBaseUrl(settings.ollamaBaseUrl) : undefined
-  const model = await resolveModel(providerId, settings.model, apiKey, baseUrl, signal)
+  const model = await resolveModelInfo(providerId, settings.model, apiKey, baseUrl, signal)
 
   const kept = preserveRecentMessages(
     working,
@@ -115,13 +95,26 @@ export async function compactRunNow(input: {
     signal,
     messages: toSummarize.map(({ thinking: _thinking, ...rest }) => rest),
     supportsStructuredOutput: model.supportsStructuredOutput,
-    contextWindow: contentWindow(model)
+    contextWindow: contentWindow(model),
+    priorSummary: isTrimWatermarkCompaction(existing) ? undefined : existing?.summary
   })
 
   if (!record) throw new CompactionUnavailableError('The model returned no summary.')
 
   const foldedMessages = folded + toSummarize.length
-  saveCompaction(runDir, { ...record, foldedMessages })
+  const compactionRecord = { ...record, foldedMessages }
+  saveCompaction(runDir, compactionRecord)
+  if (settings.memoryAutoPromote) {
+    try {
+      promoteCompactionToMemory(input.workspacePath, compactionRecord)
+    } catch (err) {
+      logger.warn('Memory auto-promote failed', {
+        scope: 'agent',
+        correlationId: input.runId,
+        err
+      })
+    }
+  }
 
   logger.info('Manual compaction complete', {
     scope: 'agent',
@@ -131,10 +124,16 @@ export async function compactRunNow(input: {
     keptMessages: kept.length
   })
 
+  const remainingEstimate =
+    estimateMessagesTokens(kept, model) + (record.tokenEstimate ?? 0)
+
   return {
     summary: record.summary,
     tokenEstimate: record.tokenEstimate,
     keptMessages: kept.length,
-    messagesBefore: working.length
+    messagesBefore: working.length,
+    estimatedTokens: remainingEstimate,
+    contextWindow: contextWindowFor(model),
+    contentWindow: contentWindow(model)
   }
 }

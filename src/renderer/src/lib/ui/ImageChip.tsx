@@ -18,8 +18,8 @@ export function ImageChip({
 }) {
   if (variant === 'compact') {
     return (
-      <span className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-1.5 py-0.5 text-xs text-muted">
-        <Icon name="image" size={11} />
+      <span className="inline-flex items-center gap-1 rounded-xl border border-border bg-surface px-1.5 py-0.5 text-xs text-muted">
+        <Icon name="image" size={14} />
         {label}
         {onRemove ? (
           <button
@@ -29,7 +29,7 @@ export function ImageChip({
             disabled={disabled}
             onClick={onRemove}
           >
-            <Icon name="close" size={10} />
+            <Icon name="close" size={12} />
           </button>
         ) : null}
       </span>
@@ -39,11 +39,12 @@ export function ImageChip({
   return (
     <span
       className={cn(
-        'inline-flex overflow-hidden rounded-md border border-border bg-surface',
+        'inline-flex overflow-hidden rounded-xl border border-border bg-surface',
         onRemove && 'pr-0.5',
         onClick && 'cursor-pointer'
       )}
       title={label}
+      aria-label={onClick ? label : undefined}
       onClick={onClick}
       onKeyDown={
         onClick
@@ -73,7 +74,7 @@ export function ImageChip({
           disabled={disabled}
           onClick={onRemove}
         >
-          <Icon name="close" size={10} />
+          <Icon name="close" size={12} />
         </button>
       ) : null}
     </span>

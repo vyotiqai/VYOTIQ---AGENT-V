@@ -1,5 +1,6 @@
 import type { ModelInfo, ProviderId } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
+import { withResolvedContextWindow } from '../../../shared/domain/modelContextWindows'
 import { providerLabel, providerNeedsKey, seedModelsFor } from '../../../shared/providers'
 import { anthropicProvider } from './anthropic'
 import { geminiProvider } from './gemini'
@@ -64,6 +65,10 @@ export function catalogWarningMessage(provider: ProviderId, err: unknown): strin
   return `${label}: ${raw}. Showing seed defaults (not live models).`
 }
 
+function enrichCatalogModels(provider: ProviderId, models: ModelInfo[]): ModelInfo[] {
+  return models.map((m) => withResolvedContextWindow(m, provider))
+}
+
 export async function listProviderModels(input: {
   provider: ProviderId
   apiKey?: string | null
@@ -74,13 +79,13 @@ export async function listProviderModels(input: {
   const key = modelCacheKey(input.provider, input.baseUrl, input.apiKey)
   if (!input.forceRefresh) {
     const cached = getCachedModels(key)
-    if (cached) return { models: cached }
+    if (cached) return { models: enrichCatalogModels(input.provider, cached) }
   }
 
   if (providerNeedsKey(input.provider) && !input.apiKey?.trim()) {
     const seeds = seedModelsFor(input.provider)
     return {
-      models: seeds,
+      models: enrichCatalogModels(input.provider, seeds),
       warning: catalogWarningMessage(
         input.provider,
         new Error(`${providerLabel(input.provider)} API key not set`)
@@ -106,12 +111,13 @@ export async function listProviderModels(input: {
       if (input.forceRefresh) clearModelCacheKey(key)
       const seeds = seedModelsFor(input.provider)
       return {
-        models: seeds,
+        models: enrichCatalogModels(input.provider, seeds),
         warning: `${providerLabel(input.provider)} live catalog was empty; showing seed defaults (not installed models).`
       }
     }
-    setCachedModels(key, models)
-    return { models }
+    const enriched = enrichCatalogModels(input.provider, models)
+    setCachedModels(key, enriched)
+    return { models: enriched }
   } catch (err) {
     if (input.forceRefresh) clearModelCacheKey(key)
     const seeds = seedModelsFor(input.provider)
@@ -126,14 +132,14 @@ export async function listProviderModels(input: {
         (timeout.aborted && /abort|timed out/i.test(raw)))
     if (timedOut) {
       return {
-        models: seeds,
+        models: enrichCatalogModels(input.provider, seeds),
         warning: `Timed out after 10s reaching ${providerLabel(input.provider)}${
           input.baseUrl ? ` at ${normalizeHostForWarning(input.baseUrl)}` : ''
         }. Showing seed defaults (not live models).`
       }
     }
     return {
-      models: seeds,
+      models: enrichCatalogModels(input.provider, seeds),
       warning: catalogWarningMessage(input.provider, err)
     }
   }

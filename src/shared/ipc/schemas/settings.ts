@@ -1,5 +1,10 @@
 import { z } from 'zod'
 import { ProviderIdSchema, ServiceTierSchema } from './providers'
+import {
+  DEFAULT_MARKETPLACE_SETTINGS,
+  MarketplaceSettingsSchema,
+  McpTransportSchema
+} from './marketplace'
 
 export const ThinkingEffortSchema = z.enum([
   'minimal',
@@ -14,14 +19,65 @@ export type ThinkingEffort = z.infer<typeof ThinkingEffortSchema>
 export const ThemeIdSchema = z.enum(['system', 'light', 'dark'])
 export type ThemeId = z.infer<typeof ThemeIdSchema>
 
-export const McpServerSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  command: z.string().min(1),
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string(), z.string()).optional(),
-  enabled: z.boolean().default(true)
-})
+const McpServerIdSchema = z
+  .string()
+  .min(1)
+  .refine((id) => !id.includes('__'), {
+    message: 'MCP server id must not contain "__"'
+  })
+
+/**
+ * MCP server config. Legacy entries without `transport` default to stdio.
+ * stdio requires `command`; http/sse require `url`.
+ */
+export const McpServerSchema = z.preprocess(
+  (raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
+    const obj = { ...(raw as Record<string, unknown>) }
+    if (obj.transport === undefined || obj.transport === null || obj.transport === '') {
+      obj.transport = 'stdio'
+    }
+    return obj
+  },
+  z
+    .object({
+      id: McpServerIdSchema,
+      name: z.string().min(1),
+      transport: McpTransportSchema.default('stdio'),
+      command: z.string().optional(),
+      args: z.array(z.string()).optional(),
+      env: z.record(z.string(), z.string()).optional(),
+      url: z.string().optional(),
+      headers: z.record(z.string(), z.string()).optional(),
+      /**
+       * When non-empty, only these bare MCP tool names are exposed/invokable.
+       * Empty / omitted = all tools (minus deniedTools).
+       */
+      allowedTools: z.array(z.string().min(1)).optional(),
+      /** Bare MCP tool names that are never exposed or invokable. */
+      deniedTools: z.array(z.string().min(1)).optional(),
+      enabled: z.boolean().default(true),
+      source: z.enum(['manual', 'marketplace']).optional(),
+      packageId: z.string().optional(),
+      packageVersion: z.string().optional()
+    })
+    .superRefine((val, ctx) => {
+      if (val.transport === 'stdio' && !(val.command ?? '').trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'command is required for stdio transport',
+          path: ['command']
+        })
+      }
+      if ((val.transport === 'http' || val.transport === 'sse') && !(val.url ?? '').trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'url is required for http/sse transport',
+          path: ['url']
+        })
+      }
+    })
+)
 export type McpServer = z.infer<typeof McpServerSchema>
 
 const ThinkingPrefsSchema = z.object({
@@ -36,6 +92,13 @@ const ThinkingPrefsSchema = z.object({
 export const ToolApprovalModeSchema = z.enum(['off', 'mutating', 'all'])
 export type ToolApprovalMode = z.infer<typeof ToolApprovalModeSchema>
 
+export const TerminalShellSchema = z.enum(['auto', 'cmd', 'powershell', 'bash'])
+export type TerminalShell = z.infer<typeof TerminalShellSchema>
+
+/** Composer interaction mode: Ask (read-only), Plan (plan artifacts), Agent (full). */
+export const AgentInteractionModeSchema = z.enum(['ask', 'plan', 'agent'])
+export type AgentInteractionMode = z.infer<typeof AgentInteractionModeSchema>
+
 export const ToolApprovalSettingsSchema = z.object({
   mode: ToolApprovalModeSchema.default('off'),
   /** Tool names the user chose to always allow, persisted per workspace. */
@@ -49,7 +112,6 @@ export const SettingsSchema = z.object({
   provider: ProviderIdSchema,
   model: z.string().min(1),
   ollamaBaseUrl: z.string().min(1),
-  maxSteps: z.number().int().min(1).max(100),
   theme: ThemeIdSchema,
   telemetryEnabled: z.boolean().default(false),
   mcpServers: z.array(McpServerSchema).default([]),
@@ -64,7 +126,19 @@ export const SettingsSchema = z.object({
   thinkingPrefsByProvider: z.record(ProviderIdSchema, ThinkingPrefsSchema).default({}),
   serviceTierByModel: z.record(z.string(), ServiceTierSchema).default({}),
   serviceTier: ServiceTierSchema.default('default'),
-  toolApproval: ToolApprovalSettingsSchema.default(DEFAULT_TOOL_APPROVAL)
+  toolApproval: ToolApprovalSettingsSchema.default(DEFAULT_TOOL_APPROVAL),
+  /** Shell used by the terminal tool. `auto` prefers PowerShell on Windows when available. */
+  terminalShell: TerminalShellSchema.default('auto'),
+  /**
+   * Optional override for the diagnostics tool typecheck command.
+   * Empty = auto-detect from package.json scripts / tsc.
+   */
+  diagnosticsCommand: z.string().default(''),
+  /** When set, sub-agents use this provider instead of `provider`. */
+  subagentProvider: ProviderIdSchema.optional(),
+  /** When set, sub-agents use this model instead of `model`. */
+  subagentModel: z.string().min(1).optional(),
+  marketplace: MarketplaceSettingsSchema.default(DEFAULT_MARKETPLACE_SETTINGS)
 })
 export type Settings = z.infer<typeof SettingsSchema>
 
@@ -72,7 +146,6 @@ export const DEFAULT_SETTINGS: Settings = {
   provider: 'ollama',
   model: 'qwen2.5',
   ollamaBaseUrl: 'http://127.0.0.1:11434',
-  maxSteps: 25,
   theme: 'system',
   telemetryEnabled: false,
   mcpServers: [],
@@ -87,7 +160,10 @@ export const DEFAULT_SETTINGS: Settings = {
   thinkingPrefsByProvider: {},
   serviceTierByModel: {},
   serviceTier: 'default',
-  toolApproval: DEFAULT_TOOL_APPROVAL
+  toolApproval: DEFAULT_TOOL_APPROVAL,
+  terminalShell: 'auto',
+  diagnosticsCommand: '',
+  marketplace: DEFAULT_MARKETPLACE_SETTINGS
 }
 
 export const SetSettingsRequestSchema = SettingsSchema.partial()

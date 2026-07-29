@@ -9,10 +9,11 @@ export function normalizeStopReason(raw: unknown): StopReason | undefined {
   if (typeof raw !== 'string' || !raw.trim()) return undefined
   const value = raw.trim().toLowerCase()
 
-  if (value.includes('tool') || value.includes('function')) return 'tool_calls'
+  // Length before generic "tool" so strings like max_tokens win over tool_calls.
   if (value.includes('max_token') || value.includes('max_output') || value === 'length') {
     return 'length'
   }
+  if (value.includes('tool') || value.includes('function')) return 'tool_calls'
   if (
     value.includes('safety') ||
     value.includes('content_filter') ||

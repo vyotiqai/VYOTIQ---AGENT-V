@@ -6,33 +6,56 @@ export function ComposerStatus({
   runNotice,
   incomplete,
   onContinue,
+  running,
   className
 }: {
   modelsWarning?: string | null
   runNotice?: string | null
   incomplete?: IncompleteTurnState | null
   onContinue?: () => void
+  /** When true, show truncation notices without a Continue button (auto-continue in flight). */
+  running?: boolean
   className?: string
 }) {
   const statusText = runNotice ?? modelsWarning
 
-  if (incomplete && onContinue) {
+  if (incomplete && onContinue && !running) {
+    return (
+      <div className={cn('flex flex-col gap-1', className)}>
+        <div className="flex items-center justify-end gap-2 px-2.5 text-right text-[11px] leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]">
+          <p className="m-0" role="status">
+            {incomplete.message}
+          </p>
+          <button
+            type="button"
+            onClick={onContinue}
+            className="shrink-0 rounded-xl border border-border px-1.5 py-0.5 font-medium text-fg transition-colors hover:bg-surface"
+          >
+            Continue
+          </button>
+        </div>
+        {statusText ? (
+          <p
+            className="m-0 px-2.5 text-right text-[11px] leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]"
+            role="status"
+          >
+            {statusText}
+          </p>
+        ) : null}
+      </div>
+    )
+  }
+
+  if (incomplete && running) {
     return (
       <p
         className={cn(
-          'm-0 flex items-center justify-end gap-2 px-2.5 text-right text-[11px] leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]',
+          'm-0 px-2.5 text-right text-[11px] leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]',
           className
         )}
         role="status"
       >
-        <span>{incomplete.message}</span>
-        <button
-          type="button"
-          onClick={onContinue}
-          className="shrink-0 rounded-md border border-subtle px-1.5 py-0.5 font-medium text-fg transition-colors hover:bg-hover"
-        >
-          Continue
-        </button>
+        {incomplete.message}
       </p>
     )
   }

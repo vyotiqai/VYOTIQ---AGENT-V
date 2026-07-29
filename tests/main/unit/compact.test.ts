@@ -145,4 +145,18 @@ describe('compactMessages', () => {
     expect(result).toBeNull()
     expect(freeformCalls).toBe(0)
   })
+
+  it('retains prior summary across successive folds', async () => {
+    const result = await compactMessages({
+      provider: mockProvider([{ type: 'text', text: structuredJson }]),
+      model: 'gpt-4o',
+      signal: new AbortController().signal,
+      messages: history,
+      supportsStructuredOutput: true,
+      priorSummary: '## Session Intent\nEarlier fact ALPHA_UNIQUE'
+    })
+    expect(result?.summary).toMatch(/ALPHA_UNIQUE/)
+    expect(result?.summary).toMatch(/Fix search/i)
+    expect(result?.summary).toContain('---')
+  })
 })

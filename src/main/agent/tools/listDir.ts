@@ -1,10 +1,12 @@
 import { existsSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
-import { assertInsideWorkspace } from '../../../shared/workspacePath'
+import { resolveInsideWorkspace } from '../../workspace/safePath'
 import { gitignoreMatcherForDir } from './gitignore'
 import { IGNORED_DIRS } from './walk'
 
-const DEFAULT_CAP = 200
+/** Max entries returned in one listing. */
+export const LIST_DIR_CAP = 200
+const DEFAULT_CAP = LIST_DIR_CAP
 
 function normalizeRelDir(pathArg: string): string {
   const rel = pathArg.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')
@@ -20,7 +22,7 @@ function formatSize(bytes: number): string {
 /** List one directory level, skipping ignored and gitignored entries. */
 export function toolListDir(workspaceRoot: string, pathArg = '.', cap = DEFAULT_CAP): string {
   const relDir = normalizeRelDir(pathArg)
-  const resolved = assertInsideWorkspace(workspaceRoot, relDir || '.')
+  const resolved = resolveInsideWorkspace(workspaceRoot, relDir || '.')
   if (!existsSync(resolved)) {
     throw new Error(`Directory not found: ${pathArg}`)
   }

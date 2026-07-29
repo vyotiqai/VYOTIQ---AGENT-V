@@ -1,5 +1,5 @@
 import { parseCompactionJson } from '../schemas/compaction'
-import type { CompactionRecord } from './types'
+import { isTrimWatermarkCompaction, type CompactionRecord } from './types'
 import { readMemoryFile, writeMemoryFile } from './memory'
 
 const PROMOTE_CAP = 2000
@@ -104,6 +104,7 @@ export function promoteCompactionToMemory(
   workspacePath: string,
   record: CompactionRecord
 ): void {
+  if (isTrimWatermarkCompaction(record)) return
   const parsed = parseCompactionJson(record.summary)
   if (parsed.structured) {
     promoteStructuredData(workspacePath, parsed.structured)

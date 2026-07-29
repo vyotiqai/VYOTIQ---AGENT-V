@@ -1,5 +1,9 @@
 import type { ChatMessage, ModelInfo } from '../../../shared/ipc'
 import type { TokenUsage } from '../providers/types'
+import {
+  BUDGET_SHARES as SHARED_BUDGET_SHARES,
+  DEFAULT_CONTEXT_WINDOW as SHARED_DEFAULT_CONTEXT_WINDOW
+} from '../../../shared/domain/contextBudget'
 
 export type BudgetLayers = {
   system: number
@@ -9,21 +13,15 @@ export type BudgetLayers = {
   buffer: number
 }
 
-/** Fixed budget shares of model context window. */
-export const BUDGET_SHARES: BudgetLayers = {
-  system: 0.12,
-  tools: 0.18,
-  memoryWorkspace: 0.15,
-  history: 0.4,
-  buffer: 0.15
-}
+/** Fixed budget shares of model context window — kept in sync via shared/domain/contextBudget. */
+export const BUDGET_SHARES: BudgetLayers = SHARED_BUDGET_SHARES
 
 export const COMPACTION_TRIGGER_RATIO = 0.7
 export const KEEP_RECENT_TURNS = 12
 export const KEEP_LAST_TOOL_RESULTS = 3
 export const MEMORY_INDEX_CAP = 3000
 export const MEMORY_STATE_CAP = 3000
-export const DEFAULT_CONTEXT_WINDOW = 128_000
+export const DEFAULT_CONTEXT_WINDOW = SHARED_DEFAULT_CONTEXT_WINDOW
 
 import { z } from 'zod'
 
@@ -41,6 +39,19 @@ export const CompactionRecordSchema = z.object({
 })
 export type CompactionRecord = z.infer<typeof CompactionRecordSchema>
 
+/**
+ * Sentinel summary for trim-only watermarks. Persists `foldedMessages` across
+ * resume when history was dropped without an LLM summary. Never inject into
+ * the system prompt or promote to memory.
+ */
+export const CONTEXT_TRIM_WATERMARK_SUMMARY = '__vyotiq_context_trim_watermark__'
+
+export function isTrimWatermarkCompaction(
+  record: Pick<CompactionRecord, 'summary'> | null | undefined
+): boolean {
+  return record?.summary === CONTEXT_TRIM_WATERMARK_SUMMARY
+}
+
 export type AssembleInput = {
   harness: string
   messages: ChatMessage[]
@@ -55,6 +66,12 @@ export type AssembleInput = {
   priorCompaction?: CompactionRecord | null
   /** Injected when the agent loop detects repeated tool-failure steps (generic, not workspace-specific). */
   loopHint?: string
+  /** Eager marketplace skills section (pre-built markdown). */
+  skillsSection?: string
+  /** Enabled plugin rules section (pre-built markdown). */
+  pluginRulesSection?: string
+  /** Ask / Plan mode overlay (null/omit for Agent). */
+  modeSection?: string
 }
 
 export type ContextLayerBreakdown = {
@@ -71,6 +88,8 @@ export type AssembleResult = {
   estimatedTokens: number
   layers: ContextLayerBreakdown
   contextShrunk: boolean
+  /** True when estimated tokens still exceed the content window after compaction/trim. */
+  overflow: boolean
   anthropicNative: {
     enableContextManagement: boolean
     clearToolUsesKeep: number

@@ -1,15 +1,28 @@
 import type { UiGroupTiming, UiToolRow } from '@shared/transcript'
+import { mcpDoneLabel, mcpRunningLabel } from '@shared/utils/mcpToolMeta'
 import {
+  isUnresolvedToolName,
+  mcpToolSummary,
+  parseArgsRecord,
   parseMcpToolDisplay,
-  TOOL_LABELS,
   summarizeToolArgs
 } from '@shared/toolSummary'
 import { formatElapsed } from '@shared/utils/timeFormat'
+import {
+  categoryLabels,
+  mixedGroupLabels,
+  toolCategory,
+  toolLabel,
+  type ToolCategory
+} from '../toolUi'
+import { truncateText } from '../toolUi/parsers/common'
+import { parseReadLineRange } from '../toolUi/parsers/read'
 
-export type ToolGroupCategory = 'file' | 'edit' | 'search' | 'command' | 'browse'
+export type ToolGroupCategory = ToolCategory
 
 export type ToolGroupNestedTool = {
   id: string
+  name: string
   category: ToolGroupCategory
   title: string
   subtitle: string
@@ -22,115 +35,131 @@ export type ToolGroupProps = {
   state: ToolGroupState
   nestedTools: ToolGroupNestedTool[]
   summary: string
-  /** Header verb derived from what the group actually did. */
   runningLabel: string
   doneLabel: string
   elapsedMs: number | null
   elapsedDisplay: string
+  singleTool: boolean
 }
-
-const FILE_TOOLS = new Set(['read', 'memory_list', 'memory_read'])
-const EDIT_TOOLS = new Set(['edit', 'write', 'memory_write'])
-const SEARCH_TOOLS = new Set(['search', 'grep', 'glob', 'web_fetch'])
-const BROWSE_TOOLS = new Set(['list_dir'])
-const COMMAND_TOOLS = new Set(['terminal'])
 
 const INTERRUPTED_CONTENT = new Set(['Cancelled', 'Interrupted', 'Stopped'])
 
-const CATEGORY_LABELS: Record<ToolGroupCategory, { running: string; done: string }> = {
-  file: { running: 'Reading', done: 'Read' },
-  edit: { running: 'Editing', done: 'Edited' },
-  search: { running: 'Searching', done: 'Searched' },
-  command: { running: 'Running', done: 'Ran' },
-  browse: { running: 'Browsing', done: 'Browsed' }
+const CATEGORY_COUNT_LABELS: Record<ToolGroupCategory, [singular: string, plural: string]> = {
+  file: ['file', 'files'],
+  edit: ['edit', 'edits'],
+  search: ['lookup', 'lookups'],
+  command: ['command', 'commands'],
+  browse: ['directory', 'directories']
 }
 
-const MIXED_LABELS = { running: 'Exploring', done: 'Explored' }
-
-function toolCategory(name: string): ToolGroupCategory {
-  if (FILE_TOOLS.has(name)) return 'file'
-  if (EDIT_TOOLS.has(name)) return 'edit'
-  if (SEARCH_TOOLS.has(name)) return 'search'
-  if (BROWSE_TOOLS.has(name)) return 'browse'
-  if (COMMAND_TOOLS.has(name)) return 'command'
-  if (parseMcpToolDisplay(name)) return 'search'
-  return 'file'
+const CATEGORY_MIXED_VERBS: Record<ToolGroupCategory, { running: string; done: string }> = {
+  file: { running: 'reading', done: 'read' },
+  edit: { running: 'editing', done: 'edited' },
+  search: { running: 'searching', done: 'searched' },
+  command: { running: 'running commands', done: 'ran commands' },
+  browse: { running: 'listing directories', done: 'listed directories' }
 }
 
-/** A group of one kind of work names that work; a mixed group is exploration. */
+function capitalize(text: string): string {
+  if (!text) return text
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+function joinComposite(parts: string[]): string {
+  if (parts.length === 0) return ''
+  if (parts.length === 1) return capitalize(parts[0]!)
+  if (parts.length === 2) return `${capitalize(parts[0]!)} and ${parts[1]}`
+  return `${capitalize(parts[0]!)}, ${parts.slice(1, -1).join(', ')}, and ${parts[parts.length - 1]}`
+}
+
+function compositeMixedLabels(tools: ToolGroupNestedTool[]): { running: string; done: string } {
+  const counts: Record<ToolGroupCategory, number> = {
+    file: 0,
+    edit: 0,
+    search: 0,
+    command: 0,
+    browse: 0
+  }
+  for (const tool of tools) counts[tool.category] += 1
+
+  const order: ToolGroupCategory[] = ['file', 'browse', 'search', 'command', 'edit']
+  const active = order.filter((category) => counts[category] > 0)
+  if (active.length === 0) return mixedGroupLabels()
+  if (active.length === 1) return categoryLabels(active[0]!)
+
+  const running = joinComposite(active.map((category) => CATEGORY_MIXED_VERBS[category].running))
+  const done = joinComposite(active.map((category) => CATEGORY_MIXED_VERBS[category].done))
+  return { running, done }
+}
+
 function groupLabels(
   tools: ToolGroupNestedTool[],
   names: string[]
 ): { running: string; done: string } {
   const first = tools[0]
-  if (!first) return MIXED_LABELS
+  if (!first) return mixedGroupLabels()
   if (names.length > 0 && names.every((name) => name === names[0])) {
-    const specific = TOOL_LABELS[names[0]!]
-    if (specific) return specific
+    const mcp = parseMcpToolDisplay(names[0]!)
+    if (mcp) {
+      return {
+        running: mcpRunningLabel(mcp.toolName),
+        done: mcpDoneLabel(mcp.toolName)
+      }
+    }
+    const specific = {
+      running: toolLabel(names[0]!, 'running'),
+      done: toolLabel(names[0]!, 'done')
+    }
+    if (specific.running !== 'Running' && specific.done !== 'Done') return specific
   }
   return tools.every((tool) => tool.category === first.category)
-    ? CATEGORY_LABELS[first.category]
-    : MIXED_LABELS
-}
-
-function toolTitle(name: string, status: UiToolRow['status']): string {
-  const mcp = parseMcpToolDisplay(name)
-  if (mcp) {
-    return status === 'running' ? `Calling ${mcp.toolName}` : mcp.toolName
-  }
-  const labels = TOOL_LABELS[name]
-  if (!labels) return name
-  return status === 'running' ? labels.running : labels.done
+    ? categoryLabels(first.category)
+    : compositeMixedLabels(tools)
 }
 
 function toolSubtitle(tool: UiToolRow): string {
+  if (isUnresolvedToolName(tool.name)) return ''
   const summary = tool.summary?.trim() || summarizeToolArgs(tool.name, tool.argsPreview)
-  if (!summary) return ''
+  if (!summary) return '…'
   if (tool.name === 'terminal') return summary.slice(0, 80)
-  if (tool.name === 'read' || tool.name === 'edit' || tool.name === 'write') {
+  if (tool.name === 'read' || tool.name === 'edit' || tool.name === 'str_replace' || tool.name === 'delete') {
     const parts = summary.split(/[/\\]/)
     const file = parts[parts.length - 1] || summary
-    const range = tool.name === 'read' ? readLineRange(tool) : ''
+    const range = tool.name === 'read' ? parseReadLineRange(tool) : ''
     return range ? `${file} ${range}` : file
   }
-  return summary.length > 80 ? `${summary.slice(0, 77)}...` : summary
-}
-
-/**
- * The span of the file a read actually returned, as "L12-48".
- *
- * A ranged read states its bounds in the arguments. An unranged one returned the
- * whole file, so its length is the range — but only when the full text is in
- * hand; a preview truncated for IPC would give a number that is simply wrong.
- */
-function readLineRange(tool: UiToolRow): string {
-  const args = parseArgs(tool.argsPreview)
-  const start = typeof args?.startLine === 'number' ? args.startLine : null
-  const end = typeof args?.endLine === 'number' ? args.endLine : null
-  if (start != null || end != null) {
-    return end == null ? `L${start}+` : `L${start ?? 1}-${end}`
+  const mcp = parseMcpToolDisplay(tool.name)
+  if (mcp) {
+    const args = parseArgsRecord(tool.argsPreview)
+    if (args) {
+      const fromMcp = mcpToolSummary(mcp.toolName, args)
+      if (fromMcp) return truncateText(fromMcp, 80)
+    }
   }
-
-  if (tool.contentTruncated || !tool.content) return ''
-  const lines = tool.content.split('\n')
-  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
-  return lines.length > 0 ? `L1-${lines.length}` : ''
+  return truncateText(summary, 80)
 }
 
-function parseArgs(args: string | undefined): Record<string, unknown> | null {
-  if (!args?.trim()) return null
-  try {
-    const parsed = JSON.parse(args) as unknown
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null
-  } catch {
-    return null
+function nestedRowTitle(tool: UiToolRow, subtitle: string, inGroup: boolean): string {
+  if (inGroup) {
+    if (subtitle && subtitle !== '…') return subtitle
+    const preview = tool.argsPreview?.trim()
+    if (preview) {
+      const fromArgs = toolSubtitle({ ...tool, argsPreview: preview })
+      if (fromArgs && fromArgs !== '…') return fromArgs
+    }
+    if (tool.name && tool.name !== 'tool') {
+      const summary = tool.summary?.trim()
+      if (summary) return truncateText(summary, 80)
+    }
   }
+  if (tool.status === 'running' && isUnresolvedToolName(tool.name)) {
+    return 'Preparing…'
+  }
+  return toolLabel(tool.name, tool.status)
 }
 
-function formatCount(value: number, label: string): string {
-  return `${value} ${value === 1 ? label : `${label}s`}`
+function formatCount(value: number, label: string, plural: string): string {
+  return `${value} ${value === 1 ? label : plural}`
 }
 
 function summarizeCounts(tools: ToolGroupNestedTool[]): string {
@@ -144,13 +173,26 @@ function summarizeCounts(tools: ToolGroupNestedTool[]): string {
   for (const tool of tools) counts[tool.category] += 1
 
   const parts: string[] = []
-  if (counts.file > 0) parts.push(formatCount(counts.file, 'file'))
-  if (counts.edit > 0) parts.push(formatCount(counts.edit, 'edit'))
-  if (counts.search > 0) {
-    parts.push(`${counts.search} ${counts.search === 1 ? 'search' : 'searches'}`)
+  if (counts.file > 0) {
+    const [s, p] = CATEGORY_COUNT_LABELS.file
+    parts.push(formatCount(counts.file, s, p))
   }
-  if (counts.command > 0) parts.push(formatCount(counts.command, 'command'))
-  if (counts.browse > 0) parts.push(formatCount(counts.browse, 'browse'))
+  if (counts.edit > 0) {
+    const [s, p] = CATEGORY_COUNT_LABELS.edit
+    parts.push(formatCount(counts.edit, s, p))
+  }
+  if (counts.search > 0) {
+    const [s, p] = CATEGORY_COUNT_LABELS.search
+    parts.push(formatCount(counts.search, s, p))
+  }
+  if (counts.command > 0) {
+    const [s, p] = CATEGORY_COUNT_LABELS.command
+    parts.push(formatCount(counts.command, s, p))
+  }
+  if (counts.browse > 0) {
+    const [s, p] = CATEGORY_COUNT_LABELS.browse
+    parts.push(formatCount(counts.browse, s, p))
+  }
 
   if (parts.length === 0) return ''
   if (parts.length === 1) return parts[0]!
@@ -163,9 +205,6 @@ function isInterrupted(tools: UiToolRow[]): boolean {
 }
 
 function deriveState(tools: UiToolRow[], groupTiming: UiGroupTiming | undefined): ToolGroupState {
-  // Only this group's own tools decide whether it is still working. Keying off the
-  // run-wide running flag kept every group with unclosed timing on "Exploring" for the
-  // rest of the turn, long after its tools had finished.
   const hasRunning = tools.some((tool) => tool.status === 'running')
   if (hasRunning && groupTiming?.endedAt == null) return 'pending'
   if (isInterrupted(tools)) return 'interrupted'
@@ -178,19 +217,22 @@ export function mapToolGroupProps(
     groupTiming?: UiGroupTiming
   }
 ): ToolGroupProps {
-  const nestedTools: ToolGroupNestedTool[] = tools.map((tool) => ({
-    id: tool.id,
-    category: toolCategory(tool.name),
-    title: toolTitle(tool.name, tool.status),
-    subtitle: toolSubtitle(tool),
-    status: tool.status
-  }))
+  const inGroup = tools.length > 1
+  const nestedTools: ToolGroupNestedTool[] = tools.map((tool) => {
+    const subtitle = toolSubtitle(tool)
+    return {
+      id: tool.id,
+      name: tool.name,
+      category: toolCategory(tool.name),
+      title: nestedRowTitle(tool, subtitle, inGroup),
+      subtitle: inGroup ? '' : subtitle,
+      status: tool.status
+    }
+  })
 
   const state = deriveState(tools, options.groupTiming)
   const { groupTiming } = options
 
-  // A finished group with timing that was never closed must not keep ticking up
-  // on every re-render — report nothing rather than an invented duration.
   let elapsedMs: number | null = null
   if (groupTiming?.startedAt != null) {
     if (groupTiming.endedAt != null) elapsedMs = groupTiming.endedAt - groupTiming.startedAt
@@ -202,13 +244,19 @@ export function mapToolGroupProps(
     tools.map((tool) => tool.name)
   )
 
+  const allSubagents = tools.length > 0 && tools.every((tool) => tool.name === 'subagent')
+  const summary = allSubagents
+    ? `${tools.length} agent${tools.length === 1 ? '' : 's'}`
+    : summarizeCounts(nestedTools)
+
   return {
     state,
     nestedTools,
-    summary: summarizeCounts(nestedTools),
+    summary,
     runningLabel: labels.running,
     doneLabel: labels.done,
     elapsedMs,
-    elapsedDisplay: elapsedMs != null && elapsedMs >= 1000 ? formatElapsed(elapsedMs) : ''
+    elapsedDisplay: elapsedMs != null && elapsedMs >= 1000 ? formatElapsed(elapsedMs) : '',
+    singleTool: tools.length === 1
   }
 }

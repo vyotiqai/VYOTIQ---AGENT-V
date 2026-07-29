@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import { PROVIDER_DEFAULTS, seedModelsFor, providerLabel } from '@shared/providers'
-import type { ModelInfo, ProviderId } from '@shared/ipc'
+import type { ProviderId } from '@shared/ipc'
 import { modelSelectionKey } from '@shared/domain/modelSelection'
 import {
   filterModelsForWorkspace,
@@ -19,9 +19,7 @@ export function useComposerModels({
   modelsRefreshKey,
   hasWorkspace,
   hasImages,
-  running,
-  browsedProvider,
-  onProviderModel
+  browsedProvider
 }: {
   provider: ProviderId
   model: string
@@ -29,9 +27,8 @@ export function useComposerModels({
   modelsRefreshKey?: string | number
   hasWorkspace?: boolean
   hasImages: boolean
-  running: boolean
+  running?: boolean
   browsedProvider?: ProviderId
-  onProviderModel: (provider: ProviderId, model: string) => void
 }) {
   const value = modelSelectionKey(provider, model)
   const activeBrowse = browsedProvider ?? provider
@@ -99,19 +96,6 @@ export function useComposerModels({
     return map
   }, [])
 
-  useEffect(() => {
-    if (!hasImages || running) return
-    const currentOk = catalog.some(
-      (m) =>
-        m.id === model && (m.supportsVision || m.inputModalities.includes('image'))
-    )
-    if (currentOk) return
-    const fallback = filtered[0]
-    if (fallback && fallback.id !== model) {
-      onProviderModel(provider, fallback.id)
-    }
-  }, [hasImages, running, catalog, filtered, model, provider, onProviderModel])
-
   const currentMeta = modelMetaByValue[value]
 
   const refreshCatalog = async (opts?: {
@@ -138,6 +122,7 @@ export function useComposerModels({
     catalogLoading: Boolean(getEntry(activeBrowse)?.loading),
     catalog,
     filtered,
+    filterOpts,
     currentMeta,
     refreshCatalog,
     loadProvider

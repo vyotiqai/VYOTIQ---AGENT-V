@@ -1,57 +1,118 @@
 import { type ZodTypeAny } from 'zod'
 
-function unwrap(schema: ZodTypeAny): ZodTypeAny {
+type ZodDef = {
+  typeName: string
+  description?: string
+  innerType?: ZodTypeAny
+  schema?: ZodTypeAny
+  type?: ZodTypeAny
+  shape?: () => Record<string, ZodTypeAny>
+  values?: string[]
+  checks?: Array<{ kind: string; value?: number }>
+  minLength?: { value: number } | null
+  maxLength?: { value: number } | null
+}
+
+function defOf(schema: ZodTypeAny): ZodDef {
+  return schema._def as ZodDef
+}
+
+/**
+ * Peel Optional / Nullable / Default / Effects while collecting the first
+ * non-empty `.describe()` on the wrapper chain. Zod attaches describe to the
+ * outer wrapper when callers write `.optional().describe(...)`, so reading
+ * description only after unwrap silently drops most param docs.
+ */
+function unwrapWithDescription(schema: ZodTypeAny): {
+  inner: ZodTypeAny
+  description: string | undefined
+} {
   let s = schema
+  let description: string | undefined
   for (;;) {
-    const typeName = s._def.typeName as string
-    if (typeName === 'ZodOptional' || typeName === 'ZodNullable') {
-      s = s._def.innerType as ZodTypeAny
+    const d = defOf(s)
+    if (d.description && !description) description = d.description
+    if (d.typeName === 'ZodOptional' || d.typeName === 'ZodNullable') {
+      s = d.innerType as ZodTypeAny
       continue
     }
-    if (typeName === 'ZodDefault') {
-      s = s._def.innerType as ZodTypeAny
+    if (d.typeName === 'ZodDefault') {
+      s = d.innerType as ZodTypeAny
       continue
     }
-    if (typeName === 'ZodEffects') {
-      s = s._def.schema as ZodTypeAny
+    if (d.typeName === 'ZodEffects') {
+      s = d.schema as ZodTypeAny
       continue
     }
     break
   }
-  return s
+  return { inner: s, description }
 }
 
 function isOptional(schema: ZodTypeAny): boolean {
-  const typeName = schema._def.typeName as string
-  return typeName === 'ZodOptional' || typeName === 'ZodDefault'
+  let s = schema
+  for (;;) {
+    const d = defOf(s)
+    if (d.typeName === 'ZodOptional' || d.typeName === 'ZodDefault') return true
+    if (d.typeName === 'ZodNullable' || d.typeName === 'ZodEffects') {
+      s = (d.typeName === 'ZodEffects' ? d.schema : d.innerType) as ZodTypeAny
+      continue
+    }
+    return false
+  }
+}
+
+function withDescription(
+  obj: Record<string, unknown>,
+  description: string | undefined
+): Record<string, unknown> {
+  return description ? { ...obj, description } : obj
+}
+
+function numberSchema(s: ZodTypeAny, description: string | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = { type: 'number' }
+  const checks = defOf(s).checks
+  if (checks) {
+    for (const c of checks) {
+      if (c.kind === 'int') out.type = 'integer'
+      if (c.kind === 'min' && typeof c.value === 'number') out.minimum = c.value
+      if (c.kind === 'max' && typeof c.value === 'number') out.maximum = c.value
+    }
+  }
+  return withDescription(out, description)
 }
 
 /** Minimal Zod → JSON Schema for tool / compaction definitions. */
 export function zodToJsonSchema(schema: ZodTypeAny): Record<string, unknown> {
-  const s = unwrap(schema)
-  const typeName = s._def.typeName as string
-  const description = s._def.description as string | undefined
-
-  const withDesc = (obj: Record<string, unknown>): Record<string, unknown> =>
-    description ? { ...obj, description } : obj
+  const { inner: s, description } = unwrapWithDescription(schema)
+  const typeName = defOf(s).typeName
 
   if (typeName === 'ZodString') {
-    return withDesc({ type: 'string' })
+    return withDescription({ type: 'string' }, description)
   }
   if (typeName === 'ZodNumber') {
-    return withDesc({ type: 'number' })
+    return numberSchema(s, description)
   }
   if (typeName === 'ZodBoolean') {
-    return withDesc({ type: 'boolean' })
+    return withDescription({ type: 'boolean' }, description)
+  }
+  if (typeName === 'ZodEnum') {
+    const values = defOf(s).values ?? []
+    return withDescription({ type: 'string', enum: [...values] }, description)
   }
   if (typeName === 'ZodArray') {
-    return withDesc({
+    const items = defOf(s).type as ZodTypeAny
+    const out: Record<string, unknown> = {
       type: 'array',
-      items: zodToJsonSchema(s._def.type as ZodTypeAny)
-    })
+      items: zodToJsonSchema(items)
+    }
+    const d = defOf(s)
+    if (d.minLength && typeof d.minLength.value === 'number') out.minItems = d.minLength.value
+    if (d.maxLength && typeof d.maxLength.value === 'number') out.maxItems = d.maxLength.value
+    return withDescription(out, description)
   }
   if (typeName === 'ZodObject') {
-    const shape = (s._def.shape as () => Record<string, ZodTypeAny>)()
+    const shape = (defOf(s).shape as () => Record<string, ZodTypeAny>)()
     const properties: Record<string, unknown> = {}
     const required: string[] = []
     for (const [key, field] of Object.entries(shape)) {
@@ -64,7 +125,9 @@ export function zodToJsonSchema(schema: ZodTypeAny): Record<string, unknown> {
       additionalProperties: false
     }
     if (required.length) out.required = required
-    return withDesc(out)
+    // OpenAI strict mode rejects `{}` tools that omit `required` entirely.
+    else if (Object.keys(properties).length === 0) out.required = []
+    return withDescription(out, description)
   }
   return {}
 }

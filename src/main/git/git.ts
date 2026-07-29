@@ -165,6 +165,48 @@ export async function readGitStatus(cwd: string): Promise<GitStatus | null> {
   }
 }
 
+const DIFF_CAP_CHARS = 100_000
+
+export type GitDiffOptions = {
+  path?: string
+  staged?: boolean
+}
+
+/** Unified diff against HEAD (or staged index). Capped for tool output. */
+export async function readGitDiff(
+  cwd: string,
+  opts: GitDiffOptions = {}
+): Promise<{ ok: true; content: string } | { ok: false; error: string }> {
+  if (!isGitRepo(cwd)) return { ok: false, error: 'Not a git repository' }
+
+  const hasCommits =
+    (await gitQuiet(['rev-parse', '--verify', 'HEAD'], cwd, READ_TIMEOUT_MS)) != null
+  const args = ['diff', '--no-color', '--no-ext-diff']
+  if (opts.staged || !hasCommits) args.push('--cached')
+  if (opts.path?.trim()) {
+    args.push('--', opts.path.trim())
+  }
+
+  try {
+    const stdout = await git(args, cwd, READ_TIMEOUT_MS)
+    const text = stdout.trimEnd()
+    if (!text) {
+      return {
+        ok: true,
+        content: opts.staged || !hasCommits ? '(no staged changes)' : '(no unstaged changes)'
+      }
+    }
+    if (text.length <= DIFF_CAP_CHARS) return { ok: true, content: text }
+    return {
+      ok: true,
+      content: text.slice(0, DIFF_CAP_CHARS) + `\n… (diff truncated at ${DIFF_CAP_CHARS} chars)`
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return { ok: false, error: message }
+  }
+}
+
 export type CommitOutcome = { committed: boolean; pushed: boolean; detail: string }
 
 export async function commitAll(

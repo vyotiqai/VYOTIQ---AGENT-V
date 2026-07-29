@@ -1,6 +1,12 @@
 import type { AgentEvent, PersistedEvent } from '../ipc'
 import { isAgentEvent } from './eventUtils'
 import {
+  allocateBudgetShares,
+  compactionTriggerFromRaw,
+  contentWindowFromRaw,
+  DEFAULT_COMPACTION_TRIGGER_RATIO
+} from '../domain/contextBudget'
+import {
   emptyStepUsageTotals,
   mergeStepUsageTotals,
   stepUsageFromEvent,
@@ -26,6 +32,8 @@ export type ContextUsageState = {
   layers: ContextLayerBreakdown
   stepUsage: StepUsageTotals
   updatedAt: string
+  /** True when context still exceeds the model window after compaction. */
+  overflow?: boolean
 }
 
 export function contextUsageFromEvent(
@@ -45,6 +53,28 @@ export function contextUsageFromEvent(
     source: event.source,
     layers: event.layers,
     stepUsage,
+    updatedAt: new Date().toISOString(),
+    ...(event.overflow ? { overflow: true } : {})
+  }
+}
+
+export type SubagentContextUsageState = {
+  step: number
+  used: number
+  window: number
+  contentWindow: number
+  model: string
+  updatedAt: string
+}
+
+export function subagentContextUsageFromEvent(event: AgentEvent): SubagentContextUsageState | null {
+  if (event.type !== 'subagent_context_usage') return null
+  return {
+    step: event.step,
+    used: event.estimatedTokens,
+    window: event.contextWindow,
+    contentWindow: event.contentWindow ?? event.contextWindow,
+    model: event.model,
     updatedAt: new Date().toISOString()
   }
 }
@@ -66,4 +96,31 @@ export function summarizeContextUsageFromEvents(
   }
 
   return latest
+}
+
+/**
+ * Re-align window / content budget / buffer / compaction trigger to the real
+ * model window while keeping measured usage layers. Fixes meters that hydrated
+ * from older runs that stored the 128k fallback.
+ */
+export function alignContextUsageToModelWindow(
+  usage: ContextUsageState,
+  modelWindow: number,
+  triggerRatio = DEFAULT_COMPACTION_TRIGGER_RATIO
+): ContextUsageState {
+  if (!Number.isFinite(modelWindow) || modelWindow <= 0 || modelWindow === usage.window) {
+    return usage
+  }
+  const shares = allocateBudgetShares(modelWindow)
+  const contentWindow = contentWindowFromRaw(modelWindow)
+  return {
+    ...usage,
+    window: modelWindow,
+    contentWindow,
+    compactionTrigger: compactionTriggerFromRaw(modelWindow, triggerRatio),
+    layers: {
+      ...usage.layers,
+      buffer: shares.buffer
+    }
+  }
 }

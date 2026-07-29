@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/react'
 import { ChatView } from '@renderer/features/chat/ChatView'
+import { COMPOSER_DOCK_FADE_PX } from '@renderer/lib/utils/layout'
 
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
@@ -13,11 +14,24 @@ beforeEach(() => {
     writable: true,
     value: { gitStatus: vi.fn().mockResolvedValue({ ok: true, data: null }) }
   })
+  class ResizeObserverStub {
+    private readonly cb: ResizeObserverCallback
+    constructor(cb: ResizeObserverCallback) {
+      this.cb = cb
+    }
+    observe(): void {
+      this.cb([], this as unknown as ResizeObserver)
+    }
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  vi.stubGlobal('ResizeObserver', ResizeObserverStub)
 })
 
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 const baseProps = {
@@ -34,7 +48,6 @@ const baseProps = {
   chatSettings: {
     provider: 'ollama' as const,
     model: 'qwen2.5',
-    maxSteps: 25,
     compactionTriggerRatio: 0.7,
     keepRecentTurns: 12,
     memoryAutoPromote: true,
@@ -58,6 +71,7 @@ describe('ChatView composer placement', () => {
     expect(composers).toHaveLength(1)
 
     expect(document.querySelector('[data-composer-hero]')).toBeTruthy()
+    expect(screen.getByText(/Type \/ for commands/i)).toBeTruthy()
     expect(screen.getByText(/\/create-rule/)).toBeTruthy()
 
     const composerRoot = composers[0].closest('.shrink-0')
@@ -130,5 +144,65 @@ describe('ChatView composer placement', () => {
       expect(el?.className).toMatch(/max-w-\[720px\]/)
       expect(el?.className).toMatch(/w-full/)
     }
+  })
+
+  it('reserves dock height plus fade so the transcript clears the composer', () => {
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (
+      this: HTMLElement
+    ) {
+      if (this.hasAttribute('data-composer-dock')) return 120
+      return 0
+    })
+
+    render(
+      <ChatView
+        {...baseProps}
+        items={[
+          {
+            kind: 'message',
+            id: 'm1',
+            role: 'user',
+            content: 'hello',
+            at: '2024-01-01T00:00:00.000Z'
+          }
+        ]}
+      />
+    )
+
+    const stage = document.querySelector('[data-chat-stage]') as HTMLElement | null
+    const transcript = document.querySelector('[data-transcript-scroll]') as HTMLElement | null
+    expect(stage).toBeTruthy()
+    expect(transcript).toBeTruthy()
+    expect(stage!.style.getPropertyValue('--vy-dock-h')).toBe(
+      `${120 + COMPOSER_DOCK_FADE_PX}px`
+    )
+    expect(transcript!.style.paddingBottom).toBe('var(--vy-dock-h, 8rem)')
+  })
+
+  it('remounts the transcript when chatSurfaceEpoch changes but not for draft alone', () => {
+    const items = [
+      {
+        kind: 'message' as const,
+        id: 'm1',
+        role: 'user' as const,
+        content: 'hello',
+        at: '2024-01-01T00:00:00.000Z'
+      }
+    ]
+    const { rerender } = render(
+      <ChatView {...baseProps} items={items} chatSurfaceEpoch={0} activeRunId={null} />
+    )
+    const first = document.querySelector('[data-transcript-scroll]')
+    expect(first).toBeTruthy()
+
+    rerender(
+      <ChatView {...baseProps} items={items} chatSurfaceEpoch={0} activeRunId="run-1" />
+    )
+    expect(document.querySelector('[data-transcript-scroll]')).toBe(first)
+
+    rerender(
+      <ChatView {...baseProps} items={items} chatSurfaceEpoch={1} activeRunId="run-1" />
+    )
+    expect(document.querySelector('[data-transcript-scroll]')).not.toBe(first)
   })
 })

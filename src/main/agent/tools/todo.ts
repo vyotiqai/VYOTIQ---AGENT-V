@@ -40,6 +40,23 @@ export function readTodos(runDir: string): TodoItem[] {
   }
 }
 
+function serializeTodoContent(todos: TodoItem[]): string {
+  const done = todos.filter((todo) => todo.status === 'completed').length
+  const lines = todos.map((todo) => `${STATUS_MARK[todo.status]} ${todo.content}`)
+  return [`${done}/${todos.length} complete`, ...lines].join('\n')
+}
+
+/** Cancel in-progress tasks left open when a run is interrupted. */
+export function finalizeInterruptedTodos(runDir: string): string | null {
+  const todos = readTodos(runDir)
+  if (!todos.some((todo) => todo.status === 'in_progress')) return null
+  const next = todos.map((todo) =>
+    todo.status === 'in_progress' ? { ...todo, status: 'cancelled' as const } : todo
+  )
+  atomicWriteJson(todoPath(runDir), { updatedAt: new Date().toISOString(), todos: next })
+  return serializeTodoContent(next)
+}
+
 /**
  * Replace or merge the run's task list.
  *
@@ -72,10 +89,8 @@ export function toolTodoWrite(
 
   atomicWriteJson(todoPath(runDir), { updatedAt: new Date().toISOString(), todos: next })
 
-  const done = next.filter((todo) => todo.status === 'completed').length
-  const lines = next.map((todo) => `${STATUS_MARK[todo.status]} ${todo.content}`)
   return {
-    content: [`${done}/${next.length} complete`, ...lines].join('\n'),
+    content: serializeTodoContent(next),
     todos: next
   }
 }

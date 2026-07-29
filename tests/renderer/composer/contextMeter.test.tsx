@@ -21,14 +21,22 @@ const usage: ContextUsageState = {
 }
 
 describe('ContextMeter', () => {
-  it('opens a breakdown popover on click', () => {
+  it('opens a structured breakdown popover on click', () => {
     render(<ContextMeter usage={usage} />)
 
-    fireEvent.click(screen.getByRole('button', { name: /context window/i }))
+    const trigger = screen.getByRole('button', { name: /context window/i })
+    expect(trigger.textContent).toContain('45k')
+    expect(trigger.textContent).toContain('90k')
 
-    expect(screen.getByRole('dialog', { name: /context window breakdown/i })).toBeTruthy()
-    expect(screen.getByText(/Layer breakdown/i)).toBeTruthy()
+    fireEvent.click(trigger)
+
+    const dialog = screen.getByRole('dialog', { name: /context window breakdown/i })
+    expect(dialog).toBeTruthy()
+    expect(screen.getByText(/^Layers$/i)).toBeTruthy()
+    expect(screen.getByText(/^Telemetry$/i)).toBeTruthy()
+    expect(screen.getByText(/Step usage/i)).toBeTruthy()
     expect(screen.getByText(/Prompt cache/i)).toBeTruthy()
-    expect(screen.getByText(/Compaction triggers at/i)).toBeTruthy()
+    expect(screen.getByText(/Compaction at/i)).toBeTruthy()
+    expect(screen.getByText(/Content budget/i)).toBeTruthy()
   })
 })

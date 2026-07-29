@@ -1,6 +1,6 @@
 import { memo } from 'react'
 import { cn } from '@renderer/lib/ui'
-import { fileBadge } from '../utils/toolCardData'
+import { fileBadge } from '../toolUi'
 
 /**
  * The file's type as a short mark, sitting where a file icon normally would.

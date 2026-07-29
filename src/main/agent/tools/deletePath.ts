@@ -1,13 +1,13 @@
 import { existsSync, readdirSync, rmSync, statSync } from 'fs'
 import { resolve } from 'path'
-import { assertInsideWorkspace } from '../../../shared/workspacePath'
+import { resolveInsideWorkspace } from '../../workspace/safePath'
 
 /** Delete a file, or a directory when the caller opts into recursion. */
 export function toolDelete(workspaceRoot: string, pathArg: string, recursive = false): string {
   const target = pathArg.trim()
   if (!target) throw new Error('delete requires a non-empty path')
 
-  const resolved = assertInsideWorkspace(workspaceRoot, target)
+  const resolved = resolveInsideWorkspace(workspaceRoot, target)
   if (resolve(resolved) === resolve(workspaceRoot)) {
     throw new Error('Refusing to delete the workspace root')
   }

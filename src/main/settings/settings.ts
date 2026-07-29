@@ -1,18 +1,17 @@
 import { app } from 'electron'
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { DEFAULT_SETTINGS, SettingsSchema, type Settings } from '../../shared/ipc'
 import { defaultModelFor, normalizeOllamaHost } from '../../shared/providers'
 import { logger } from '../../shared/logger'
+import { atomicWriteJson } from '../storage/atomicWrite'
 
 function settingsPath(): string {
   return join(app.getPath('userData'), 'settings.json')
 }
 
 function writeSettings(next: Settings): void {
-  const dir = app.getPath('userData')
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  writeFileSync(settingsPath(), JSON.stringify(next, null, 2), 'utf8')
+  atomicWriteJson(settingsPath(), next)
 }
 
 function normalizeSettings(data: Settings): Settings {
@@ -21,7 +20,13 @@ function normalizeSettings(data: Settings): Settings {
 }
 
 function stripLegacyFields(raw: Record<string, unknown>): Record<string, unknown> {
-  const { workspacePath: _legacy, ...rest } = raw
+  const {
+    workspacePath: _legacy,
+    maxSteps: _maxSteps,
+    maxAgentSteps: _maxAgentSteps,
+    maxSubagentSteps: _maxSubagentSteps,
+    ...rest
+  } = raw
   return rest
 }
 
@@ -74,11 +79,16 @@ export function getSettings(): Settings {
         })
       }
     }
-    if ('workspacePath' in raw) {
+    if (
+      'workspacePath' in raw ||
+      'maxSteps' in raw ||
+      'maxAgentSteps' in raw ||
+      'maxSubagentSteps' in raw
+    ) {
       try {
         writeSettings(data)
       } catch (err) {
-        logger.warn('Failed to strip legacy workspacePath from settings', {
+        logger.warn('Failed to strip legacy fields from settings', {
           scope: 'settings',
           code: 'SETTINGS',
           err

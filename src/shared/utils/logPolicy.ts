@@ -21,7 +21,6 @@ export const ALLOWED_LOG_FIELD_KEYS = new Set([
   'kind',
   'resume',
   'step',
-  'maxSteps',
   'ratio',
   'estimatedTokens',
   'contextWindow',

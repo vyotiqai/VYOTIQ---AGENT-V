@@ -1,0 +1,121 @@
+import type {
+  MarketplaceCatalogEntry,
+  MarketplaceInstalledItem,
+  McpServerStatus
+} from '@shared/ipc'
+
+export type PackageActivityKind =
+  | 'coming-soon'
+  | 'connected'
+  | 'enabled'
+  | 'disabled'
+  | 'installed'
+  | 'available'
+
+export type PackageActivity = {
+  kind: PackageActivityKind
+  /** Short label for card footers / buttons */
+  label: string
+  /** Optional success/danger tint class for the label */
+  className?: string
+}
+
+export type PackageActivityOptions = {
+  /** Workspace Force on/off for this package (MCP / skill / plugin id). */
+  workspaceEnabled?: boolean
+  /** Nested MCP connection status for plugin packages. */
+  nestedMcpStatuses?: Array<McpServerStatus | undefined>
+}
+
+export function packageActivity(
+  entry: MarketplaceCatalogEntry,
+  installed: MarketplaceInstalledItem | undefined,
+  mcpStatus: McpServerStatus | undefined,
+  options?: PackageActivityOptions
+): PackageActivity {
+  if (entry.installable === false) {
+    return { kind: 'coming-soon', label: 'Coming soon' }
+  }
+  if (!installed) {
+    return { kind: 'available', label: kindFallback(entry) }
+  }
+  if (options?.workspaceEnabled === false) {
+    return { kind: 'disabled', label: 'Force off here' }
+  }
+  if (!installed.enabled) {
+    return { kind: 'disabled', label: 'Disabled' }
+  }
+  if (entry.kind === 'mcp') {
+    if (mcpStatus?.connected) {
+      const n = mcpStatus.toolCount
+      return {
+        kind: 'connected',
+        label: `Connected · ${n} tool${n === 1 ? '' : 's'}`,
+        className: 'text-success'
+      }
+    }
+    if (mcpStatus?.error) {
+      return { kind: 'enabled', label: 'Enabled · not connected', className: 'text-danger' }
+    }
+    return { kind: 'enabled', label: 'Enabled' }
+  }
+  if (entry.kind === 'plugin' && options?.nestedMcpStatuses?.length) {
+    const statuses = options.nestedMcpStatuses.filter(
+      (s): s is McpServerStatus => s != null
+    )
+    if (statuses.length > 0) {
+      const connected = statuses.filter((s) => s.connected)
+      const tools = connected.reduce((sum, s) => sum + s.toolCount, 0)
+      if (connected.length === statuses.length) {
+        return {
+          kind: 'connected',
+          label: `Connected · ${tools} tool${tools === 1 ? '' : 's'}`,
+          className: 'text-success'
+        }
+      }
+      if (connected.length > 0) {
+        return {
+          kind: 'enabled',
+          label: `${connected.length}/${statuses.length} MCP connected`,
+          className: 'text-success'
+        }
+      }
+    }
+  }
+  return { kind: 'enabled', label: 'Enabled' }
+}
+
+function kindFallback(entry: MarketplaceCatalogEntry): string {
+  switch (entry.kind) {
+    case 'mcp':
+      return 'MCP'
+    case 'skill':
+      return 'Skill'
+    case 'plugin':
+      return 'Plugin'
+    default: {
+      const _exhaustive: never = entry.kind
+      return _exhaustive
+    }
+  }
+}
+
+/** Featured / detail trailing button label when installed. */
+export function installedActionLabel(activity: PackageActivity): string {
+  switch (activity.kind) {
+    case 'connected':
+      return 'Connected'
+    case 'enabled':
+      return 'Enabled'
+    case 'disabled':
+      return 'Disabled'
+    case 'installed':
+    case 'coming-soon':
+    case 'available':
+      return 'Installed'
+    default: {
+      const _exhaustive: never = activity.kind
+      return _exhaustive
+    }
+  }
+}

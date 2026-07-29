@@ -4,7 +4,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { ThinkingControls } from '@renderer/features/chat/components/composer/ThinkingControls'
-import { DEFAULT_SETTINGS } from '@shared/ipc'
 import type { EffectiveChatSettings } from '@shared/effectiveSettings'
 
 afterEach(() => {
@@ -14,13 +13,16 @@ afterEach(() => {
 const chatSettings: EffectiveChatSettings = {
   provider: 'openai',
   model: 'gpt-5.6',
-  maxSteps: 25,
   compactionTriggerRatio: 0.7,
   keepRecentTurns: 12,
   memoryAutoPromote: true,
   thinkingEnabled: true,
   thinkingEffort: 'medium',
   showThinking: true
+}
+
+function thinkingButton(): HTMLElement {
+  return screen.getByRole('button', { name: /Thinking/i })
 }
 
 describe('ThinkingControls', () => {
@@ -36,23 +38,22 @@ describe('ThinkingControls', () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it('opens popover and changes effort', () => {
-    const onChatSettingsChange = vi.fn()
+  it('stays visible but locked while the agent is running', () => {
     render(
       <ThinkingControls
         provider="openai"
         model="gpt-5.6"
         chatSettings={chatSettings}
-        onChatSettingsChange={onChatSettingsChange}
+        onChatSettingsChange={vi.fn()}
+        running
       />
     )
-
-    fireEvent.click(screen.getByRole('button', { name: /Thinking settings/i }))
-    fireEvent.click(screen.getByRole('button', { name: /^High$/i }))
-    expect(onChatSettingsChange).toHaveBeenCalledWith({ thinkingEffort: 'high' })
+    const button = screen.getByRole('button', { name: /locked while running/i })
+    expect(button).toBeTruthy()
+    expect(button).toHaveProperty('disabled', true)
   })
 
-  it('toggles thinking off', () => {
+  it('cycles effort forward on click', () => {
     const onChatSettingsChange = vi.fn()
     render(
       <ThinkingControls
@@ -63,9 +64,62 @@ describe('ThinkingControls', () => {
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /Thinking settings/i }))
-    fireEvent.click(screen.getByLabelText(/Extended thinking/i))
+    fireEvent.click(thinkingButton())
+    expect(onChatSettingsChange).toHaveBeenCalledWith({
+      thinkingEnabled: true,
+      thinkingEffort: 'high'
+    })
+  })
+
+  it('cycles to off after max', () => {
+    const onChatSettingsChange = vi.fn()
+    render(
+      <ThinkingControls
+        provider="openai"
+        model="gpt-5.6"
+        chatSettings={{ ...chatSettings, thinkingEffort: 'max' }}
+        onChatSettingsChange={onChatSettingsChange}
+      />
+    )
+
+    fireEvent.click(thinkingButton())
     expect(onChatSettingsChange).toHaveBeenCalledWith({ thinkingEnabled: false })
+  })
+
+  it('enables thinking from off on click', () => {
+    const onChatSettingsChange = vi.fn()
+    render(
+      <ThinkingControls
+        provider="openai"
+        model="gpt-5.6"
+        chatSettings={{ ...chatSettings, thinkingEnabled: false }}
+        onChatSettingsChange={onChatSettingsChange}
+      />
+    )
+
+    fireEvent.click(thinkingButton())
+    expect(onChatSettingsChange).toHaveBeenCalledWith({
+      thinkingEnabled: true,
+      thinkingEffort: 'minimal'
+    })
+  })
+
+  it('cycles backward with shift-click', () => {
+    const onChatSettingsChange = vi.fn()
+    render(
+      <ThinkingControls
+        provider="openai"
+        model="gpt-5.6"
+        chatSettings={chatSettings}
+        onChatSettingsChange={onChatSettingsChange}
+      />
+    )
+
+    fireEvent.click(thinkingButton(), { shiftKey: true })
+    expect(onChatSettingsChange).toHaveBeenCalledWith({
+      thinkingEnabled: true,
+      thinkingEffort: 'low'
+    })
   })
 
   it('survives switching between thinking and non-thinking models', () => {
@@ -79,7 +133,7 @@ describe('ThinkingControls', () => {
       />
     )
 
-    expect(screen.getByRole('button', { name: /Thinking settings/i })).toBeTruthy()
+    expect(thinkingButton()).toBeTruthy()
 
     rerender(
       <ThinkingControls
@@ -99,6 +153,6 @@ describe('ThinkingControls', () => {
         onChatSettingsChange={onChatSettingsChange}
       />
     )
-    expect(screen.getByRole('button', { name: /Thinking settings/i })).toBeTruthy()
+    expect(thinkingButton()).toBeTruthy()
   })
 })

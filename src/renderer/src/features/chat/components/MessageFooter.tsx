@@ -32,13 +32,13 @@ export function MessageFooter({ content, at }: { content: string; at?: string })
         className={cn(
           'inline-grid size-6 place-items-center rounded-sm vy-transition',
           'opacity-0 hover:bg-surface hover:text-fg focus-visible:opacity-100',
-          'group-hover/message:opacity-100',
+          'group-hover/message:opacity-100 [@media(hover:none)]:opacity-100',
           copied && 'opacity-100 text-success'
         )}
         onClick={onCopy}
         aria-label={copied ? 'Copied' : 'Copy message'}
       >
-        <Icon name={copied ? 'check' : 'copy'} size={12} />
+        <Icon name={copied ? 'check' : 'copy'} size={14} />
       </button>
     </div>
   )

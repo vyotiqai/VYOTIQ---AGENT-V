@@ -1,11 +1,11 @@
-import type { AgentEvent, ChatMessage } from '../../shared/ipc'
+import type { AgentEvent, AgentInteractionMode, ChatMessage } from '../../shared/ipc'
 import { isAbortError, isExpectedToolError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
 import { summarizeToolArgs } from '../../shared/toolSummary'
 import { toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
 import type { ToolCall } from './providers/types'
 import { executeTool } from '@main/agent/tools'
-import { isReadOnlyTool, MAX_PARALLEL_READ_TOOLS } from './tools/classify'
+import { isParallelSafeTool, MAX_PARALLEL_READ_TOOLS, MAX_PARALLEL_SUBAGENTS } from './tools/classify'
 import { repairToolArgs } from './toolArgsRepair'
 import type { ToolApprovalGate } from './toolApproval'
 
@@ -22,8 +22,17 @@ export type ToolStepContext = {
   maxParallelReadTools?: number
   /** Present only when the workspace opted into tool approval. */
   approval?: ToolApprovalGate
+  /** Ask / Plan / Agent for this invoke. */
+  agentMode?: AgentInteractionMode
   /** Streams events while a tool is still running (sub-agent progress). */
   emitLiveEvent?: (ev: AgentEvent) => void
+  /**
+   * MCP servers enabled for this run (workspace overrides applied).
+   * Enforced at invoke time so Force-off cannot be bypassed via stale tool names.
+   */
+  runEnabledMcpIds?: ReadonlySet<string>
+  /** Per-server allow/deny for bare MCP tool names. */
+  mcpToolPolicies?: ReadonlyMap<string, { allowedTools?: string[]; deniedTools?: string[] }>
 }
 
 /**
@@ -107,6 +116,11 @@ function emitToolStart(ctx: ToolStepContext, event: AgentEvent): void {
   ctx.emitLiveEvent?.(event)
 }
 
+function emitToolResult(ctx: ToolStepContext, event: AgentEvent): void {
+  if (event.type !== 'tool_result') return
+  ctx.emitLiveEvent?.(event)
+}
+
 async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<ToolOutcome> {
   const events: AgentEvent[] = []
   const call = withRepairedArguments(rawCall, ctx)
@@ -144,6 +158,7 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
       }
     )
     emitToolStart(ctx, events[0]!)
+    emitToolResult(ctx, events[1]!)
     return { ok: false, events, message: toolMsg }
   }
 
@@ -179,12 +194,17 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
           ok: false,
           content: verdict.reason
         })
+        emitToolResult(ctx, events[events.length - 1]!)
         return { ok: false, events, message: toolMsg }
       }
     }
 
     const result = await executeTool(call.name, call.arguments, ctx.workspace, ctx.signal, {
       runDir: ctx.runDir,
+      depth: 0,
+      agentMode: ctx.agentMode,
+      runEnabledMcpIds: ctx.runEnabledMcpIds,
+      mcpToolPolicies: ctx.mcpToolPolicies,
       onProgress: ctx.emitLiveEvent
         ? (update) =>
             ctx.emitLiveEvent?.({
@@ -193,6 +213,19 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
               parentToolCallId: call.id,
               kind: update.kind,
               text: update.text
+            })
+        : undefined,
+      onSubagentContextUsage: ctx.emitLiveEvent
+        ? (usage) =>
+            ctx.emitLiveEvent?.({
+              type: 'subagent_context_usage',
+              runId: ctx.runId,
+              parentToolCallId: call.id,
+              step: usage.step,
+              estimatedTokens: usage.estimatedTokens,
+              contextWindow: usage.contextWindow,
+              contentWindow: usage.contentWindow,
+              model: usage.model
             })
         : undefined
     })
@@ -214,6 +247,7 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
       ok: result.ok,
       content
     })
+    emitToolResult(ctx, events[events.length - 1]!)
     if (!result.ok && !result.failureLogged) {
       logger.warn('Tool returned failure', {
         scope: 'agent',
@@ -247,6 +281,7 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
         ok: false,
         content: 'Cancelled'
       })
+      emitToolResult(ctx, events[events.length - 1]!)
       return { ok: false, events, message: toolMsg }
     }
     throw err
@@ -285,6 +320,7 @@ function cancelledToolResult(call: ToolCall, ctx: ToolStepContext): ToolOutcome 
     content: 'Cancelled'
   }
   emitToolStart(ctx, startEv)
+  emitToolResult(ctx, ev)
   return { ok: false, events: [startEv, ev], message: toolMsg }
 }
 
@@ -322,27 +358,37 @@ export async function executeStepToolCalls(
   const messages: ChatMessage[] = []
   const events: AgentEvent[] = []
   let stepToolsOk = true
-  const parallelLimit = ctx.maxParallelReadTools ?? MAX_PARALLEL_READ_TOOLS
+  const parallelLimit = ctx.approval
+    ? 1
+    : (ctx.maxParallelReadTools ?? MAX_PARALLEL_READ_TOOLS)
 
   const groups: ToolCall[][] = []
-  let readBatch: ToolCall[] = []
+  let batch: ToolCall[] = []
 
-  const flushReadBatch = (): void => {
-    while (readBatch.length > 0) {
-      groups.push(readBatch.splice(0, parallelLimit))
+  const batchLimitFor = (name: string): number =>
+    name === 'subagent' ? MAX_PARALLEL_SUBAGENTS : parallelLimit
+
+  const flushBatch = (): void => {
+    if (batch.length === 0) return
+    const limit = batchLimitFor(batch[0]!.name)
+    while (batch.length > 0) {
+      groups.push(batch.splice(0, Math.min(limit, batch.length)))
     }
   }
 
   for (const call of calls) {
-    if (isReadOnlyTool(call.name)) {
-      readBatch.push(call)
-      if (readBatch.length >= parallelLimit) flushReadBatch()
+    if (isParallelSafeTool(call.name)) {
+      if (batch.length > 0 && batch[0]!.name !== call.name) {
+        flushBatch()
+      }
+      batch.push(call)
+      if (batch.length >= batchLimitFor(call.name)) flushBatch()
     } else {
-      flushReadBatch()
+      flushBatch()
       groups.push([call])
     }
   }
-  flushReadBatch()
+  flushBatch()
 
   const collect = (outcome: ToolOutcome): void => {
     const final = applyRepeatFailureHint(ctx, outcome)
@@ -358,9 +404,13 @@ export async function executeStepToolCalls(
       continue
     }
 
-    const parallel = group.length > 1 && group.every((c) => isReadOnlyTool(c.name))
+    const parallel =
+      !ctx.approval &&
+      group.length > 1 &&
+      group.every((c) => isParallelSafeTool(c.name))
     if (parallel) {
-      const batch = await runParallelBatch(group, ctx, parallelLimit)
+      const batchLimit = batchLimitFor(group[0]!.name)
+      const batch = await runParallelBatch(group, ctx, batchLimit)
       for (const call of group) {
         collect(batch.get(call.id) ?? cancelledToolResult(call, ctx))
       }

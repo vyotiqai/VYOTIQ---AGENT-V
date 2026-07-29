@@ -1,0 +1,22 @@
+---
+description: Never add max step limits for main agent or subagent loops
+alwaysApply: true
+---
+
+# No agent / subagent step limits
+
+Do **not** add, restore, or suggest hard ceilings on agent or subagent loop steps.
+
+## Forbidden
+
+- Settings fields such as `maxAgentSteps`, `maxSubagentSteps`, `maxSteps`
+- UI for “Max agent steps” / “Max sub-agent steps”
+- Loop early-exit on step count (`AGENT_MAX_STEPS`, “max step limit”, etc.)
+
+## Allowed
+
+- Abort/cancel via user signal
+- Existing safety stops unrelated to step count (truncation continues, tool-failure circuits, etc.)
+- Stripping legacy `maxSteps` / `maxAgentSteps` / `maxSubagentSteps` from persisted settings
+
+Loops run until the model finishes, the user aborts, or a non-step-count safety path fires.

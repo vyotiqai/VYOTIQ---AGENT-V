@@ -5,6 +5,9 @@ import type {
   ChatStartRequest,
   ChatStartResult,
   CompactRunResult,
+  UndoWritesResult,
+  ResolveWritesResult,
+  ReadRunArtifactResult,
   GitCommitResult,
   GitStatus,
   IpcResult,
@@ -22,9 +25,25 @@ import type {
   ExtractAttachmentRequest,
   ExtractAttachmentResult,
   McpStatusResult,
+  MarketplaceIndex,
+  MarketplaceCatalogEntry,
+  MarketplaceInstallResult,
+  MarketplaceInstallRequest,
+  MarketplaceBrowseRequest,
+  McpDetectRequest,
+  McpDetectResult,
+  McpApplyDetectedRequest,
+  McpApplyDetectedResult,
+  McpScanExternalRequest,
+  McpImportExternalRequest,
+  McpImportExternalResult,
+  PackageContents,
   WorkspaceSettingsOverride,
   WorkspacesState,
-  WorkspaceUiState
+  WorkspaceUiState,
+  SlashCommandDescriptor,
+  SlashCommandResolveResult,
+  SlashCommandsCreateRuleResult
 } from './ipc'
 
 /** Host OS from preload `process.platform`. */
@@ -61,6 +80,23 @@ export interface VyotiqApi {
   chatStart: (payload: ChatStartRequest) => Promise<IpcResult<ChatStartResult>>
   chatCancel: (runId: string) => Promise<IpcResult<true>>
   chatCompact: (workspacePath: string, runId: string) => Promise<IpcResult<CompactRunResult>>
+  undoWrites: (
+    workspacePath: string,
+    runId: string,
+    checkpointId?: string
+  ) => Promise<IpcResult<UndoWritesResult>>
+  resolveWrites: (payload: {
+    workspacePath: string
+    runId: string
+    checkpointId?: string
+    action: 'keep' | 'discard'
+    paths?: string[]
+  }) => Promise<IpcResult<ResolveWritesResult>>
+  readRunArtifact: (payload: {
+    workspacePath: string
+    runId: string
+    name: 'plan.md' | 'contract.md'
+  }) => Promise<IpcResult<ReadRunArtifactResult>>
   onChatEvent: (handler: (event: AgentEvent) => void) => () => void
   onToolApprovalRequest: (handler: (request: ToolApprovalRequest) => void) => () => void
   respondToolApproval: (
@@ -98,17 +134,68 @@ export interface VyotiqApi {
     message: string,
     push: boolean
   ) => Promise<IpcResult<GitCommitResult>>
-  openHarness: () => Promise<IpcResult<true>>
   windowMinimize: () => Promise<IpcResult<true>>
   windowMaximize: () => Promise<IpcResult<boolean>>
   windowClose: () => Promise<IpcResult<true>>
   windowIsMaximized: () => Promise<IpcResult<boolean>>
   onWindowMaximizedChanged: (handler: (maximized: boolean) => void) => () => void
+  onBrowserState: (handler: (state: import('./ipc').AgentBrowserState) => void) => () => void
+  browserGetState: () => Promise<IpcResult<import('./ipc').AgentBrowserState>>
+  browserFocus: () => Promise<IpcResult<boolean>>
+  browserClose: () => Promise<IpcResult<true>>
   openLogsDir: () => Promise<IpcResult<true>>
   getLogsPath: () => Promise<IpcResult<string>>
   telemetryStatus: () => Promise<IpcResult<TelemetryStatus>>
-  mcpStatus: () => Promise<IpcResult<McpStatusResult>>
-  mcpRefresh: () => Promise<IpcResult<McpStatusResult>>
+  mcpStatus: (payload?: { workspacePath?: string | null }) => Promise<IpcResult<McpStatusResult>>
+  mcpRefresh: (payload?: { workspacePath?: string | null }) => Promise<IpcResult<McpStatusResult>>
+  mcpSetAuthToken: (serverId: string, token: string) => Promise<IpcResult<true>>
+  mcpClearAuthToken: (serverId: string) => Promise<IpcResult<true>>
+  mcpStartOAuth: (serverId: string) => Promise<IpcResult<McpStatusResult>>
+  marketplaceListInstalled: () => Promise<IpcResult<MarketplaceIndex>>
+  marketplaceBrowse: (
+    payload?: MarketplaceBrowseRequest
+  ) => Promise<IpcResult<{ packages: MarketplaceCatalogEntry[] }>>
+  marketplaceRefreshCatalog: () => Promise<
+    IpcResult<{ packages: MarketplaceCatalogEntry[]; remoteCount: number }>
+  >
+  marketplaceInstall: (
+    payload: MarketplaceInstallRequest
+  ) => Promise<IpcResult<MarketplaceInstallResult>>
+  marketplaceDetectMcp: (
+    payload: McpDetectRequest
+  ) => Promise<IpcResult<McpDetectResult>>
+  marketplaceApplyDetectedMcp: (
+    payload: McpApplyDetectedRequest
+  ) => Promise<IpcResult<McpApplyDetectedResult>>
+  marketplaceScanExternalMcp: (
+    payload?: McpScanExternalRequest
+  ) => Promise<IpcResult<McpImportExternalResult>>
+  marketplaceImportExternalMcp: (
+    payload: McpImportExternalRequest
+  ) => Promise<IpcResult<McpImportExternalResult>>
+  marketplaceUninstall: (id: string) => Promise<IpcResult<MarketplaceIndex>>
+  marketplaceSetEnabled: (
+    id: string,
+    enabled: boolean
+  ) => Promise<IpcResult<MarketplaceIndex>>
+  marketplacePickLocal: () => Promise<IpcResult<string | null>>
+  marketplaceGetContents: (id: string) => Promise<IpcResult<PackageContents>>
+  slashCommandsList: (payload?: {
+    workspacePath?: string | null
+  }) => Promise<IpcResult<{ commands: SlashCommandDescriptor[] }>>
+  slashCommandsResolve: (payload: {
+    id: string
+    workspacePath?: string | null
+    trailingText?: string
+  }) => Promise<IpcResult<SlashCommandResolveResult>>
+  slashCommandsCreateRule: (payload: {
+    workspacePath: string
+    title?: string
+  }) => Promise<IpcResult<SlashCommandsCreateRuleResult>>
+  slashCommandsOpenFile: (payload: {
+    workspacePath: string
+    path: string
+  }) => Promise<IpcResult<true>>
   getSystemTheme: () => Promise<IpcResult<boolean>>
   onSystemThemeChanged: (handler: (prefersDark: boolean) => void) => () => void
 }

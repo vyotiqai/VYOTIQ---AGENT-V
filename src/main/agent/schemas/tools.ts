@@ -1,33 +1,47 @@
 import { z } from 'zod'
+import { TERMINAL_MAX_TIMEOUT_MS } from '../tools/terminal'
 import type { ToolDefinition } from '../providers/types'
 import { zodToJsonSchema } from './zodToJsonSchema'
 
-const readArgs = z.object({
-  path: z.string().describe('Relative or absolute path inside the workspace'),
-  startLine: z
-    .number()
-    .int()
-    .min(1)
-    .optional()
-    .describe('First line to return, 1-based inclusive. Prefer this over offset/limit.'),
-  endLine: z
-    .number()
-    .int()
-    .min(1)
-    .optional()
-    .describe('Last line to return, 1-based inclusive. Defaults to end of file.'),
-  offset: z
-    .number()
-    .optional()
-    .describe('Byte offset; only for files too large to slice by line'),
-  limit: z.number().optional().describe('Max bytes to read from offset')
-})
+const readArgs = z
+  .object({
+    path: z.string().describe('Relative or absolute path inside the workspace'),
+    startLine: z
+      .number()
+      .int()
+      .min(1)
+      .describe('First line to return, 1-based inclusive. Prefer this over offset/limit.')
+      .optional(),
+    endLine: z
+      .number()
+      .int()
+      .min(1)
+      .describe('Last line to return, 1-based inclusive. Defaults to end of file.')
+      .optional(),
+    offset: z
+      .number()
+      .min(0)
+      .describe('Byte offset; only for files too large to slice by line')
+      .optional(),
+    limit: z.number().min(1).describe('Max bytes to read from offset').optional()
+  })
+  .refine(
+    (args) =>
+      args.startLine == null || args.endLine == null || args.endLine >= args.startLine,
+    { message: 'endLine must be >= startLine', path: ['endLine'] }
+  )
 
 const editArgs = z
   .object({
     path: z.string().describe('File path inside the workspace'),
-    contents: z.string().optional().describe('Full file contents to write'),
-    diff: z.string().optional().describe('Unified diff to apply instead of full contents')
+    contents: z
+      .string()
+      .describe('Full file contents to write (prefer for new/small files)')
+      .optional(),
+    diff: z
+      .string()
+      .describe('Unified diff with @@ hunks to apply instead of full contents')
+      .optional()
   })
   .refine(
     (args) =>
@@ -37,87 +51,233 @@ const editArgs = z
   )
 
 const searchArgs = z.object({
-  query: z.string().describe('Filename fragment or content substring (or regex when regex=true)'),
-  maxResults: z.number().optional().describe('Max hits (default 40)'),
-  regex: z.boolean().optional().describe('Treat query as case-insensitive regex (default false)')
+  query: z
+    .string()
+    .describe('Filename fragment or content substring (or regex when regex=true)'),
+  maxResults: z
+    .number()
+    .int()
+    .min(1)
+    .describe('Max hits (default 40)')
+    .optional(),
+  regex: z
+    .boolean()
+    .describe('Treat query as case-insensitive regex (default false)')
+    .optional()
 })
 
 const terminalArgs = z.object({
-  command: z.string().describe('Shell command to run'),
-  timeoutMs: z.number().optional().describe('Timeout in ms (default 60000)')
+  command: z
+    .string()
+    .describe(
+      'Shell command to run at workspace root. Shell comes from Settings → Agent → Terminal shell (auto prefers PowerShell on Windows when available; cmd blocks common Unix builtins). Prefer shell-native commands for the active shell.'
+    ),
+  timeoutMs: z
+    .number()
+    .int()
+    .min(1)
+    .max(TERMINAL_MAX_TIMEOUT_MS)
+    .describe(`Timeout in ms (default 60000, max ${TERMINAL_MAX_TIMEOUT_MS})`)
+    .optional()
 })
 
 const globArgs = z.object({
   pattern: z
     .string()
     .describe('Glob over workspace-relative paths, e.g. src/**/*.ts or **/{README,LICENSE}*'),
-  maxResults: z.number().int().min(1).optional().describe('Max paths to return (default 100)')
+  maxResults: z
+    .number()
+    .int()
+    .min(1)
+    .describe('Max paths to return (default 100)')
+    .optional()
 })
 
 const grepArgs = z.object({
   pattern: z.string().describe('Regular expression matched against each line'),
-  include: z.string().optional().describe('Glob limiting which files are searched'),
-  caseSensitive: z.boolean().optional().describe('Default false'),
+  include: z
+    .string()
+    .describe('Glob limiting which files are searched, e.g. src/**/*.ts')
+    .optional(),
+  caseSensitive: z.boolean().describe('Case-sensitive match (default false)').optional(),
   contextLines: z
     .number()
     .int()
     .min(0)
     .max(5)
+    .describe('Lines of context around each hit (default 0, max 5)')
+    .optional(),
+  maxResults: z
+    .number()
+    .int()
+    .min(1)
+    .describe('Max matching lines (default 60)')
     .optional()
-    .describe('Lines of context around each hit (default 0)'),
-  maxResults: z.number().int().min(1).optional().describe('Max matching lines (default 60)')
 })
 
 const listDirArgs = z.object({
-  path: z.string().optional().describe('Workspace-relative directory (default workspace root)')
+  path: z
+    .string()
+    .describe('Workspace-relative directory (default workspace root)')
+    .optional()
 })
 
 const multiEditArgs = z.object({
   edits: z
     .array(
-      z.object({
-        path: z.string().describe('File path inside the workspace'),
-        contents: z.string().optional().describe('Full file contents to write'),
-        diff: z.string().optional().describe('Unified diff to apply instead of full contents')
-      })
+      z
+        .object({
+          path: z.string().describe('File path inside the workspace'),
+          contents: z
+            .string()
+            .describe('Full file contents to write')
+            .optional(),
+          diff: z
+            .string()
+            .describe('Unified diff to apply instead of full contents')
+            .optional()
+        })
+        .refine(
+          (args) =>
+            typeof args.contents === 'string' ||
+            (typeof args.diff === 'string' && args.diff.trim().length > 0),
+          { message: 'each edit requires contents or diff' }
+        )
     )
     .min(1)
-    .describe('Edits applied together; if any fails, none are written')
+    .describe(
+      'Edits applied together atomically; if any fails, none are written. Do not list the same path twice.'
+    )
 })
 
 const deleteArgs = z.object({
   path: z.string().describe('File or directory inside the workspace'),
-  recursive: z.boolean().optional().describe('Required to delete a non-empty directory')
+  recursive: z
+    .boolean()
+    .describe('Required to delete a non-empty directory')
+    .optional()
 })
 
 const todoWriteArgs = z.object({
   todos: z
     .array(
       z.object({
-        id: z.string().describe('Stable id so status updates can find the task again'),
-        content: z.string().describe('What the task is'),
-        status: z.enum(['pending', 'in_progress', 'completed', 'cancelled'])
+        id: z.string().min(1).describe('Stable id so status updates can find the task again'),
+        content: z.string().min(1).describe('What the task is'),
+        status: z
+          .enum(['pending', 'in_progress', 'completed', 'cancelled'])
+          .describe(
+            'Task status. Keep at most one task in_progress; update as work progresses.'
+          )
       })
     )
     .describe('The full task list, or the subset to update when merge=true'),
   merge: z
     .boolean()
-    .optional()
     .describe('Merge these entries into the existing list instead of replacing it')
+    .optional()
 })
+  .refine((args) => args.merge === true || args.todos.length > 0, {
+    message: 'todos must be non-empty unless merge=true',
+    path: ['todos']
+  })
 
 const webFetchArgs = z.object({
   url: z.string().describe('Absolute http(s) URL. Private and loopback hosts are rejected.'),
-  maxChars: z.number().int().min(1000).optional().describe('Cap on returned text (default 40000)'),
-  timeoutMs: z.number().int().min(1000).optional().describe('Request timeout (default 20000)')
+  maxChars: z
+    .number()
+    .int()
+    .min(1000)
+    .describe('Cap on returned text (default 40000)')
+    .optional(),
+  timeoutMs: z
+    .number()
+    .int()
+    .min(1000)
+    .describe('Request timeout in ms (default 20000)')
+    .optional()
+})
+
+const webSearchArgs = z.object({
+  query: z.string().min(1).describe('Search query string.'),
+  maxResults: z
+    .number()
+    .int()
+    .min(1)
+    .max(15)
+    .describe('Max results to return (default 8, max 15)')
+    .optional(),
+  timeoutMs: z
+    .number()
+    .int()
+    .min(1000)
+    .describe('Request timeout in ms (default 20000)')
+    .optional()
+})
+
+const browserNavigateArgs = z.object({
+  url: z
+    .string()
+    .describe('Absolute http(s) URL to open in the built-in agent browser. Private/loopback hosts are rejected.'),
+  timeoutMs: z
+    .number()
+    .int()
+    .min(1000)
+    .describe('Navigation timeout in ms (default 30000)')
+    .optional()
+})
+
+const browserSnapshotArgs = z.object({
+  maxChars: z
+    .number()
+    .int()
+    .min(1000)
+    .describe('Cap on returned page text (default 40000)')
+    .optional()
+})
+
+const browserClickArgs = z.object({
+  selector: z.string().min(1).describe('CSS selector of the element to click.'),
+  button: z
+    .enum(['left', 'right', 'middle'])
+    .describe('Mouse button (default left)')
+    .optional()
+})
+
+const browserTypeArgs = z.object({
+  text: z.string().describe('Text to type into the focused (or selected) element.'),
+  selector: z
+    .string()
+    .min(1)
+    .describe('Optional CSS selector to focus/click before typing')
+    .optional(),
+  clear: z.boolean().describe('Select-all and delete before typing (default false)').optional(),
+  pressEnter: z.boolean().describe('Press Enter after typing (default false)').optional()
+})
+
+const strReplaceArgs = z.object({
+  path: z.string().describe('File path inside the workspace'),
+  old_string: z
+    .string()
+    .min(1)
+    .describe('Exact text to find. Must be unique in the file unless replace_all is true.'),
+  new_string: z.string().describe('Replacement text (may be empty to delete the match)'),
+  replace_all: z
+    .boolean()
+    .describe('Replace every occurrence (default false — fails if old_string matches more than once)')
+    .optional()
 })
 
 const subagentArgs = z.object({
   task: z
     .string()
-    .describe('Self-contained investigation for the sub-agent, including what to report back'),
-  context: z.string().optional().describe('Findings so far that save the sub-agent re-deriving them'),
-  maxSteps: z.number().int().min(1).max(16).optional().describe('Step budget (default 8)')
+    .describe(
+      'Self-contained investigation for the sub-agent, including what to report back. Nested agent is read-only.'
+    ),
+  context: z
+    .string()
+    .describe('Findings so far that save the sub-agent re-deriving them')
+    .optional()
 })
 
 const memoryListArgs = z.object({})
@@ -125,78 +285,132 @@ const memoryListArgs = z.object({})
 const memoryReadArgs = z.object({
   path: z
     .string()
-    .describe('Relative path inside .vyotiq/memory (index.md | state.md | notes/…)')
+    .describe(
+      'Relative path inside .vyotiq/memory: index.md | state.md | notes/<name>.md'
+    )
 })
 
 const memoryWriteArgs = z.object({
-  path: z.string().describe('Relative path inside .vyotiq/memory'),
-  contents: z.string().describe('Full markdown contents to write')
+  path: z
+    .string()
+    .describe(
+      'Relative path inside .vyotiq/memory: index.md | state.md | notes/<name>.md'
+    ),
+  contents: z
+    .string()
+    .describe('Full markdown contents to write. Never store secrets.')
+})
+
+const gitStatusArgs = z.object({})
+
+const gitDiffArgs = z.object({
+  path: z
+    .string()
+    .describe('Optional workspace-relative path to limit the diff')
+    .optional(),
+  staged: z
+    .boolean()
+    .describe('When true, show staged (index) diff instead of working tree')
+    .optional()
+})
+
+const diagnosticsArgs = z.object({
+  kind: z
+    .enum(['typecheck', 'lint'])
+    .describe('typecheck (default) or lint — uses package scripts when present')
+    .optional()
 })
 
 const TOOL_REGISTRY = {
   read: {
     description:
-      'Read a file under the workspace root. Returns text contents (size capped). For large files use offset/limit. Directories return a listing.',
+      'Read a file under the workspace root (text only). Directories return a shallow listing.',
     schema: readArgs
   },
   edit: {
     description:
-      'Create/overwrite a file with full contents, or apply a unified diff. Prefer contents for new/small files.',
+      'Create or overwrite a workspace file with full contents, or apply a unified diff.',
     schema: editArgs
   },
   search: {
     description:
-      'Search filenames and text file contents. Default: case-insensitive substring. Set regex=true for regex. Ignores node_modules, .git, and build dirs.',
+      'Quick combined filename-or-content lookup. Default: case-insensitive substring; set regex=true for case-insensitive regex. First hit per file.',
     schema: searchArgs
   },
   glob: {
     description:
-      'List workspace files whose path matches a glob (**, *, ?, {a,b}). Gitignore-aware. Use this to find files by name or extension instead of shelling out.',
+      'List workspace-relative paths matching a glob (**, *, ?, {a,b}). Gitignore-aware.',
     schema: globArgs
   },
   grep: {
     description:
-      'Regex search across text file contents, reporting every matching line with optional context. Use search for a quick filename-or-content lookup; use grep when you need all the hits.',
+      'Regex search across text file contents; every matching line with optional context. Default: case-insensitive.',
     schema: grepArgs
   },
   list_dir: {
-    description:
-      'List one directory level with file sizes, skipping gitignored and build directories.',
+    description: 'List one directory level with sizes. Gitignore- and build-dir-aware.',
     schema: listDirArgs
   },
   multi_edit: {
     description:
-      'Apply several file edits atomically: if any edit fails to apply, no file is written. Prefer this over repeated edit calls for a coordinated change.',
+      'Apply several file edits atomically: if any edit fails to validate or match, no file is written.',
     schema: multiEditArgs
   },
-  delete: {
+  str_replace: {
     description:
-      'Delete a file, or a directory when recursive=true. Scoped to the workspace root.',
+      'Replace exact text in a workspace file. Prefer for surgical edits; use edit for new files or unified diffs.',
+    schema: strReplaceArgs
+  },
+  delete: {
+    description: 'Delete a workspace file, or a directory when recursive=true.',
     schema: deleteArgs
   },
   todo_write: {
-    description:
-      'Record the task list for this run so progress is visible. Keep at most one task in_progress, and update status as work completes.',
+    description: "Record and update this run's visible task list.",
     schema: todoWriteArgs
   },
   web_fetch: {
     description:
-      'Fetch a public http(s) URL and return it as text (HTML is converted to markdown). Size- and time-capped; private and loopback hosts are rejected.',
+      'Fetch a public http(s) URL as text. HTML responses are converted to markdown; other text types are returned as trimmed text.',
     schema: webFetchArgs
+  },
+  web_search: {
+    description:
+      'Search the public web (DuckDuckGo HTML). Returns titles, URLs, and snippets. Prefer web_fetch or browser_navigate to read a specific result.',
+    schema: webSearchArgs
+  },
+  browser_navigate: {
+    description:
+      'Open a public http(s) URL in the built-in live browser window (JS rendered). Prefer for SPAs; use web_fetch for static text.',
+    schema: browserNavigateArgs
+  },
+  browser_snapshot: {
+    description:
+      'Capture the current agent-browser page as accessibility text (and a screenshot for the UI). Call browser_navigate first.',
+    schema: browserSnapshotArgs
+  },
+  browser_click: {
+    description:
+      'Click an element in the agent browser by CSS selector. Call browser_navigate first; use browser_snapshot to inspect the page.',
+    schema: browserClickArgs
+  },
+  browser_type: {
+    description:
+      'Type text into the agent browser. Optionally focus a CSS selector first; can clear existing text and press Enter.',
+    schema: browserTypeArgs
   },
   subagent: {
     description:
-      'Delegate a read-only investigation to a nested agent that returns one written report. Use it for open-ended searching whose intermediate output you do not need; it cannot edit files or run commands, and it cannot start further sub-agents.',
+      'Delegate a read-only investigation to a nested agent that returns one written report.',
     schema: subagentArgs
   },
   terminal: {
-    description:
-      'Run a shell command with cwd set to the workspace root. Output is capped. On Windows this uses cmd.exe — prefer cmd-safe commands (dir, findstr, where, type); do not use ls/grep/head/find/cat/which unless bash is available.',
+    description: 'Run a shell command with cwd at the workspace root. Output is capped.',
     schema: terminalArgs
   },
   memory_list: {
     description:
-      'List long-term memory under .vyotiq/memory/: index excerpt, note names, and whether state.md exists. Not RAG — explicit files only.',
+      'List long-term memory under .vyotiq/memory/: index excerpt, note names, whether state.md exists.',
     schema: memoryListArgs
   },
   memory_read: {
@@ -206,8 +420,21 @@ const TOOL_REGISTRY = {
   },
   memory_write: {
     description:
-      'Create or update a memory file (index.md, state.md, or notes/<name>.md). Write durable facts when learned — prefs, architecture, decisions. Never store secrets.',
+      'Create or update a memory file (index.md, state.md, or notes/<name>.md).',
     schema: memoryWriteArgs
+  },
+  git_status: {
+    description: 'Structured git status for the workspace (branch, changed files, +/- counts).',
+    schema: gitStatusArgs
+  },
+  git_diff: {
+    description: 'Unified git diff for the workspace (optional path; optional staged).',
+    schema: gitDiffArgs
+  },
+  diagnostics: {
+    description:
+      'Run project typecheck or lint and return structured diagnostics when parseable.',
+    schema: diagnosticsArgs
   }
 } as const
 

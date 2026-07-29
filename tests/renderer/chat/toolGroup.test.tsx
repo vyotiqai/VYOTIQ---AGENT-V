@@ -44,8 +44,8 @@ describe('ToolGroup', () => {
       toolItem('t2', 'search', 'query', 'running')
     ]
     render(<ToolGroup tools={tools} />)
-    expect(screen.getByText('Exploring')).toBeTruthy()
-    expect(screen.getByText('1 file and 1 search')).toBeTruthy()
+    expect(screen.getByText('Reading and searching')).toBeTruthy()
+    expect(screen.getByText('1 file and 1 lookup')).toBeTruthy()
   })
 
   it('lists the calls as they land while the group is still running', () => {
@@ -59,6 +59,7 @@ describe('ToolGroup', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
     expect(screen.getByText('a.ts')).toBeTruthy()
     expect(screen.getByText('b.ts')).toBeTruthy()
+    expect(document.querySelectorAll('.vy-text-shimmer--active').length).toBeGreaterThan(1)
   })
 
   it('shows completed label and summary when group is closed', () => {
@@ -67,8 +68,8 @@ describe('ToolGroup', () => {
       toolItem('t2', 'search', 'query', 'done')
     ]
     render(<ToolGroup tools={tools} />)
-    expect(screen.getByText('Explored')).toBeTruthy()
-    expect(screen.getByText('1 file and 1 search')).toBeTruthy()
+    expect(screen.getByText('Read and searched')).toBeTruthy()
+    expect(screen.getByText('1 file and 1 lookup')).toBeTruthy()
     expect(screen.getByText('6s')).toBeTruthy()
     expect(screen.queryByText('a.ts')).toBeNull()
   })
@@ -81,7 +82,21 @@ describe('ToolGroup', () => {
     render(<ToolGroup tools={tools} />)
     expect(screen.getByText('interrupted')).toBeTruthy()
     expect(screen.getByText('Read')).toBeTruthy()
-    expect(screen.getByText('1 file')).toBeTruthy()
+    expect(screen.getByText(/a\.ts/)).toBeTruthy()
+  })
+
+  it('does not duplicate list_dir path in the expanded body when shown as activity', () => {
+    const tools = [
+      toolItem('t1', 'list_dir', 'src', 'done', { startedAt: 1_000, endedAt: 2_000 })
+    ]
+    tools[0]!.tool.content = JSON.stringify({
+      path: 'src',
+      entries: [{ name: 'a.ts', type: 'file' }]
+    })
+    tools[0]!.tool.argsPreview = '{"path":"src"}'
+    render(<ToolGroup tools={tools} groupExpanded />)
+    // Path appears in the compact subtitle; body must not repeat a path header.
+    expect(screen.getAllByText(/src/).length).toBe(1)
   })
 
   it('names the group after a single kind of work', () => {
@@ -118,6 +133,7 @@ describe('ToolGroup', () => {
 
   it('follows the host disclosure state instead of local state', () => {
     const tools = [toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 })]
+    tools[0]!.tool.content = 'alpha output'
     const onGroupToggle = vi.fn()
 
     const { rerender } = render(
@@ -127,10 +143,10 @@ describe('ToolGroup', () => {
 
     expect(onGroupToggle).toHaveBeenCalledWith(true)
     // Still closed: the host owns the state and has not applied the change yet.
-    expect(screen.queryByText('a.ts')).toBeNull()
+    expect(screen.queryByText('alpha output')).toBeNull()
 
     rerender(<ToolGroup tools={tools} groupExpanded onGroupToggle={onGroupToggle} />)
-    expect(screen.getByText('a.ts')).toBeTruthy()
+    expect(screen.getByText('alpha output')).toBeTruthy()
   })
 
   it('spans elapsed time across batches that only carry partial timing', () => {
@@ -144,5 +160,49 @@ describe('ToolGroup', () => {
       />
     )
     expect(screen.getByText('8s')).toBeTruthy()
+  })
+
+  it('auto-expands only the running nested body while a group is pending', () => {
+    const tools = [
+      toolItem('t1', 'read', 'a.ts', 'done', { startedAt: Date.now() }),
+      toolItem('t2', 'read', 'b.ts', 'running')
+    ]
+    tools[0]!.tool.content = 'alpha output'
+    tools[1]!.tool.content = 'beta output'
+
+    render(<ToolGroup tools={tools} />)
+
+    expect(screen.getByRole('button', { name: /Reading 2 files/i }).getAttribute('aria-expanded')).toBe(
+      'true'
+    )
+    expect(screen.getByText(/a\.ts/)).toBeTruthy()
+    expect(screen.getByText(/b\.ts/)).toBeTruthy()
+    expect(screen.queryByText('alpha output')).toBeNull()
+    expect(screen.getByText('beta output')).toBeTruthy()
+  })
+
+  it('auto-expands nested bodies for running tools when MessageList omits expandedToolIds', () => {
+    // MessageList passes undefined until a tool has an explicit toolExpanded flag.
+    // An empty Set would make Set.has() return false and block defaultExpanded.
+    const tools = [
+      toolItem('s1', 'subagent', 'Audit core', 'done', { startedAt: Date.now() }),
+      toolItem('s2', 'subagent', 'Audit API', 'running')
+    ]
+    tools[0]!.tool.content = 'core done'
+    tools[1]!.tool.content = 'api running'
+
+    render(<ToolGroup tools={tools} />)
+
+    expect(screen.getByRole('button', { name: /Investigating/i }).getAttribute('aria-expanded')).toBe(
+      'true'
+    )
+    const nested = screen.getAllByRole('button', { name: /Audit/i })
+    expect(nested.length).toBeGreaterThanOrEqual(2)
+    const core = nested.find((btn) => /Audit core/i.test(btn.textContent ?? ''))
+    const api = nested.find((btn) => /Audit API/i.test(btn.textContent ?? ''))
+    expect(core?.getAttribute('aria-expanded')).toBe('false')
+    expect(api?.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.queryByText('core done')).toBeNull()
+    expect(screen.getByText('api running')).toBeTruthy()
   })
 })

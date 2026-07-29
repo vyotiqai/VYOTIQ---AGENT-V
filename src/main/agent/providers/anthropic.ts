@@ -16,6 +16,7 @@ import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
+import { formatProviderHttpError } from './httpErrors'
 import { anthropicThinkingBlocksFromMessage, anthropicThinkingFields } from './thinkingPolicy'
 
 function asContentBlocks(content: unknown): Array<Record<string, unknown>> {
@@ -282,7 +283,9 @@ export function buildAnthropicBody(req: ProviderChatRequest): Record<string, unk
     stream: true
   }
   if (req.toolChoice && tools.length) {
-    body.tool_choice = { type: req.toolChoice }
+    body.tool_choice = {
+      type: req.toolChoice === 'required' ? 'any' : req.toolChoice
+    }
   }
   if (req.responseFormat) {
     body.output_config = {
@@ -318,7 +321,7 @@ export const anthropicProvider: LlmProvider = {
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       logProviderFailure('anthropic', 'http', { status: res.status })
-      throw new Error(`HTTP ${res.status}: ${text.slice(0, 400)}`)
+      throw new Error(formatProviderHttpError(res.status, text, 'anthropic'))
     }
     const data = (await res.json()) as { data?: Array<Record<string, unknown>> }
     const out: ModelInfo[] = []
@@ -394,7 +397,9 @@ export const anthropicProvider: LlmProvider = {
     }
 
     if (req.toolChoice && tools.length) {
-      body.tool_choice = { type: req.toolChoice }
+      body.tool_choice = {
+        type: req.toolChoice === 'required' ? 'any' : req.toolChoice
+      }
     }
 
     if (req.responseFormat) {
@@ -444,7 +449,7 @@ export const anthropicProvider: LlmProvider = {
       logProviderFailure('anthropic', 'http', {
         status: res.status
       })
-      yield { type: 'error', error: `HTTP ${res.status}: ${text.slice(0, 400)}` }
+      yield { type: 'error', error: formatProviderHttpError(res.status, text, 'anthropic') }
       return
     }
 
@@ -542,6 +547,16 @@ export const anthropicProvider: LlmProvider = {
             name: String(block.name),
             arguments: ''
           })
+          // Emit immediately so the UI can show tool chrome before argument JSON arrives.
+          yield {
+            type: 'tool_call_delta',
+            toolCallDelta: {
+              index,
+              id: String(block.id),
+              name: String(block.name),
+              arguments: ''
+            }
+          }
         } else if (block?.type === 'thinking') {
           currentIndex = index
           currentBlockType = 'thinking'
@@ -573,6 +588,7 @@ export const anthropicProvider: LlmProvider = {
       if (type === 'content_block_stop') {
         if (currentBlockType === 'thinking' && currentThinkingText) {
           thinkingBlocks.push({ type: 'thinking', thinking: currentThinkingText })
+          yield { type: 'thinking_done', text: currentThinkingText }
           currentThinkingText = ''
           currentBlockType = null
         }
@@ -581,13 +597,11 @@ export const anthropicProvider: LlmProvider = {
 
     if (currentBlockType === 'thinking' && currentThinkingText) {
       thinkingBlocks.push({ type: 'thinking', thinking: currentThinkingText })
+      yield { type: 'thinking_done', text: currentThinkingText }
     }
 
     for (const call of toolCalls.values()) {
       yield { type: 'tool_call', toolCall: call }
-    }
-    if (thinkingBlocks.length) {
-      yield { type: 'thinking_done', text: thinkingBlocks.map((b) => b.thinking).filter(Boolean).join('\n') }
     }
     yield {
       type: 'done',

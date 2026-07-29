@@ -1,6 +1,6 @@
 # Vyotiq Agent V
 
-Lean Electron desktop coding agent: natural-language harness, workspace tools, multi-provider chat, live context management, and file-backed long-term memory. No terminal UI, browser automation, embedding RAG, or GitHub.
+Lean Electron desktop coding agent: natural-language harness, workspace tools, multi-provider chat, live context management, and file-backed long-term memory. Includes a built-in live agent browser (navigate, snapshot, click, type). No terminal UI, embedding RAG, or GitHub.
 
 ## Stack
 
@@ -36,7 +36,7 @@ pnpm dev
 
 OpenAI · Anthropic · Gemini · Ollama · DeepSeek · Groq · OpenRouter · xAI · Mistral
 
-- **Extended thinking:** Reasoning-capable models stream a separate thinking channel (collapsed in chat). Configure in the composer **model picker** (thinking on/off, effort, show/hide), along with max steps and compaction.
+- **Extended thinking:** Reasoning-capable models stream a separate thinking channel (collapsed in chat). Configure in the composer **model picker** (thinking on/off, effort, show/hide), along with compaction.
 - **OpenAI** reasoning models use the **Responses API** (`/v1/responses`) with reasoning summaries and tool-loop continuity.
 - **Gemini** thinking models use the **Interactions API** (`/v1beta/interactions`) with stateful `previous_interaction_id`.
 - **Anthropic** uses **Messages API** extended/adaptive thinking; **DeepSeek** and **OpenRouter** use Chat Completions with `reasoning_content` / `reasoning` replay on tool steps.
@@ -48,7 +48,8 @@ OpenAI · Anthropic · Gemini · Ollama · DeepSeek · Groq · OpenRouter · xAI
 ## Context + memory
 
 - Universal client context pipeline: budget layers, tool-result trimming, structured compaction, workspace snapshot, always-on memory index + state injection, live context-window meter in the composer.
-- Read-only tools may run in parallel when the model requests multiple calls in one step.
+- Read-only built-in tools may run in parallel when the model requests multiple calls in one step. MCP tools always run serially and are not auto-exempt from approval via `readOnlyHint` (session/workspace allowlists can still skip prompts).
+- **Marketplace** (sidebar): Discover / Featured catalog for MCP servers, skills, and plugins; Manage installs and configures them (stdio / HTTP / SSE). Settings → Registry holds the optional remote catalog URL. Enabled skills inject into the system prompt; plugins expand nested MCP + skills + rules.
 - Anthropic also sends server `cache_control` + `context_management` (`clear_tool_uses` / `compact`) when available.
 - Long-term memory lives at `{workspace}/.vyotiq/memory/` (`index.md`, `notes/*.md`, optional `state.md`) with tools `memory_list` / `memory_read` / `memory_write`.
 
@@ -63,7 +64,7 @@ src/main/          # window, security, IPC, secrets, agent loop / tools / provid
 src/preload/       # contextBridge API (+ optional Sentry renderer bridge)
 src/shared/        # Zod IPC contracts, channels, AppError, logger facade, scrubber
 src/renderer/      # React UI (sidebar + chat + settings + ErrorBoundary)
-resources/harness/ # system agent harness (default.md — sole source, not copied)
+resources/harness/ # system agent harness (default.md — behavioral policy; per-tool how-to lives in tool defs)
 ```
 
 Run state (chat sessions) lives under AppData, not in the project folder:
@@ -85,7 +86,9 @@ Run state (chat sessions) lives under AppData, not in the project folder:
           events.jsonl
 ```
 
-Project-local agent memory stays at `{workspace}/.vyotiq/memory/` only. The system harness lives only in `resources/harness/default.md` (bundled with the app).
+Project-local agent memory stays at `{workspace}/.vyotiq/memory/` only. The system harness lives only in `resources/harness/default.md` (bundled with the app). Built-in tools use short capability descriptions in `src/main/agent/schemas/tools.ts`, not a duplicated harness catalog.
+
+When adding or changing a built-in tool, update its argument schema, handler, and runtime limits/classification together. Keep the tool description as a short capability blurb; `tests/main/unit/toolsSchema.test.ts` checks registry/handler parity and the harness boundary.
 
 **Run file contract:** `messages.jsonl` is the canonical chat transcript (one JSON object per line: user/assistant/tool messages). `events.jsonl` is an append-only ops log (`status`, `step_usage`, `context_usage`, etc. with ISO `at` timestamps); full tool output is stored only in `messages.jsonl`. The UI rebuilds the chat timeline from `messages.jsonl` on reload and shows run telemetry in the Activity panel. Legacy session-only runs under `{userData}/sessions/` are migrated into the workspace AppData sessions folder on first startup.
 
@@ -114,4 +117,4 @@ VITE_SENTRY_DSN=https://<key>@o<org>.ingest.sentry.io/<project>
 
 ## Scope (kept lean)
 
-Tools: `read` · `edit` · `search` · `terminal` · `memory_list` · `memory_read` · `memory_write` (no terminal panel).
+Tools: `read` · `list_dir` · `glob` · `grep` · `search` · `edit` · `multi_edit` · `delete` · `todo_write` · `web_fetch` · `web_search` · `browser_navigate` · `browser_snapshot` · `browser_click` · `browser_type` · `subagent` · `terminal` · `memory_list` · `memory_read` · `memory_write` (no terminal panel).

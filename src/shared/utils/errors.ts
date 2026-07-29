@@ -3,7 +3,6 @@ import { scrubString } from './scrub'
 
 export type ErrorCode =
   | 'AGENT_LOOP'
-  | 'AGENT_MAX_STEPS'
   | 'IPC_VALIDATION'
   | 'IPC_HANDLER'
   | 'IPC_CLIENT'
@@ -71,8 +70,7 @@ export function isExpectedToolError(message: string): boolean {
 // so it must not be re-reported as an unexpected crash.
 const EXPECTED_CODES = new Set<ErrorCode>([
   'IPC_VALIDATION',
-  'IPC_CLIENT',
-  'AGENT_MAX_STEPS'
+  'IPC_CLIENT'
 ])
 
 export function isExpectedError(err: unknown): boolean {

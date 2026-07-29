@@ -1,17 +1,16 @@
-import { useEffect, type RefObject } from 'react'
-
-const MAX_HEIGHT_PX = 240
+import { useLayoutEffect, type RefObject } from 'react'
+import { COMPOSER_TEXTAREA_MAX_PX } from '@renderer/lib/utils/layout'
 
 export function useAutoGrowTextarea(
   ref: RefObject<HTMLTextAreaElement | null>,
   value: string
 ): void {
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
     el.style.height = 'auto'
-    const next = Math.min(el.scrollHeight, MAX_HEIGHT_PX)
+    const next = Math.min(el.scrollHeight, COMPOSER_TEXTAREA_MAX_PX)
     el.style.height = `${next}px`
-    el.style.overflowY = el.scrollHeight > MAX_HEIGHT_PX ? 'auto' : 'hidden'
+    el.style.overflowY = el.scrollHeight > COMPOSER_TEXTAREA_MAX_PX ? 'auto' : 'hidden'
   }, [ref, value])
 }

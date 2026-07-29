@@ -62,11 +62,6 @@ describe('formatError + AppError', () => {
     expect(wrapped.correlationId).toBe('abc')
   })
 
-  it('accepts AGENT_MAX_STEPS as a distinct taxonomy code', () => {
-    const err = new AppError('Stopped after 25 steps.', { code: 'AGENT_MAX_STEPS' })
-    expect(err.code).toBe('AGENT_MAX_STEPS')
-    expect(formatError(err)).toBe('Stopped after 25 steps.')
-  })
 
   it('classifies expected tool exploration errors', () => {
     expect(isExpectedToolError('File not found: src/a.ts')).toBe(true)
@@ -78,9 +73,6 @@ describe('formatError + AppError', () => {
     expect(isExpectedError(new DOMException('Aborted', 'AbortError'))).toBe(true)
     expect(isExpectedError(new AppError('bad', { code: 'IPC_VALIDATION' }))).toBe(true)
     expect(isExpectedError(new AppError('boom', { code: 'AGENT_LOOP' }))).toBe(false)
-    expect(isExpectedError(new AppError('Stopped after 25 steps.', { code: 'AGENT_MAX_STEPS' }))).toBe(
-      true
-    )
     try {
       z.string().min(1).parse('')
     } catch (err) {
@@ -278,16 +270,6 @@ describe('logger facade', () => {
     })
     logger.exception(new AppError('boom', { code: 'AGENT_LOOP' }))
     expect(capture).toHaveBeenCalled()
-  })
-
-  it('does not capture expected max-steps stops', () => {
-    const capture = vi.fn()
-    setLoggerBackend({
-      log: () => undefined,
-      captureException: capture
-    })
-    logger.exception(new AppError('Stopped after 25 steps.', { code: 'AGENT_MAX_STEPS' }))
-    expect(capture).not.toHaveBeenCalled()
   })
 
   it('does not capture expected validation errors', () => {

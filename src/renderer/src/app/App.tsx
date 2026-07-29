@@ -1,11 +1,13 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AppShell } from './AppShell'
 import { ChatView } from '../features/chat/ChatView'
-import { SettingsView } from '../features/settings/SettingsView'
+import { SettingsView, type SettingsSection } from '../features/settings'
+import { MarketplaceView } from '../features/marketplace'
 import { useTheme } from '@renderer/lib/hooks/useTheme'
 import { useSettings } from '@renderer/lib/hooks/useSettings'
 import { useWorkspaceManager } from '@renderer/lib/hooks/useWorkspaceManager'
-import type { ProviderId, SecretProvider, ServiceTier } from '@shared/ipc'
+import { ErrorBoundary } from '@renderer/lib/ErrorBoundary'
+import type { ProviderId, SecretProvider, ServiceTier, AttachedFile } from '@shared/ipc'
 import { defaultModelFor } from '@shared/providers'
 import {
   resolveEffectiveSettings,
@@ -14,11 +16,11 @@ import {
 import {
   DEFAULT_THINKING_PREFS,
   modelSelectionKey,
-  pushRecentModel
+  pushRecentModel,
+  resolveServiceTier
 } from '@shared/domain/modelSelection'
 import { logger } from '@shared/logger'
-
-type SettingsSection = 'general' | 'providers' | 'agent' | 'advanced'
+import { workspacePathsEqual } from '@shared/workspacePathMatch'
 
 /** Sent as a visible user turn when resuming a run that was cut short. */
 const CONTINUE_PROMPT = 'Continue from where you stopped.'
@@ -29,6 +31,7 @@ export function App() {
     secrets,
     encryptionAvailable,
     loading,
+    refresh,
     update,
     saveSecret,
     removeSecret,
@@ -43,11 +46,19 @@ export function App() {
     activeWorkspace,
     openWorkspaces,
     activeContext,
-    activeController,
+    contexts,
     activeRuns,
     chat,
     chatActions,
+    onLoadToolContent,
+    onThinkingToggle,
+    onToolToggle,
+    onGroupToggle,
+    onTurnToggle,
+    onApprovalDecision,
+    collapsedTurns,
     openRunTab,
+    openRunInWorkspace,
     closeRunTab,
     setSessionQuery,
     addWorkspace,
@@ -56,28 +67,33 @@ export function App() {
     getRunController,
     loadRunIntoTab: loadRunTranscriptIntoTab,
     refreshActiveRuns,
+    refreshWorkspaceRuns,
     workspaceHasBackgroundRun,
     scrollRestoreToken,
     setComposerDraft,
+    setAgentMode,
     onMessageListScroll,
     setSettingsOverride,
     workspaceError,
     clearWorkspaceError,
     clearRunsError,
-    activeScrollTop
+    activeScrollTop,
+    chatSurfaceEpoch
   } = workspace
 
-  const [view, setView] = useState<'chat' | 'settings'>('chat')
+  const [view, setView] = useState<'chat' | 'settings' | 'marketplace'>('chat')
+  const [marketplaceFocusServerId, setMarketplaceFocusServerId] = useState<string | null>(null)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
   const [modelsRefreshNonce, setModelsRefreshNonce] = useState(0)
-  const [harnessActive, setHarnessActive] = useState(false)
   const chatHeadingRef = useRef<HTMLHeadingElement>(null)
   const settingsBackRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     if (view === 'settings') {
       window.setTimeout(() => settingsBackRef.current?.focus(), 0)
-    } else {
+    } else if (view === 'marketplace') {
+      // MarketplaceView focuses its Close control on mount.
+    } else if (view === 'chat') {
       window.setTimeout(() => chatHeadingRef.current?.focus(), 0)
     }
   }, [view])
@@ -106,7 +122,9 @@ export function App() {
         ...override,
         useOverride: true,
         provider,
-        model: resolvedModel
+        model: resolvedModel,
+        thinkingEnabled: prefs.thinkingEnabled,
+        thinkingEffort: prefs.thinkingEffort
       }).then((res) => {
         if (!res.ok) setSettingsError(res.error)
       })
@@ -188,29 +206,23 @@ export function App() {
     setView('chat')
   }
 
-  const onSelectRunTab = async (runId: string): Promise<void> => {
-    openRunTab(runId)
+  const onSelectRunInWorkspace = async (path: string, runId: string): Promise<void> => {
+    if (!chatActions) {
+      setSettingsError('Session loading is unavailable.')
+      setView('chat')
+      return
+    }
+    await openRunInWorkspace(path, runId)
     const ctrl = getRunController(runId)
     if (!ctrl || ctrl.items.length === 0) {
-      await loadRunIntoTab(runId)
+      await loadRunTranscriptIntoTab(path, runId)
     }
+    setView('chat')
   }
 
   const onNewChat = (): void => {
     openRunTab(null)
     setView('chat')
-  }
-
-  const onOpenHarness = async (): Promise<void> => {
-    setSettingsError(null)
-    const res = await window.vyotiq.openHarness()
-    if (!res.ok) {
-      logger.warn('openHarness failed', { scope: 'harness', err: res.error })
-      setSettingsError(res.error)
-      return
-    }
-    setHarnessActive(true)
-    window.setTimeout(() => setHarnessActive(false), 2000)
   }
 
   const onPickWorkspace = (): void => {
@@ -221,7 +233,229 @@ export function App() {
     })
   }
 
+  const chatActionsRef = useRef(chatActions)
+  chatActionsRef.current = chatActions
+
+  const onChatSend = useCallback(
+    async (text: string, images?: string[], files?: AttachedFile[]) =>
+      chatActionsRef.current?.send(text, images, files) ?? false,
+    []
+  )
+
+  const onChatStop = useCallback(() => {
+    void chatActionsRef.current?.stop()
+  }, [])
+
+  const onChatContinue = useCallback(() => {
+    void chatActionsRef.current?.send(CONTINUE_PROMPT)
+  }, [])
+
+  const activeRunId = chat.runId
+  const [undoBusy, setUndoBusy] = useState(false)
+  const onCompactContext = useCallback(async () => {
+    if (!activeWorkspace || !activeRunId) {
+      return { ok: false as const, message: 'Compaction is unavailable.' }
+    }
+    const res = await window.vyotiq.chatCompact(activeWorkspace, activeRunId)
+    if (!res.ok) return { ok: false as const, message: res.error }
+    chatActionsRef.current?.applyManualCompaction?.(res.data)
+    return {
+      ok: true as const,
+      message: `Summarized ${res.data.messagesBefore - res.data.keptMessages} messages; ${res.data.keptMessages} kept verbatim.`
+    }
+  }, [activeWorkspace, activeRunId])
+
+  const resolveAgentWrites = useCallback(
+    async (action: 'keep' | 'discard', paths?: string[]): Promise<boolean> => {
+      if (!activeWorkspace || !activeRunId) {
+        setSettingsError('Keep/Discard is unavailable.')
+        return false
+      }
+      if (chat.running) {
+        setSettingsError('Stop the run before resolving agent writes.')
+        return false
+      }
+      const checkpointId = chat.writeCheckpoint?.undone
+        ? undefined
+        : chat.writeCheckpoint?.checkpointId
+      setUndoBusy(true)
+      try {
+        const res = await window.vyotiq.resolveWrites({
+          workspacePath: activeWorkspace,
+          runId: activeRunId,
+          ...(checkpointId ? { checkpointId } : {}),
+          action,
+          ...(paths?.length ? { paths } : {})
+        })
+        if (!res.ok) {
+          setSettingsError(res.error)
+          return false
+        }
+        chatActionsRef.current?.applyWriteCheckpointResolution?.(res.data)
+        setSettingsError(null)
+        return true
+      } finally {
+        setUndoBusy(false)
+      }
+    },
+    [activeWorkspace, activeRunId, chat.running, chat.writeCheckpoint]
+  )
+
+  const onUndoWrites = useCallback(async (): Promise<boolean> => {
+    return resolveAgentWrites('discard')
+  }, [resolveAgentWrites])
+
+  const onKeepWriteFile = useCallback(
+    (path: string) => resolveAgentWrites('keep', [path]),
+    [resolveAgentWrites]
+  )
+  const onDiscardWriteFile = useCallback(
+    (path: string) => resolveAgentWrites('discard', [path]),
+    [resolveAgentWrites]
+  )
+  const onKeepAllWrites = useCallback(
+    () => resolveAgentWrites('keep'),
+    [resolveAgentWrites]
+  )
+
+  const writeFileResolutions = useMemo(() => {
+    const files = chat.writeCheckpoint?.files
+    if (!files?.length) return undefined
+    const map = new Map<string, 'kept' | 'discarded' | undefined>()
+    for (const f of files) {
+      map.set(f.path, f.resolved)
+    }
+    return map
+  }, [chat.writeCheckpoint])
+
+  const slashHandlersValue = useMemo(
+    () => ({
+      onCompact: async () => {
+        const result = await onCompactContext()
+        if (!result.ok) {
+          setSettingsError(result.message)
+          return false
+        }
+        setSettingsError(null)
+        return true
+      },
+      onUndoWrites: () => onUndoWrites(),
+      onSetAgentMode: (mode: import('@shared/ipc').AgentInteractionMode) => {
+        setAgentMode(mode)
+        return true
+      },
+      onOpenMarketplace: (mcpServerId?: string) => {
+        setMarketplaceFocusServerId(mcpServerId ?? null)
+        setView('marketplace')
+      },
+      onOpenSettings: () => {
+        setView('settings')
+      },
+      onCreateRule: async (title?: string) => {
+        if (!activeWorkspace) {
+          setSettingsError('Open a workspace to create a rule.')
+          return false
+        }
+        const res = await window.vyotiq.slashCommandsCreateRule({
+          workspacePath: activeWorkspace,
+          title
+        })
+        if (!res.ok) {
+          setSettingsError(res.error)
+          return false
+        }
+        setSettingsError(null)
+        logger.info('Created workspace rule', {
+          scope: 'slash',
+          path: res.data.relativePath
+        })
+        return true
+      },
+      onMarketplaceAction: async (packageId: string, intent: 'install' | 'enable') => {
+        if (intent === 'enable') {
+          const res = await window.vyotiq.marketplaceSetEnabled(packageId, true)
+          if (!res.ok) setSettingsError(res.error)
+          return
+        }
+        const browse = await window.vyotiq.marketplaceBrowse({})
+        if (!browse.ok) {
+          setSettingsError(browse.error)
+          return
+        }
+        const entry = browse.data.packages.find((p) => p.id === packageId)
+        if (!entry) {
+          setSettingsError(`Package not found in catalog: ${packageId}`)
+          return
+        }
+        if (entry.installable === false) {
+          setSettingsError(`Package is not installable: ${packageId}`)
+          return
+        }
+        const payload =
+          entry.bundledPath != null && entry.bundledPath !== ''
+            ? {
+                source: 'bundled' as const,
+                target: entry.bundledPath,
+                kind: entry.kind,
+                version: entry.version
+              }
+            : {
+                source: 'registry' as const,
+                target: entry.id,
+                kind: entry.kind,
+                version: entry.version
+              }
+        const res = await window.vyotiq.marketplaceInstall(payload)
+        if (!res.ok) setSettingsError(res.error)
+      },
+      onOpenFile: async (path: string) => {
+        if (!activeWorkspace) {
+          setSettingsError('Open a workspace to open files.')
+          return
+        }
+        const res = await window.vyotiq.slashCommandsOpenFile({
+          workspacePath: activeWorkspace,
+          path
+        })
+        if (!res.ok) setSettingsError(res.error)
+      },
+      onNotice: (message: string) => {
+        setSettingsError(message)
+      }
+    }),
+    [activeWorkspace, onCompactContext, onUndoWrites, setAgentMode]
+  )
+
   const operationalError = settingsError ?? workspaceError
+
+  const [mcpServerNames, setMcpServerNames] = useState(() => new Map<string, string>())
+
+  useEffect(() => {
+    const map = new Map<string, string>()
+    for (const server of settings.mcpServers) {
+      map.set(server.id, server.name.trim() || server.id)
+    }
+    setMcpServerNames(map)
+    let cancelled = false
+    void (async () => {
+      const res = await window.vyotiq?.mcpStatus?.({
+        workspacePath: activeWorkspace
+      })
+      if (cancelled || !res?.ok) return
+      setMcpServerNames((prev) => {
+        const next = new Map(prev)
+        for (const server of res.data.servers) {
+          if (!next.has(server.id)) {
+            next.set(server.id, server.name.trim() || server.id)
+          }
+        }
+        return next
+      })
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [settings.mcpServers, activeWorkspace])
 
   const onDismissChatBanner = (): void => {
     setSettingsError(null)
@@ -244,6 +478,20 @@ export function App() {
     refreshActiveRuns()
   }
 
+  const onRenameRunInWorkspace = async (
+    path: string,
+    runId: string,
+    goal: string
+  ): Promise<void> => {
+    if (!window.vyotiq?.renameRun) return
+    const res = await window.vyotiq.renameRun(path, runId, goal)
+    if (!res.ok) {
+      setSettingsError(res.error)
+      return
+    }
+    refreshWorkspaceRuns(path)
+  }
+
   const onDeleteRun = async (runId: string): Promise<void> => {
     if (!activeWorkspace || !window.vyotiq?.deleteRun) return
     const res = await window.vyotiq.deleteRun(activeWorkspace, runId)
@@ -253,6 +501,19 @@ export function App() {
     }
     closeRunTab(runId)
     refreshActiveRuns()
+  }
+
+  const onDeleteRunInWorkspace = async (path: string, runId: string): Promise<void> => {
+    if (!window.vyotiq?.deleteRun) return
+    const res = await window.vyotiq.deleteRun(path, runId)
+    if (!res.ok) {
+      setSettingsError(res.error)
+      return
+    }
+    if (activeWorkspace && workspacePathsEqual(path, activeWorkspace)) {
+      closeRunTab(runId)
+    }
+    refreshWorkspaceRuns(path)
   }
 
   const onCloseWorkspace = (path: string): void => {
@@ -269,10 +530,25 @@ export function App() {
   const shellWorkspaceProps = {
     openWorkspaces,
     activeRuns,
+    runsByWorkspacePath: Object.fromEntries(
+      Object.entries(contexts).map(([path, ctx]) => [
+        path,
+        {
+          runs: ctx.runs,
+          runsCapped: ctx.runsCapped,
+          runsError: ctx.runsError,
+          activeRunId: ctx.activeRunId
+        }
+      ])
+    ),
     onSwitchWorkspace: (path: string) => void switchWorkspace(path),
     onCloseWorkspace,
     onAddWorkspace: onPickWorkspace,
-    workspaceHasBackgroundRun
+    workspaceHasBackgroundRun,
+    onSelectRunInWorkspace: (path: string, runId: string) => void onSelectRunInWorkspace(path, runId),
+    onRenameRunInWorkspace: (path: string, runId: string, goal: string) =>
+      void onRenameRunInWorkspace(path, runId, goal),
+    onDeleteRunInWorkspace: (path: string, runId: string) => void onDeleteRunInWorkspace(path, runId)
   }
 
   if (loading) {
@@ -285,8 +561,8 @@ export function App() {
         sessionQuery=""
         onSessionQuery={() => {}}
         onOpenSettings={() => {}}
+        onOpenMarketplace={() => {}}
         onOpenChat={() => {}}
-        onOpenHarness={() => {}}
         onNewChat={() => {}}
         onSelectRun={() => {}}
         onRenameRun={() => {}}
@@ -312,12 +588,11 @@ export function App() {
       runsError={activeContext?.runsError}
       onDismissRunsError={clearRunsError}
       activeRunId={activeContext?.activeRunId ?? chat.runId}
-      sessionQuery={activeContext?.sessionQuery ?? ''}
-      harnessActive={harnessActive}
+      sessionQuery=""
       onSessionQuery={setSessionQuery}
       onOpenSettings={() => setView('settings')}
+      onOpenMarketplace={() => setView('marketplace')}
       onOpenChat={() => setView('chat')}
-      onOpenHarness={() => void onOpenHarness()}
       onNewChat={onNewChat}
       onSelectRun={(runId) => void onSelectRun(runId)}
       onRenameRun={(runId, goal) => void onRenameRun(runId, goal)}
@@ -357,88 +632,103 @@ export function App() {
           onSetSettingsOverride={setSettingsOverride}
           onModelsRefreshed={() => setModelsRefreshNonce((n) => n + 1)}
         />
-      ) : (
-        <ChatView
-          hasOpenWorkspaces={openWorkspaces.length > 0}
-          recentPaths={registry?.recentPaths ?? []}
-          needsWorkspaceForMigration={registry?.needsWorkspaceForMigration}
-          pendingMigrationCount={registry?.pendingMigrationCount}
-          items={chat.items}
-          running={chat.running}
-          error={chatError}
-          runNotice={chat.runNotice}
-          incomplete={chat.incomplete}
-          onContinue={() => void chatActions?.send(CONTINUE_PROMPT)}
-          contextUsage={chat.contextUsage}
-          onCompactContext={
-            activeWorkspace && chat.runId
-              ? async () => {
-                  const res = await window.vyotiq.chatCompact(activeWorkspace, chat.runId!)
-                  if (!res.ok) return { ok: false as const, message: res.error }
-                  return {
-                    ok: true as const,
-                    message: `Summarized ${res.data.messagesBefore - res.data.keptMessages} messages; ${res.data.keptMessages} kept verbatim.`
-                  }
-                }
-              : undefined
-          }
-          operationalError={operationalError}
-          hasWorkspace={Boolean(activeWorkspace)}
-          workspacePath={activeWorkspace}
-          provider={effectiveChatSettings.provider}
-          model={effectiveChatSettings.model}
-          ollamaBaseUrl={settings.ollamaBaseUrl}
-          modelsRefreshKey={modelsRefreshKey}
-          activeRunId={chat.runId ?? activeContext?.activeRunId ?? null}
-          transcriptLoading={chat.transcriptLoading}
-          headingRef={chatHeadingRef}
-          onOpenRecent={onOpenRecent}
-          onAddWorkspace={onPickWorkspace}
-          onProviderModel={onProviderModel}
-          favoriteModels={settings.favoriteModels}
-          recentModels={settings.recentModels}
-          serviceTier={settings.serviceTier}
-          onToggleFavorite={onToggleFavorite}
-          onServiceTierChange={onServiceTierChange}
-          chatSettings={effectiveChatSettings}
-          onChatSettingsChange={onChatSettingsChange}
-          onSend={async (text, images, files) => {
-            return chatActions?.send(text, images, files) ?? false
-          }}
-          onStop={() => void chatActions?.stop()}
-          onDismissError={onDismissChatBanner}
-          composerDraft={activeContext?.ui.composerDraft}
-          onComposerDraftChange={setComposerDraft}
-          restoreScrollTop={activeScrollTop}
-          scrollRestoreToken={scrollRestoreToken}
-          onScrollTopChange={onMessageListScroll}
-          showThinking={effectiveChatSettings.showThinking}
-          onLoadToolContent={
-            activeController
-              ? (toolCallId) => activeController.loadToolContent(toolCallId)
-              : undefined
-          }
-          onThinkingToggle={
-            activeController
-              ? (messageId, expanded) => activeController.setThinkingExpanded(messageId, expanded)
-              : undefined
-          }
-          onToolToggle={
-            activeController
-              ? (toolCallId, expanded) => activeController.setToolExpanded(toolCallId, expanded)
-              : undefined
-          }
-          onGroupToggle={
-            activeController
-              ? (anchorId, expanded) => activeController.setGroupExpanded(anchorId, expanded)
-              : undefined
-          }
-          onApprovalDecision={
-            activeController
-              ? (requestId, decision) => void activeController.respondToApproval(requestId, decision)
-              : undefined
-          }
+      ) : view === 'marketplace' ? (
+        <MarketplaceView
+          settings={settings}
+          onUpdate={update}
+          onReloadSettings={refresh}
+          activeWorkspacePath={activeWorkspace}
+          settingsOverridesByPath={registry?.settingsOverridesByPath ?? {}}
+          onSetSettingsOverride={setSettingsOverride}
+          focusServerId={marketplaceFocusServerId}
+          onFocusServerConsumed={() => setMarketplaceFocusServerId(null)}
+          onClose={() => setView('chat')}
         />
+      ) : (
+        <ErrorBoundary title="Chat couldn't render" resetKey={chatSurfaceEpoch}>
+          <ChatView
+            hasOpenWorkspaces={openWorkspaces.length > 0}
+            recentPaths={registry?.recentPaths ?? []}
+            needsWorkspaceForMigration={registry?.needsWorkspaceForMigration}
+            pendingMigrationCount={registry?.pendingMigrationCount}
+            items={chat.items}
+            itemsStore={{
+              subscribeItems: chat.subscribeItems,
+              getItemsRevision: chat.getItemsRevision,
+              getItems: chat.getItems
+            }}
+            metaStore={{
+              subscribeMeta: chat.subscribeMeta,
+              getMetaRevision: chat.getMetaRevision,
+              getContextUsage: chat.getContextUsage
+            }}
+            running={chat.running}
+            pendingRun={chat.pendingRun}
+            error={chatError}
+            runNotice={chat.runNotice}
+            incomplete={chat.incomplete}
+            onContinue={onChatContinue}
+            contextUsage={chat.contextUsage}
+            onCompactContext={activeWorkspace && activeRunId ? onCompactContext : undefined}
+            operationalError={operationalError}
+            hasWorkspace={Boolean(activeWorkspace)}
+            workspacePath={activeWorkspace}
+            provider={effectiveChatSettings.provider}
+            model={effectiveChatSettings.model}
+            ollamaBaseUrl={settings.ollamaBaseUrl}
+            modelsRefreshKey={modelsRefreshKey}
+            activeRunId={chat.runId ?? activeContext?.activeRunId ?? null}
+            transcriptLoading={chat.transcriptLoading}
+            headingRef={chatHeadingRef}
+            onOpenRecent={onOpenRecent}
+            onAddWorkspace={onPickWorkspace}
+            onProviderModel={onProviderModel}
+            favoriteModels={settings.favoriteModels}
+            recentModels={settings.recentModels}
+            serviceTier={resolveServiceTier(
+              settings,
+              effectiveChatSettings.provider,
+              effectiveChatSettings.model
+            )}
+            onToggleFavorite={onToggleFavorite}
+            onServiceTierChange={onServiceTierChange}
+            chatSettings={effectiveChatSettings}
+            onChatSettingsChange={onChatSettingsChange}
+            agentMode={activeContext?.ui.agentMode ?? 'agent'}
+            onAgentModeChange={setAgentMode}
+            onContinueInAgent={() => {
+              setAgentMode('agent')
+              setComposerDraft('Implement the approved plan in plan.md.')
+            }}
+            onSend={onChatSend}
+            onStop={onChatStop}
+            onDismissError={onDismissChatBanner}
+            onComposerDraftChange={setComposerDraft}
+            restoreScrollTop={activeScrollTop}
+            scrollRestoreToken={scrollRestoreToken}
+            onScrollTopChange={onMessageListScroll}
+            chatSurfaceEpoch={chatSurfaceEpoch}
+            showThinking={effectiveChatSettings.showThinking}
+            onLoadToolContent={onLoadToolContent}
+            onThinkingToggle={onThinkingToggle}
+            onToolToggle={onToolToggle}
+            onGroupToggle={onGroupToggle}
+            onTurnToggle={onTurnToggle}
+            collapsedTurns={collapsedTurns}
+            onApprovalDecision={onApprovalDecision}
+            mcpServerNames={mcpServerNames}
+            slashHandlers={slashHandlersValue}
+            canUndoWrites={Boolean(
+              chat.writeCheckpoint && !chat.writeCheckpoint.undone && !chat.running
+            )}
+            undoBusy={undoBusy}
+            onUndoWrites={onUndoWrites}
+            writeFileResolutions={writeFileResolutions}
+            onKeepWriteFile={onKeepWriteFile}
+            onDiscardWriteFile={onDiscardWriteFile}
+            onKeepAllWrites={onKeepAllWrites}
+          />
+        </ErrorBoundary>
       )}
     </AppShell>
   )

@@ -1,31 +1,118 @@
 import type { Ref } from 'react'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { GitBranchStrip, GitChangePills, useGitChrome } from './components/GitChrome'
+import { memo, useLayoutEffect, useRef, useState } from 'react'
 import { MessageList } from './components/MessageList'
+import { AgentBrowserPanel } from './components/AgentBrowserPanel'
 import { Composer } from './components/composer'
+import {
+  ChatGitLeading,
+  ChatGitTrailing,
+  useChatLiveItems,
+  useHasChatItems
+} from './components/ChatStreamLeaves'
 import { RecentsPicker } from './RecentsPicker'
 import type { UiItem } from '@shared/transcript'
-import type { ProviderId, ToolApprovalDecision } from '@shared/ipc'
+import type { AgentInteractionMode, ProviderId, ToolApprovalDecision } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { Alert } from '@renderer/lib/ui'
-import { CHAT_COLUMN, CHAT_COLUMN_MAX, CHAT_GUTTER } from '@renderer/lib/utils/layout'
+import {
+  CHAT_COLUMN_MAX,
+  CHAT_GUTTER,
+  COMPOSER_DOCK_FADE_PX,
+  COMPOSER_DOCK_FALLBACK_PX
+} from '@renderer/lib/utils/layout'
 import { cn } from '@renderer/lib/ui/cn'
+import type { ChatItemsStore, ChatMetaStore } from './chatStores'
 
-/** Bumps once per workspace change and once each time a run stops. */
-function useGitRevision(workspacePath: string | null, running: boolean): number {
-  const [revision, setRevision] = useState(0)
-  const wasRunning = useRef(running)
+export type { ChatItemsStore, ChatMetaStore } from './chatStores'
 
-  useEffect(() => {
-    if (wasRunning.current && !running) setRevision((value) => value + 1)
-    wasRunning.current = running
-  }, [running])
+const MemoComposer = memo(Composer)
 
-  useEffect(() => {
-    setRevision((value) => value + 1)
-  }, [workspacePath])
-
-  return revision
+function TranscriptPane({
+  itemsStore,
+  items,
+  pendingRun,
+  running,
+  transcriptLoading,
+  dockReservePx,
+  restoreScrollTop,
+  scrollRestoreToken,
+  onScrollTopChange,
+  onLoadToolContent,
+  onThinkingToggle,
+  onToolToggle,
+  onGroupToggle,
+  onTurnToggle,
+  onApprovalDecision,
+  collapsedTurns,
+  showThinking,
+  mcpServerNames,
+  surfaceKey,
+  canUndoWrites,
+  undoBusy,
+  onUndoWrites,
+  writeFileResolutions,
+  onKeepWriteFile,
+  onDiscardWriteFile,
+  onKeepAllWrites
+}: {
+  itemsStore?: ChatItemsStore
+  items: UiItem[]
+  pendingRun?: boolean
+  running: boolean
+  transcriptLoading?: boolean
+  dockReservePx: number
+  restoreScrollTop?: number
+  scrollRestoreToken?: number
+  onScrollTopChange?: (scrollTop: number) => void
+  onLoadToolContent?: (toolCallId: string) => Promise<string | null>
+  onThinkingToggle?: (messageId: string, expanded: boolean) => void
+  onToolToggle?: (toolCallId: string, expanded: boolean) => void
+  onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
+  onTurnToggle?: (turnIndex: number) => void
+  onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
+  collapsedTurns?: ReadonlySet<number>
+  showThinking?: boolean
+  mcpServerNames?: ReadonlyMap<string, string>
+  surfaceKey: string
+  canUndoWrites?: boolean
+  undoBusy?: boolean
+  onUndoWrites?: () => void | Promise<unknown>
+  writeFileResolutions?: ReadonlyMap<string, 'kept' | 'discarded' | undefined>
+  onKeepWriteFile?: (path: string) => void | Promise<unknown>
+  onDiscardWriteFile?: (path: string) => void | Promise<unknown>
+  onKeepAllWrites?: () => void | Promise<unknown>
+}) {
+  const liveItems = useChatLiveItems(itemsStore, items)
+  return (
+    <MessageList
+      key={`transcript:${surfaceKey}`}
+      items={liveItems}
+      pendingRun={pendingRun}
+      running={running}
+      transcriptLoading={transcriptLoading}
+      reserveComposerSpace
+      dockReservePx={dockReservePx}
+      restoreScrollTop={restoreScrollTop}
+      scrollRestoreToken={scrollRestoreToken}
+      onScrollTopChange={onScrollTopChange}
+      onLoadToolContent={onLoadToolContent}
+      onThinkingToggle={onThinkingToggle}
+      onToolToggle={onToolToggle}
+      onGroupToggle={onGroupToggle}
+      onTurnToggle={onTurnToggle}
+      onApprovalDecision={onApprovalDecision}
+      collapsedTurns={collapsedTurns}
+      showThinking={showThinking}
+      mcpServerNames={mcpServerNames}
+      canUndoWrites={canUndoWrites}
+      undoBusy={undoBusy}
+      onUndoWrites={onUndoWrites}
+      writeFileResolutions={writeFileResolutions}
+      onKeepWriteFile={onKeepWriteFile}
+      onDiscardWriteFile={onDiscardWriteFile}
+      onKeepAllWrites={onKeepAllWrites}
+    />
+  )
 }
 
 export function ChatView({
@@ -34,7 +121,10 @@ export function ChatView({
   needsWorkspaceForMigration,
   pendingMigrationCount,
   items,
+  itemsStore,
+  metaStore,
   running,
+  pendingRun = false,
   error,
   runNotice,
   incomplete,
@@ -61,6 +151,9 @@ export function ChatView({
   onServiceTierChange = () => {},
   chatSettings,
   onChatSettingsChange,
+  agentMode = 'agent',
+  onAgentModeChange = () => {},
+  onContinueInAgent,
   onSend,
   onStop,
   onDismissError,
@@ -73,15 +166,32 @@ export function ChatView({
   onThinkingToggle,
   onToolToggle,
   onGroupToggle,
+  onTurnToggle,
   onApprovalDecision,
-  showThinking = true
+  collapsedTurns,
+  showThinking = true,
+  chatSurfaceEpoch = 0,
+  mcpServerNames,
+  slashHandlers,
+  canUndoWrites = false,
+  undoBusy = false,
+  onUndoWrites,
+  writeFileResolutions,
+  onKeepWriteFile,
+  onDiscardWriteFile,
+  onKeepAllWrites
 }: {
   hasOpenWorkspaces: boolean
   recentPaths: string[]
   needsWorkspaceForMigration?: boolean
   pendingMigrationCount?: number
   items: UiItem[]
+  /** When set, transcript leaves subscribe so ChatView/Composer skip token patches. */
+  itemsStore?: ChatItemsStore
+  /** When set, ContextMeter reads usage via meta store (skips prop fanout). */
+  metaStore?: ChatMetaStore
   running: boolean
+  pendingRun?: boolean
   error: string | null
   runNotice?: string | null
   incomplete?: import('@renderer/lib/hooks/createChatStreamController').IncompleteTurnState | null
@@ -108,6 +218,9 @@ export function ChatView({
   onServiceTierChange?: (tier: import('@shared/ipc').ServiceTier) => void
   chatSettings: EffectiveChatSettings
   onChatSettingsChange: (patch: ChatSettingsPatch) => void
+  agentMode?: AgentInteractionMode
+  onAgentModeChange?: (mode: AgentInteractionMode) => void
+  onContinueInAgent?: () => void
   onSend: (
     text: string,
     images?: string[],
@@ -124,37 +237,55 @@ export function ChatView({
   onThinkingToggle?: (messageId: string, expanded: boolean) => void
   onToolToggle?: (toolCallId: string, expanded: boolean) => void
   onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
-  onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void
+  onTurnToggle?: (turnIndex: number) => void
+  onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
+  collapsedTurns?: ReadonlySet<number>
   showThinking?: boolean
+  mcpServerNames?: ReadonlyMap<string, string>
+  /**
+   * Bumps on workspace / run-tab switches (not draft→run id assignment) so the
+   * transcript and composer remount without clearing mid-send attachments.
+   */
+  chatSurfaceEpoch?: number
+  slashHandlers?: import('./components/composer/slashCommandExecute').SlashClientHandlers
+  canUndoWrites?: boolean
+  undoBusy?: boolean
+  onUndoWrites?: () => void | Promise<unknown>
+  writeFileResolutions?: ReadonlyMap<string, 'kept' | 'discarded' | undefined>
+  onKeepWriteFile?: (path: string) => void | Promise<unknown>
+  onDiscardWriteFile?: (path: string) => void | Promise<unknown>
+  onKeepAllWrites?: () => void | Promise<unknown>
 }) {
+  // Boolean presence only — stays Object.is-stable across pure text_delta frames.
+  const hasItems = useHasChatItems(itemsStore, items)
   const bannerError = operationalError ?? error
-  const showHero = items.length === 0 && !activeRunId && !transcriptLoading
-  // A finished turn is the moment the working tree is most likely to have moved.
-  const gitRevision = useGitRevision(workspacePath, running)
-  // The hero has no dock, so there is nowhere to show a repository state yet.
-  const gitChrome = useGitChrome(workspacePath, gitRevision, !showHero)
-  const composerKey = `${workspacePath ?? 'none'}:${activeRunId ?? 'draft'}`
+  const showHero = !hasItems && !activeRunId && !transcriptLoading
+  const surfaceKey = `${workspacePath ?? 'none'}:${chatSurfaceEpoch}`
   const stageRef = useRef<HTMLDivElement>(null)
+  const [dockReservePx, setDockReservePx] = useState(COMPOSER_DOCK_FALLBACK_PX)
 
-  // Transcript scrolls behind the floating composer, so it has to reserve exactly
-  // the dock's height. The dock already carries its own bottom padding.
+  // Transcript scrolls behind the floating composer, so it has to reserve the
+  // dock height plus the fade painted above it (not included in offsetHeight).
   useLayoutEffect(() => {
     const stage = stageRef.current
-    if (!stage || typeof ResizeObserver === 'undefined') return undefined
+    if (!stage) return undefined
     const dock = stage.querySelector<HTMLElement>('[data-composer-dock]')
     if (!dock) return undefined
 
     const sync = (): void => {
-      stage.style.setProperty('--vy-dock-h', `${Math.max(dock.offsetHeight, 48)}px`)
+      const dockH = Math.max(dock.offsetHeight, 48) + COMPOSER_DOCK_FADE_PX
+      stage.style.setProperty('--vy-dock-h', `${dockH}px`)
+      setDockReservePx(dockH)
     }
 
     sync()
+    if (typeof ResizeObserver === 'undefined') return undefined
     const ro = new ResizeObserver(sync)
     ro.observe(dock)
     const shell = dock.querySelector('[data-composer-shell]')
     if (shell) ro.observe(shell)
     return () => ro.disconnect()
-  }, [showHero])
+  }, [showHero, surfaceKey])
 
   const composerProps = {
     provider,
@@ -167,6 +298,7 @@ export function ChatView({
     modelsRefreshKey,
     draft: composerDraft,
     onDraftChange: onComposerDraftChange,
+    workspacePath,
     onProviderModel,
     favoriteModels,
     recentModels,
@@ -175,14 +307,20 @@ export function ChatView({
     onServiceTierChange,
     chatSettings,
     onChatSettingsChange,
+    agentMode,
+    onAgentModeChange,
     onSend,
     onStop,
     runNotice,
     incomplete,
     onContinue,
-    contextUsage,
+    onContinueInAgent,
+    activeRunId,
+    contextUsage: metaStore ? undefined : contextUsage,
+    metaStore,
     onCompactContext,
-    composerPlaceholder: transcriptLoading ? 'Loading chat…' : undefined
+    composerPlaceholder: transcriptLoading ? 'Loading chat…' : undefined,
+    slashHandlers
   }
 
   if (!hasOpenWorkspaces) {
@@ -237,8 +375,8 @@ export function ChatView({
               )}
               data-composer-hero
             >
-              <Composer
-                key={composerKey}
+              <MemoComposer
+                key={`composer:${surfaceKey}`}
                 {...composerProps}
                 variant="hero"
                 className="w-full"
@@ -247,9 +385,13 @@ export function ChatView({
           </div>
         ) : (
           <div ref={stageRef} className="relative flex min-h-0 flex-1 flex-col" data-chat-stage>
-            <MessageList
+            <TranscriptPane
+              itemsStore={itemsStore}
               items={items}
-              reserveComposerSpace
+              pendingRun={pendingRun}
+              running={running}
+              transcriptLoading={transcriptLoading}
+              dockReservePx={dockReservePx}
               restoreScrollTop={restoreScrollTop}
               scrollRestoreToken={scrollRestoreToken}
               onScrollTopChange={onScrollTopChange}
@@ -257,18 +399,48 @@ export function ChatView({
               onThinkingToggle={onThinkingToggle}
               onToolToggle={onToolToggle}
               onGroupToggle={onGroupToggle}
+              onTurnToggle={onTurnToggle}
               onApprovalDecision={onApprovalDecision}
+              collapsedTurns={collapsedTurns}
               showThinking={showThinking}
+              mcpServerNames={mcpServerNames}
+              surfaceKey={surfaceKey}
+              canUndoWrites={canUndoWrites}
+              undoBusy={undoBusy}
+              onUndoWrites={onUndoWrites}
+              writeFileResolutions={writeFileResolutions}
+              onKeepWriteFile={onKeepWriteFile}
+              onDiscardWriteFile={onDiscardWriteFile}
+              onKeepAllWrites={onKeepAllWrites}
             />
 
-            <Composer
-              key={composerKey}
+            <MemoComposer
+              key={`composer:${surfaceKey}`}
               {...composerProps}
               variant="dock"
               bannerError={bannerError}
               onDismissError={onDismissError}
-              leading={<GitChangePills chrome={gitChrome} />}
-              trailing={<GitBranchStrip chrome={gitChrome} />}
+              leading={
+                <div className="flex flex-col gap-2">
+                  <AgentBrowserPanel />
+                  <ChatGitLeading
+                    itemsStore={itemsStore}
+                    items={items}
+                    workspacePath={workspacePath}
+                    running={running}
+                    enabled
+                  />
+                </div>
+              }
+              trailing={
+                <ChatGitTrailing
+                  itemsStore={itemsStore}
+                  items={items}
+                  workspacePath={workspacePath}
+                  running={running}
+                  enabled
+                />
+              }
             />
           </div>
         )}

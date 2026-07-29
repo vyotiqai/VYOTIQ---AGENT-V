@@ -1,4 +1,4 @@
-import { assertInsideWorkspace } from '../../../shared/workspacePath'
+import { resolveInsideWorkspace } from '../../workspace/safePath'
 import {
   existsSync,
   readFileSync,
@@ -8,9 +8,14 @@ import {
 import { basename, dirname, join } from 'path'
 
 const MAX_BYTES = 512 * 1024
+/** Shared with the tools dispatcher — model-facing content cap matches disk read cap. */
+export const READ_CONTENT_CAP = MAX_BYTES
 /** Line slicing needs the whole file in memory, so it gets a wider but finite cap. */
-const LINE_RANGE_MAX_BYTES = 8 * 1024 * 1024
-const DIR_LIST_CAP = 80
+export const READ_LINE_RANGE_MAX_BYTES = 8 * 1024 * 1024
+const LINE_RANGE_MAX_BYTES = READ_LINE_RANGE_MAX_BYTES
+/** Directory listing when `read` is pointed at a directory. */
+export const READ_DIR_LIST_CAP = 80
+const DIR_LIST_CAP = READ_DIR_LIST_CAP
 const SUGGEST_CAP = 8
 
 export type ReadOptions = {
@@ -40,7 +45,8 @@ function listDirectoryEntries(resolved: string, relPath: string): string {
 function suggestSimilarPaths(workspaceRoot: string, relPath: string): string[] {
   const parent = dirname(relPath)
   const target = basename(relPath).toLowerCase()
-  const parentResolved = parent === '.' ? workspaceRoot : assertInsideWorkspace(workspaceRoot, parent)
+  const parentResolved =
+    parent === '.' ? workspaceRoot : resolveInsideWorkspace(workspaceRoot, parent)
   if (!existsSync(parentResolved)) return []
   try {
     const names = readdirSync(parentResolved)
@@ -84,7 +90,7 @@ export function toolRead(
   pathArg: string,
   options: ReadOptions = {}
 ): string {
-  const resolved = assertInsideWorkspace(workspaceRoot, pathArg)
+  const resolved = resolveInsideWorkspace(workspaceRoot, pathArg)
   if (!existsSync(resolved)) {
     throw new Error(formatMissingFileHint(workspaceRoot, pathArg))
   }

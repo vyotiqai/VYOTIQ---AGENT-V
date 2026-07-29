@@ -3,7 +3,7 @@
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
-import { useWorkspaceManager } from '@renderer/lib/hooks/useWorkspaceManager'
+import { useWorkspaceManager, WORKSPACE_MANAGER_LIMITS } from '@renderer/lib/hooks/useWorkspaceManager'
 import type { AgentEvent, WorkspacesState } from '@shared/ipc'
 
 type Handler = (event: AgentEvent) => void
@@ -63,7 +63,7 @@ describe('useWorkspaceManager', () => {
     loadRun.mockReset()
     loadRunEvents.mockReset()
 
-    chatStart.mockResolvedValue({ ok: true, data: { runId: 'run-1' } })
+    chatStart.mockResolvedValue({ ok: true, data: { runId: 'run-1', invokeId: 1 } })
     chatCancel.mockResolvedValue({ ok: true, data: true })
     getWorkspaces.mockResolvedValue({ ok: true, data: defaultRegistry() })
     listRuns.mockResolvedValue({ ok: true, data: { runs: [], capped: false } })
@@ -178,10 +178,51 @@ describe('useWorkspaceManager', () => {
     ).toBe(false)
   })
 
-  it('keeps background run demux alive when workspace tab is removed', async () => {
+  it('opens a run under a different workspace and switches active path', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    await act(async () => {
+      await result.current.openRunInWorkspace('/ws-b', 'run-b-123')
+    })
+
+    expect(setActiveWorkspace).toHaveBeenCalledWith('/ws-b')
+    expect(result.current.activeWorkspace).toBe('/ws-b')
+    expect(result.current.activeContext?.activeRunId).toBe('run-b-123')
+    expect(result.current.activeContext?.openRunIds).toContain('run-b-123')
+  })
+
+  it('refreshes workspace runs when activeRuns poll drops a finished background run', async () => {
     listActiveRuns.mockResolvedValue({
       ok: true,
       data: [{ runId: 'run-bg', workspacePath: '/ws-a' }]
+    })
+
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    listRuns.mockClear()
+    listActiveRuns.mockResolvedValue({ ok: true, data: [] })
+
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+    })
+
+    await waitFor(() => {
+      expect(listRuns.mock.calls.some((call) => call[0] === '/ws-a')).toBe(true)
+    })
+  })
+
+  it('keeps background run demux alive when workspace tab is removed', async () => {
+    listActiveRuns.mockResolvedValue({
+      ok: true,
+      data: [{ runId: 'run-bg', workspacePath: '/ws-a', invokeId: 3 }]
     })
 
     const { result } = renderHook(() => useWorkspaceManager())
@@ -313,7 +354,8 @@ describe('useWorkspaceManager', () => {
       openRunIds: [],
       scrollTop: 0,
       scrollTopByRunId: {},
-      composerDraft: 'hello'
+      composerDraft: 'hello',
+      agentMode: 'agent'
     })
 
     updateWorkspaceUiState.mockClear()
@@ -340,7 +382,7 @@ describe('useWorkspaceManager', () => {
   it('reattaches active runs from listActiveRuns on mount', async () => {
     listActiveRuns.mockResolvedValue({
       ok: true,
-      data: [{ runId: 'run-live', workspacePath: '/ws-a' }]
+      data: [{ runId: 'run-live', workspacePath: '/ws-a', invokeId: 7 }]
     })
     loadRun.mockResolvedValue({
       ok: true,
@@ -356,7 +398,9 @@ describe('useWorkspaceManager', () => {
     const { result } = renderHook(() => useWorkspaceManager())
 
     await waitFor(() => {
-      expect(result.current.activeRuns).toEqual([{ runId: 'run-live', workspacePath: '/ws-a' }])
+      expect(result.current.activeRuns).toEqual([
+        { runId: 'run-live', workspacePath: '/ws-a', invokeId: 7 }
+      ])
     })
 
     expect(loadRun).toHaveBeenCalledWith('/ws-a', 'run-live')
@@ -483,6 +527,32 @@ describe('useWorkspaceManager', () => {
     vi.useRealTimers()
   })
 
+  it('bumps chat surface epoch on workspace and run tab switches', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    const initialEpoch = result.current.chatSurfaceEpoch
+    const initialToken = result.current.scrollRestoreToken
+
+    await act(async () => {
+      await result.current.switchWorkspace('/ws-b')
+    })
+
+    expect(result.current.chatSurfaceEpoch).toBeGreaterThan(initialEpoch)
+    expect(result.current.scrollRestoreToken).toBeGreaterThan(initialToken)
+
+    const afterSwitch = result.current.chatSurfaceEpoch
+
+    act(() => {
+      result.current.openRunTab('run-tab-a')
+    })
+
+    expect(result.current.chatSurfaceEpoch).toBeGreaterThan(afterSwitch)
+  })
+
   it('does not duplicate open run tab on follow-up', async () => {
     const { result } = renderHook(() => useWorkspaceManager())
 
@@ -602,5 +672,158 @@ describe('useWorkspaceManager', () => {
       expect(result.current.workspaceError).toBe('disk read failed')
     })
     expect(result.current.activeWorkspace).toBeNull()
+  })
+
+  it('caps orphan event buffers for never-registered run ids', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    const { ORPHAN_EVENT_BUFFER_MAX } = WORKSPACE_MANAGER_LIMITS
+    const overflow = 5
+
+    await act(async () => {
+      for (let i = 0; i < ORPHAN_EVENT_BUFFER_MAX + overflow; i++) {
+        handler?.({ type: 'text_delta', runId: 'ghost-run', text: `[${i}]` })
+      }
+    })
+
+    await act(async () => {
+      result.current.openRunTab('ghost-run')
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    })
+
+    const ctrl = result.current.getRunController('ghost-run')
+    const assistant = ctrl?.items.find((i) => i.kind === 'message' && i.role === 'assistant')
+    expect(assistant?.kind).toBe('message')
+    if (assistant?.kind !== 'message') return
+
+    expect(assistant.content).not.toContain('[0]')
+    expect(assistant.content).toContain(`[${overflow}]`)
+    expect(assistant.content).toContain(`[${ORPHAN_EVENT_BUFFER_MAX + overflow - 1}]`)
+    expect(assistant.content.startsWith(`[${overflow}]`)).toBe(true)
+  })
+
+  it('keeps terminal orphan events when the buffer overflows with text deltas', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    const { ORPHAN_EVENT_BUFFER_MAX } = WORKSPACE_MANAGER_LIMITS
+
+    await act(async () => {
+      handler?.({
+        type: 'assistant_message',
+        runId: 'ghost-terminal',
+        content: 'kept-answer',
+        toolCalls: []
+      })
+      for (let i = 0; i < ORPHAN_EVENT_BUFFER_MAX; i++) {
+        handler?.({ type: 'text_delta', runId: 'ghost-terminal', text: `[${i}]` })
+      }
+    })
+
+    await act(async () => {
+      result.current.openRunTab('ghost-terminal')
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    })
+
+    const ctrl = result.current.getRunController('ghost-terminal')
+    const assistant = ctrl?.items.find((i) => i.kind === 'message' && i.role === 'assistant')
+    expect(assistant?.kind).toBe('message')
+    if (assistant?.kind !== 'message') return
+    expect(assistant.content).toContain('kept-answer')
+  })
+
+  it('does not resurrect an empty transcript from late events after closing a idle run tab', async () => {
+    loadRun.mockResolvedValue({
+      ok: true,
+      data: {
+        runId: 'run-closed',
+        messages: [{ role: 'user', content: 'persisted' }]
+      }
+    })
+
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    await act(async () => {
+      result.current.openRunTab('run-closed')
+      await result.current.loadRunIntoTab('/ws-a', 'run-closed')
+    })
+
+    await waitFor(() => {
+      expect(
+        result.current.chat.items.some((i) => i.kind === 'message' && i.content === 'persisted')
+      ).toBe(true)
+    })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-closed', status: 'done' })
+    })
+
+    await act(async () => {
+      result.current.closeRunTab('run-closed')
+    })
+
+    await act(async () => {
+      handler?.({ type: 'text_delta', runId: 'run-closed', text: 'LATE_LEAK' })
+      handler?.({ type: 'assistant_message', runId: 'run-closed', content: 'LATE_LEAK' })
+    })
+
+    await act(async () => {
+      result.current.openRunTab('run-closed')
+      await result.current.loadRunIntoTab('/ws-a', 'run-closed')
+    })
+
+    await waitFor(() => {
+      expect(
+        result.current.chat.items.some((i) => i.kind === 'message' && i.content === 'persisted')
+      ).toBe(true)
+    })
+
+    expect(
+      result.current.chat.items.some((i) => i.kind === 'message' && i.content.includes('LATE_LEAK'))
+    ).toBe(false)
+  })
+
+  it('does not apply late events to an LRU-evicted idle controller', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    const { OPEN_RUN_TAB_LIMIT } = WORKSPACE_MANAGER_LIMITS
+    const keptId = `run-keep`
+
+    await act(async () => {
+      for (let i = 0; i < OPEN_RUN_TAB_LIMIT; i++) {
+        result.current.openRunTab(`run-idle-${i}`)
+      }
+      result.current.openRunTab(keptId)
+    })
+
+    expect(result.current.activeContext?.openRunIds.length).toBe(OPEN_RUN_TAB_LIMIT + 1)
+
+    await act(async () => {
+      handler?.({ type: 'text_delta', runId: 'run-idle-0', text: 'EVICT_LEAK' })
+      handler?.({ type: 'assistant_message', runId: 'run-idle-0', content: 'EVICT_LEAK' })
+    })
+
+    await act(async () => {
+      result.current.openRunTab('run-idle-0')
+    })
+
+    expect(
+      result.current.chat.items.some((i) => i.kind === 'message' && i.content.includes('EVICT_LEAK'))
+    ).toBe(false)
   })
 })

@@ -1,20 +1,26 @@
 import { z } from 'zod'
 import { ProviderIdSchema } from './providers'
-import { ThinkingEffortSchema, ToolApprovalSettingsSchema } from './settings'
+import { MarketplaceOverridesSchema } from './marketplace'
+import {
+  AgentInteractionModeSchema,
+  ThinkingEffortSchema,
+  ToolApprovalSettingsSchema
+} from './settings'
 
 export const WorkspaceUiStateSchema = z.object({
   activeRunId: z.string().nullable(),
   openRunIds: z.array(z.string()),
   scrollTop: z.number(),
   scrollTopByRunId: z.record(z.string(), z.number()).default({}),
-  composerDraft: z.string()
+  composerDraft: z.string(),
+  /** Per-workspace composer Ask / Plan / Agent mode. */
+  agentMode: AgentInteractionModeSchema.default('agent')
 })
 export type WorkspaceUiState = z.infer<typeof WorkspaceUiStateSchema>
 
 export const WorkspaceSettingsOverrideSchema = z.object({
   provider: ProviderIdSchema.optional(),
   model: z.string().min(1).optional(),
-  maxSteps: z.number().int().min(1).max(100).optional(),
   compactionTriggerRatio: z.number().min(0.5).max(0.95).optional(),
   keepRecentTurns: z.number().int().min(4).max(50).optional(),
   memoryAutoPromote: z.boolean().optional(),
@@ -22,6 +28,10 @@ export const WorkspaceSettingsOverrideSchema = z.object({
   thinkingEffort: ThinkingEffortSchema.optional(),
   showThinking: z.boolean().optional(),
   toolApproval: ToolApprovalSettingsSchema.optional(),
+  subagentProvider: ProviderIdSchema.optional(),
+  subagentModel: z.string().min(1).optional(),
+  /** Per-id enable overrides for marketplace MCP / skills / plugins. */
+  marketplaceOverrides: MarketplaceOverridesSchema.optional(),
   useOverride: z.boolean()
 })
 export type WorkspaceSettingsOverride = z.infer<typeof WorkspaceSettingsOverrideSchema>
@@ -68,5 +78,3 @@ export const WorkspacesSetSettingsOverrideRequestSchema = z.object({
 export type WorkspacesSetSettingsOverrideRequest = z.infer<
   typeof WorkspacesSetSettingsOverrideRequestSchema
 >
-
-export const OpenHarnessRequestSchema = z.object({})

@@ -122,14 +122,14 @@ describe('executeStepToolCalls', () => {
   })
 
   it('feeds a denied approval back as a tool failure without running the tool', async () => {
-    executeTool.mockResolvedValue({ ok: true, summary: 'write', content: 'wrote' })
+    executeTool.mockResolvedValue({ ok: true, summary: 'edit', content: 'wrote' })
 
     const { ctx } = makeCtx(new AbortController().signal)
     ctx.approval = {
-      authorize: async () => ({ allowed: false, reason: 'The user denied permission to run write.' })
+      authorize: async () => ({ allowed: false, reason: 'The user denied permission to run edit.' })
     }
     const outcome = await executeStepToolCalls(
-      [{ id: 'c1', name: 'write', arguments: '{"path":"a.ts","contents":"x"}' }],
+      [{ id: 'c1', name: 'edit', arguments: '{"path":"a.ts","contents":"x"}' }],
       ctx
     )
 
@@ -151,8 +151,62 @@ describe('executeStepToolCalls', () => {
     )
 
     expect(live.some((ev) => ev.type === 'tool_start' && ev.toolCallId === 'c1')).toBe(true)
+    expect(live.some((ev) => ev.type === 'tool_result' && ev.toolCallId === 'c1')).toBe(true)
     expect(events.some((ev) => ev.type === 'tool_start' && ev.toolCallId === 'c1')).toBe(true)
     expect(outcome.messages[0]?.ok).toBe(false)
+  })
+
+  it('routes parallel subagent live updates to distinct parentToolCallIds', async () => {
+    const live: AgentEvent[] = []
+    executeTool.mockImplementation(
+      async (
+        _name: string,
+        _args: string,
+        _workspace: string,
+        _signal: AbortSignal,
+        context?: {
+          onProgress?: (u: { kind: 'tool'; text: string }) => void
+          onSubagentContextUsage?: (u: {
+            step: number
+            estimatedTokens: number
+            contextWindow: number
+            contentWindow: number
+            model: string
+          }) => void
+        }
+      ) => {
+        context?.onProgress?.({ kind: 'tool', text: 'reading' })
+        context?.onSubagentContextUsage?.({
+          step: 1,
+          estimatedTokens: 1000,
+          contextWindow: 128_000,
+          contentWindow: 110_000,
+          model: 'm'
+        })
+        await new Promise((r) => setTimeout(r, 10))
+        return { ok: true, summary: 'task', content: 'report' }
+      }
+    )
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    ctx.emitLiveEvent = (ev) => live.push(ev)
+    const outcome = await executeStepToolCalls(
+      [
+        { id: 'sa1', name: 'subagent', arguments: '{"task":"a"}' },
+        { id: 'sa2', name: 'subagent', arguments: '{"task":"b"}' }
+      ],
+      ctx
+    )
+
+    expect(outcome.messages.map((m) => m.toolCallId)).toEqual(['sa1', 'sa2'])
+    const updates = live.filter((ev) => ev.type === 'subagent_update')
+    const usages = live.filter((ev) => ev.type === 'subagent_context_usage')
+    expect(updates.map((ev) => (ev.type === 'subagent_update' ? ev.parentToolCallId : ''))).toEqual(
+      expect.arrayContaining(['sa1', 'sa2'])
+    )
+    expect(usages.map((ev) => (ev.type === 'subagent_context_usage' ? ev.parentToolCallId : ''))).toEqual(
+      expect.arrayContaining(['sa1', 'sa2'])
+    )
   })
 
   it('runs read-only tools serially when maxParallelReadTools is 1', async () => {
@@ -174,5 +228,68 @@ describe('executeStepToolCalls', () => {
     )
 
     expect(order).toEqual(['read', 'read'])
+  })
+
+  it('serializes reads when an approval gate is present so prompts cannot stack', async () => {
+    let concurrent = 0
+    let maxConcurrent = 0
+    let authorizeCalls = 0
+
+    executeTool.mockImplementation(async () => {
+      concurrent += 1
+      maxConcurrent = Math.max(maxConcurrent, concurrent)
+      await new Promise((r) => setTimeout(r, 15))
+      concurrent -= 1
+      return { ok: true, summary: 'file', content: 'ok' }
+    })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    ctx.approval = {
+      authorize: async () => {
+        authorizeCalls += 1
+        return { allowed: true }
+      }
+    }
+
+    await executeStepToolCalls(
+      [
+        { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' },
+        { id: 'c2', name: 'read', arguments: '{"path":"b.ts"}' },
+        { id: 'c3', name: 'read', arguments: '{"path":"c.ts"}' }
+      ],
+      ctx
+    )
+
+    expect(authorizeCalls).toBe(3)
+    expect(maxConcurrent).toBe(1)
+  })
+
+  it('emits tool_result live for each parallel tool as it finishes', async () => {
+    const live: AgentEvent[] = []
+    const finished: string[] = []
+
+    executeTool.mockImplementation(async (_name: string, args: string) => {
+      const path = JSON.parse(args).path as string
+      if (path === 'b.ts') await new Promise((r) => setTimeout(r, 40))
+      else await new Promise((r) => setTimeout(r, 5))
+      finished.push(path)
+      return { ok: true, summary: path, content: `body:${path}` }
+    })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    ctx.emitLiveEvent = (ev) => {
+      if (ev.type === 'tool_result') live.push(ev)
+    }
+
+    await executeStepToolCalls(
+      [
+        { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' },
+        { id: 'c2', name: 'read', arguments: '{"path":"b.ts"}' }
+      ],
+      ctx
+    )
+
+    expect(live.map((ev) => (ev.type === 'tool_result' ? ev.toolCallId : ''))).toEqual(['c1', 'c2'])
+    expect(finished.indexOf('a.ts')).toBeLessThan(finished.indexOf('b.ts'))
   })
 })

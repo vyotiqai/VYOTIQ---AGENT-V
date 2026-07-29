@@ -7,9 +7,11 @@ import { toolGrep } from '@main/agent/tools/grep'
 import { toolListDir } from '@main/agent/tools/listDir'
 import { toolMultiEdit } from '@main/agent/tools/multiEdit'
 import { toolDelete } from '@main/agent/tools/deletePath'
+import { toolStrReplace } from '@main/agent/tools/strReplace'
 import { readTodos, toolTodoWrite } from '@main/agent/tools/todo'
 import { htmlToMarkdown } from '@main/agent/tools/webFetch'
 import { globToRegExp } from '@main/agent/tools/walk'
+import { validateToolArgs } from '@main/agent/schemas/tools'
 
 let root: string
 
@@ -129,6 +131,50 @@ describe('toolMultiEdit', () => {
   })
 })
 
+describe('multi_edit schema', () => {
+  it('rejects edits that omit both contents and diff', () => {
+    const result = validateToolArgs(
+      'multi_edit',
+      JSON.stringify({ edits: [{ path: 'a.ts' }] })
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toMatch(/contents or diff/)
+  })
+})
+
+describe('tool arg bounds', () => {
+  it('rejects search maxResults of 0', () => {
+    const result = validateToolArgs('search', JSON.stringify({ query: 'x', maxResults: 0 }))
+    expect(result.ok).toBe(false)
+  })
+
+  it('rejects empty todo ids and wipe-all empty replace lists', () => {
+    expect(
+      validateToolArgs(
+        'todo_write',
+        JSON.stringify({ todos: [{ id: '', content: 'x', status: 'pending' }] })
+      ).ok
+    ).toBe(false)
+    expect(validateToolArgs('todo_write', JSON.stringify({ todos: [] })).ok).toBe(false)
+    expect(
+      validateToolArgs('todo_write', JSON.stringify({ todos: [], merge: true })).ok
+    ).toBe(true)
+  })
+
+  it('rejects negative terminal timeoutMs', () => {
+    expect(
+      validateToolArgs('terminal', JSON.stringify({ command: 'echo hi', timeoutMs: -1 })).ok
+    ).toBe(false)
+  })
+
+  it('rejects terminal timeoutMs above the configured maximum', () => {
+    expect(
+      validateToolArgs('terminal', JSON.stringify({ command: 'echo hi', timeoutMs: 999_999_999 }))
+        .ok
+    ).toBe(false)
+  })
+})
+
 describe('toolDelete', () => {
   it('deletes a file', () => {
     expect(toolDelete(root, 'README.md')).toContain('Deleted README.md')
@@ -145,6 +191,26 @@ describe('toolDelete', () => {
   it('refuses to escape the workspace or delete its root', () => {
     expect(() => toolDelete(root, '..')).toThrow()
     expect(() => toolDelete(root, '.')).toThrow(/workspace root/)
+  })
+})
+
+describe('toolStrReplace', () => {
+  it('replaces a unique occurrence', () => {
+    const out = toolStrReplace(root, 'src/a.ts', 'alpha', 'gamma')
+    expect(out).toContain('1 occurrence')
+    expect(readFileSync(join(root, 'src', 'a.ts'), 'utf8')).toContain('gamma')
+  })
+
+  it('fails when old_string matches more than once unless replace_all', () => {
+    writeFileSync(join(root, 'dup.ts'), 'aa aa aa\n', 'utf8')
+    expect(() => toolStrReplace(root, 'dup.ts', 'aa', 'bb')).toThrow(/matched 3 times/)
+    const out = toolStrReplace(root, 'dup.ts', 'aa', 'bb', true)
+    expect(out).toContain('3 occurrences')
+    expect(readFileSync(join(root, 'dup.ts'), 'utf8')).toBe('bb bb bb\n')
+  })
+
+  it('fails when old_string is missing', () => {
+    expect(() => toolStrReplace(root, 'src/a.ts', 'nope', 'x')).toThrow(/not found/)
   })
 })
 

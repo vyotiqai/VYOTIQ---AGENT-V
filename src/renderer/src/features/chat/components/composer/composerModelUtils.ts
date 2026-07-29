@@ -70,6 +70,22 @@ export function filterModelsForWorkspace<T extends ModelInfo>(
   })
 }
 
+/** Return a vision-capable model id when the current selection cannot accept images. */
+export function pickVisionFallback(
+  catalog: ModelInfo[],
+  currentModel: string,
+  filterOpts: ModelFilterOpts
+): string | null {
+  const currentOk = catalog.some(
+    (m) =>
+      m.id === currentModel &&
+      (m.supportsVision || m.inputModalities.includes('image'))
+  )
+  if (currentOk) return null
+  const filtered = filterModelsForWorkspace(catalog, { ...filterOpts, hasImages: true })
+  return filtered[0]?.id ?? null
+}
+
 export function modelsToOptions(
   provider: ProviderId,
   models: ModelInfo[],

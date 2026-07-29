@@ -12,6 +12,7 @@ import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
+import { formatProviderHttpError } from './httpErrors'
 
 function toolOutputsFromMessages(messages: ChatMessage[]): Array<Record<string, unknown>> {
   return messages
@@ -92,13 +93,16 @@ export function toResponsesUserContent(
   )
 }
 
-function toResponsesTools(tools: ProviderChatRequest['tools']): Array<Record<string, unknown>> {
+function toResponsesTools(
+  tools: ProviderChatRequest['tools'],
+  strictTools: boolean
+): Array<Record<string, unknown>> {
   return tools.map((t) => ({
     type: 'function',
     name: t.name,
     description: t.description,
     parameters: t.parameters,
-    strict: true
+    ...(strictTools ? { strict: true } : {})
   }))
 }
 
@@ -122,7 +126,7 @@ export async function* streamOpenAiResponses(
     store: true,
     ...(req.tools.length
       ? {
-          tools: toResponsesTools(req.tools),
+          tools: toResponsesTools(req.tools, req.strictTools !== false),
           tool_choice: req.toolChoice ?? 'auto',
           parallel_tool_calls: req.parallelToolCalls ?? true
         }
@@ -163,15 +167,18 @@ export async function* streamOpenAiResponses(
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     logProviderFailure('openai', 'http', { status: res.status })
-    yield { type: 'error', error: `HTTP ${res.status}: ${text.slice(0, 400)}` }
+    yield { type: 'error', error: formatProviderHttpError(res.status, text, 'openai') }
     return
   }
 
   const pending = new Map<string, ToolCall>()
+  const yieldedToolCalls = new Set<string>()
   const itemIdToCallId = new Map<string, string>()
   const outputItems: unknown[] = []
   let responseId: string | undefined
   let thinkingText = ''
+  let thinkingDoneEmitted = false
+  let answerStarted = false
   let lastUsage: TokenUsage | undefined
   let stopReason: StopReason | undefined
   let toolCallIndex = 0
@@ -185,6 +192,13 @@ export async function* streamOpenAiResponses(
     return next
   }
 
+  const emitThinkingDoneIfNeeded = function* (): Generator<StreamChunk, void, unknown> {
+    if (thinkingText && !thinkingDoneEmitted) {
+      thinkingDoneEmitted = true
+      yield { type: 'thinking_done', text: thinkingText }
+    }
+  }
+
   const drops = { dropped: 0 }
 
   for await (const event of iterateSseJson(res, req.signal, drops)) {
@@ -194,7 +208,11 @@ export async function* streamOpenAiResponses(
 
     if (type === 'response.output_text.delta') {
       const delta = event.delta as string | undefined
-      if (delta) yield { type: 'text', text: delta }
+      if (delta) {
+        answerStarted = true
+        yield* emitThinkingDoneIfNeeded()
+        yield { type: 'text', text: delta }
+      }
     }
 
     if (type === 'response.reasoning_summary_text.delta') {
@@ -217,6 +235,17 @@ export async function* streamOpenAiResponses(
           arguments: ''
         }
         pending.set(callId, call)
+        // Emit immediately so UI can show tool chrome before argument deltas.
+        yield* emitThinkingDoneIfNeeded()
+        yield {
+          type: 'tool_call_delta',
+          toolCallDelta: {
+            index: indexForCall(callId),
+            id: callId,
+            name: call.name || undefined,
+            arguments: ''
+          }
+        }
       }
     }
 
@@ -225,6 +254,7 @@ export async function* streamOpenAiResponses(
       if (item) {
         outputItems.push(item)
         if (item.type === 'function_call') {
+          yield* emitThinkingDoneIfNeeded()
           const callId = String(item.call_id ?? item.id ?? `call_${pending.size}`)
           const call: ToolCall = {
             id: callId,
@@ -232,13 +262,14 @@ export async function* streamOpenAiResponses(
             arguments: String(item.arguments ?? '')
           }
           pending.set(callId, call)
+          yieldedToolCalls.add(callId)
           yield { type: 'tool_call', toolCall: call }
         }
         if (item.type === 'reasoning') {
           const summary = item.summary as Array<{ text?: string }> | undefined
           if (summary?.length) {
             const text = summary.map((s) => s.text ?? '').join('')
-            if (text && !thinkingText) {
+            if (text && !thinkingText && !answerStarted && !thinkingDoneEmitted) {
               thinkingText = text
               yield { type: 'thinking_delta', text }
             }
@@ -253,6 +284,7 @@ export async function* streamOpenAiResponses(
       )
       const delta = event.delta as string | undefined
       if (callId && delta) {
+        yield* emitThinkingDoneIfNeeded()
         const existing = pending.get(callId) ?? { id: callId, name: '', arguments: '' }
         existing.arguments += delta
         pending.set(callId, existing)
@@ -303,7 +335,13 @@ export async function* streamOpenAiResponses(
     }
   }
 
-  if (thinkingText) yield { type: 'thinking_done', text: thinkingText }
+  if (thinkingText && !thinkingDoneEmitted) yield { type: 'thinking_done', text: thinkingText }
+
+  // Flush tool calls that only received argument deltas (no output_item.done).
+  for (const [callId, call] of pending) {
+    if (yieldedToolCalls.has(callId) || !call.name) continue
+    yield { type: 'tool_call', toolCall: call }
+  }
 
   yield {
     type: 'done',

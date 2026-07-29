@@ -10,6 +10,21 @@ const baseProps = {
   workspacePath: '/ws/demo',
   openWorkspaces: ['/ws/demo'],
   activeRuns: [] as { runId: string; workspacePath: string }[],
+  runsByWorkspacePath: {
+    '/ws/demo': {
+      runs: [
+        {
+          runId: 'run-abc',
+          goal: 'Fix tests',
+          status: 'done' as const,
+          updatedAt: new Date().toISOString()
+        }
+      ],
+      runsCapped: false,
+      runsError: null,
+      activeRunId: null
+    }
+  },
   runs: [
     {
       runId: 'run-abc',
@@ -22,12 +37,15 @@ const baseProps = {
   sessionQuery: '',
   onSessionQuery: vi.fn(),
   onOpenSettings: vi.fn(),
+  onOpenMarketplace: vi.fn(),
   onOpenChat: vi.fn(),
-  onOpenHarness: vi.fn(),
   onNewChat: vi.fn(),
   onSelectRun: vi.fn(),
+  onSelectRunInWorkspace: vi.fn(),
   onRenameRun: vi.fn(),
+  onRenameRunInWorkspace: vi.fn(),
   onDeleteRun: vi.fn(),
+  onDeleteRunInWorkspace: vi.fn(),
   onSwitchWorkspace: vi.fn(),
   onCloseWorkspace: vi.fn(),
   onAddWorkspace: vi.fn(),
@@ -101,35 +119,39 @@ describe('AppShell', () => {
   })
 
   it('selects a chat from the sidebar', () => {
-    const onSelectRun = vi.fn()
+    const onSelectRunInWorkspace = vi.fn()
     const onOpenChat = vi.fn()
     render(
-      <AppShell {...baseProps} onSelectRun={onSelectRun} onOpenChat={onOpenChat}>
+      <AppShell
+        {...baseProps}
+        onSelectRunInWorkspace={onSelectRunInWorkspace}
+        onOpenChat={onOpenChat}
+      >
         <p>Main content</p>
       </AppShell>
     )
 
     fireEvent.click(screen.getAllByRole('button', { name: /fix tests/i })[0])
-    expect(onSelectRun).toHaveBeenCalledWith('run-abc')
+    expect(onSelectRunInWorkspace).toHaveBeenCalledWith('/ws/demo', 'run-abc')
     expect(onOpenChat).toHaveBeenCalled()
   })
 
-  it('shows categorized sidebar sections with toggle inside the sidebar', () => {
+  it('shows agent-first sidebar with chats and workspace controls', () => {
     render(
       <AppShell {...baseProps}>
         <p>Main content</p>
       </AppShell>
     )
-    expect(screen.getByText('Chats')).toBeTruthy()
-    expect(screen.getByText('Workspaces')).toBeTruthy()
-    expect(screen.getByText('Navigate')).toBeTruthy()
-    expect(screen.getByRole('tablist', { name: /workspaces/i })).toBeTruthy()
+    expect(screen.getByRole('region', { name: /workspace sessions/i })).toBeTruthy()
+    expect(screen.getByText(/workspaces/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /new chat/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /settings/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^marketplace$/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /collapse sidebar/i })).toBeTruthy()
-    // Desktop: toggle is not in the title bar
     expect(screen.queryByRole('button', { name: /open menu/i })).toBeNull()
   })
 
-  it('collapses the desktop sidebar to an icon rail', () => {
+  it('collapses the desktop sidebar to a top corner icon', () => {
     render(
       <AppShell {...baseProps}>
         <p>Main content</p>
@@ -139,15 +161,12 @@ describe('AppShell', () => {
     fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }))
     expect(screen.getByRole('button', { name: /expand sidebar/i })).toBeTruthy()
     expect(screen.queryByRole('textbox', { name: /search chats/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^new chat$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^search chats$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^settings$/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /^marketplace$/i })).toBeTruthy()
+    expect(screen.queryByRole('tablist', { name: /workspaces/i })).toBeNull()
     expect(localStorage.getItem('vyotiq.sidebarCollapsed')).toBe('1')
-
-    // Collapsed rail: essentials only
-    expect(screen.getByRole('button', { name: /^new chat$/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^settings$/i })).toBeTruthy()
-    expect(screen.getByRole('tablist', { name: /workspaces/i })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /add workspace/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /harness/i })).toBeNull()
-    expect(screen.queryByText('Local agent')).toBeNull()
   })
 
   it('disables workspace-dependent sidebar actions when no workspace is open', () => {
@@ -160,9 +179,8 @@ describe('AppShell', () => {
     expect((screen.getByRole('button', { name: /new chat/i }) as HTMLButtonElement).disabled).toBe(
       true
     )
-    expect(screen.queryByRole('textbox', { name: /search chats/i })).toBeNull()
-    expect((screen.getByRole('button', { name: /harness/i }) as HTMLButtonElement).disabled).toBe(
-      false
+    expect((screen.getByRole('textbox', { name: /search chats/i }) as HTMLInputElement).disabled).toBe(
+      true
     )
     expect((screen.getByRole('button', { name: /settings/i }) as HTMLButtonElement).disabled).toBe(
       false
@@ -207,8 +225,40 @@ describe('AppShell', () => {
       </AppShell>
     )
 
-    expect(screen.getByRole('alert')).toBeTruthy()
-    expect(screen.getByText('Failed to load chats')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.getAllByRole('button', { name: /fix tests/i }).length).toBeGreaterThan(0)
+  })
+
+  it('switches workspace when selecting a run from another workspace', () => {
+    const onSelectRunInWorkspace = vi.fn()
+    render(
+      <AppShell
+        {...baseProps}
+        openWorkspaces={['/ws/demo', '/ws/other']}
+        runsByWorkspacePath={{
+          '/ws/demo': baseProps.runsByWorkspacePath['/ws/demo'],
+          '/ws/other': {
+            runs: [
+              {
+                runId: 'run-xyz',
+                goal: 'Other workspace chat',
+                status: 'done',
+                updatedAt: new Date().toISOString()
+              }
+            ],
+            runsCapped: false,
+            runsError: null,
+            activeRunId: null
+          }
+        }}
+        onSelectRunInWorkspace={onSelectRunInWorkspace}
+      >
+        <p>Main content</p>
+      </AppShell>
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /expand .*other/i }))
+    fireEvent.click(screen.getAllByRole('button', { name: /other workspace chat/i })[0])
+    expect(onSelectRunInWorkspace).toHaveBeenCalledWith('/ws/other', 'run-xyz')
   })
 })

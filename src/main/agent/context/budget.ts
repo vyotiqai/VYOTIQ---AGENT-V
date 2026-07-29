@@ -1,41 +1,38 @@
 import type { ModelInfo } from '../../../shared/ipc'
+import { knownContextWindow } from '../../../shared/domain/modelContextWindows'
 import {
-  BUDGET_SHARES,
+  allocateBudgetShares,
+  contentWindowFromRaw,
+  compactionTriggerFromRaw,
   DEFAULT_CONTEXT_WINDOW,
-  type BudgetLayers
-} from './types'
+  type BudgetLayerShares
+} from '../../../shared/domain/contextBudget'
+import type { BudgetLayers } from './types'
 
 export function contextWindowFor(model: ModelInfo): number {
-  return model.contextWindow && model.contextWindow > 0
-    ? model.contextWindow
-    : DEFAULT_CONTEXT_WINDOW
+  if (model.contextWindow && model.contextWindow > 0) return model.contextWindow
+  return knownContextWindow(model.id) ?? DEFAULT_CONTEXT_WINDOW
 }
 
 export function allocateBudget(model: ModelInfo): Record<keyof BudgetLayers, number> {
-  const window = contextWindowFor(model)
-  return {
-    system: Math.floor(window * BUDGET_SHARES.system),
-    tools: Math.floor(window * BUDGET_SHARES.tools),
-    memoryWorkspace: Math.floor(window * BUDGET_SHARES.memoryWorkspace),
-    history: Math.floor(window * BUDGET_SHARES.history),
-    buffer: Math.floor(window * BUDGET_SHARES.buffer)
-  }
+  return allocateBudgetShares(contextWindowFor(model)) as Record<keyof BudgetLayerShares, number>
 }
 
 export function effectiveWindow(model: ModelInfo): number {
-  const b = allocateBudget(model)
-  return b.system + b.tools + b.memoryWorkspace + b.history
+  return contentWindowFromRaw(contextWindowFor(model))
 }
 
-/** Window available for content after reserving the buffer layer. */
+/**
+ * Window available for content after reserving the buffer layer.
+ * Equals the non-buffer budget shares (85% of the raw model window).
+ */
 export function contentWindow(model: ModelInfo): number {
-  const b = allocateBudget(model)
-  return effectiveWindow(model) - b.buffer
+  return effectiveWindow(model)
 }
 
 export function compactionTriggerTokens(
   model: ModelInfo,
   triggerRatio = 0.7
 ): number {
-  return Math.floor(contentWindow(model) * triggerRatio)
+  return compactionTriggerFromRaw(contextWindowFor(model), triggerRatio)
 }

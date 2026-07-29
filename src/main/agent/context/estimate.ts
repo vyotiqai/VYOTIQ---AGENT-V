@@ -28,24 +28,34 @@ export function estimateMessagesTokens(messages: ChatMessage[], model?: ModelInf
   const encoding = encodingForModel(model)
   let n = 0
   for (const message of messages) {
-    n += countContentTokens(message.content, encoding)
-    if (message.thinking) n += countTextTokens(message.thinking, encoding)
-    if (message.reasoningState) {
-      n += countTextTokens(JSON.stringify(message.reasoningState), encoding)
-    }
-    if (message.toolCalls) {
-      for (const toolCall of message.toolCalls) {
-        n +=
-          countTextTokens(toolCall.name, encoding) +
-          countTextTokens(toolCall.arguments, encoding)
-      }
-    }
-    if (message.role === 'tool') {
+    n += estimateOneMessageTokens(message, encoding)
+  }
+  return n
+}
+
+const messageTokenCache = new WeakMap<object, { encoding: EncodingName; tokens: number }>()
+
+function estimateOneMessageTokens(message: ChatMessage, encoding: EncodingName): number {
+  const cached = messageTokenCache.get(message)
+  if (cached && cached.encoding === encoding) return cached.tokens
+
+  let n = countContentTokens(message.content, encoding)
+  if (message.thinking) n += countTextTokens(message.thinking, encoding)
+  if (message.reasoningState) {
+    n += countTextTokens(JSON.stringify(message.reasoningState), encoding)
+  }
+  if (message.toolCalls) {
+    for (const toolCall of message.toolCalls) {
       n +=
-        countTextTokens(message.toolName ?? '', encoding) +
-        countTextTokens(contentToText(message.content), encoding)
+        countTextTokens(toolCall.name, encoding) + countTextTokens(toolCall.arguments, encoding)
     }
   }
+  if (message.role === 'tool') {
+    n +=
+      countTextTokens(message.toolName ?? '', encoding) +
+      countTextTokens(contentToText(message.content), encoding)
+  }
+  messageTokenCache.set(message, { encoding, tokens: n })
   return n
 }
 

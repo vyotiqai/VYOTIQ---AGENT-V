@@ -21,7 +21,12 @@ function estimateToolDefTokens(tool: ToolDefinition): number {
 export function trimToolsToBudget(
   tools: ToolDefinition[],
   budgetTokens: number
-): { tools: ToolDefinition[]; estimate: number; omittedMcp: number } {
+): {
+  tools: ToolDefinition[]
+  estimate: number
+  omittedMcp: number
+  omittedMcpNames: string[]
+} {
   const builtins = tools.filter((t) => BUILTIN_NAMES.has(t.name))
   const mcp = tools.filter((t) => t.name.startsWith(MCP_TOOL_PREFIX))
 
@@ -47,7 +52,11 @@ export function trimToolsToBudget(
     }
   }
 
-  const omittedMcp = mcp.length - kept.filter((t) => t.name.startsWith(MCP_TOOL_PREFIX)).length
+  const keptMcpNames = new Set(
+    kept.filter((t) => t.name.startsWith(MCP_TOOL_PREFIX)).map((t) => t.name)
+  )
+  const omittedMcpNames = mcp.map((t) => t.name).filter((n) => !keptMcpNames.has(n))
+  const omittedMcp = omittedMcpNames.length
   if (omittedMcp > 0) {
     logger.warn('MCP tools omitted to fit tools budget', {
       scope: 'agent',
@@ -58,7 +67,7 @@ export function trimToolsToBudget(
     })
   }
 
-  return { tools: kept, estimate, omittedMcp }
+  return { tools: kept, estimate, omittedMcp, omittedMcpNames }
 }
 
 function truncateToolDescription(

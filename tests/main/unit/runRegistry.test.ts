@@ -13,7 +13,7 @@ describe('runRegistry listActiveRuns', () => {
     resetActiveRunsForTests()
     const runId = 'session-run'
     const first = registerRunAbort(runId, '/ws')
-    expect(listActiveRuns()).toEqual([{ runId, workspacePath: '/ws' }])
+    expect(listActiveRuns()).toEqual([{ runId, workspacePath: '/ws', invokeId: first.invokeId }])
     expect(isActive(runId)).toBe(true)
 
     markRunTurnComplete(runId, first.invokeId)
@@ -21,10 +21,10 @@ describe('runRegistry listActiveRuns', () => {
     expect(listActiveRuns()).toEqual([])
 
     const second = registerRunAbort(runId, '/ws')
-    expect(listActiveRuns()).toEqual([{ runId, workspacePath: '/ws' }])
+    expect(listActiveRuns()).toEqual([{ runId, workspacePath: '/ws', invokeId: second.invokeId }])
 
     clearRunAbort(runId, first.invokeId)
-    expect(listActiveRuns()).toEqual([{ runId, workspacePath: '/ws' }])
+    expect(listActiveRuns()).toEqual([{ runId, workspacePath: '/ws', invokeId: second.invokeId }])
 
     clearRunAbort(runId, second.invokeId)
     expect(listActiveRuns()).toEqual([])

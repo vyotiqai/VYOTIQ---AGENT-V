@@ -16,7 +16,7 @@ vi.mock('electron', () => ({
   }
 }))
 
-import { appendMessage, loadMessages, saveCompaction } from '@main/agent/state'
+import { appendMessage, flushMessageAppends, loadMessages, saveCompaction } from '@main/agent/state'
 import { resolveRunDir, workspaceSessionsRoot } from '@main/storage/paths'
 
 describe('atomic run persistence', () => {
@@ -28,7 +28,7 @@ describe('atomic run persistence', () => {
     if (existsSync(userData)) rmSync(userData, { recursive: true, force: true })
   })
 
-  it('rewrites messages.jsonl atomically on append', () => {
+  it('rewrites messages.jsonl atomically on append', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'vyotiq-atomic-ws-'))
     const runId = 'atomic-run'
     const dir = resolveRunDir(workspace, runId)
@@ -42,6 +42,7 @@ describe('atomic run persistence', () => {
 
     appendMessage(dir, { role: 'user', content: 'hello' })
     appendMessage(dir, { role: 'assistant', content: 'world' })
+    await flushMessageAppends(dir)
 
     const messages = loadMessages(workspace, runId)
     expect(messages).toHaveLength(2)

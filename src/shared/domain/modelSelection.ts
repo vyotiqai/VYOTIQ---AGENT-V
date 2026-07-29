@@ -1,8 +1,17 @@
-import type { ProviderId } from '../ipc'
+import type { ProviderId, ServiceTier, Settings } from '../ipc'
 import type { ThinkingEffort } from '../ipc/schemas/settings'
 
 export function modelSelectionKey(provider: ProviderId, model: string): string {
   return `${provider}::${model}`
+}
+
+export function resolveServiceTier(
+  settings: Pick<Settings, 'serviceTier' | 'serviceTierByModel'>,
+  provider: ProviderId,
+  model: string
+): ServiceTier {
+  const key = modelSelectionKey(provider, model)
+  return settings.serviceTierByModel[key] ?? settings.serviceTier
 }
 
 export function parseModelSelectionKey(

@@ -15,6 +15,7 @@ import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
+import { formatProviderHttpError } from './httpErrors'
 import { streamGeminiInteractions } from './geminiInteractions'
 
 /** Exported for tests — parse Gemini usage metadata including implicit cache hits. */
@@ -143,6 +144,15 @@ function toGeminiContents(messages: ChatMessage[]): Array<Record<string, unknown
   return merged
 }
 
+/** Map loop toolChoice to Gemini functionCallingConfig.mode. */
+export function geminiFunctionCallingMode(
+  choice: ProviderChatRequest['toolChoice']
+): 'AUTO' | 'ANY' | 'NONE' {
+  if (choice === 'none') return 'NONE'
+  if (choice === 'required') return 'ANY'
+  return 'AUTO'
+}
+
 /** Exported for tests — build Gemini generateContent request body. */
 export function buildGeminiBody(req: ProviderChatRequest): Record<string, unknown> {
   const systemParts = [
@@ -177,6 +187,13 @@ export function buildGeminiBody(req: ProviderChatRequest): Record<string, unknow
       ? { parts: systemParts.map((t) => ({ text: t })) }
       : undefined,
     tools,
+    ...(tools
+      ? {
+          toolConfig: {
+            functionCallingConfig: { mode: geminiFunctionCallingMode(req.toolChoice) }
+          }
+        }
+      : {}),
     ...(Object.keys(generationConfig).length ? { generationConfig } : {})
   }
 }
@@ -201,7 +218,7 @@ export const geminiProvider: LlmProvider = {
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       logProviderFailure('gemini', 'http', { status: res.status })
-      throw new Error(`HTTP ${res.status}: ${text.slice(0, 400)}`)
+      throw new Error(formatProviderHttpError(res.status, text, 'gemini'))
     }
     const data = (await res.json()) as { models?: Array<Record<string, unknown>> }
     const out: ModelInfo[] = []
@@ -285,6 +302,13 @@ export const geminiProvider: LlmProvider = {
             ? { parts: systemParts.map((t) => ({ text: t })) }
             : undefined,
           tools,
+          ...(tools
+            ? {
+                toolConfig: {
+                  functionCallingConfig: { mode: geminiFunctionCallingMode(req.toolChoice) }
+                }
+              }
+            : {}),
           ...(Object.keys(generationConfig).length ? { generationConfig } : {})
         })
       })
@@ -298,7 +322,7 @@ export const geminiProvider: LlmProvider = {
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       logProviderFailure('gemini', 'http', { status: res.status })
-      yield { type: 'error', error: `HTTP ${res.status}: ${text.slice(0, 400)}` }
+      yield { type: 'error', error: formatProviderHttpError(res.status, text, 'gemini') }
       return
     }
 
@@ -335,9 +359,6 @@ export const geminiProvider: LlmProvider = {
       if (!parts) continue
 
       for (const part of parts) {
-        if (typeof part.text === 'string' && part.text) {
-          yield { type: 'text', text: part.text }
-        }
         const fc = part.functionCall as { name?: string; args?: unknown; id?: string } | undefined
         if (fc?.name) {
           const id =
@@ -346,19 +367,24 @@ export const geminiProvider: LlmProvider = {
           const existing = pendingCalls.get(id)
           if (existing) {
             existing.arguments = argsJson
+            // Mid-stream update: live-forward so chrome/args appear before stream end.
+            yield { type: 'tool_call', toolCall: { ...existing } }
           } else {
-            pendingCalls.set(id, {
+            const call = {
               id: typeof fc.id === 'string' && fc.id ? fc.id : `gemini_${toolIndex++}`,
               name: fc.name,
               arguments: argsJson
-            })
+            }
+            pendingCalls.set(id, call)
+            yield { type: 'tool_call', toolCall: { ...call } }
           }
         }
       }
-    }
-
-    for (const call of pendingCalls.values()) {
-      yield { type: 'tool_call', toolCall: call }
+      for (const part of parts) {
+        if (typeof part.text === 'string' && part.text) {
+          yield { type: 'text', text: part.text }
+        }
+      }
     }
 
     yield {

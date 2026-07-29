@@ -1,0 +1,137 @@
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'fs'
+import { dirname, join } from 'path'
+import { atomicWriteJson } from '../storage/atomicWrite'
+import {
+  MarketplaceIndexSchema,
+  VyotiqMcpManifestSchema,
+  VyotiqPluginManifestSchema,
+  type MarketplaceIndex,
+  type MarketplaceInstalledItem
+} from '../../shared/ipc'
+import { clearMcpAuthToken, clearMcpOAuthState } from '../settings/secrets'
+import { marketplaceIndexPath, marketplacePackageDir, marketplaceRoot } from './paths'
+import { logger } from '../../shared/logger'
+
+const EMPTY_INDEX: MarketplaceIndex = { schemaVersion: 1, items: [] }
+
+export function readMarketplaceIndex(): MarketplaceIndex {
+  const path = marketplaceIndexPath()
+  if (!existsSync(path)) return { ...EMPTY_INDEX, items: [] }
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as unknown
+    return MarketplaceIndexSchema.parse(raw)
+  } catch (err) {
+    logger.warn('Marketplace index unreadable; treating as empty', {
+      scope: 'marketplace',
+      err
+    })
+    return { ...EMPTY_INDEX, items: [] }
+  }
+}
+
+export function writeMarketplaceIndex(index: MarketplaceIndex): void {
+  mkdirSync(dirname(marketplaceIndexPath()), { recursive: true })
+  mkdirSync(marketplaceRoot(), { recursive: true })
+  atomicWriteJson(marketplaceIndexPath(), MarketplaceIndexSchema.parse(index))
+}
+
+export function upsertInstalledItem(item: MarketplaceInstalledItem): MarketplaceIndex {
+  const index = readMarketplaceIndex()
+  const prior = index.items.find((i) => i.id === item.id)
+  if (prior && prior.version !== item.version) {
+    const oldDir = marketplacePackageDir(prior.id, prior.version)
+    if (existsSync(oldDir)) {
+      try {
+        rmSync(oldDir, { recursive: true, force: true })
+      } catch (err) {
+        logger.warn('Failed to remove prior marketplace package version', {
+          scope: 'marketplace',
+          id: prior.id,
+          version: prior.version,
+          err
+        })
+      }
+    }
+  }
+  const nextItems = index.items.filter((i) => i.id !== item.id)
+  nextItems.push(item)
+  const next = { schemaVersion: 1 as const, items: nextItems }
+  writeMarketplaceIndex(next)
+  return next
+}
+
+export function setInstalledEnabled(id: string, enabled: boolean): MarketplaceIndex {
+  const index = readMarketplaceIndex()
+  const items = index.items.map((i) => (i.id === id ? { ...i, enabled } : i))
+  const next = { schemaVersion: 1 as const, items }
+  writeMarketplaceIndex(next)
+  return next
+}
+
+/** Clear Bearer + OAuth secrets for an MCP server id (best-effort). */
+function clearMcpSecrets(serverId: string): void {
+  try {
+    clearMcpAuthToken(serverId)
+    clearMcpOAuthState(serverId)
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Nested plugin MCP ids match resolve.ts: `plugin-{pluginId}-{nestedId}`.
+ * Must run before the package directory is removed.
+ */
+function clearNestedPluginMcpSecrets(item: MarketplaceInstalledItem): void {
+  if (item.kind !== 'plugin') return
+  const root = marketplacePackageDir(item.id, item.version)
+  const manifestPath = join(root, 'vyotiq.plugin.json')
+  if (!existsSync(manifestPath)) return
+  try {
+    const plugin = VyotiqPluginManifestSchema.parse(
+      JSON.parse(readFileSync(manifestPath, 'utf8'))
+    )
+    for (const rel of plugin.mcp) {
+      const mcpManifestPath = join(root, rel, 'vyotiq.mcp.json')
+      if (!existsSync(mcpManifestPath)) continue
+      try {
+        const nested = VyotiqMcpManifestSchema.parse(
+          JSON.parse(readFileSync(mcpManifestPath, 'utf8'))
+        )
+        const nestedId = `plugin-${plugin.id}-${nested.id}`.replace(/__/g, '-')
+        clearMcpSecrets(nestedId)
+      } catch {
+        // skip invalid nested manifest
+      }
+    }
+  } catch {
+    // skip invalid plugin manifest
+  }
+}
+
+export function removeInstalledItem(id: string): MarketplaceIndex {
+  const index = readMarketplaceIndex()
+  const item = index.items.find((i) => i.id === id)
+  if (item) {
+    clearNestedPluginMcpSecrets(item)
+    clearMcpSecrets(item.id)
+    const dir = marketplacePackageDir(item.id, item.version)
+    if (existsSync(dir)) {
+      try {
+        rmSync(dir, { recursive: true, force: true })
+      } catch {
+        // ignore cleanup errors
+      }
+    }
+  }
+  const next = {
+    schemaVersion: 1 as const,
+    items: index.items.filter((i) => i.id !== id)
+  }
+  writeMarketplaceIndex(next)
+  return next
+}
+
+export function getInstalledItem(id: string): MarketplaceInstalledItem | undefined {
+  return readMarketplaceIndex().items.find((i) => i.id === id)
+}

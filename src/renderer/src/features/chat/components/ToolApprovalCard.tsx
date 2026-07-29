@@ -16,28 +16,47 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
   onDecide
 }: {
   approval: UiToolApproval
-  onDecide?: (requestId: string, decision: ToolApprovalDecision) => void
+  onDecide?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
 }) {
-  const [answered, setAnswered] = useState(false)
+  const [phase, setPhase] = useState<'idle' | 'pending' | 'done'>('idle')
+  const [pendingDecision, setPendingDecision] = useState<ToolApprovalDecision | null>(null)
+  const [localError, setLocalError] = useState<string | null>(null)
 
   const decide = (decision: ToolApprovalDecision): void => {
-    if (answered) return
-    setAnswered(true)
-    onDecide?.(approval.requestId, decision)
+    if (phase !== 'idle') return
+    setPhase('pending')
+    setPendingDecision(decision)
+    setLocalError(null)
+    void Promise.resolve(onDecide?.(approval.requestId, decision))
+      .then(() => {
+        // Stay locked; parent usually removes the card on success.
+        setPhase('done')
+      })
+      .catch((err: unknown) => {
+        setPhase('idle')
+        setPendingDecision(null)
+        setLocalError(err instanceof Error ? err.message : 'Could not send decision')
+      })
   }
 
+  const busy = phase !== 'idle'
+
   return (
-    <div className={cn(TOOL_CARD_SURFACE, 'w-full border-accent/50')} role="group">
+    <div
+      className={cn(TOOL_CARD_SURFACE, 'w-full border-accent/50')}
+      role="group"
+      aria-busy={phase === 'pending' ? true : undefined}
+    >
       <div className={cn(TOOL_CARD_HEADER, 'flex items-center gap-2 text-fg')}>
-        <Icon name="warning" size={12} className="shrink-0 text-accent" />
+        <Icon name="warning" size={14} className="shrink-0 text-danger" />
         <span className="font-medium">
-          Run <span className="font-mono">{approval.toolName}</span>?
+          Allow tool: <span className="font-mono">{approval.toolName}</span>?
         </span>
         <span className="min-w-0 truncate text-tertiary" title={approval.summary}>
           {approval.summary}
         </span>
         <span className="ml-auto shrink-0 text-tertiary">
-          {approval.mutating ? 'modifies workspace' : 'read-only'}
+          {approval.mutating ? 'mutating / network' : 'read-only'}
         </span>
       </div>
       {approval.argsPreview ? (
@@ -45,30 +64,35 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
           {approval.argsPreview}
         </pre>
       ) : null}
+      {localError ? (
+        <p className="border-t border-border px-3 py-2 text-xs text-danger" role="alert">
+          {localError}
+        </p>
+      ) : null}
       <div className="flex flex-wrap items-center gap-2 border-t border-border px-3 py-2">
         {CHOICES.map((choice) => (
           <button
             key={choice.decision}
             type="button"
-            disabled={answered}
+            disabled={busy}
             className={cn(
-              'rounded-md border px-2 py-1 text-xs vy-transition disabled:opacity-50',
+              'rounded-md border px-2 py-1 text-xs vy-transition disabled:opacity-[var(--vy-disabled-opacity)]',
               choice.primary
                 ? 'border-accent bg-accent text-accent-fg hover:opacity-90'
                 : 'border-border text-fg hover:bg-surface'
             )}
             onClick={() => decide(choice.decision)}
           >
-            {choice.label}
+            {pendingDecision === choice.decision && phase === 'pending' ? 'Sending…' : choice.label}
           </button>
         ))}
         <button
           type="button"
-          disabled={answered}
-          className="ml-auto rounded-md border border-border px-2 py-1 text-xs text-danger vy-transition hover:bg-surface disabled:opacity-50"
+          disabled={busy}
+          className="ml-auto rounded-md border border-border px-2 py-1 text-xs text-danger vy-transition hover:bg-surface disabled:opacity-[var(--vy-disabled-opacity)]"
           onClick={() => decide('deny')}
         >
-          Deny
+          {pendingDecision === 'deny' && phase === 'pending' ? 'Sending…' : 'Deny'}
         </button>
       </div>
     </div>

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ChatMessageSchema,
   ChatStartRequestSchema,
+  ChatStartResultSchema,
   CancelRunRequestSchema,
   CompactRunRequestSchema,
   DeleteRunRequestSchema,
@@ -11,7 +12,6 @@ import {
   MAX_ATTACHMENT_DATA_CHARS,
   SetSettingsRequestSchema,
   SetSecretRequestSchema,
-  OpenHarnessRequestSchema,
   ListModelsRequestSchema,
   ModelInfoSchema,
   ProviderIdSchema,
@@ -31,7 +31,11 @@ import {
   fail,
   MAX_IMAGE_DATA_URL_CHARS,
   contentHasImage,
-  contentToText
+  contentToText,
+  ToolApprovalRequestSchema,
+  ToolApprovalResponseSchema,
+  ActiveRunSchema,
+  GitStatusSchema
 } from '@shared/ipc'
 import { IPC } from '@shared/channels'
 import { PROVIDER_DEFAULTS, seedModelsFor } from '@shared/providers'
@@ -61,10 +65,6 @@ describe('ipc schemas', () => {
     expect(() =>
       SetSecretRequestSchema.parse({ provider: 'openai', key: '   ' })
     ).toThrow()
-  })
-
-  it('accepts empty open harness request', () => {
-    expect(OpenHarnessRequestSchema.parse({})).toEqual({})
   })
 
   it('parses multimodal user content parts', () => {
@@ -196,14 +196,14 @@ describe('ipc schemas', () => {
       AgentEventSchema.parse({
         type: 'error',
         runId: 'r1',
-        message: 'Stopped after 25 steps.',
-        code: 'AGENT_MAX_STEPS'
+        message: 'boom',
+        code: 'AGENT_LOOP'
       })
     ).toEqual({
       type: 'error',
       runId: 'r1',
-      message: 'Stopped after 25 steps.',
-      code: 'AGENT_MAX_STEPS'
+      message: 'boom',
+      code: 'AGENT_LOOP'
     })
     expect(
       AgentEventSchema.parse({
@@ -235,6 +235,43 @@ describe('ipc schemas', () => {
         message: 'boom'
       }).code
     ).toBeUndefined()
+    expect(
+      AgentEventSchema.parse({
+        type: 'stream_reset',
+        runId: 'r1',
+        step: 2
+      }).type
+    ).toBe('stream_reset')
+    expect(
+      AgentEventSchema.parse({
+        type: 'incomplete',
+        runId: 'r1',
+        reason: 'empty_response',
+        step: 1,
+        message: 'The model returned an empty response.'
+      }).reason
+    ).toBe('empty_response')
+    expect(
+      AgentEventSchema.parse({
+        type: 'subagent_update',
+        runId: 'r1',
+        parentToolCallId: 'c1',
+        kind: 'tool',
+        text: 'read a.ts'
+      }).parentToolCallId
+    ).toBe('c1')
+    expect(
+      AgentEventSchema.parse({
+        type: 'subagent_context_usage',
+        runId: 'r1',
+        parentToolCallId: 'c1',
+        step: 2,
+        estimatedTokens: 1200,
+        contextWindow: 128_000,
+        contentWindow: 110_000,
+        model: 'gpt-test'
+      }).model
+    ).toBe('gpt-test')
     expect(WindowMaximizedChangedSchema.parse(true)).toBe(true)
     expect(LoadRunRequestSchema.parse({ workspacePath: '/ws', runId: 'r1' })).toEqual({
       workspacePath: '/ws',
@@ -320,7 +357,6 @@ describe('ipc schemas', () => {
       provider: 'ollama',
       model: 'qwen2.5',
       ollamaBaseUrl: 'http://127.0.0.1:11434',
-      maxSteps: 25,
       theme: 'system'
     })
     expect(legacy.telemetryEnabled).toBe(false)
@@ -368,5 +404,57 @@ describe('ipc schemas', () => {
       'telemetryStatus'
     ]
     expect(apiKeys).toHaveLength(3)
+  })
+
+  it('requires invokeId on chat start results and active runs', () => {
+    expect(ChatStartResultSchema.parse({ runId: 'r1', invokeId: 1 })).toEqual({
+      runId: 'r1',
+      invokeId: 1
+    })
+    expect(() => ChatStartResultSchema.parse({ runId: 'r1' })).toThrow()
+    expect(
+      ActiveRunSchema.parse({ runId: 'r1', workspacePath: '/ws', invokeId: 2 })
+    ).toEqual({ runId: 'r1', workspacePath: '/ws', invokeId: 2 })
+    expect(() => ActiveRunSchema.parse({ runId: 'r1', workspacePath: '/ws' })).toThrow()
+  })
+
+  it('parses tool approval request/response and git status shapes', () => {
+    expect(
+      ToolApprovalRequestSchema.parse({
+        requestId: 'req-1',
+        runId: 'r1',
+        toolCallId: 'c1',
+        name: 'edit',
+        summary: 'a.ts',
+        argsPreview: '{}',
+        mutating: true
+      }).name
+    ).toBe('edit')
+    expect(
+      ToolApprovalResponseSchema.parse({
+        requestId: 'req-1',
+        decision: 'once'
+      })
+    ).toEqual({ requestId: 'req-1', decision: 'once' })
+    expect(
+      GitStatusSchema.parse({
+        branch: 'main',
+        fileCount: 1,
+        added: 2,
+        removed: 0,
+        truncated: false,
+        hasRemote: true,
+        hasCommits: true,
+        files: [
+          {
+            path: 'a.ts',
+            status: 'modified',
+            added: 2,
+            removed: 0,
+            binary: false
+          }
+        ]
+      }).branch
+    ).toBe('main')
   })
 })

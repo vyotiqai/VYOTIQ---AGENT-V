@@ -4,6 +4,7 @@ import { cn } from '@renderer/lib/ui'
 import { DISCLOSURE_ROW } from '@renderer/lib/utils/layout'
 import { formatElapsed } from '@shared/utils/timeFormat'
 import type { TurnSpan } from '../utils/transcriptRows'
+import { formatRunActivityLabel } from '../utils/runActivity'
 import { TextShimmer } from './TextShimmer'
 
 /** Below this the duration is noise; the turn was effectively instant. */
@@ -12,13 +13,15 @@ const MIN_REPORTABLE_MS = 1000
 export const TurnSummary = memo(function TurnSummary({
   span,
   collapsed,
+  panelId,
   onToggle
 }: {
   span: TurnSpan
   collapsed: boolean
+  panelId?: string
   onToggle: () => void
 }) {
-  const { startedAt, endedAt, active } = span
+  const { startedAt, endedAt, active, activity } = span
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -32,30 +35,41 @@ export const TurnSummary = memo(function TurnSummary({
     startedAt == null ? null : active ? now - startedAt : endedAt == null ? null : endedAt - startedAt
 
   const duration = elapsedMs != null && elapsedMs >= MIN_REPORTABLE_MS ? formatElapsed(elapsedMs) : ''
-  const label = active
-    ? duration
-      ? `Working for ${duration}`
-      : 'Working'
-    : duration
-      ? `Worked for ${duration}`
-      : 'Worked'
+  const phaseLabel = activity ? formatRunActivityLabel(activity) : 'Working'
+  // Always keep the phase visible (collapsed or expanded) so the control stays
+  // readable once a duration appears — tools show verbs, this shows context.
+  const activeLabel = duration ? `${phaseLabel} · ${duration}` : phaseLabel
+  const doneLabel = duration ? `Worked for ${duration}` : 'Worked'
+  const accessibleName = active
+    ? collapsed
+      ? activeLabel
+      : `Collapse turn work, ${activeLabel}`
+    : doneLabel
 
   return (
     <button
       type="button"
-      className={cn(DISCLOSURE_ROW, 'text-tertiary')}
+      className={cn(DISCLOSURE_ROW, 'w-full text-left text-tertiary')}
       aria-expanded={!collapsed}
+      aria-controls={!collapsed ? panelId : undefined}
+      aria-label={accessibleName}
       onClick={onToggle}
     >
       {active ? (
-        <TextShimmer className="shrink-0">{label}</TextShimmer>
+        activeLabel ? (
+          <TextShimmer className="shrink-0">{activeLabel}</TextShimmer>
+        ) : (
+          <span className="shrink-0 tabular-nums opacity-0" aria-hidden>
+            ·
+          </span>
+        )
       ) : (
-        <span className="shrink-0 tabular-nums">{label}</span>
+        <span className="shrink-0 tabular-nums">{doneLabel}</span>
       )}
       <Icon
         name="chevronRight"
-        size={12}
-        className={cn('self-center vy-transition', !collapsed && 'rotate-90')}
+        size={14}
+        className={cn('shrink-0 self-center vy-transition', !collapsed && 'rotate-90')}
       />
     </button>
   )

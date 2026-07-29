@@ -1,4 +1,4 @@
-import { assertInsideWorkspace } from '../../../shared/workspacePath'
+import { resolveInsideWorkspace } from '../../workspace/safePath'
 import { mkdirSync, readFileSync, existsSync } from 'fs'
 import { dirname } from 'path'
 import { atomicWriteFile } from '@main/storage/atomicWrite'
@@ -153,7 +153,7 @@ export function toolEdit(
   diff?: string
 ): string {
   if (!pathArg.trim()) throw new Error('edit requires a non-empty path')
-  const resolved = assertInsideWorkspace(workspaceRoot, pathArg)
+  const resolved = resolveInsideWorkspace(workspaceRoot, pathArg)
   mkdirSync(dirname(resolved), { recursive: true })
 
   if (typeof contents === 'string') {

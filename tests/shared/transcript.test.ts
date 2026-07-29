@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from '@shared/ipc'
-import { inferToolStatus, messagesToUiItems, applyEventTimestamps, isMeaningfulThinking, duplicatesReasoning } from '@shared/transcript'
+import { inferToolStatus, messagesToUiItems, applyEventTimestamps, applyPersistedLiveTools, finalizeHydratedTranscript, isMeaningfulThinking, shouldRenderThinking, duplicatesReasoning, mergeThinkingContent, stripToolShapedAssistantText, stripToolShapedAssistantTextForStream, stripIncompleteToolPrefix, isToolShapedTextLeak, scrubStreamingAssistantToolLeak } from '@shared/transcript'
 
 describe('messagesToUiItems', () => {
   it('rebuilds user, assistant, and tool rows in order', () => {
@@ -236,6 +236,13 @@ describe('transcript display helpers', () => {
     expect(isMeaningfulThinking('planned approach')).toBe(true)
   })
 
+  it('hides short finished thinking that would leave empty transcript gaps', () => {
+    expect(shouldRenderThinking('OK')).toBe(false)
+    expect(shouldRenderThinking('planned approach')).toBe(false)
+    expect(shouldRenderThinking('Let me reason about this carefully.')).toBe(true)
+    expect(shouldRenderThinking('OK', true)).toBe(true)
+  })
+
   it('keeps narration between tool batches, streaming or not', () => {
     const narration = {
       kind: 'message',
@@ -248,7 +255,21 @@ describe('transcript display helpers', () => {
     expect(duplicatesReasoning({ ...narration, streaming: true })).toBe(false)
   })
 
-  it('hides text a reasoning model already said in its thinking', () => {
+  it('hides text that repeats the opening of reasoning verbatim', () => {
+    const passage = 'The router builds its table before the first request arrives.'
+
+    expect(
+      duplicatesReasoning({
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        content: passage,
+        thinking: `${passage}\n\nNow I will verify the handlers.`
+      })
+    ).toBe(true)
+  })
+
+  it('keeps an answer that only appears later inside reasoning', () => {
     const passage = 'The router builds its table before the first request arrives.'
 
     expect(
@@ -259,7 +280,7 @@ describe('transcript display helpers', () => {
         content: passage,
         thinking: `Let me check.\n\n${passage}`
       })
-    ).toBe(true)
+    ).toBe(false)
   })
 
   it('does not treat a shared phrase as a duplicate', () => {
@@ -273,6 +294,149 @@ describe('transcript display helpers', () => {
       })
     ).toBe(false)
   })
+
+  it('drops duplicate paragraphs when merging thinking chunks', () => {
+    const repeated =
+      'Good, I have a comprehensive view of the codebase. Now I will launch parallel sub-agents.'
+    const merged = mergeThinkingContent([
+      `First pass.\n\n${repeated}`,
+      `${repeated}\n\nSecond pass.`
+    ])
+    expect(merged).toBe(`First pass.\n\n${repeated}\n\nSecond pass.`)
+  })
+})
+
+describe('stripToolShapedAssistantText', () => {
+  it('removes a leaked tool JSON blob from assistant text', () => {
+    expect(
+      stripToolShapedAssistantText(
+        'tool {"edits":[{"path":"api/page.tsx","contents":"\\"use client\\";"}]}\nNow I have the COMPLETE picture.'
+      )
+    ).toBe('Now I have the COMPLETE picture.')
+  })
+
+  it('drops a message that is only a tool dump', () => {
+    expect(stripToolShapedAssistantText('tool {"path":"a.ts","contents":"x"}')).toBe('')
+  })
+
+  it('leaves ordinary narration alone', () => {
+    expect(stripToolShapedAssistantText('The tool ran successfully.')).toBe(
+      'The tool ran successfully.'
+    )
+  })
+
+  it('removes leaked pseudo tool call lines', () => {
+    expect(
+      stripToolShapedAssistantText(
+        'tool read src/a.ts\ntool glob **/*.tsx\n\nHere is what I found.'
+      )
+    ).toBe('Here is what I found.')
+  })
+
+  it('removes DeepSeek DSML tool_calls blocks (fullwidth pipes from V4 encoding docs)', () => {
+    const fw = '\uFF5C'
+    const block =
+      `Good — the CSS foundation is solid.\n` +
+      `<${fw}DSML${fw}tool_calls>\n` +
+      `<${fw}DSML${fw}invoke name="multi_edit">\n` +
+      `<${fw}DSML${fw}parameter name="edits" string="false">[{"path":"layout.tsx"}]</${fw}DSML${fw}parameter>\n` +
+      `</${fw}DSML${fw}invoke>\n` +
+      `</${fw}DSML${fw}tool_calls>`
+    expect(stripToolShapedAssistantText(block)).toBe('Good — the CSS foundation is solid.')
+  })
+
+  it('removes DSML markup with ASCII pipes as shown in the live UI', () => {
+    const leaked =
+      'Let me fix the remaining files.\n' +
+      '<|DSML|tool_calls><|DSML|invoke name="multi_edit">' +
+      '<|DSML|parameter name="edits" string="false">[{"path":"a.tsx"}]</|DSML|parameter>' +
+      '</|DSML|invoke></|DSML|tool_calls>'
+    expect(stripToolShapedAssistantText(leaked)).toBe('Let me fix the remaining files.')
+  })
+})
+
+describe('stripToolShapedAssistantTextForStream', () => {
+  it('hides an in-progress tool JSON blob at the end of the buffer', () => {
+    expect(stripToolShapedAssistantTextForStream('Checking routes.\ntool {"path":"a.ts"')).toBe(
+      'Checking routes.'
+    )
+  })
+
+  it('strips complete blobs and trailing incomplete prefixes together', () => {
+    expect(
+      stripToolShapedAssistantTextForStream(
+        'tool {"path":"a.ts"}\nNow reading.\ntool {"path":"b.ts"'
+      )
+    ).toBe('Now reading.')
+  })
+
+  it('leaves ordinary narration alone', () => {
+    expect(stripToolShapedAssistantTextForStream('The tool ran successfully.')).toBe(
+      'The tool ran successfully.'
+    )
+  })
+
+  it('hides an in-progress DSML tool_calls block while streaming', () => {
+    expect(
+      stripToolShapedAssistantTextForStream(
+        'Applying edits.\n<|DSML|tool_calls>\n<|DSML|invoke name="multi_edit">'
+      )
+    ).toBe('Applying edits.')
+  })
+})
+
+describe('isToolShapedTextLeak', () => {
+  it('detects leaked tool JSON and pseudo calls', () => {
+    expect(isToolShapedTextLeak('tool {"path":"a.ts"}')).toBe(true)
+    expect(isToolShapedTextLeak('tool read src/a.ts')).toBe(true)
+    expect(isToolShapedTextLeak('The tool ran successfully.')).toBe(false)
+  })
+
+  it('detects a buffer that is only tool-shaped leak after stripping', () => {
+    expect(isToolShapedTextLeak('\n\ntool {"path":"a.ts"}\n')).toBe(true)
+    expect(isToolShapedTextLeak('tool {"a":1}\ntool read x.ts')).toBe(true)
+  })
+
+  it('detects a buffer that is only DSML markup', () => {
+    expect(
+      isToolShapedTextLeak(
+        '<|DSML|tool_calls><|DSML|invoke name="multi_edit"></|DSML|invoke></|DSML|tool_calls>'
+      )
+    ).toBe(true)
+  })
+})
+
+describe('stripIncompleteToolPrefix', () => {
+  it('drops a trailing partial pseudo tool line', () => {
+    expect(stripIncompleteToolPrefix('Summary so far.\ntool read src/a.ts')).toBe('Summary so far.')
+  })
+
+  it('drops a trailing bare tool prefix', () => {
+    expect(stripIncompleteToolPrefix('Summary so far.\ntool ')).toBe('Summary so far.')
+  })
+})
+
+describe('scrubStreamingAssistantToolLeak', () => {
+  it('strips leaked tool JSON from streaming assistant rows', () => {
+    const items = scrubStreamingAssistantToolLeak([
+      {
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        content: 'Checking routes.\ntool {"path":"a.ts"',
+        streaming: true
+      },
+      {
+        kind: 'message',
+        id: 'a2',
+        role: 'assistant',
+        content: 'done',
+        streaming: false
+      }
+    ])
+    const streaming = items.find((i) => i.kind === 'message' && i.id === 'a1')
+    expect(streaming?.kind === 'message' ? streaming.content : null).toBe('Checking routes.')
+  })
 })
 
 describe('inferToolStatus', () => {
@@ -285,6 +449,8 @@ describe('inferToolStatus', () => {
   it('treats empty tool output as success when replaying history', () => {
     expect(inferToolStatus('')).toBe('done')
     expect(inferToolStatus('Cancelled')).toBe('fail')
+    expect(inferToolStatus('Interrupted')).toBe('fail')
+    expect(inferToolStatus('Stopped')).toBe('fail')
     expect(inferToolStatus('Failed to parse tool arguments')).toBe('fail')
     expect(inferToolStatus('invalid args for read')).toBe('fail')
     expect(inferToolStatus('exit_code: 0')).toBe('done')
@@ -632,6 +798,207 @@ describe('applyEventTimestamps', () => {
         { kind: 'done', text: 'Finished' }
       ])
     }
+  })
+
+  it('replays subagent_context_usage onto the parent tool row', () => {
+    const items = messagesToUiItems([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'subagent', arguments: '{}' }]
+      },
+      { role: 'tool', toolCallId: 'c1', toolName: 'subagent', content: 'report', ok: true }
+    ])
+    const enriched = applyEventTimestamps(items, [
+      {
+        at: '2026-07-24T12:00:00.000Z',
+        event: {
+          type: 'subagent_context_usage',
+          runId: 'r1',
+          parentToolCallId: 'c1',
+          step: 1,
+          estimatedTokens: 4_000,
+          contextWindow: 128_000,
+          contentWindow: 110_000,
+          model: 'test-model'
+        }
+      },
+      {
+        at: '2026-07-24T12:00:02.000Z',
+        event: {
+          type: 'subagent_context_usage',
+          runId: 'r1',
+          parentToolCallId: 'c1',
+          step: 2,
+          estimatedTokens: 12_000,
+          contextWindow: 128_000,
+          contentWindow: 110_000,
+          model: 'test-model'
+        }
+      }
+    ])
+    const tool = enriched.find((i) => i.kind === 'tool')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind === 'tool') {
+      expect(tool.subagentContextUsage).toMatchObject({
+        step: 2,
+        used: 12_000,
+        window: 128_000,
+        contentWindow: 110_000,
+        model: 'test-model',
+        updatedAt: '2026-07-24T12:00:02.000Z'
+      })
+    }
+  })
+})
+
+describe('applyPersistedLiveTools', () => {
+  it('rebuilds running tool chrome from persisted tool_call_delta snapshots', () => {
+    const items = messagesToUiItems([{ role: 'user', content: 'go' }])
+    const events = [
+      {
+        at: '2026-07-28T12:00:00.000Z',
+        event: {
+          type: 'tool_call_delta' as const,
+          runId: 'r1',
+          toolCallId: 'c1',
+          name: 'read',
+          argumentsDelta: '{"path":"a.ts"}'
+        }
+      }
+    ]
+    const next = applyPersistedLiveTools(items, events)
+    const tool = next.find((item) => item.kind === 'tool')
+    expect(tool).toMatchObject({
+      id: 'c1',
+      tool: { name: 'read', status: 'running', argsPreview: '{"path":"a.ts"}' }
+    })
+  })
+
+  it('does not duplicate tools already present from messages', () => {
+    const items = messagesToUiItems([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }]
+      }
+    ])
+    const events = [
+      {
+        at: '2026-07-28T12:00:00.000Z',
+        event: {
+          type: 'tool_call_delta' as const,
+          runId: 'r1',
+          toolCallId: 'c1',
+          name: 'read',
+          argumentsDelta: '{"path":"a.ts"}'
+        }
+      }
+    ]
+    const next = applyPersistedLiveTools(items, events)
+    expect(next.filter((item) => item.kind === 'tool')).toHaveLength(1)
+  })
+
+  it('skips nameless tool_call_delta placeholders', () => {
+    const items = messagesToUiItems([{ role: 'user', content: 'go' }])
+    const events = [
+      {
+        at: '2026-07-28T12:00:00.000Z',
+        event: {
+          type: 'tool_call_delta' as const,
+          runId: 'r1',
+          toolCallId: 'pending_0',
+          name: 'tool',
+          argumentsDelta: '{'
+        }
+      }
+    ]
+    expect(applyPersistedLiveTools(items, events).some((item) => item.kind === 'tool')).toBe(false)
+  })
+})
+
+describe('finalizeHydratedTranscript', () => {
+  it('marks orphan running tools failed when the run was cancelled', () => {
+    const events = [
+      {
+        at: '2026-07-24T12:00:00.000Z',
+        event: { type: 'status', runId: 'r1', status: 'running' as const }
+      },
+      {
+        at: '2026-07-24T12:00:01.000Z',
+        event: { type: 'tool_start', runId: 'r1', toolCallId: 'c1', name: 'subagent' }
+      },
+      {
+        at: '2026-07-24T12:00:03.000Z',
+        event: { type: 'status', runId: 'r1', status: 'cancelled' as const }
+      }
+    ]
+    const items = applyEventTimestamps(
+      messagesToUiItems([
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'c1', name: 'subagent', arguments: '{}' }]
+        }
+      ]),
+      events
+    )
+    const finalized = finalizeHydratedTranscript(items, events)
+    const tool = finalized.find((item) => item.kind === 'tool')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind === 'tool') {
+      expect(tool.tool.status).toBe('fail')
+      expect(tool.tool.content).toBe('Cancelled')
+    }
+  })
+
+  it('cancels in-progress todo items when the run was interrupted', () => {
+    const events = [
+      {
+        at: '2026-07-24T12:00:03.000Z',
+        event: { type: 'status', runId: 'r1', status: 'cancelled' as const }
+      }
+    ]
+    const items = messagesToUiItems([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'todo1', name: 'todo_write', arguments: '{}' }]
+      },
+      {
+        role: 'tool',
+        toolCallId: 'todo1',
+        toolName: 'todo_write',
+        content: '0/5 complete\n[~] Audit core library files\n[ ] Audit API routes'
+      }
+    ])
+    const finalized = finalizeHydratedTranscript(items, events)
+    const tool = finalized.find((item) => item.kind === 'tool')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind === 'tool') {
+      expect(tool.tool.content).toContain('[-] Audit core library files')
+      expect(tool.tool.content).not.toContain('[~]')
+    }
+  })
+
+  it('leaves running tools alone while the run is still active', () => {
+    const events = [
+      {
+        at: '2026-07-24T12:00:00.000Z',
+        event: { type: 'status', runId: 'r1', status: 'running' as const }
+      }
+    ]
+    const items = messagesToUiItems([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'read', arguments: '{}' }]
+      }
+    ])
+    const finalized = finalizeHydratedTranscript(items, events)
+    const tool = finalized.find((item) => item.kind === 'tool')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind === 'tool') expect(tool.tool.status).toBe('running')
   })
 })
 

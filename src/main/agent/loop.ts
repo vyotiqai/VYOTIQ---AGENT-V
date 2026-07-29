@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import type {
   AgentEvent,
+  AgentInteractionMode,
   ChatMessage,
   IncompleteReason,
   ModelInfo,
@@ -19,9 +20,11 @@ import {
   RetriableStreamError
 } from './providers/fetchWithRetry'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
+import { resolveServiceTier } from '../../shared/domain/modelSelection'
+import { stripToolShapedAssistantText } from '../../shared/transcript'
 import { createApprovalGate } from './toolApproval'
 import { persistAlwaysAllow } from './toolApprovalStore'
-import { getSecret, secretStatus } from '@main/settings/secrets'
+import { getSecret, hasStoredSecretBlob, secretStatus } from '@main/settings/secrets'
 import { getSettings } from '@main/settings/settings'
 import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/workspace/workspaces'
 import {
@@ -33,24 +36,30 @@ import {
   estimateTextTokens,
   ensureMemoryLayout,
   promoteCompactionToMemory,
+  preserveRecentMessages,
   trimToolsToBudget,
   type CompactionRecord
 } from './context'
+import { CONTEXT_TRIM_WATERMARK_SUMMARY, isTrimWatermarkCompaction } from './context/types'
 import { executeStepToolCalls } from './executeStepTools'
 import { loadHarness } from './harness'
 import {
+  combineLoopHints,
   loopHintForConsecutiveFailures,
+  loopHintForOmittedMcpTools,
   maxParallelReadToolsForFailureStreak
 } from './loopPolicy'
 import { MAX_PARALLEL_READ_TOOLS } from './tools/classify'
 import { getProvider } from './providers'
 import { resolveModelInfo } from './modelResolve'
+import { requestMaxOutputTokens } from './providers/requestLimits'
 import type { ProviderReasoningState } from '../../shared/reasoning'
 import { parseProviderReasoningState } from '../../shared/reasoning'
 import type { StopReason, TokenUsage, ToolCall } from './providers/types'
 import {
   cancelRun,
   clearRunAbort,
+  isCurrentInvoke,
   registerRunAbort,
   resetActiveRunsForTests
 } from './runRegistry'
@@ -63,13 +72,21 @@ import {
   readContractAsync,
   resumeRun,
   saveCompaction,
-  syncMessages,
+  syncMessagesAsync,
   updateStatus,
-  flushEventAppends
+  flushEventAppends,
+  flushMessageAppends
 } from './state'
 import { toolResultEventForIpc, toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
 import { AGENT_TOOLS } from './types'
-import { listMcpToolDefinitions, syncMcpServers } from './mcp'
+import { listMcpToolDefinitions, parseMcpToolName, syncMcpServers } from './mcp'
+import { resolveEffectiveMcpServers, resolveMcpServersForSessionMap } from '../marketplace/resolve'
+import { buildSkillsSection, loadEnabledSkills, loadPluginRules } from './skills'
+import { beginWriteCheckpoint, finalizeWriteCheckpoint } from './checkpoints'
+import { isMcpToolPermitted } from '../../shared/utils/mcpToolPolicy'
+import { filterToolDefsForMode, modeSectionMarkdown } from './tools/modePolicy'
+import { existsSync, writeFileSync } from 'fs'
+import { join } from 'path'
 
 export { cancelRun, clearRunAbort, registerRunAbort, resetActiveRunsForTests }
 
@@ -84,11 +101,31 @@ function dedupeToolCalls(calls: ToolCall[]): ToolCall[] {
   return [...seen.values()]
 }
 
-const INCOMPLETE_MESSAGES: Record<IncompleteReason, string> = {
+const INCOMPLETE_MESSAGES: Record<Exclude<IncompleteReason, never>, string> = {
   truncated: 'The model hit its output token limit before finishing this turn.',
   empty_response: 'The model returned an empty response.',
-  filtered: 'The provider stopped the response because of a content filter.',
-  max_steps: 'The step budget ran out before the work was finished.'
+  filtered: 'The provider stopped the response because of a content filter.'
+}
+
+/** True when two messages are the same role + normalized text (resume dedupe). */
+function messagesContentEqual(a: ChatMessage, b: ChatMessage): boolean {
+  if (a.role !== b.role) return false
+  return contentToText(a.content).trim() === contentToText(b.content).trim()
+}
+
+/**
+ * Drop leading `newMessages` that were already persisted on disk (e.g. retry
+ * after chatStart wrote the user turn then failed mid-stream).
+ */
+function dedupeNewMessagesAgainstDisk(
+  diskMessages: ChatMessage[],
+  newMessages: ChatMessage[]
+): ChatMessage[] {
+  if (diskMessages.length === 0 || newMessages.length === 0) return newMessages
+  if (messagesContentEqual(diskMessages[diskMessages.length - 1], newMessages[0])) {
+    return newMessages.slice(1)
+  }
+  return newMessages
 }
 
 /**
@@ -102,7 +139,19 @@ function classifyIncompleteTurn(
 ): IncompleteReason | undefined {
   if (stopReason === 'length') return 'truncated'
   if (stopReason === 'content_filter') return 'filtered'
-  if (stopReason === 'error') return 'empty_response'
+  // tool_calls with zero parsed tools usually means truncated/malformed deltas,
+  // not a genuinely empty model response.
+  if (stopReason === 'tool_calls') return 'truncated'
+  if (stopReason === 'error') {
+    // Only label as empty when nothing was produced; partial text is truncated.
+    if (!assistantText.trim() && !thinkingText.trim()) return 'empty_response'
+    return 'truncated'
+  }
+  // Providers sometimes emit `unknown` for truncated/interrupted streams.
+  if (stopReason === 'unknown') {
+    if (!assistantText.trim() && !thinkingText.trim()) return 'empty_response'
+    return 'truncated'
+  }
   if (!assistantText.trim() && !thinkingText.trim()) return 'empty_response'
   return undefined
 }
@@ -137,7 +186,8 @@ function* flushPartialAssistant(
   toolCalls: ToolCall[],
   interruption: 'cancelled' | 'interrupted'
 ): Generator<AgentEvent> {
-  if (!assistantText && !thinkingText && toolCalls.length === 0) return
+  const scrubbedText = stripToolShapedAssistantText(assistantText)
+  if (!scrubbedText && !thinkingText && toolCalls.length === 0) return
 
   const stub = interruption === 'cancelled' ? 'Cancelled' : 'Interrupted'
   const mappedCalls = toolCalls.map((t) => ({
@@ -147,7 +197,7 @@ function* flushPartialAssistant(
   }))
   const assistant: ChatMessage = {
     role: 'assistant',
-    content: assistantText,
+    content: scrubbedText,
     ...(thinkingText ? { thinking: thinkingText } : {}),
     ...(reasoningState ? { reasoningState } : {}),
     ...(mappedCalls.length ? { toolCalls: mappedCalls } : {})
@@ -157,7 +207,7 @@ function* flushPartialAssistant(
   const assistantEv: AgentEvent = {
     type: 'assistant_message',
     runId,
-    content: assistantText,
+    content: scrubbedText,
     ...(thinkingText ? { thinking: thinkingText } : {}),
     ...(mappedCalls.length ? { toolCalls: mappedCalls } : {})
   }
@@ -169,7 +219,8 @@ function* flushPartialAssistant(
       role: 'tool',
       toolCallId: call.id,
       toolName: call.name,
-      content: stub
+      content: stub,
+      ok: false
     }
     messages.push(unfinished)
     appendMessage(runDir, unfinished)
@@ -194,18 +245,40 @@ export async function* runAgent(input: {
   incremental?: boolean
   workspacePath: string
   resume?: boolean
+  /** Ask / Plan / Agent — defaults to agent when omitted. */
+  mode?: AgentInteractionMode
 }): AsyncGenerator<AgentEvent> {
   const globalSettings = getSettings()
   const workspaces = readWorkspacesState()
   const override = findWorkspaceSettingsOverride(workspaces, input.workspacePath)
   const effective = resolveEffectiveSettings(globalSettings, override)
   const settings = { ...DEFAULT_SETTINGS, ...globalSettings, ...effective }
+  const agentMode: AgentInteractionMode = input.mode ?? 'agent'
   const workspace = input.workspacePath
   const runId = input.runId
   const { controller, invokeId } = registerRunAbort(runId, workspace)
 
   // Entire body in try/finally so early returns (missing key, etc.) always clear the abort map.
   let runDir: string | null = null
+  let checkpointFlushed = false
+  const writeStatus = (patch: Parameters<typeof updateStatus>[1]): void => {
+    if (!runDir || !isCurrentInvoke(runId, invokeId)) return
+    updateStatus(runDir, patch)
+  }
+  const flushWriteCheckpoint = function* (): Generator<AgentEvent, void, unknown> {
+    if (!runDir || checkpointFlushed) return
+    checkpointFlushed = true
+    const meta = finalizeWriteCheckpoint(runDir)
+    if (!meta) return
+    const ev: AgentEvent = {
+      type: 'writes_checkpoint',
+      runId,
+      checkpointId: meta.id,
+      files: meta.files
+    }
+    appendEvent(runDir, ev)
+    yield ev
+  }
   try {
     const lastUser = [...(input.messages ?? input.newMessages ?? [])]
       .reverse()
@@ -219,18 +292,38 @@ export async function* runAgent(input: {
 
     if (input.resume) {
       runDir = resumeRun(workspace, runId)
-      if (input.incremental && input.newMessages?.length) {
-        const diskMessages = loadMessages(workspace, runId)
-        messages = [...diskMessages, ...input.newMessages.map((m) => ({ ...m }))]
-        syncMessages(runDir, messages)
+      const diskMessages = loadMessages(workspace, runId)
+      // Always merge from durable disk history on resume so a stale client
+      // payload cannot silently rewrite messages.jsonl.
+      if (input.newMessages?.length) {
+        const toAppend = dedupeNewMessagesAgainstDisk(diskMessages, input.newMessages)
+        messages = [...diskMessages, ...toAppend.map((m) => ({ ...m }))]
       } else {
-        messages = (input.messages ?? []).map((m) => ({ ...m }))
-        syncMessages(runDir, messages)
+        messages = diskMessages.map((m) => ({ ...m }))
       }
+      await syncMessagesAsync(runDir, messages)
     } else {
       messages = (input.messages ?? []).map((m) => ({ ...m }))
       runDir = createRun(workspace, runId, goal)
       for (const m of messages) appendMessage(runDir, m)
+    }
+
+    beginWriteCheckpoint(runDir, workspace)
+
+    if (agentMode === 'plan') {
+      const planPath = join(runDir, 'plan.md')
+      if (!existsSync(planPath)) {
+        writeFileSync(
+          planPath,
+          [
+            '# Plan',
+            '',
+            '_Draft the plan here. Update as you learn. Do not edit product source in Plan mode._',
+            ''
+          ].join('\n'),
+          'utf8'
+        )
+      }
     }
 
     let compaction: CompactionRecord | null = loadCompaction(runDir)
@@ -238,7 +331,10 @@ export async function* runAgent(input: {
     // never re-enters the working set. `messages.jsonl` still holds the full history
     // for transcript replay and lazy tool-output loads.
     let foldedMessages = compaction?.foldedMessages ?? 0
-    if (foldedMessages > 0 && foldedMessages < messages.length) {
+    if (foldedMessages > 0 && messages.length > 0) {
+      // Corrupt/stale watermarks must not drop the latest turn — keep at least
+      // the final message in the working set.
+      foldedMessages = Math.min(foldedMessages, messages.length - 1)
       messages = messages.slice(foldedMessages)
       while (messages.length > 1 && messages[0].role === 'tool') {
         messages = messages.slice(1)
@@ -253,6 +349,7 @@ export async function* runAgent(input: {
       correlationId: runId,
       provider: settings.provider,
       model: settings.model,
+      mode: agentMode,
       ...(workspace ? { workspaceId: workspaceIdFromPath(workspace) } : {}),
       resume: Boolean(input.resume)
     })
@@ -282,10 +379,17 @@ export async function* runAgent(input: {
       apiKey = getSecret(providerId)
       if (!apiKey) {
         const status = secretStatus()
+        const storedBlob = hasStoredSecretBlob(providerId)
         const message = !status.encryptionAvailable
           ? 'OS secure storage is unavailable. API keys cannot be decrypted on this system.'
-          : `API key for ${providerId} is not set. Add it in Settings.`
-        const code = !status.encryptionAvailable ? 'PROVIDER_KEYCHAIN' : 'PROVIDER_AUTH'
+          : storedBlob
+            ? `API key for ${providerId} is stored but cannot be decrypted. Re-enter it in Settings or restore OS keychain access.`
+            : `API key for ${providerId} is not set. Add it in Settings.`
+        const code = !status.encryptionAvailable
+          ? 'PROVIDER_KEYCHAIN'
+          : storedBlob
+            ? 'PROVIDER_KEY_DECRYPT'
+            : 'PROVIDER_AUTH'
         logger.warn(message, {
           scope: 'agent',
           code,
@@ -293,17 +397,16 @@ export async function* runAgent(input: {
           provider: providerId
         })
         yield { type: 'error', runId, message, code }
+        yield* flushWriteCheckpoint()
         yield { type: 'status', runId, status: 'error' }
-        updateStatus(runDir, { status: 'error', error: message })
+        writeStatus({ status: 'error', error: message })
         appendEvent(runDir, { type: 'error', runId, message, code })
         appendEvent(runDir, { type: 'status', runId, status: 'error' })
         return
       }
     }
 
-    const maxSteps = settings.maxSteps
     let step = 0
-    let lastStepToolsSucceeded = false
     let lastUsage: TokenUsage | undefined
 
     const approvalSettings = settings.toolApproval ?? DEFAULT_SETTINGS.toolApproval
@@ -314,6 +417,7 @@ export async function* runAgent(input: {
         ? undefined
         : createApprovalGate({
             runId,
+            invokeId,
             mode: approvalSettings.mode,
             workspaceAllowlist: approvalSettings.allowlist,
             signal: controller.signal,
@@ -322,12 +426,18 @@ export async function* runAgent(input: {
 
     const emitCompaction = (record: CompactionRecord | null): AgentEvent | null => {
       if (!record || !runDir) return null
-      if (compaction?.summary === record.summary && compaction?.createdAt === record.createdAt) {
+      if (
+        compaction?.summary === record.summary &&
+        compaction?.createdAt === record.createdAt &&
+        (compaction?.foldedMessages ?? 0) === (record.foldedMessages ?? 0)
+      ) {
         return null
       }
+      const summaryChanged =
+        compaction?.summary !== record.summary || compaction?.createdAt !== record.createdAt
       compaction = record
       saveCompaction(runDir, record)
-      if (workspace && settings.memoryAutoPromote) {
+      if (workspace && settings.memoryAutoPromote && summaryChanged) {
         try {
           promoteCompactionToMemory(workspace, record)
         } catch (err) {
@@ -337,6 +447,10 @@ export async function* runAgent(input: {
             err
           })
         }
+      }
+      // UI notice only when a real summary changed, not trim watermarks / folded bumps
+      if (!summaryChanged || isTrimWatermarkCompaction(record)) {
+        return null
       }
       const ev: AgentEvent = {
         type: 'compaction',
@@ -360,47 +474,85 @@ export async function* runAgent(input: {
     )
 
     if (controller.signal.aborted) {
+      yield* flushWriteCheckpoint()
       yield { type: 'status', runId, status: 'cancelled' }
-      updateStatus(runDir, { status: 'cancelled' })
+      writeStatus({ status: 'cancelled' })
       appendEvent(runDir, { type: 'status', runId, status: 'cancelled' })
       return
     }
 
-    await syncMcpServers(settings.mcpServers)
+    // Marketplace Force on/off applies from marketplaceOverrides even when the
+    // provider/model workspace override toggle is off.
+    const marketplaceOverrides = override?.marketplaceOverrides
 
-    const allToolDefs =
-      modelInfo.supportsTools !== false
-        ? [...AGENT_TOOLS, ...listMcpToolDefinitions()]
-        : []
-    const toolBudget = allocateBudget(modelInfo).tools
-    const trimmedTools = trimToolsToBudget(allToolDefs, toolBudget)
-    let toolDefs = trimmedTools.tools.map((t) => ({
-      name: t.name,
-      description: t.description,
-      parameters: t.parameters as Record<string, unknown>
-    }))
-    let toolsJsonEstimate = trimmedTools.estimate
+    const enabledSkills = loadEnabledSkills(marketplaceOverrides)
+    const skillsSection = buildSkillsSection(
+      enabledSkills,
+      Math.floor(allocateBudget(modelInfo).system * 4 * 0.35)
+    )
+    const pluginRulesSection = loadPluginRules(marketplaceOverrides)
+
+    let runEnabledMcpIds = new Set<string>()
+    let mcpToolPolicies = new Map<
+      string,
+      { allowedTools?: string[]; deniedTools?: string[] }
+    >()
+    let toolDefs: { name: string; description: string; parameters: Record<string, unknown> }[] = []
+    let toolsJsonEstimate = 0
+    let omittedMcpHint: string | undefined
+
+    const refreshMcpToolsForStep = async (): Promise<void> => {
+      // Session map unions every open workspace so Force-off only disconnects when
+      // no workspace still needs the server. Re-run each step so mid-run enable /
+      // reconnect is visible to the model on the next provider call.
+      await syncMcpServers(resolveMcpServersForSessionMap())
+      const runMcpServers = resolveEffectiveMcpServers(marketplaceOverrides)
+      runEnabledMcpIds = new Set(runMcpServers.filter((s) => s.enabled).map((s) => s.id))
+      mcpToolPolicies = new Map(
+        runMcpServers
+          .filter((s) => s.enabled)
+          .map((s) => [
+            s.id,
+            {
+              ...(s.allowedTools?.length ? { allowedTools: s.allowedTools } : {}),
+              ...(s.deniedTools?.length ? { deniedTools: s.deniedTools } : {})
+            }
+          ])
+      )
+      const mcpToolDefs = listMcpToolDefinitions().filter((t) => {
+        const parsed = parseMcpToolName(t.name)
+        if (parsed == null || !runEnabledMcpIds.has(parsed.serverId)) return false
+        const policy = mcpToolPolicies.get(parsed.serverId)
+        if (policy && !isMcpToolPermitted(parsed.toolName, policy)) return false
+        return true
+      })
+      const allToolDefs =
+        modelInfo.supportsTools !== false
+          ? filterToolDefsForMode(agentMode, [...AGENT_TOOLS, ...mcpToolDefs])
+          : []
+      const toolBudget = allocateBudget(modelInfo).tools
+      const trimmedTools = trimToolsToBudget(allToolDefs, toolBudget)
+      toolDefs = trimmedTools.tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters as Record<string, unknown>
+      }))
+      toolsJsonEstimate = trimmedTools.estimate
+      omittedMcpHint = loopHintForOmittedMcpTools(trimmedTools.omittedMcpNames)
+    }
+
+    await refreshMcpToolsForStep()
     const failedToolKeys = new Map<string, number>()
     let consecutiveToolFailureSteps = 0
+    let truncationContinues = 0
+    const MAX_TRUNCATION_CONTINUES = 2
 
-    while (step < maxSteps) {
+    while (true) {
       if (controller.signal.aborted) break
       step++
-      lastStepToolsSucceeded = false
-      updateStatus(runDir, { step, status: 'running' })
-
-      const budgetWarnStep = Math.max(1, Math.ceil(maxSteps * 0.8))
-      if (step === budgetWarnStep && maxSteps > 1) {
-        const budgetEv: AgentEvent = {
-          type: 'step_budget',
-          runId,
-          step,
-          maxSteps,
-          ratio: step / maxSteps
-        }
-        appendEvent(runDir, budgetEv)
-        yield budgetEv
-      }
+      writeStatus({ step, status: 'running' })
+      // Steps after the first pick up MCP servers enabled/reconnected mid-run.
+      if (step > 1) await refreshMcpToolsForStep()
 
       let assistantText = ''
       let thinkingText = ''
@@ -409,8 +561,29 @@ export async function* runAgent(input: {
       let stepStopReason: StopReason | undefined
       let stepMalformedChunks = 0
       const toolCalls: ToolCall[] = []
+      const liveForwardedToolIds = new Set<string>()
+      const persistedLiveToolIds = new Set<string>()
       const thinkingEnabled =
         settings.thinkingEnabled && (modelInfo.supportsThinking !== false)
+
+      const persistLiveToolChrome = (
+        toolCallId: string,
+        name: string | undefined,
+        argumentsDelta: string
+      ): void => {
+        // One snapshot per id once the name is known — enough for reattach/hydrate
+        // without writing every argument delta to events.jsonl.
+        if (!runDir || persistedLiveToolIds.has(toolCallId)) return
+        if (!name || name === 'tool') return
+        persistedLiveToolIds.add(toolCallId)
+        appendEvent(runDir, {
+          type: 'tool_call_delta',
+          runId,
+          toolCallId,
+          name,
+          argumentsDelta
+        })
+      }
 
       const priorSummary = compaction?.summary
       const contract = await readContractAsync(runDir)
@@ -426,7 +599,13 @@ export async function* runAgent(input: {
         priorCompaction: compaction,
         keepRecentTurns: settings.keepRecentTurns,
         compactionTriggerRatio: settings.compactionTriggerRatio,
-        loopHint: loopHintForConsecutiveFailures(consecutiveToolFailureSteps),
+        skillsSection,
+        pluginRulesSection,
+        modeSection: modeSectionMarkdown(agentMode) ?? undefined,
+        loopHint: combineLoopHints(
+          omittedMcpHint,
+          loopHintForConsecutiveFailures(consecutiveToolFailureSteps)
+        ),
         providerId,
         provider,
         apiKey,
@@ -436,13 +615,32 @@ export async function* runAgent(input: {
       const droppedThisStep = assembled.contextShrunk
         ? Math.max(0, messages.length - assembled.messages.length)
         : 0
-      const compactionEv = emitCompaction(
-        assembled.compaction
-          ? { ...assembled.compaction, foldedMessages: foldedMessages + droppedThisStep }
-          : null
-      )
+      const nextFolded = foldedMessages + droppedThisStep
+      let compactionWithWatermark: CompactionRecord | null = null
+      if (assembled.compaction) {
+        compactionWithWatermark = {
+          ...assembled.compaction,
+          foldedMessages: nextFolded
+        }
+      } else if (assembled.contextShrunk && droppedThisStep > 0) {
+        // Emergency trim (or fold without a new summary) still needs a durable
+        // watermark so resume does not reload the full transcript.
+        if (compaction) {
+          compactionWithWatermark = { ...compaction, foldedMessages: nextFolded }
+        } else {
+          compactionWithWatermark = {
+            summary: CONTEXT_TRIM_WATERMARK_SUMMARY,
+            createdAt: new Date().toISOString(),
+            tokenEstimate: assembled.estimatedTokens,
+            foldedMessages: nextFolded
+          }
+        }
+      }
+      const compactionEv = emitCompaction(compactionWithWatermark)
       if (compactionEv) yield compactionEv
-      compaction = assembled.compaction ?? compaction
+      // Keep the watermark on in-memory state so Anthropic server compaction
+      // and later steps do not lose foldedMessages.
+      compaction = compactionWithWatermark ?? compaction
       if (assembled.contextShrunk || compaction?.summary !== priorSummary) {
         lastUsage = { inputTokens: assembled.estimatedTokens }
       }
@@ -460,20 +658,25 @@ export async function* runAgent(input: {
         modelInfo,
         settings.compactionTriggerRatio
       )
-      const providerInput =
-        lastUsage?.inputTokens && lastUsage.inputTokens > 0
-          ? lastUsage.inputTokens
-          : assembled.estimatedTokens
+      // Prefer prior-step provider input tokens for the meter when context did not shrink.
+      // After compaction/trim, lastUsage was reset to the estimate above.
+      const priorProviderInput =
+        lastUsage?.inputTokens && lastUsage.inputTokens > 0 ? lastUsage.inputTokens : undefined
+      const usingProviderMeter =
+        priorProviderInput != null &&
+        !assembled.contextShrunk &&
+        compaction?.summary === priorSummary
       const contextUsageEv: AgentEvent = {
         type: 'context_usage',
         runId,
         step,
         estimatedTokens: assembled.estimatedTokens,
-        inputTokens: providerInput,
+        inputTokens: usingProviderMeter ? priorProviderInput : assembled.estimatedTokens,
         contextWindow,
         contentWindow: effectiveContentWindow,
         compactionTrigger,
-        source: lastUsage?.inputTokens ? 'provider' : 'estimate',
+        source: usingProviderMeter ? 'provider' : 'estimate',
+        ...(assembled.overflow ? { overflow: true } : {}),
         layers: assembled.layers
       }
       appendEvent(runDir, contextUsageEv)
@@ -486,7 +689,9 @@ export async function* runAgent(input: {
 
       while (!streamFinished && streamAttempt < MAX_STREAM_ATTEMPTS) {
         streamAttempt++
-        if (streamAttempt > 1 && (assistantText || thinkingText)) {
+        // Any prior attempt may have streamed text, thinking, or tool deltas —
+        // tell the UI to drop all of it before the retry starts clean.
+        if (streamAttempt > 1) {
           yield { type: 'stream_reset', runId, step }
         }
         assistantText = ''
@@ -496,6 +701,7 @@ export async function* runAgent(input: {
         stepStopReason = undefined
         stepMalformedChunks = 0
         toolCalls.length = 0
+        liveForwardedToolIds.clear()
 
         let retryStream = false
         try {
@@ -507,7 +713,7 @@ export async function* runAgent(input: {
           signal: controller.signal,
           apiKey,
           baseUrl,
-          maxOutputTokens: modelInfo.maxOutputTokens,
+          maxOutputTokens: requestMaxOutputTokens(providerId, modelInfo),
           anthropicNative: assembled.anthropicNative,
           strictTools: toolDefs.length > 0,
           toolChoice: toolDefs.length > 0 ? 'auto' : undefined,
@@ -522,7 +728,7 @@ export async function* runAgent(input: {
                 display: settings.showThinking ? 'summarized' : 'omitted'
               }
             : { enabled: false },
-          serviceTier: settings.serviceTier
+          serviceTier: resolveServiceTier(settings, providerId, settings.model)
         })) {
           if (controller.signal.aborted) break
           if (chunk.type === 'text' && chunk.text) {
@@ -546,15 +752,35 @@ export async function* runAgent(input: {
             }
           } else if (chunk.type === 'tool_call_delta' && chunk.toolCallDelta) {
             const delta = chunk.toolCallDelta
+            const toolCallId = delta.id ?? `pending_${delta.index}`
+            liveForwardedToolIds.add(toolCallId)
+            const argumentsDelta = delta.arguments ?? ''
+            persistLiveToolChrome(toolCallId, delta.name, argumentsDelta)
             yield {
               type: 'tool_call_delta',
               runId,
-              toolCallId: delta.id ?? `pending_${delta.index}`,
+              toolCallId,
               name: delta.name,
-              argumentsDelta: delta.arguments ?? ''
+              argumentsDelta
             }
           } else if (chunk.type === 'tool_call' && chunk.toolCall) {
             toolCalls.push(chunk.toolCall)
+            // Providers that only emit complete tool_call chunks (e.g. Gemini)
+            // never produce tool_call_delta; live-forward so the UI can show
+            // tool chrome before assistant_message. Args go out once per id so
+            // applyToolCallDelta does not concatenate the full JSON twice.
+            const tc = chunk.toolCall
+            const already = liveForwardedToolIds.has(tc.id)
+            liveForwardedToolIds.add(tc.id)
+            const argumentsDelta = already ? '' : (tc.arguments ?? '')
+            persistLiveToolChrome(tc.id, tc.name, argumentsDelta || tc.arguments || '')
+            yield {
+              type: 'tool_call_delta',
+              runId,
+              toolCallId: tc.id,
+              name: tc.name,
+              argumentsDelta
+            }
           } else if (chunk.type === 'done') {
             if (chunk.reasoningState) stepReasoningState = chunk.reasoningState
             if (chunk.stopReason) stepStopReason = chunk.stopReason
@@ -592,9 +818,10 @@ export async function* runAgent(input: {
                 contentWindow: effectiveContentWindow,
                 compactionTrigger,
                 source: 'provider',
+                ...(assembled.overflow ? { overflow: true } : {}),
                 layers: assembled.layers
               }
-              appendEvent(runDir, providerContextEv)
+              // Live UI still needs context_usage; skip a second disk write for the same step.
               yield providerContextEv
               if (chunk.usage.cachedInputTokens && chunk.usage.cachedInputTokens > 0) {
                 logger.info('Prompt cache hit', {
@@ -609,11 +836,31 @@ export async function* runAgent(input: {
             }
             if (chunk.compaction?.trim()) {
               const summary = chunk.compaction.trim()
+              const keepRecent = settings.keepRecentTurns ?? DEFAULT_SETTINGS.keepRecentTurns
+              const historyBudget = allocateBudget(modelInfo).history
+              const beforeLen = messages.length
+              const kept = preserveRecentMessages(
+                messages,
+                keepRecent,
+                historyBudget,
+                modelInfo
+              )
+              const dropped = Math.max(0, beforeLen - kept.length)
+              if (dropped > 0) {
+                foldedMessages += dropped
+                messages = kept
+              }
               const record: CompactionRecord = {
                 summary,
                 createdAt: new Date().toISOString(),
-                tokenEstimate: estimateTextTokens(summary)
+                tokenEstimate: estimateTextTokens(summary),
+                ...(foldedMessages > 0
+                  ? { foldedMessages }
+                  : compaction?.foldedMessages != null
+                    ? { foldedMessages: compaction.foldedMessages }
+                    : {})
               }
+              compaction = { ...(compaction ?? {}), ...record }
               const anthropicCompactionEv = emitCompaction(record)
               if (anthropicCompactionEv) yield anthropicCompactionEv
               // Server-side compaction means prior inputTokens no longer describe the wire payload.
@@ -656,8 +903,9 @@ export async function* runAgent(input: {
               'interrupted'
             )
             yield { type: 'error', runId, message, code: 'PROVIDER_STREAM' }
+            yield* flushWriteCheckpoint()
             yield { type: 'status', runId, status: 'error' }
-            updateStatus(runDir, { status: 'error', error: message })
+            writeStatus({ status: 'error', error: message })
             appendEvent(runDir, { type: 'error', runId, message, code: 'PROVIDER_STREAM' })
             appendEvent(runDir, { type: 'status', runId, status: 'error' })
             return
@@ -735,9 +983,10 @@ export async function* runAgent(input: {
           appendEvent(runDir, thinkingDoneEv)
           yield thinkingDoneEv
         }
+        const scrubbedAssistantText = stripToolShapedAssistantText(assistantText)
         const assistant: ChatMessage = {
           role: 'assistant',
-          content: assistantText,
+          content: scrubbedAssistantText,
           ...(thinkingText ? { thinking: thinkingText } : {}),
           ...(stepReasoningState ? { reasoningState: stepReasoningState } : {})
         }
@@ -746,13 +995,36 @@ export async function* runAgent(input: {
         const assistantMsgEv: AgentEvent = {
           type: 'assistant_message',
           runId,
-          content: assistantText,
+          content: scrubbedAssistantText,
           ...(thinkingText ? { thinking: thinkingText } : {})
         }
         appendEvent(runDir, assistantMsgEv)
         yield assistantMsgEv
 
-        const incomplete = classifyIncompleteTurn(stepStopReason, assistantText, thinkingText)
+        const incomplete = classifyIncompleteTurn(stepStopReason, scrubbedAssistantText, thinkingText)
+        if (
+          incomplete === 'truncated' &&
+          truncationContinues < MAX_TRUNCATION_CONTINUES &&
+          !controller.signal.aborted
+        ) {
+          truncationContinues += 1
+          logger.info('Auto-continuing after truncation', {
+            scope: 'agent',
+            correlationId: runId,
+            step,
+            truncationContinues
+          })
+          const continueEv: AgentEvent = {
+            type: 'incomplete',
+            runId,
+            reason: 'truncated',
+            step,
+            message: `Output was truncated; continuing automatically (${truncationContinues}/${MAX_TRUNCATION_CONTINUES})…`
+          }
+          appendEvent(runDir, continueEv)
+          yield continueEv
+          continue
+        }
         if (incomplete) {
           const incompleteEv: AgentEvent = {
             type: 'incomplete',
@@ -776,8 +1048,9 @@ export async function* runAgent(input: {
           yield incompleteEv
         }
 
+        yield* flushWriteCheckpoint()
         yield { type: 'status', runId, status: 'done' }
-        updateStatus(runDir, { status: 'done' })
+        writeStatus({ status: 'done' })
         appendEvent(runDir, { type: 'status', runId, status: 'done' })
         return
       }
@@ -787,9 +1060,10 @@ export async function* runAgent(input: {
         name: t.name,
         arguments: t.arguments
       }))
+      const scrubbedAssistantText = stripToolShapedAssistantText(assistantText)
       const assistantWithTools: ChatMessage = {
         role: 'assistant',
-        content: assistantText,
+        content: scrubbedAssistantText,
         toolCalls: mappedCalls,
         ...(thinkingText ? { thinking: thinkingText } : {}),
         ...(stepReasoningState ? { reasoningState: stepReasoningState } : {})
@@ -810,7 +1084,7 @@ export async function* runAgent(input: {
       const assistantMsgEv: AgentEvent = {
         type: 'assistant_message',
         runId,
-        content: assistantText,
+        content: scrubbedAssistantText,
         ...(thinkingText ? { thinking: thinkingText } : {}),
         toolCalls: mappedCalls
       }
@@ -822,6 +1096,7 @@ export async function* runAgent(input: {
       // step is a single await, so queue those events and drain them between
       // wakeups instead of holding them until the batch settles.
       const liveEvents: AgentEvent[] = []
+      const liveToolResultsEmitted = new Set<string>()
       let wakeLiveEvents: (() => void) | null = null
       const toolCtx = {
         runId,
@@ -836,9 +1111,17 @@ export async function* runAgent(input: {
         appendMessage: (msg: ChatMessage) => appendMessage(runDir!, msg),
         appendEvent: (ev: AgentEvent) => appendEvent(runDir!, ev),
         approval: approvalGate,
+        agentMode,
+        runEnabledMcpIds,
+        mcpToolPolicies,
         emitLiveEvent: (ev: AgentEvent) => {
           liveEvents.push(ev)
-          if (ev.type === 'subagent_update') appendEvent(runDir!, ev)
+          if (ev.type === 'subagent_update' || ev.type === 'subagent_context_usage') {
+            appendEvent(runDir!, ev)
+          }
+          if (ev.type === 'tool_result') {
+            liveToolResultsEmitted.add(ev.toolCallId)
+          }
           wakeLiveEvents?.()
         }
       }
@@ -857,7 +1140,10 @@ export async function* runAgent(input: {
         }
       )
       for (;;) {
-        while (liveEvents.length) yield liveEvents.shift()!
+        while (liveEvents.length) {
+          const ev = liveEvents.shift()!
+          yield ev.type === 'tool_result' ? toolResultEventForIpc(ev) : ev
+        }
         if (toolsSettled) break
         await Promise.race([
           settledWork.catch(() => undefined),
@@ -869,7 +1155,10 @@ export async function* runAgent(input: {
       }
       const toolOutcome = await settledWork
       for (const ev of toolOutcome.events) {
-        if (ev.type === 'tool_result') yield toolResultEventForIpc(ev)
+        if (ev.type === 'tool_result') {
+          if (liveToolResultsEmitted.has(ev.toolCallId)) continue
+          yield toolResultEventForIpc(ev)
+        }
       }
       for (const toolMsg of toolOutcome.messages) {
         messages.push(toolMsg)
@@ -885,58 +1174,22 @@ export async function* runAgent(input: {
         }
       }
 
-      if (!controller.signal.aborted && stepToolsOk && uniqueToolCalls.length > 0) {
-        lastStepToolsSucceeded = true
-      }
-
       if (controller.signal.aborted) break
     }
 
     if (controller.signal.aborted) {
+      yield* flushWriteCheckpoint()
       yield { type: 'status', runId, status: 'cancelled' }
-      updateStatus(runDir, { status: 'cancelled' })
+      writeStatus({ status: 'cancelled' })
       appendEvent(runDir, { type: 'status', runId, status: 'cancelled' })
-    } else if (lastStepToolsSucceeded) {
-      // Ran out of steps mid-work: the last tools succeeded but the model never
-      // got a turn to wrap up, so this is incomplete rather than done.
-      const incompleteEv: AgentEvent = {
-        type: 'incomplete',
-        runId,
-        reason: 'max_steps',
-        step,
-        message: INCOMPLETE_MESSAGES.max_steps
-      }
-      logger.warn('Step budget exhausted after a successful tool step', {
-        scope: 'agent',
-        code: 'AGENT_INCOMPLETE',
-        correlationId: runId,
-        maxSteps
-      })
-      appendEvent(runDir, incompleteEv)
-      yield incompleteEv
-      yield { type: 'status', runId, status: 'done' }
-      updateStatus(runDir, { status: 'done' })
-      appendEvent(runDir, { type: 'status', runId, status: 'done' })
-    } else {
-      const message = `Stopped after ${maxSteps} steps. Checkpoint durable facts to memory if useful; treat remaining work as partial — summarize what is done vs done-when in contract.md.`
-      logger.warn(message, {
-        scope: 'agent',
-        code: 'AGENT_MAX_STEPS',
-        correlationId: runId,
-        maxSteps
-      })
-      yield { type: 'error', runId, message, code: 'AGENT_MAX_STEPS' }
-      yield { type: 'status', runId, status: 'error' }
-      updateStatus(runDir, { status: 'error', error: message })
-      appendEvent(runDir, { type: 'error', runId, message, code: 'AGENT_MAX_STEPS' })
-      appendEvent(runDir, { type: 'status', runId, status: 'error' })
     }
   } catch (err) {
     if (isAbortError(err)) {
       logger.warn('Agent run cancelled', { scope: 'agent', correlationId: runId })
+      yield* flushWriteCheckpoint()
       yield { type: 'status', runId, status: 'cancelled' }
       if (runDir) {
-        updateStatus(runDir, { status: 'cancelled' })
+        writeStatus({ status: 'cancelled' })
         appendEvent(runDir, { type: 'status', runId, status: 'cancelled' })
       }
     } else {
@@ -948,15 +1201,33 @@ export async function* runAgent(input: {
         err
       })
       yield { type: 'error', runId, message, code: 'AGENT_LOOP' }
+      yield* flushWriteCheckpoint()
       yield { type: 'status', runId, status: 'error' }
       if (runDir) {
-        updateStatus(runDir, { status: 'error', error: message })
+        writeStatus({ status: 'error', error: message })
         appendEvent(runDir, { type: 'error', runId, message, code: 'AGENT_LOOP' })
         appendEvent(runDir, { type: 'status', runId, status: 'error' })
       }
     }
   } finally {
-    if (runDir) await flushEventAppends(runDir)
+    // Always drain the per-run append chain so a superseded invoke cannot leave
+    // events buffered when a follow-up turn starts immediately.
+    if (runDir) {
+      if (!checkpointFlushed) {
+        const meta = finalizeWriteCheckpoint(runDir)
+        checkpointFlushed = true
+        if (meta) {
+          appendEvent(runDir, {
+            type: 'writes_checkpoint',
+            runId,
+            checkpointId: meta.id,
+            files: meta.files
+          })
+        }
+      }
+      await flushMessageAppends(runDir)
+      await flushEventAppends(runDir)
+    }
     clearRunAbort(runId, invokeId)
   }
 }

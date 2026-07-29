@@ -1,4 +1,5 @@
 import { Button } from '@renderer/lib/ui'
+import { Icon } from '@renderer/lib/icons'
 import { formatWorkspaceName } from '@renderer/lib/utils/formatWorkspaceName'
 import { CHAT_COLUMN, CHAT_COLUMN_MAX, CHAT_GUTTER } from '@renderer/lib/utils/layout'
 import { cn } from '@renderer/lib/ui/cn'
@@ -38,13 +39,16 @@ export function RecentsPicker({
               <button
                 key={path}
                 type="button"
-                className="rounded-md border border-border bg-surface px-3 py-2 text-left text-sm text-fg hover:bg-surface-2"
+                className="flex items-start gap-2.5 rounded-md border border-border bg-surface px-3 py-2 text-left text-sm text-fg hover:bg-surface-2"
                 onClick={() => onOpenRecent(path)}
               >
-                <span className="block font-medium text-fg-strong">
-                  {formatWorkspaceName(path, path)}
+                <Icon name="folder" size={16} className="mt-0.5 shrink-0 text-muted" />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-medium text-fg-strong">
+                    {formatWorkspaceName(path, path)}
+                  </span>
+                  <span className="mt-0.5 block truncate text-xs text-tertiary">{path}</span>
                 </span>
-                <span className="mt-0.5 block truncate text-xs text-tertiary">{path}</span>
               </button>
             ))
           ) : (
@@ -54,6 +58,7 @@ export function RecentsPicker({
 
         <div className="mt-6">
           <Button type="button" onClick={onAddWorkspace}>
+            <Icon name="folderPlus" size={16} />
             Add workspace
           </Button>
         </div>

@@ -4,7 +4,7 @@
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, fireEvent, within, waitFor } from '@testing-library/react'
-import { SettingsView } from '@renderer/features/settings/SettingsView'
+import { SettingsView } from '@renderer/features/settings'
 import { emptySecretStatus, type Settings } from '@shared/ipc'
 import { DEFAULT_SETTINGS } from '@shared/ipc'
 
@@ -34,7 +34,48 @@ beforeEach(() => {
       data: { dsnConfigured: false, telemetryEnabled: false }
     })),
     mcpStatus: vi.fn(async () => ({ ok: true as const, data: { servers: [] } })),
-    mcpRefresh: vi.fn(async () => ({ ok: true as const, data: { servers: [] } }))
+    mcpRefresh: vi.fn(async () => ({ ok: true as const, data: { servers: [] } })),
+    marketplaceBrowse: vi.fn(async () => ({
+      ok: true as const,
+      data: {
+        packages: [
+          {
+            id: 'filesystem',
+            name: 'Filesystem',
+            version: '1.0.0',
+            description: 'Bundled MCP',
+            kind: 'mcp' as const,
+            source: 'bundled' as const,
+            bundledPath: 'filesystem'
+          }
+        ]
+      }
+    })),
+    marketplaceListInstalled: vi.fn(async () => ({
+      ok: true as const,
+      data: { schemaVersion: 1 as const, items: [] }
+    })),
+    marketplaceRefreshCatalog: vi.fn(async () => ({
+      ok: true as const,
+      data: { packages: [], remoteCount: 0 }
+    })),
+    marketplaceInstall: vi.fn(async () => ({
+      ok: false as const,
+      error: 'not used'
+    })),
+    marketplaceUninstall: vi.fn(async () => ({
+      ok: true as const,
+      data: { schemaVersion: 1 as const, items: [] }
+    })),
+    marketplaceSetEnabled: vi.fn(async () => ({
+      ok: true as const,
+      data: { schemaVersion: 1 as const, items: [] }
+    })),
+    marketplacePickLocal: vi.fn(async () => ({ ok: true as const, data: null })),
+    marketplaceGetContents: vi.fn(async () => ({
+      ok: false as const,
+      error: 'not found'
+    }))
   }
 })
 
@@ -219,7 +260,7 @@ describe('settings', () => {
     )
   })
 
-  it('validates ollama url and max steps', async () => {
+  it('validates ollama url', async () => {
     const onUpdate = vi.fn(async () => ({ ok: true as const }))
     render(
       <SettingsView
@@ -231,13 +272,6 @@ describe('settings', () => {
         onClearSecret={vi.fn(async () => ({ ok: true as const }))}
       />
     )
-
-    fireEvent.click(screen.getByRole('button', { name: /^Agent$/i }))
-    const steps = screen.getByLabelText(/Max steps/i)
-    fireEvent.change(steps, { target: { value: '999' } })
-    fireEvent.blur(steps)
-    expect((await screen.findByRole('alert')).textContent).toMatch(/1 to 100/)
-    expect(onUpdate).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: /^Providers$/i }))
     const ollama = screen.getByLabelText(/Ollama base URL/i)
@@ -298,8 +332,10 @@ describe('settings', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Providers$/i }))
     expect(screen.getByText(/1\/8 saved/i)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /Refresh models/i }))
-    expect(await screen.findByText(/seed models for Ollama/i)).toBeTruthy()
-    expect((await screen.findByRole('alert')).textContent).toMatch(/Cannot reach Ollama/)
+    expect(
+      await screen.findByText(/seed models for Ollama.*Cannot reach Ollama/i)
+    ).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.queryByText(/^1 models for Ollama · fetch failed$/)).toBeNull()
   })
 
@@ -318,21 +354,6 @@ describe('settings', () => {
     fireEvent.click(screen.getByRole('button', { name: /Refresh models/i }))
     expect((await screen.findByRole('alert')).textContent).toMatch(/DeepSeek API key not set/i)
     expect(window.vyotiq.listModels).not.toHaveBeenCalled()
-  })
-
-  it('disables harness open without workspace', () => {
-    render(
-      <SettingsView
-        settings={baseSettings}
-        activeWorkspacePath={null}
-        secrets={emptySecrets}
-        onClose={vi.fn()}
-        onUpdate={vi.fn(async () => ({ ok: true as const }))}
-        onSaveSecret={vi.fn(async () => ({ ok: true as const }))}
-        onClearSecret={vi.fn(async () => ({ ok: true as const }))}
-      />
-    )
-    expect(screen.queryByRole('button', { name: /^Harness$/i })).toBeNull()
   })
 
   it('theme menu calls onSetTheme', () => {
@@ -355,11 +376,12 @@ describe('settings', () => {
     expect(onSetTheme).toHaveBeenCalledWith('dark')
   })
 
-  it('edits MCP server fields in Advanced settings', async () => {
+  it('edits MCP server fields in Marketplace manage view', async () => {
     const serverId = 'mcp-test-id'
     const onUpdate = vi.fn(async () => ({ ok: true as const }))
+    const { MarketplaceView } = await import('@renderer/features/marketplace')
     render(
-      <SettingsView
+      <MarketplaceView
         settings={{
           ...baseSettings,
           mcpServers: [
@@ -368,19 +390,17 @@ describe('settings', () => {
               name: 'Echo server',
               command: 'node',
               args: ['echo-server.mjs'],
-              enabled: true
+              enabled: true,
+              source: 'manual'
             }
           ]
         }}
-        secrets={emptySecrets}
-        onClose={vi.fn()}
         onUpdate={onUpdate}
-        onSaveSecret={vi.fn(async () => ({ ok: true as const }))}
-        onClearSecret={vi.fn(async () => ({ ok: true as const }))}
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /^Advanced$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Manage$/i }))
+    expect(await screen.findByRole('tab', { name: /^Installed$/i })).toBeTruthy()
     await waitFor(() => expect(window.vyotiq.mcpStatus).toHaveBeenCalled())
 
     const nameInput = screen.getByLabelText(`MCP server name for ${serverId}`)
@@ -440,7 +460,7 @@ describe('settings', () => {
     )
   })
 
-  it('shows MCP connection status in Advanced settings', async () => {
+  it('shows MCP connection status in Marketplace manage view', async () => {
     // @ts-expect-error test bridge
     window.vyotiq.mcpStatus = vi.fn(async () => ({
       ok: true as const,
@@ -457,20 +477,36 @@ describe('settings', () => {
       }
     }))
 
+    const { MarketplaceView } = await import('@renderer/features/marketplace')
     render(
-      <SettingsView
+      <MarketplaceView
         settings={{
           ...baseSettings,
           mcpServers: [
             {
               id: 'srv-1',
               name: 'Echo',
+              transport: 'stdio',
               command: 'node',
               args: ['echo.mjs'],
-              enabled: true
+              enabled: true,
+              source: 'manual'
             }
           ]
         }}
+        onUpdate={vi.fn(async () => ({ ok: true as const }))}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /^Manage$/i }))
+    expect(await screen.findByRole('tab', { name: /^Installed$/i })).toBeTruthy()
+    expect(await screen.findByText(/Connected · 2 tools/i)).toBeTruthy()
+  })
+
+  it('opens Registry settings section for marketplace registry URL', async () => {
+    render(
+      <SettingsView
+        settings={baseSettings}
         secrets={emptySecrets}
         onClose={vi.fn()}
         onUpdate={vi.fn(async () => ({ ok: true as const }))}
@@ -479,7 +515,10 @@ describe('settings', () => {
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /^Advanced$/i }))
-    expect(await screen.findByText(/Connected · 2 tools/i)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^Registry$/i }))
+    expect(await screen.findByLabelText(/Registry URL/i)).toBeTruthy()
+    expect(screen.getByLabelText(/Acknowledge remote install risk/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Browse$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Installed$/i })).toBeNull()
   })
 })

@@ -83,7 +83,7 @@ export function TitleBar({
             title="Minimize"
             onClick={() => void window.vyotiq?.windowMinimize()}
           >
-            <Icon name="minimize" size={14} />
+            <Icon name="minimize" size={16} />
           </button>
           <button
             type="button"
@@ -92,7 +92,7 @@ export function TitleBar({
             title={maximized ? 'Restore' : 'Maximize'}
             onClick={() => void window.vyotiq?.windowMaximize()}
           >
-            <Icon name={maximized ? 'restore' : 'maximize'} size={13} />
+            <Icon name={maximized ? 'restore' : 'maximize'} size={16} />
           </button>
           <button
             type="button"
@@ -101,7 +101,7 @@ export function TitleBar({
             title="Close"
             onClick={() => void window.vyotiq?.windowClose()}
           >
-            <Icon name="close" size={14} />
+            <Icon name="close" size={16} />
           </button>
         </div>
       ) : null}

@@ -18,6 +18,10 @@ export function enqueueEventAppend(dir: string, event: unknown): void {
         err
       })
     })
+    .finally(() => {
+      // Drop settled chains so long sessions do not retain every Promise forever.
+      if (appendChains.get(dir) === next) appendChains.delete(dir)
+    })
   appendChains.set(dir, next)
 }
 
@@ -27,6 +31,11 @@ export async function flushEventAppends(dir?: string): Promise<void> {
     return
   }
   await Promise.all([...appendChains.values()])
+}
+
+/** @internal Test helper — how many run dirs still have a pending chain. */
+export function appendChainSizeForTests(): number {
+  return appendChains.size
 }
 
 export function resetEventAppendQueueForTests(): void {

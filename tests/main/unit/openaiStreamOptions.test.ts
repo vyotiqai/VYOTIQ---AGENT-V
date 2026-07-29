@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   compatStreamOptions,
   buildOpenAiCompatBody,
+  openAiCompatMessageReasoningDelta,
   parseOpenAiCompatUsage
 } from '@main/agent/providers/openai'
 import type { ProviderChatRequest } from '@main/agent/providers/types'
@@ -30,6 +31,19 @@ describe('buildOpenAiCompatBody prompt cache', () => {
     tools: [],
     signal: new AbortController().signal
   }
+
+  it('omits max_tokens when maxOutputTokens is unset', () => {
+    const body = buildOpenAiCompatBody(baseReq, { defaultBaseUrl: 'https://openrouter.ai/api/v1' })
+    expect(body.max_tokens).toBeUndefined()
+  })
+
+  it('includes max_tokens only when explicitly set on the request', () => {
+    const body = buildOpenAiCompatBody(
+      { ...baseReq, maxOutputTokens: 4096 },
+      { defaultBaseUrl: 'https://openrouter.ai/api/v1' }
+    )
+    expect(body.max_tokens).toBe(4096)
+  })
 
   it('includes prompt_cache_key when enabled for OpenAI', () => {
     const body = buildOpenAiCompatBody(
@@ -80,5 +94,21 @@ describe('parseOpenAiCompatUsage cache metrics', () => {
   it('returns undefined for empty usage payloads', () => {
     expect(parseOpenAiCompatUsage(null)).toBeUndefined()
     expect(parseOpenAiCompatUsage({})).toBeUndefined()
+  })
+})
+
+describe('openAiCompatMessageReasoningDelta', () => {
+  it('emits the full message when no reasoning streamed yet', () => {
+    expect(openAiCompatMessageReasoningDelta('Plan the audit.', '')).toBe('Plan the audit.')
+  })
+
+  it('emits only the new suffix when message extends streamed reasoning', () => {
+    expect(openAiCompatMessageReasoningDelta('Plan the audit. Start with src.', 'Plan the audit.')).toBe(
+      ' Start with src.'
+    )
+  })
+
+  it('returns null when message does not extend accumulated reasoning', () => {
+    expect(openAiCompatMessageReasoningDelta('Plan the audit.', 'Plan the audit.')).toBeNull()
   })
 })

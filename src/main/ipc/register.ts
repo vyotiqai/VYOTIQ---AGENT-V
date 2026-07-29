@@ -1,10 +1,13 @@
-import { ipcMain, BrowserWindow, shell, nativeTheme } from 'electron'
-import { ZodError } from 'zod'
+import { ipcMain, BrowserWindow, shell, nativeTheme, dialog } from 'electron'
+import { ZodError, z } from 'zod'
 import { IPC } from '../../shared/channels'
 import {
   ChatStartRequestSchema,
   CancelRunRequestSchema,
   CompactRunRequestSchema,
+  UndoWritesRequestSchema,
+  ResolveWritesRequestSchema,
+  ReadRunArtifactRequestSchema,
   SetSettingsRequestSchema,
   SetSecretRequestSchema,
   ClearSecretRequestSchema,
@@ -13,7 +16,6 @@ import {
   LoadRunRequestSchema,
   LoadRunEventsRequestSchema,
   LoadToolResultRequestSchema,
-  OpenHarnessRequestSchema,
   DeleteRunRequestSchema,
   RenameRunRequestSchema,
   WorkspacesAddRequestSchema,
@@ -25,6 +27,18 @@ import {
   GitCommitRequestSchema,
   ToolApprovalResponseSchema,
   ExtractAttachmentRequestSchema,
+  MarketplaceBrowseRequestSchema,
+  MarketplaceInstallRequestSchema,
+  MarketplaceSetEnabledRequestSchema,
+  MarketplaceUninstallRequestSchema,
+  McpDetectRequestSchema,
+  McpApplyDetectedRequestSchema,
+  McpImportExternalRequestSchema,
+  McpScanExternalRequestSchema,
+  SlashCommandsListRequestSchema,
+  SlashCommandsResolveRequestSchema,
+  SlashCommandsCreateRuleRequestSchema,
+  SlashCommandsOpenFileRequestSchema,
   ok,
   fail,
   type ExtractAttachmentResult,
@@ -34,6 +48,9 @@ import {
   type ChatStartResult,
   type ChatMessage,
   type CompactRunResult,
+  type UndoWritesResult,
+  type ResolveWritesResult,
+  type ReadRunArtifactResult,
   type ListRunsResult,
   type RunSummary,
   type SecretsStatus,
@@ -44,20 +61,55 @@ import {
   type WorkspacesState,
   type ActiveRunsResult,
   type GitStatus,
-  type GitCommitResult
+  type GitCommitResult,
+  type AgentBrowserState
 } from '../../shared/ipc'
 import { resolveOllamaListBaseUrl } from '../../shared/providers'
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync } from 'fs'
 import { formatError, AppError, isAbortError } from '../../shared/errors'
 import { logger, logErrorSummary } from '../../shared/logger'
 import { pickWorkspace } from '@main/workspace/workspace'
-import { openHarness } from '@main/agent/harness'
 import { getSettings, setSettings } from '@main/settings/settings'
-import { syncMcpServers, getMcpServerStatus, refreshMcpServers } from '@main/agent/mcp'
-import { setSecret, clearSecret, getSecret, secretStatus } from '@main/settings/secrets'
-import { ChatEventBatcher } from './streamBatch'
+import { syncMcpServers, getMcpServerStatus, refreshMcpServers, startMcpOAuth } from '@main/agent/mcp'
+import { headersWithoutAuthorization } from '../../shared/utils/mcpAuth'
+import {
+  browseCatalog,
+  refreshRemoteCatalog,
+  readMarketplaceIndex,
+  installMarketplacePackage,
+  removeInstalledItem,
+  setInstalledEnabled,
+  syncMarketplaceMcpIntoSettings,
+  resolveEffectiveMcpServers,
+  resolveMcpServersForSessionMap,
+  getPackageContents,
+  detectMcpInput,
+  applyDetectedManualMcp,
+  scanExternalMcpConfigs,
+  importExternalMcpServers,
+  invalidateMcpResolveCache
+} from '@main/marketplace'
+import {
+  listSlashCommands,
+  resolveSlashCommand,
+  createWorkspaceRule,
+  openSlashFile
+} from '@main/agent/slashCommands'
+import {
+  setSecret,
+  clearSecret,
+  getSecret,
+  secretStatus,
+  setMcpAuthToken,
+  clearMcpAuthToken,
+  clearMcpOAuthState
+} from '@main/settings/secrets'
+import { ChatEventBatcher, getChatEventBatchStats, resetChatEventBatchStats } from './streamBatch'
 import { runAgent, createRunId } from '../agent/loop'
 import { compactRunNow, CompactionUnavailableError } from '../agent/compactRun'
+import { undoWrites, resolveWrites, getWriteCheckpointMeta } from '../agent/checkpoints'
+import { resolveRunDir } from '@main/storage/paths'
+import { focusAgentBrowser, closeAgentBrowser, getAgentBrowserState } from '@main/app/agentBrowser'
 import { extractAttachment } from '../attachments/extract'
 import {
   cancelPendingApprovals,
@@ -76,12 +128,14 @@ import {
 } from '../agent/runRegistry'
 import {
   listRuns,
-  loadMessages,
-  loadEventsForRun,
+  loadMessagesAsync,
+  loadEventsForRunAsync,
+  LOAD_EVENTS_UI_LIMIT,
   loadToolResultContent,
   deleteRun,
   renameRun,
-  runExists
+  runExists,
+  appendEvent
 } from '../agent/state'
 import {
   getWorkspaces,
@@ -89,9 +143,11 @@ import {
   removeWorkspace,
   setActiveWorkspace,
   updateWorkspaceUiState,
-  setWorkspaceSettingsOverride
+  setWorkspaceSettingsOverride,
+  findWorkspaceSettingsOverride
 } from '@main/workspace/workspaces'
-import { workspacePathsEqual } from '../../shared/workspacePath'
+import { canonicalizeWorkspacePath, workspacePathsEqual } from '../../shared/workspacePath'
+import { relative, isAbsolute, join } from 'path'
 import { commitAll, readGitStatus } from '@main/git/git'
 import { applyTitleBarTheme } from '@main/app/window'
 import { logsDirectory } from '../logging/init'
@@ -154,6 +210,23 @@ function failFrom(err: unknown, channel: string, correlationId?: string): IpcRes
     })
   }
   return fail(message)
+}
+
+/** Persist Keep/Discard/Undo into events.jsonl so reload hydrates resolution state. */
+function persistWriteCheckpointEvent(
+  runDir: string,
+  runId: string,
+  checkpointId: string
+): void {
+  const meta = getWriteCheckpointMeta(runDir, checkpointId)
+  if (!meta) return
+  appendEvent(runDir, {
+    type: 'writes_checkpoint',
+    runId,
+    checkpointId: meta.id,
+    undone: Boolean(meta.undone || meta.resolved),
+    files: meta.files
+  })
 }
 
 export function registerIpc(): void {
@@ -249,7 +322,10 @@ export function registerIpc(): void {
       if (!senderOk(event)) return fail('Invalid sender')
       try {
         const { path, override } = WorkspacesSetSettingsOverrideRequestSchema.parse(raw)
-        return ok(setWorkspaceSettingsOverride(path, override))
+        const next = setWorkspaceSettingsOverride(path, override)
+        // Force-off / Force-on may change which MCP processes should stay alive.
+        await syncMcpServers(resolveMcpServersForSessionMap())
+        return ok(next)
       } catch (err) {
         return failFrom(err, IPC.workspacesSetSettingsOverride)
       }
@@ -274,8 +350,9 @@ export function registerIpc(): void {
       if (partial.telemetryEnabled !== undefined) {
         applySentryTelemetry(next.telemetryEnabled)
       }
-      if (partial.mcpServers !== undefined) {
-        await syncMcpServers(next.mcpServers)
+      if (partial.mcpServers !== undefined || partial.marketplace !== undefined) {
+        invalidateMcpResolveCache()
+        await syncMcpServers(resolveMcpServersForSessionMap())
       }
       return ok(next)
     } catch (err) {
@@ -386,13 +463,15 @@ export function registerIpc(): void {
                 workspacePath: req.workspacePath,
                 resume,
                 incremental: true as const,
-                newMessages: req.newMessages
+                newMessages: req.newMessages,
+                mode: req.mode
               }
             : {
                 runId,
                 messages: req.messages ?? [],
                 workspacePath: req.workspacePath,
-                resume
+                resume,
+                mode: req.mode
               }
         // Stamp the invoke on every event so the renderer can tell a live event apart
         // from one arriving late from the previous turn of the same run.
@@ -438,8 +517,13 @@ export function registerIpc(): void {
           }
         } finally {
           batcher.flush()
+          if (process.env.VYOTIQ_PERF === '1') {
+            const stats = getChatEventBatchStats()
+            console.info('[vyotiq-perf] chatEvent batch', JSON.stringify(stats))
+            resetChatEventBatchStats()
+          }
           releaseApprovalSender()
-          cancelPendingApprovals(runId)
+          cancelPendingApprovals(runId, invokeId)
           clearRunAbort(runId, invokeId)
         }
       })()
@@ -488,6 +572,7 @@ export function registerIpc(): void {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
       const req = CompactRunRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
       if (isActive(req.runId)) {
         return fail('Stop the run before compacting its history.')
       }
@@ -503,6 +588,83 @@ export function registerIpc(): void {
     }
   })
 
+  ipcMain.handle(IPC.runsUndoWrites, async (event, raw): Promise<IpcResult<UndoWritesResult>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = UndoWritesRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      if (isActive(req.runId)) {
+        return fail('Stop the run before undoing agent writes.')
+      }
+      const runDir = resolveRunDir(req.workspacePath, req.runId)
+      const result = undoWrites(runDir, req.workspacePath, req.checkpointId)
+      persistWriteCheckpointEvent(runDir, req.runId, result.checkpointId)
+      logger.info('Undid agent writes', {
+        scope: 'ipc',
+        correlationId: req.runId,
+        channel: IPC.runsUndoWrites,
+        checkpointId: result.checkpointId,
+        restored: result.restored.length
+      })
+      return ok(result)
+    } catch (err) {
+      return failFrom(err, IPC.runsUndoWrites)
+    }
+  })
+
+  ipcMain.handle(
+    IPC.runsResolveWrites,
+    async (event, raw): Promise<IpcResult<ResolveWritesResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = ResolveWritesRequestSchema.parse(raw)
+        if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+        if (isActive(req.runId)) {
+          return fail('Stop the run before resolving agent writes.')
+        }
+        const runDir = resolveRunDir(req.workspacePath, req.runId)
+        const result = resolveWrites(runDir, req.workspacePath, {
+          checkpointId: req.checkpointId,
+          action: req.action,
+          paths: req.paths
+        })
+        persistWriteCheckpointEvent(runDir, req.runId, result.checkpointId)
+        logger.info('Resolved agent writes', {
+          scope: 'ipc',
+          correlationId: req.runId,
+          channel: IPC.runsResolveWrites,
+          checkpointId: result.checkpointId,
+          action: req.action,
+          kept: result.kept.length,
+          discarded: result.discarded.length
+        })
+        return ok(result)
+      } catch (err) {
+        return failFrom(err, IPC.runsResolveWrites)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    IPC.runsReadArtifact,
+    async (event, raw): Promise<IpcResult<ReadRunArtifactResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = ReadRunArtifactRequestSchema.parse(raw)
+        if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+        const runDir = resolveRunDir(req.workspacePath, req.runId)
+        const filePath = join(runDir, req.name)
+        if (!existsSync(filePath)) {
+          return ok({ name: req.name, exists: false, content: null })
+        }
+        const content = readFileSync(filePath, 'utf8')
+        return ok({ name: req.name, exists: true, content })
+      } catch (err) {
+        return failFrom(err, IPC.runsReadArtifact)
+      }
+    }
+  )
+
   ipcMain.handle(IPC.listRuns, async (event, raw): Promise<IpcResult<ListRunsResult>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
@@ -512,6 +674,7 @@ export function registerIpc(): void {
         return ok({ runs: [], capped: false })
       }
       const req = ListRunsRequestSchema.parse({ workspacePath })
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
       return ok(await listRuns(req.workspacePath))
     } catch (err) {
       return failFrom(err, IPC.listRuns)
@@ -524,7 +687,8 @@ export function registerIpc(): void {
       if (!senderOk(event)) return fail('Invalid sender')
       try {
         const req = LoadRunRequestSchema.parse(raw)
-        const messages = loadMessages(req.workspacePath, req.runId)
+        if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+        const messages = await loadMessagesAsync(req.workspacePath, req.runId)
         return ok({ runId: req.runId, messages })
       } catch (err) {
         return failFrom(err, IPC.loadRun)
@@ -538,7 +702,12 @@ export function registerIpc(): void {
       if (!senderOk(event)) return fail('Invalid sender')
       try {
         const req = LoadRunEventsRequestSchema.parse(raw)
-        return ok(loadEventsForRun(req.workspacePath, req.runId))
+        if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+        return ok(
+          await loadEventsForRunAsync(req.workspacePath, req.runId, {
+            limit: LOAD_EVENTS_UI_LIMIT
+          })
+        )
       } catch (err) {
         return failFrom(err, IPC.loadRunEvents)
       }
@@ -549,6 +718,7 @@ export function registerIpc(): void {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
       const req = LoadToolResultRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
       const content = await loadToolResultContent(
         req.workspacePath,
         req.runId,
@@ -565,6 +735,7 @@ export function registerIpc(): void {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
       const req = DeleteRunRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
       const result = deleteRun(req.workspacePath, req.runId)
       if (!result.ok) return fail(result.error)
       return ok(true)
@@ -579,6 +750,7 @@ export function registerIpc(): void {
       if (!senderOk(event)) return fail('Invalid sender')
       try {
         const req = RenameRunRequestSchema.parse(raw)
+        if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
         return ok(renameRun(req.workspacePath, req.runId, req.goal))
       } catch (err) {
         return failFrom(err, IPC.runsRename)
@@ -614,17 +786,6 @@ export function registerIpc(): void {
       return ok(await commitAll(req.workspacePath, req.message, req.push === true))
     } catch (err) {
       return failFrom(err, IPC.gitCommit)
-    }
-  })
-
-  ipcMain.handle(IPC.openHarness, async (event): Promise<IpcResult<true>> => {
-    if (!senderOk(event)) return fail('Invalid sender')
-    try {
-      OpenHarnessRequestSchema.parse({})
-      await openHarness()
-      return ok(true)
-    } catch (err) {
-      return failFrom(err, IPC.openHarness)
     }
   })
 
@@ -670,22 +831,325 @@ export function registerIpc(): void {
     }
   })
 
-  ipcMain.handle(IPC.mcpStatus, async (event): Promise<IpcResult<McpStatusResult>> => {
+  ipcMain.handle(IPC.mcpStatus, async (event, raw): Promise<IpcResult<McpStatusResult>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
-      return ok({ servers: getMcpServerStatus(getSettings().mcpServers) })
+      const workspacePath =
+        typeof (raw as { workspacePath?: unknown } | null)?.workspacePath === 'string'
+          ? ((raw as { workspacePath: string }).workspacePath.trim() || null)
+          : getWorkspaces().activePath
+      const overrides = workspacePath
+        ? findWorkspaceSettingsOverride(getWorkspaces(), workspacePath)?.marketplaceOverrides ??
+          null
+        : null
+      const servers = resolveEffectiveMcpServers(overrides)
+      return ok({ servers: getMcpServerStatus(servers) })
     } catch (err) {
       return failFrom(err, IPC.mcpStatus)
     }
   })
 
-  ipcMain.handle(IPC.mcpRefresh, async (event): Promise<IpcResult<McpStatusResult>> => {
+  ipcMain.handle(IPC.mcpRefresh, async (event, raw): Promise<IpcResult<McpStatusResult>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
-      const servers = await refreshMcpServers(getSettings().mcpServers)
-      return ok({ servers })
+      const workspacePath =
+        typeof (raw as { workspacePath?: unknown } | null)?.workspacePath === 'string'
+          ? ((raw as { workspacePath: string }).workspacePath.trim() || null)
+          : getWorkspaces().activePath
+      const overrides = workspacePath
+        ? findWorkspaceSettingsOverride(getWorkspaces(), workspacePath)?.marketplaceOverrides ??
+          null
+        : null
+      await refreshMcpServers(resolveMcpServersForSessionMap())
+      return ok({ servers: getMcpServerStatus(resolveEffectiveMcpServers(overrides)) })
     } catch (err) {
       return failFrom(err, IPC.mcpRefresh)
+    }
+  })
+
+  ipcMain.handle(IPC.mcpSetAuthToken, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const { serverId, token } = z
+        .object({ serverId: z.string().min(1), token: z.string().min(1) })
+        .parse(raw)
+      setMcpAuthToken(serverId, token)
+      invalidateMcpResolveCache()
+      const settings = getSettings()
+      const nextServers = (settings.mcpServers ?? []).map((s) =>
+        s.id === serverId
+          ? { ...s, headers: headersWithoutAuthorization(s.headers) }
+          : s
+      )
+      setSettings({ mcpServers: nextServers })
+      await syncMcpServers(resolveMcpServersForSessionMap())
+      return ok(true)
+    } catch (err) {
+      return failFrom(err, IPC.mcpSetAuthToken)
+    }
+  })
+
+  ipcMain.handle(IPC.mcpClearAuthToken, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const { serverId } = z.object({ serverId: z.string().min(1) }).parse(raw)
+      clearMcpAuthToken(serverId)
+      clearMcpOAuthState(serverId)
+      invalidateMcpResolveCache()
+      const settings = getSettings()
+      const nextServers = (settings.mcpServers ?? []).map((s) =>
+        s.id === serverId
+          ? { ...s, headers: headersWithoutAuthorization(s.headers) }
+          : s
+      )
+      setSettings({ mcpServers: nextServers })
+      await syncMcpServers(resolveMcpServersForSessionMap())
+      return ok(true)
+    } catch (err) {
+      return failFrom(err, IPC.mcpClearAuthToken)
+    }
+  })
+
+  ipcMain.handle(IPC.mcpStartOAuth, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const { serverId } = z.object({ serverId: z.string().min(1) }).parse(raw)
+      await startMcpOAuth(serverId)
+      invalidateMcpResolveCache()
+      await syncMcpServers(resolveMcpServersForSessionMap())
+      return ok({ servers: getMcpServerStatus(resolveEffectiveMcpServers()) })
+    } catch (err) {
+      return failFrom(err, IPC.mcpStartOAuth)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceListInstalled, async (event) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      return ok(readMarketplaceIndex())
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceListInstalled)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceBrowse, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = MarketplaceBrowseRequestSchema.parse(raw ?? {})
+      const packages = await browseCatalog(req)
+      return ok({ packages })
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceBrowse)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceRefreshCatalog, async (event) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const remote = await refreshRemoteCatalog()
+      const packages = await browseCatalog()
+      return ok({ packages, remoteCount: remote.packages.length })
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceRefreshCatalog)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceInstall, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = MarketplaceInstallRequestSchema.parse(raw)
+      const result = await installMarketplacePackage(req)
+      invalidateMcpResolveCache()
+      await syncMcpServers(resolveMcpServersForSessionMap())
+      return ok(result)
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceInstall)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceDetectMcp, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = McpDetectRequestSchema.parse(raw)
+      const result = await detectMcpInput(req)
+      return ok(result)
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceDetectMcp)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceApplyDetectedMcp, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = McpApplyDetectedRequestSchema.parse(raw)
+      if (req.install) {
+        const result = await installMarketplacePackage(req.install)
+        await syncMcpServers(resolveMcpServersForSessionMap())
+        return ok({
+          applied: 'marketplace' as const,
+          serverId: result.item.id,
+          installResult: result
+        })
+      }
+      const applied = applyDetectedManualMcp(req)
+      await syncMcpServers(resolveMcpServersForSessionMap())
+      return ok(applied)
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceApplyDetectedMcp)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceScanExternalMcp, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = McpScanExternalRequestSchema.parse(raw ?? {})
+      return ok(scanExternalMcpConfigs(req))
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceScanExternalMcp)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceImportExternalMcp, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = McpImportExternalRequestSchema.parse(raw)
+      const result = importExternalMcpServers(req)
+      await syncMcpServers(resolveMcpServersForSessionMap())
+      return ok(result)
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceImportExternalMcp)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceUninstall, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const { id } = MarketplaceUninstallRequestSchema.parse(raw)
+      const index = removeInstalledItem(id)
+      syncMarketplaceMcpIntoSettings()
+      invalidateMcpResolveCache()
+      await syncMcpServers(resolveMcpServersForSessionMap())
+      return ok(index)
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceUninstall)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceSetEnabled, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const { id, enabled } = MarketplaceSetEnabledRequestSchema.parse(raw)
+      const index = setInstalledEnabled(id, enabled)
+      invalidateMcpResolveCache()
+      const item = index.items.find((i) => i.id === id)
+      if (item?.kind === 'mcp' || item?.kind === 'plugin') {
+        if (item.kind === 'mcp') syncMarketplaceMcpIntoSettings()
+        await syncMcpServers(resolveMcpServersForSessionMap())
+      }
+      return ok(index)
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceSetEnabled)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplacePickLocal, async (event) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const options: Electron.OpenDialogOptions = {
+        title: 'Add marketplace package',
+        properties: ['openFile', 'openDirectory'],
+        filters: [
+          { name: 'Packages', extensions: ['zip', 'tgz', 'json', 'md'] },
+          { name: 'All', extensions: ['*'] }
+        ]
+      }
+      const result = win
+        ? await dialog.showOpenDialog(win, options)
+        : await dialog.showOpenDialog(options)
+      if (result.canceled || !result.filePaths[0]) return ok(null)
+      return ok(result.filePaths[0])
+    } catch (err) {
+      return failFrom(err, IPC.marketplacePickLocal)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceGetContents, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const id = z.string().min(1).parse((raw as { id?: string })?.id)
+      const contents = getPackageContents(id)
+      if (!contents) return fail('Package not found')
+      return ok(contents)
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceGetContents)
+    }
+  })
+
+  ipcMain.handle(IPC.slashCommandsList, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = SlashCommandsListRequestSchema.parse(raw ?? {})
+      const workspacePath = req.workspacePath?.trim() || null
+      if (workspacePath && !isOpenWorkspace(workspacePath)) {
+        return fail('Workspace is not open')
+      }
+      const commands = await listSlashCommands(workspacePath)
+      return ok({ commands })
+    } catch (err) {
+      return failFrom(err, IPC.slashCommandsList)
+    }
+  })
+
+  ipcMain.handle(IPC.slashCommandsResolve, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = SlashCommandsResolveRequestSchema.parse(raw)
+      const workspacePath = req.workspacePath?.trim() || null
+      if (workspacePath && !isOpenWorkspace(workspacePath)) {
+        return fail('Workspace is not open')
+      }
+      const result = await resolveSlashCommand(req.id, {
+        workspacePath,
+        trailingText: req.trailingText
+      })
+      return ok(result)
+    } catch (err) {
+      return failFrom(err, IPC.slashCommandsResolve)
+    }
+  })
+
+  ipcMain.handle(IPC.slashCommandsCreateRule, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = SlashCommandsCreateRuleRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) {
+        return fail('Workspace is not open')
+      }
+      const result = await createWorkspaceRule(req.workspacePath, req.title)
+      return ok(result)
+    } catch (err) {
+      return failFrom(err, IPC.slashCommandsCreateRule)
+    }
+  })
+
+  ipcMain.handle(IPC.slashCommandsOpenFile, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = SlashCommandsOpenFileRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) {
+        return fail('Workspace is not open')
+      }
+      const root = canonicalizeWorkspacePath(req.workspacePath)
+      const target = canonicalizeWorkspacePath(req.path)
+      const rel = relative(root, target)
+      if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+        return fail('Path is outside the workspace')
+      }
+      await openSlashFile(target)
+      return ok(true)
+    } catch (err) {
+      return failFrom(err, IPC.slashCommandsOpenFile)
     }
   })
 
@@ -734,6 +1198,34 @@ export function registerIpc(): void {
       return ok(win.isMaximized())
     } catch (err) {
       return failFrom(err, IPC.windowIsMaximized)
+    }
+  })
+
+  ipcMain.handle(IPC.browserGetState, async (event): Promise<IpcResult<AgentBrowserState>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      return ok(getAgentBrowserState())
+    } catch (err) {
+      return failFrom(err, IPC.browserGetState)
+    }
+  })
+
+  ipcMain.handle(IPC.browserFocus, async (event): Promise<IpcResult<boolean>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      return ok(focusAgentBrowser())
+    } catch (err) {
+      return failFrom(err, IPC.browserFocus)
+    }
+  })
+
+  ipcMain.handle(IPC.browserClose, async (event): Promise<IpcResult<true>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      closeAgentBrowser()
+      return ok(true)
+    } catch (err) {
+      return failFrom(err, IPC.browserClose)
     }
   })
 

@@ -15,6 +15,7 @@ import { trimHistoryToBudget } from './historyTrim'
 import { trimToolResults } from './toolTrim'
 import {
   KEEP_RECENT_TURNS,
+  isTrimWatermarkCompaction,
   type AssembleInput,
   type AssembleResult,
   type CompactionRecord,
@@ -24,9 +25,45 @@ import { stripImagesFromMessages } from './stripImages'
 import { buildWorkspaceRulesSection } from './rules'
 import { buildWorkspaceSnapshotAsync } from './workspaceSnapshot'
 import { logger } from '../../../shared/logger'
+import { perfLog, perfNow } from './perfDebug'
 
 const COMPACTION_MIN_MESSAGES = 4
 const COMPACTION_MIN_TOKENS = 2000
+
+type SystemCacheEntry = { fingerprint: string; system: string }
+let systemPromptCache: SystemCacheEntry | null = null
+
+function systemFingerprint(parts: {
+  harness: string
+  workspace: string
+  rules: string
+  skillsSection: string
+  pluginRulesSection: string
+  memoryIndex: string
+  memoryState: string
+  contract: string
+  modeSection?: string
+  compactionSummary?: string
+  loopHint?: string
+  historyBudget: number
+  toolsBudget: number
+}): string {
+  return [
+    parts.harness,
+    parts.workspace,
+    parts.rules,
+    parts.skillsSection,
+    parts.pluginRulesSection,
+    parts.memoryIndex,
+    parts.memoryState,
+    parts.contract,
+    parts.modeSection ?? '',
+    parts.compactionSummary ?? '',
+    parts.loopHint ?? '',
+    String(parts.historyBudget),
+    String(parts.toolsBudget)
+  ].join('\0')
+}
 
 function modelAcceptsVision(model: AssembleInput['model']): boolean {
   return model.supportsVision || model.inputModalities.includes('image')
@@ -42,11 +79,13 @@ function capText(text: string, maxTokens: number): string {
 function harnessSectionPriority(heading: string): number {
   const h = heading.toLowerCase()
   if (h.includes('execution contract')) return 100
+  // Safety outranks Role — under budget pressure keep constraints over identity.
+  if (h.includes('safety')) return 85
   if (h === 'role' || h.endsWith(' role')) return 80
-  if (h.includes('safety')) return 70
+  // Cross-cutting tool policy (MCP / attachments / don't narrate) outranks loop.
+  if (h.includes('tool policy') || h.includes('tool')) return 55
   if (h.includes('loop')) return 50
   if (h.includes('memory')) return 40
-  if (h.includes('tool')) return 30
   return 20
 }
 
@@ -95,15 +134,53 @@ function buildSystem(parts: {
   harness: string
   workspace: string
   rules: string
+  skillsSection?: string
+  pluginRulesSection?: string
   memoryIndex: string
   memoryState: string
   contract?: string
+  modeSection?: string
   compaction?: CompactionRecord | null
   budgets: ReturnType<typeof allocateBudget>
   loopHint?: string
 }): string {
+  const fingerprint = systemFingerprint({
+    harness: parts.harness,
+    workspace: parts.workspace,
+    rules: parts.rules,
+    skillsSection: parts.skillsSection ?? '',
+    pluginRulesSection: parts.pluginRulesSection ?? '',
+    memoryIndex: parts.memoryIndex,
+    memoryState: parts.memoryState,
+    contract: parts.contract ?? '',
+    modeSection: parts.modeSection,
+    compactionSummary:
+      parts.compaction?.summary && !isTrimWatermarkCompaction(parts.compaction)
+        ? parts.compaction.summary
+        : undefined,
+    loopHint: parts.loopHint,
+    historyBudget: parts.budgets.history,
+    toolsBudget: parts.budgets.tools
+  })
+  if (systemPromptCache?.fingerprint === fingerprint) {
+    return systemPromptCache.system
+  }
+
   const sections: string[] = []
   sections.push(capHarness(parts.harness, parts.budgets.system))
+  if (parts.modeSection?.trim()) {
+    sections.push(capText(parts.modeSection.trim(), Math.floor(parts.budgets.system * 0.2)))
+  }
+  if (parts.skillsSection?.trim()) {
+    sections.push(
+      capText(parts.skillsSection.trim(), Math.floor(parts.budgets.system * 0.35))
+    )
+  }
+  if (parts.pluginRulesSection?.trim()) {
+    sections.push(
+      capText(parts.pluginRulesSection.trim(), Math.floor(parts.budgets.system * 0.25))
+    )
+  }
   if (parts.rules.trim()) {
     // Between the harness and the run contract: project conventions outrank the
     // generic harness but yield to what the user asked for in this run.
@@ -123,7 +200,7 @@ function buildSystem(parts: {
   if (parts.memoryState.trim()) {
     sections.push(`## Memory state\n${capText(parts.memoryState, mw)}`)
   }
-  if (parts.compaction?.summary) {
+  if (parts.compaction?.summary && !isTrimWatermarkCompaction(parts.compaction)) {
     sections.push(
       [
         '## Prior session summary',
@@ -135,7 +212,9 @@ function buildSystem(parts: {
       ].join('\n')
     )
   }
-  return sections.join('\n\n')
+  const system = sections.join('\n\n')
+  systemPromptCache = { fingerprint, system }
+  return system
 }
 
 function computeLayers(
@@ -179,10 +258,14 @@ function resolveUsedTokens(
   trigger: number
 ): number {
   const providerHint = lastUsage?.inputTokens
+  // Prefer local estimate only when the provider hint looks inflated *and*
+  // is still below the compaction trigger. If the provider already reports
+  // at/over trigger, trust it so we do not defer compaction.
   if (
     providerHint !== undefined &&
     providerHint > estimated &&
-    estimated < trigger * 0.5
+    estimated < trigger * 0.5 &&
+    providerHint < trigger
   ) {
     return estimated
   }
@@ -198,6 +281,7 @@ export async function assembleContext(
     signal: AbortSignal
   }
 ): Promise<AssembleResult> {
+  const assembleStarted = perfNow()
   const budgets = allocateBudget(input.model)
   const keepRecent = input.keepRecentTurns ?? KEEP_RECENT_TURNS
   const triggerRatio = input.compactionTriggerRatio ?? 0.7
@@ -229,13 +313,17 @@ export async function assembleContext(
   let compaction = input.priorCompaction ?? null
   let contextShrunk = false
 
+  const estimateStarted = perfNow()
   const systemDraft = buildSystem({
     harness: input.harness,
     workspace,
     rules,
+    skillsSection: input.skillsSection,
+    pluginRulesSection: input.pluginRulesSection,
     memoryIndex,
     memoryState,
     contract: input.contract,
+    modeSection: input.modeSection,
     compaction,
     budgets,
     loopHint: input.loopHint
@@ -243,12 +331,22 @@ export async function assembleContext(
 
   let layers = computeLayers(systemDraft, messages, input.toolsJsonEstimate, input.model, budgets)
   let estimated = totalFromLayers(layers)
+  perfLog('estimateMessagesTokens', estimateStarted, {
+    messages: messages.length,
+    estimated
+  })
 
   const trigger = compactionTriggerTokens(input.model, triggerRatio)
   let used = resolveUsedTokens(estimated, input.lastUsage, trigger)
 
   if (used >= trigger || estimated >= trigger) {
-    const toSummarize = messages.slice(0, Math.max(0, messages.length - keepRecent * 2))
+    const keptForBoundary = preserveRecentMessages(
+      messages,
+      keepRecent,
+      budgets.history,
+      input.model
+    )
+    const toSummarize = messages.slice(0, Math.max(0, messages.length - keptForBoundary.length))
     if (shouldCompactHistory(toSummarize, input.model)) {
       const record = await compactMessages({
         provider: input.provider,
@@ -258,10 +356,13 @@ export async function assembleContext(
         signal: input.signal,
         messages: stripThinkingForCompaction(toSummarize),
         supportsStructuredOutput: input.model.supportsStructuredOutput,
-        contextWindow: window
+        contextWindow: window,
+        priorSummary: isTrimWatermarkCompaction(input.priorCompaction)
+          ? undefined
+          : input.priorCompaction?.summary
       })
       if (record) {
-        messages = preserveRecentMessages(messages, keepRecent, budgets.history, input.model)
+        messages = keptForBoundary
         compaction = record
         contextShrunk = true
       }
@@ -274,6 +375,8 @@ export async function assembleContext(
     harness: input.harness,
     workspace,
     rules,
+    skillsSection: input.skillsSection,
+    pluginRulesSection: input.pluginRulesSection,
     memoryIndex,
     memoryState,
     contract: input.contract,
@@ -294,6 +397,8 @@ export async function assembleContext(
       harness: input.harness,
       workspace,
       rules,
+      skillsSection: input.skillsSection,
+      pluginRulesSection: input.pluginRulesSection,
       memoryIndex,
       memoryState,
       contract: input.contract,
@@ -315,7 +420,13 @@ export async function assembleContext(
           signal: input.signal,
           messages: stripThinkingForCompaction(toSummarize),
           supportsStructuredOutput: input.model.supportsStructuredOutput,
-          contextWindow: window
+          contextWindow: window,
+          priorSummary: isTrimWatermarkCompaction(compaction)
+            ? undefined
+            : (compaction?.summary ??
+              (isTrimWatermarkCompaction(input.priorCompaction)
+                ? undefined
+                : input.priorCompaction?.summary))
         })
         if (record) {
           messages = preserveRecentMessages(messages, Math.max(2, Math.floor(keepRecent / 2)), budgets.history, input.model)
@@ -325,6 +436,8 @@ export async function assembleContext(
             harness: input.harness,
             workspace,
             rules,
+            skillsSection: input.skillsSection,
+            pluginRulesSection: input.pluginRulesSection,
             memoryIndex,
             memoryState,
             contract: input.contract,
@@ -348,6 +461,12 @@ export async function assembleContext(
     }
   }
 
+  perfLog('assembleContext', assembleStarted, {
+    messages: messages.length,
+    estimated,
+    contextShrunk
+  })
+
   return {
     system,
     messages,
@@ -355,6 +474,7 @@ export async function assembleContext(
     estimatedTokens: estimated,
     layers,
     contextShrunk,
+    overflow: estimated > window,
     anthropicNative: anthropicNativeOptions(
       input.providerId,
       input.model,

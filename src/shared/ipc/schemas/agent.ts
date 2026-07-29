@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { AgentInteractionModeSchema } from './settings'
 
 export const MAX_IMAGE_BYTES = 4 * 1024 * 1024
 export const MAX_IMAGE_DATA_URL_CHARS = Math.ceil(MAX_IMAGE_BYTES * (4 / 3)) + 128
@@ -89,8 +90,7 @@ export type IpcResult<T> = { ok: true; data: T } | { ok: false; error: string }
 export const IncompleteReasonSchema = z.enum([
   'truncated',
   'empty_response',
-  'filtered',
-  'max_steps'
+  'filtered'
 ])
 export type IncompleteReason = z.infer<typeof IncompleteReasonSchema>
 
@@ -156,6 +156,16 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     text: z.string()
   }),
   z.object({
+    type: z.literal('subagent_context_usage'),
+    ...eventBase,
+    parentToolCallId: z.string(),
+    step: z.number().int().min(1),
+    estimatedTokens: z.number().int().min(0),
+    contextWindow: z.number().int().min(1),
+    contentWindow: z.number().int().min(1).optional(),
+    model: z.string()
+  }),
+  z.object({
     type: z.literal('status'),
     ...eventBase,
     status: z.enum(['running', 'cancelled', 'error', 'done'])
@@ -205,13 +215,6 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     step: z.number().int().min(1)
   }),
   z.object({
-    type: z.literal('step_budget'),
-    ...eventBase,
-    step: z.number().int().min(1),
-    maxSteps: z.number().int().min(1),
-    ratio: z.number().min(0).max(1)
-  }),
-  z.object({
     type: z.literal('step_usage'),
     ...eventBase,
     step: z.number().int().min(1),
@@ -230,12 +233,30 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     contentWindow: z.number().int().min(1).optional(),
     compactionTrigger: z.number().int().min(0),
     source: z.enum(['estimate', 'provider']),
+    /** True when estimated tokens still exceed the model window after compaction/trim. */
+    overflow: z.boolean().optional(),
     layers: z.object({
       system: z.number().int().min(0),
       history: z.number().int().min(0),
       tools: z.number().int().min(0),
       buffer: z.number().int().min(0)
     })
+  }),
+  z.object({
+    /** Turn-level snapshot of agent file writes; used for Undo on the Files Changed card. */
+    type: z.literal('writes_checkpoint'),
+    ...eventBase,
+    checkpointId: z.string().min(1),
+    /** True after Keep all / Discard all / Undo fully resolves the checkpoint. */
+    undone: z.boolean().optional(),
+    files: z.array(
+      z.object({
+        path: z.string().min(1),
+        action: z.enum(['created', 'modified', 'deleted']),
+        undoable: z.boolean(),
+        resolved: z.enum(['kept', 'discarded']).optional()
+      })
+    )
   })
 ])
 export type AgentEvent = z.infer<typeof AgentEventSchema>
@@ -278,7 +299,9 @@ export const ChatStartRequestSchema = z
     newMessages: z.array(ChatMessageSchema).optional(),
     incremental: z.boolean().optional(),
     workspacePath: z.string().min(1),
-    runId: RunIdSchema.optional()
+    runId: RunIdSchema.optional(),
+    /** Ask / Plan / Agent — authoritative for this invoke. */
+    mode: AgentInteractionModeSchema.optional()
   })
   .superRefine((val, ctx) => {
     if (val.incremental) {
@@ -323,9 +346,64 @@ export const CompactRunResultSchema = z.object({
   tokenEstimate: z.number().int().min(0),
   /** Messages the working set was reduced to, for the confirmation message. */
   keptMessages: z.number().int().min(0),
-  messagesBefore: z.number().int().min(0)
+  messagesBefore: z.number().int().min(0),
+  /** Post-compact estimate for the live context meter. */
+  estimatedTokens: z.number().int().min(0).optional(),
+  contextWindow: z.number().int().min(1).optional(),
+  contentWindow: z.number().int().min(1).optional()
 })
 export type CompactRunResult = z.infer<typeof CompactRunResultSchema>
+
+export const UndoWritesRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  runId: RunIdSchema,
+  checkpointId: z.string().min(1).optional()
+})
+export type UndoWritesRequest = z.infer<typeof UndoWritesRequestSchema>
+
+export const UndoWritesResultSchema = z.object({
+  checkpointId: z.string().min(1),
+  restored: z.array(z.string()),
+  skipped: z.array(z.string())
+})
+export type UndoWritesResult = z.infer<typeof UndoWritesResultSchema>
+
+export const ResolveWritesRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  runId: RunIdSchema,
+  checkpointId: z.string().min(1).optional(),
+  action: z.enum(['keep', 'discard']),
+  /** When omitted, applies to all unresolved files. */
+  paths: z.array(z.string().min(1)).optional()
+})
+export type ResolveWritesRequest = z.infer<typeof ResolveWritesRequestSchema>
+
+export const ResolveWritesResultSchema = z.object({
+  checkpointId: z.string().min(1),
+  kept: z.array(z.string()),
+  discarded: z.array(z.string()),
+  skipped: z.array(z.string()),
+  fullyResolved: z.boolean()
+})
+export type ResolveWritesResult = z.infer<typeof ResolveWritesResultSchema>
+
+/** Run-dir artifacts Plan mode may edit (`plan.md` / `contract.md`). */
+export const RunArtifactNameSchema = z.enum(['plan.md', 'contract.md'])
+export type RunArtifactName = z.infer<typeof RunArtifactNameSchema>
+
+export const ReadRunArtifactRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  runId: RunIdSchema,
+  name: RunArtifactNameSchema
+})
+export type ReadRunArtifactRequest = z.infer<typeof ReadRunArtifactRequestSchema>
+
+export const ReadRunArtifactResultSchema = z.object({
+  name: RunArtifactNameSchema,
+  exists: z.boolean(),
+  content: z.string().nullable()
+})
+export type ReadRunArtifactResult = z.infer<typeof ReadRunArtifactResultSchema>
 
 /**
  * A gated tool call waiting on the user. The loop is parked on this request, so
@@ -339,7 +417,7 @@ export const ToolApprovalRequestSchema = z.object({
   summary: z.string(),
   /** Raw arguments so the card can show exactly what would run. */
   argsPreview: z.string(),
-  /** False for read-only tools, which are only gated in `all` mode. */
+  /** False for approval-exempt tools; true for mutating tools, web_fetch, and MCP. */
   mutating: z.boolean()
 })
 export type ToolApprovalRequest = z.infer<typeof ToolApprovalRequestSchema>
@@ -389,7 +467,8 @@ export type RenameRunRequest = z.infer<typeof RenameRunRequestSchema>
 
 export const ActiveRunSchema = z.object({
   runId: z.string(),
-  workspacePath: z.string()
+  workspacePath: z.string(),
+  invokeId: z.number().int().min(1)
 })
 export type ActiveRun = z.infer<typeof ActiveRunSchema>
 
