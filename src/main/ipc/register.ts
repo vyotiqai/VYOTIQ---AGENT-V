@@ -834,13 +834,13 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.mcpStatus, async (event, raw): Promise<IpcResult<McpStatusResult>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
+      const workspaces = getWorkspaces()
       const workspacePath =
         typeof (raw as { workspacePath?: unknown } | null)?.workspacePath === 'string'
           ? ((raw as { workspacePath: string }).workspacePath.trim() || null)
-          : getWorkspaces().activePath
+          : workspaces.activePath
       const overrides = workspacePath
-        ? findWorkspaceSettingsOverride(getWorkspaces(), workspacePath)?.marketplaceOverrides ??
-          null
+        ? findWorkspaceSettingsOverride(workspaces, workspacePath)?.marketplaceOverrides ?? null
         : null
       const servers = resolveEffectiveMcpServers(overrides)
       return ok({ servers: getMcpServerStatus(servers) })
