@@ -108,6 +108,7 @@ import { runAgent, createRunId } from '../agent/loop'
 import { compactRunNow, CompactionUnavailableError } from '../agent/compactRun'
 import { undoWrites, resolveWrites, getWriteCheckpointMeta } from '../agent/checkpoints'
 import { resolveRunDir } from '@main/storage/paths'
+import { focusAgentBrowser, closeAgentBrowser } from '@main/app/agentBrowser'
 import { extractAttachment } from '../attachments/extract'
 import {
   cancelPendingApprovals,
@@ -1196,6 +1197,25 @@ export function registerIpc(): void {
       return ok(win.isMaximized())
     } catch (err) {
       return failFrom(err, IPC.windowIsMaximized)
+    }
+  })
+
+  ipcMain.handle(IPC.browserFocus, async (event): Promise<IpcResult<boolean>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      return ok(focusAgentBrowser())
+    } catch (err) {
+      return failFrom(err, IPC.browserFocus)
+    }
+  })
+
+  ipcMain.handle(IPC.browserClose, async (event): Promise<IpcResult<true>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      closeAgentBrowser()
+      return ok(true)
+    } catch (err) {
+      return failFrom(err, IPC.browserClose)
     }
   })
 

@@ -26,6 +26,8 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   delete: { running: 'Deleting', done: 'Deleted' },
   todo_write: { running: 'Updating tasks', done: 'Updated tasks' },
   web_fetch: { running: 'Fetching', done: 'Fetched' },
+  browser_navigate: { running: 'Browsing', done: 'Browsed' },
+  browser_snapshot: { running: 'Snapshotting', done: 'Snapshot' },
   subagent: { running: 'Investigating', done: 'Investigated' },
   terminal: { running: 'Running', done: 'Ran' },
   memory_list: { running: 'Listing memory', done: 'Listed memory' },
@@ -106,9 +108,12 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
     const todos = args.todos
     if (Array.isArray(todos)) return `${todos.length} tasks`
   }
-  if (name === 'web_fetch') {
+  if (name === 'web_fetch' || name === 'browser_navigate') {
     const url = args.url
     if (typeof url === 'string') return truncate(url)
+  }
+  if (name === 'browser_snapshot') {
+    return 'page'
   }
   if (name === 'subagent') {
     const task = args.task

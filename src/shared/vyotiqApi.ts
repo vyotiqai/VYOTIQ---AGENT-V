@@ -139,6 +139,9 @@ export interface VyotiqApi {
   windowClose: () => Promise<IpcResult<true>>
   windowIsMaximized: () => Promise<IpcResult<boolean>>
   onWindowMaximizedChanged: (handler: (maximized: boolean) => void) => () => void
+  onBrowserState: (handler: (state: import('./ipc').AgentBrowserState) => void) => () => void
+  browserFocus: () => Promise<IpcResult<boolean>>
+  browserClose: () => Promise<IpcResult<true>>
   openLogsDir: () => Promise<IpcResult<true>>
   getLogsPath: () => Promise<IpcResult<string>>
   telemetryStatus: () => Promise<IpcResult<TelemetryStatus>>

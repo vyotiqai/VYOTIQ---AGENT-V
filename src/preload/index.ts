@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import { IPC } from '../shared/channels'
-import { AgentEventSchema, ToolApprovalRequestSchema } from '../shared/ipc'
+import { AgentEventSchema, ToolApprovalRequestSchema, AgentBrowserStateSchema } from '../shared/ipc'
 import type { VyotiqApi } from '../shared/vyotiqApi'
 
 export type { HostPlatform, VyotiqApi } from '../shared/vyotiqApi'
@@ -100,6 +100,19 @@ const api: VyotiqApi = {
       ipcRenderer.removeListener(IPC.windowMaximizedChanged, listener)
     }
   },
+  onBrowserState: (handler) => {
+    const listener = (_: IpcRendererEvent, raw: unknown): void => {
+      const parsed = AgentBrowserStateSchema.safeParse(raw)
+      if (!parsed.success) return
+      handler(parsed.data)
+    }
+    ipcRenderer.on(IPC.browserState, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.browserState, listener)
+    }
+  },
+  browserFocus: () => ipcRenderer.invoke(IPC.browserFocus),
+  browserClose: () => ipcRenderer.invoke(IPC.browserClose),
   openLogsDir: () => ipcRenderer.invoke(IPC.logsOpenDir),
   getLogsPath: () => ipcRenderer.invoke(IPC.logsGetPath),
   telemetryStatus: () => ipcRenderer.invoke(IPC.telemetryStatus),

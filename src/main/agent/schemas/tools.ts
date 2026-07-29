@@ -198,6 +198,27 @@ const webFetchArgs = z.object({
     .optional()
 })
 
+const browserNavigateArgs = z.object({
+  url: z
+    .string()
+    .describe('Absolute http(s) URL to open in the built-in agent browser. Private/loopback hosts are rejected.'),
+  timeoutMs: z
+    .number()
+    .int()
+    .min(1000)
+    .describe('Navigation timeout in ms (default 30000)')
+    .optional()
+})
+
+const browserSnapshotArgs = z.object({
+  maxChars: z
+    .number()
+    .int()
+    .min(1000)
+    .describe('Cap on returned page text (default 40000)')
+    .optional()
+})
+
 const strReplaceArgs = z.object({
   path: z.string().describe('File path inside the workspace'),
   old_string: z
@@ -316,6 +337,16 @@ const TOOL_REGISTRY = {
     description:
       'Fetch a public http(s) URL as text. HTML responses are converted to markdown; other text types are returned as trimmed text.',
     schema: webFetchArgs
+  },
+  browser_navigate: {
+    description:
+      'Open a public http(s) URL in the built-in live browser window (JS rendered). Prefer for SPAs; use web_fetch for static text.',
+    schema: browserNavigateArgs
+  },
+  browser_snapshot: {
+    description:
+      'Capture the current agent-browser page as accessibility text (and a screenshot for the UI). Call browser_navigate first.',
+    schema: browserSnapshotArgs
   },
   subagent: {
     description:

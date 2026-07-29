@@ -1,6 +1,7 @@
 import type { Ref } from 'react'
 import { memo, useLayoutEffect, useRef, useState } from 'react'
 import { MessageList } from './components/MessageList'
+import { AgentBrowserPanel } from './components/AgentBrowserPanel'
 import { Composer } from './components/composer'
 import {
   ChatGitLeading,
@@ -420,13 +421,16 @@ export function ChatView({
               bannerError={bannerError}
               onDismissError={onDismissError}
               leading={
-                <ChatGitLeading
-                  itemsStore={itemsStore}
-                  items={items}
-                  workspacePath={workspacePath}
-                  running={running}
-                  enabled
-                />
+                <div className="flex flex-col gap-2">
+                  <AgentBrowserPanel />
+                  <ChatGitLeading
+                    itemsStore={itemsStore}
+                    items={items}
+                    workspacePath={workspacePath}
+                    running={running}
+                    enabled
+                  />
+                </div>
               }
               trailing={
                 <ChatGitTrailing

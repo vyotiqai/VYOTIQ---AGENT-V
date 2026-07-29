@@ -29,7 +29,16 @@ const EDIT_TOOLS = new Set([
   'delete',
   'todo_write'
 ])
-const SEARCH_TOOLS = new Set(['search', 'grep', 'glob', 'web_fetch', 'git_status', 'git_diff'])
+const SEARCH_TOOLS = new Set([
+  'search',
+  'grep',
+  'glob',
+  'web_fetch',
+  'browser_navigate',
+  'browser_snapshot',
+  'git_status',
+  'git_diff'
+])
 const BROWSE_TOOLS = new Set(['list_dir', 'memory_list'])
 const COMMAND_TOOLS = new Set(['terminal', 'subagent', 'diagnostics'])
 
@@ -128,6 +137,8 @@ const TOOL_ICON_BY_NAME: Record<string, IconName> = {
   delete: 'trash',
   todo_write: 'listTodo',
   web_fetch: 'globe',
+  browser_navigate: 'globe',
+  browser_snapshot: 'globe',
   subagent: 'bot',
   terminal: 'terminal',
   memory_list: 'memory',

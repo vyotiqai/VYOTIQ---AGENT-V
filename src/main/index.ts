@@ -3,6 +3,7 @@ import { join } from 'path'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 import { createWindow, applyTitleBarTheme, getMainWindow } from '@main/app/window'
 import { applyCsp } from '@main/app/security'
+import { closeAgentBrowser } from '@main/app/agentBrowser'
 import { registerIpc } from './ipc/register'
 import { shutdownMcpServers, syncMcpServers } from '@main/agent/mcp'
 import { resolveEffectiveMcpServers, syncMarketplaceMcpIntoSettings } from '@main/marketplace'
@@ -108,6 +109,7 @@ if (!gotLock) {
   })
 
   app.on('before-quit', () => {
+    closeAgentBrowser()
     void shutdownMcpServers()
   })
 }

@@ -11,6 +11,8 @@ export const ASK_SAFE_BUILTIN = new Set([
   'grep',
   'list_dir',
   'web_fetch',
+  'browser_navigate',
+  'browser_snapshot',
   'memory_list',
   'memory_read',
   'subagent',

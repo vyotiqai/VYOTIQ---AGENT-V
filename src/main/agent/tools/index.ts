@@ -243,6 +243,29 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     throwIfAborted(signal)
     return toolOk('web_fetch', url, content)
   },
+  browser_navigate: async (_workspace, args, signal) => {
+    throwIfAborted(signal)
+    const url = String(args.url ?? '')
+    // Dynamic import keeps Electron out of unit-test graph for tools/index.
+    const { navigateUrl } = await import('@main/app/agentBrowser')
+    const content = await navigateUrl(url, {
+      signal,
+      timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined
+    })
+    throwIfAborted(signal)
+    return toolOk('browser_navigate', url, content)
+  },
+  browser_snapshot: async (_workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    const { snapshotPage } = await import('@main/app/agentBrowser')
+    const content = await snapshotPage({
+      signal,
+      maxChars: typeof args.maxChars === 'number' ? args.maxChars : undefined,
+      runDir: context.runDir
+    })
+    throwIfAborted(signal)
+    return toolOk('browser_snapshot', 'page', content)
+  },
   subagent: async (workspace, args, signal, context) => {
     throwIfAborted(signal)
     const task = String(args.task ?? '')

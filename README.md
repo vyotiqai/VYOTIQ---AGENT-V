@@ -1,6 +1,6 @@
 # Vyotiq Agent V
 
-Lean Electron desktop coding agent: natural-language harness, workspace tools, multi-provider chat, live context management, and file-backed long-term memory. No terminal UI, browser automation, embedding RAG, or GitHub.
+Lean Electron desktop coding agent: natural-language harness, workspace tools, multi-provider chat, live context management, and file-backed long-term memory. Includes a built-in live agent browser (navigate + snapshot). No terminal UI, embedding RAG, or GitHub.
 
 ## Stack
 

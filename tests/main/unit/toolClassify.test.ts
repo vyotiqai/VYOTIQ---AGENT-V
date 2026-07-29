@@ -38,6 +38,15 @@ describe('tool classify', () => {
     expect(isToolGated('read', 'mutating', new Set(), [])).toBe(false)
   })
 
+  it('gates browser tools like web_fetch', () => {
+    expect(isParallelSafeTool('browser_navigate')).toBe(true)
+    expect(isParallelSafeTool('browser_snapshot')).toBe(true)
+    expect(isApprovalExemptTool('browser_navigate')).toBe(false)
+    expect(isApprovalExemptTool('browser_snapshot')).toBe(false)
+    expect(isToolGated('browser_navigate', 'mutating', new Set(), [])).toBe(true)
+    expect(isToolGated('browser_snapshot', 'mutating', new Set(), [])).toBe(true)
+  })
+
   it('treats MCP tools as untrusted regardless of readOnlyHint', () => {
     expect(isParallelSafeTool('mcp__fs__read_file')).toBe(false)
     expect(isApprovalExemptTool('mcp__fs__read_file')).toBe(false)
