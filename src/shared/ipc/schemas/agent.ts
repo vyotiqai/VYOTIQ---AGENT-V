@@ -156,6 +156,14 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     text: z.string()
   }),
   z.object({
+    /** Incremental stdout/stderr from a running terminal tool call (not persisted). */
+    type: z.literal('terminal_output_delta'),
+    ...eventBase,
+    toolCallId: z.string(),
+    text: z.string(),
+    stream: z.enum(['stdout', 'stderr']).optional()
+  }),
+  z.object({
     type: z.literal('subagent_context_usage'),
     ...eventBase,
     parentToolCallId: z.string(),

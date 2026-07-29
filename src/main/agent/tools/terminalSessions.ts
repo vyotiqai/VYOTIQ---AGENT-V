@@ -28,15 +28,20 @@ type TerminalSession = {
   status: TerminalSessionStatus
   pattern?: RegExp
   createdAt: number
+  onOutput?: (chunk: { text: string; stream: 'stdout' | 'stderr' }) => void
 }
 
 const sessions = new Map<string, TerminalSession>()
 const MAX_OUTPUT = TERMINAL_MAX_OUTPUT
 
-function appendCapped(prev: string, chunk: string): string {
-  if (prev.length >= MAX_OUTPUT) return prev
-  const next = prev + chunk
-  return next.length > MAX_OUTPUT ? next.slice(0, MAX_OUTPUT) : next
+function appendCapped(
+  prev: string,
+  chunk: string
+): { next: string; emitted: string } {
+  if (prev.length >= MAX_OUTPUT) return { next: prev, emitted: '' }
+  const room = MAX_OUTPUT - prev.length
+  const emitted = chunk.length > room ? chunk.slice(0, room) : chunk
+  return { next: prev + emitted, emitted }
 }
 
 function matchesPattern(session: TerminalSession): boolean {
@@ -87,6 +92,7 @@ export type StartBackgroundTerminalOpts = {
   pattern?: string
   /** Wait this long before returning (0 = immediate). */
   blockUntilMs: number
+  onOutput?: (chunk: { text: string; stream: 'stdout' | 'stderr' }) => void
 }
 
 export async function startBackgroundTerminal(
@@ -150,7 +156,8 @@ export async function startBackgroundTerminal(
     running: true,
     status: 'running',
     pattern,
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    onOutput: opts.onOutput
   }
   sessions.set(id, session)
 
@@ -163,13 +170,17 @@ export async function startBackgroundTerminal(
   else opts.signal.addEventListener('abort', onAbort, { once: true })
 
   child.stdout?.on('data', (buf: Buffer) => {
-    session.stdout = appendCapped(session.stdout, buf.toString('utf8'))
+    const { next, emitted } = appendCapped(session.stdout, buf.toString('utf8'))
+    session.stdout = next
+    if (emitted) session.onOutput?.({ text: emitted, stream: 'stdout' })
     if (matchesPattern(session) && session.running) {
       session.status = 'pattern_matched'
     }
   })
   child.stderr?.on('data', (buf: Buffer) => {
-    session.stderr = appendCapped(session.stderr, buf.toString('utf8'))
+    const { next, emitted } = appendCapped(session.stderr, buf.toString('utf8'))
+    session.stderr = next
+    if (emitted) session.onOutput?.({ text: emitted, stream: 'stderr' })
     if (matchesPattern(session) && session.running) {
       session.status = 'pattern_matched'
     }
@@ -201,6 +212,7 @@ export type PollTerminalSessionOpts = {
   blockUntilMs: number
   pattern?: string
   signal: AbortSignal
+  onOutput?: (chunk: { text: string; stream: 'stdout' | 'stderr' }) => void
 }
 
 export async function pollTerminalSession(opts: PollTerminalSessionOpts): Promise<string> {
@@ -208,6 +220,7 @@ export async function pollTerminalSession(opts: PollTerminalSessionOpts): Promis
   if (!session) {
     throw new Error(`Unknown terminal session_id: ${opts.sessionId}`)
   }
+  if (opts.onOutput) session.onOutput = opts.onOutput
   if (opts.pattern?.trim()) {
     try {
       session.pattern = new RegExp(opts.pattern)

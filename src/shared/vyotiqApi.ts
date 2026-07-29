@@ -143,6 +143,9 @@ export interface VyotiqApi {
   browserGetState: () => Promise<IpcResult<import('./ipc').AgentBrowserState>>
   browserFocus: () => Promise<IpcResult<boolean>>
   browserClose: () => Promise<IpcResult<true>>
+  browserSelectTab: (tabId: string) => Promise<IpcResult<boolean>>
+  browserBack: () => Promise<IpcResult<boolean>>
+  browserForward: () => Promise<IpcResult<boolean>>
   openLogsDir: () => Promise<IpcResult<true>>
   getLogsPath: () => Promise<IpcResult<string>>
   telemetryStatus: () => Promise<IpcResult<TelemetryStatus>>

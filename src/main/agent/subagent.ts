@@ -34,7 +34,18 @@ import {
  * Investigation is what a sub-agent is for; anything that changes the workspace
  * stays with the parent, where the user can see and approve it.
  */
-export const SUBAGENT_TOOLS = ['read', 'search', 'glob', 'grep', 'list_dir'] as const
+export const SUBAGENT_TOOLS = [
+  'read',
+  'search',
+  'glob',
+  'grep',
+  'list_dir',
+  'web_fetch',
+  'git_status',
+  'git_diff',
+  'diagnostics',
+  'memory_read'
+] as const
 
 const SUBAGENT_TOOL_SET = new Set<string>(SUBAGENT_TOOLS)
 

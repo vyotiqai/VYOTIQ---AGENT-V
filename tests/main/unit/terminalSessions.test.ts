@@ -43,4 +43,22 @@ describe('terminalSessions', () => {
     expect(polled).toContain(sessionId!)
     expect(polled).toMatch(/status:\s*(done|pattern_matched)/)
   }, 15_000)
+
+  it('emits onOutput chunks while the session runs', async () => {
+    cwd = mkdtempSync(join(tmpdir(), 'vyotiq-term-out-'))
+    const signal = new AbortController().signal
+    const chunks: string[] = []
+    const command =
+      process.platform === 'win32' ? 'cmd /c echo stream-chunk' : 'echo stream-chunk'
+
+    await startBackgroundTerminal({
+      workspaceRoot: cwd,
+      command,
+      signal,
+      shell: process.platform === 'win32' ? 'cmd' : 'auto',
+      blockUntilMs: 5_000,
+      onOutput: (c) => chunks.push(c.text)
+    })
+    expect(chunks.join('')).toMatch(/stream-chunk/)
+  }, 15_000)
 })

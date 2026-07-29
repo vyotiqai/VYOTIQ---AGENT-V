@@ -1238,6 +1238,31 @@ export function createChatStreamController(
         items: closeTrailingGroupIfIdle(nextItems),
         messages: nextMessages
       })
+    } else if (event.type === 'terminal_output_delta') {
+      const TERMINAL_UI_MAX = 64 * 1024
+      const idx = findToolRowIndex(state.items, event.toolCallId, 'terminal')
+      const item = idx >= 0 ? state.items[idx] : undefined
+      if (!item || item.kind !== 'tool') return
+      if (item.tool.status !== 'running') return
+      const prev = item.tool.content ?? ''
+      if (prev.length >= TERMINAL_UI_MAX) return
+      const room = TERMINAL_UI_MAX - prev.length
+      let piece = event.text
+      if (event.stream === 'stderr' && !prev.includes('stderr:\n')) {
+        piece = `${prev ? '\n' : ''}stderr:\n${event.text}`
+      }
+      const clipped = piece.length > room ? piece.slice(0, room) : piece
+      if (!clipped) return
+      patch({
+        items: replaceAt(state.items, idx, {
+          ...item,
+          toolExpanded: item.toolExpanded === false ? false : true,
+          tool: {
+            ...item.tool,
+            content: prev + clipped
+          }
+        })
+      })
     } else if (event.type === 'subagent_update') {
       const idx = findToolRowIndex(state.items, event.parentToolCallId)
       const item = idx >= 0 ? state.items[idx] : undefined

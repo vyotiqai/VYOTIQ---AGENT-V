@@ -215,6 +215,16 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
               text: update.text
             })
         : undefined,
+      onTerminalOutput: ctx.emitLiveEvent
+        ? (chunk) =>
+            ctx.emitLiveEvent?.({
+              type: 'terminal_output_delta',
+              runId: ctx.runId,
+              toolCallId: call.id,
+              text: chunk.text,
+              stream: chunk.stream
+            })
+        : undefined,
       onSubagentContextUsage: ctx.emitLiveEvent
         ? (usage) =>
             ctx.emitLiveEvent?.({

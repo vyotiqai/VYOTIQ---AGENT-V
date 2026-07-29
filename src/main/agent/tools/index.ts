@@ -2,7 +2,7 @@ import { logger, logErrorSummary } from '../../../shared/logger'
 import { formatError, isAbortError, isExpectedToolError } from '../../../shared/errors'
 import { summarizeToolArgsFromRecord } from '../../../shared/toolSummary'
 import { validateToolArgs, type AgentToolName } from '../schemas/tools'
-import { invokeMcpTool, parseMcpToolName, getMcpToolDefinition } from '../mcp'
+import { invokeMcpTool, parseMcpToolName, getMcpToolDefinition, listMcpToolDefinitions, getMcpReadOnlyHint } from '../mcp'
 import { isMcpToolPermitted } from '../../../shared/utils/mcpToolPolicy'
 import { validateAgainstJsonSchema } from '../schemas/jsonSchemaValidate'
 import { toolRead, READ_CONTENT_CAP } from './read'
@@ -51,6 +51,8 @@ export type ToolExecutionContext = {
   skipWriteCheckpoint?: boolean
   /** Live progress from a long-running tool, surfaced under its transcript row. */
   onProgress?: (update: { kind: 'text' | 'thinking' | 'tool' | 'done'; text: string }) => void
+  /** Incremental terminal stdout/stderr for live UI streaming. */
+  onTerminalOutput?: (chunk: { text: string; stream: 'stdout' | 'stderr' }) => void
   /** Per-step context fill for nested sub-agents. */
   onSubagentContextUsage?: (usage: SubagentContextUsage) => void
   /**
@@ -261,11 +263,11 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
   browser_navigate: async (_workspace, args, signal) => {
     throwIfAborted(signal)
     const url = String(args.url ?? '')
-    // Dynamic import keeps Electron out of unit-test graph for tools/index.
     const { navigateUrl } = await import('@main/app/agentBrowser')
     const content = await navigateUrl(url, {
       signal,
-      timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined
+      timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined,
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined
     })
     throwIfAborted(signal)
     return toolOk('browser_navigate', url, content)
@@ -276,7 +278,8 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const content = await snapshotPage({
       signal,
       maxChars: typeof args.maxChars === 'number' ? args.maxChars : undefined,
-      runDir: context.runDir
+      runDir: context.runDir,
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined
     })
     throwIfAborted(signal)
     return toolOk('browser_snapshot', 'page', content)
@@ -289,7 +292,12 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       args.button === 'left' || args.button === 'right' || args.button === 'middle'
         ? args.button
         : undefined
-    const content = await clickSelector(selector, { signal, button })
+    const content = await clickSelector(selector, {
+      signal,
+      button,
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
+      settleMs: typeof args.settleMs === 'number' ? args.settleMs : undefined
+    })
     throwIfAborted(signal)
     return toolOk('browser_click', selector, content)
   },
@@ -301,7 +309,9 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       signal,
       selector: typeof args.selector === 'string' ? args.selector : undefined,
       clear: args.clear === true,
-      pressEnter: args.pressEnter === true
+      pressEnter: args.pressEnter === true,
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
+      settleMs: typeof args.settleMs === 'number' ? args.settleMs : undefined
     })
     throwIfAborted(signal)
     const target =
@@ -317,7 +327,9 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       signal,
       selector: typeof args.selector === 'string' ? args.selector : undefined,
       deltaX: typeof args.deltaX === 'number' ? args.deltaX : undefined,
-      deltaY: typeof args.deltaY === 'number' ? args.deltaY : undefined
+      deltaY: typeof args.deltaY === 'number' ? args.deltaY : undefined,
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
+      settleMs: typeof args.settleMs === 'number' ? args.settleMs : undefined
     })
     throwIfAborted(signal)
     const target =
@@ -333,10 +345,128 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const { fillSelector } = await import('@main/app/agentBrowser')
     const content = await fillSelector(selector, value, {
       signal,
-      pressEnter: args.pressEnter === true
+      pressEnter: args.pressEnter === true,
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
+      settleMs: typeof args.settleMs === 'number' ? args.settleMs : undefined
     })
     throwIfAborted(signal)
     return toolOk('browser_fill', selector, content)
+  },
+  browser_tabs: async (_workspace, args, signal) => {
+    throwIfAborted(signal)
+    const action = args.action
+    if (action !== 'list' && action !== 'open' && action !== 'close' && action !== 'select') {
+      return toolFail('browser_tabs', 'tabs', 'action must be list|open|close|select')
+    }
+    const { manageTabs } = await import('@main/app/agentBrowser')
+    const content = await manageTabs(action, {
+      signal,
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
+      url: typeof args.url === 'string' ? args.url : undefined
+    })
+    throwIfAborted(signal)
+    return toolOk('browser_tabs', action, content)
+  },
+  browser_back: async (_workspace, args, signal) => {
+    throwIfAborted(signal)
+    const { goBack } = await import('@main/app/agentBrowser')
+    const content = await goBack({
+      signal,
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined
+    })
+    throwIfAborted(signal)
+    return toolOk('browser_back', 'back', content)
+  },
+  browser_forward: async (_workspace, args, signal) => {
+    throwIfAborted(signal)
+    const { goForward } = await import('@main/app/agentBrowser')
+    const content = await goForward({
+      signal,
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined
+    })
+    throwIfAborted(signal)
+    return toolOk('browser_forward', 'forward', content)
+  },
+  browser_wait_for_selector: async (_workspace, args, signal) => {
+    throwIfAborted(signal)
+    const selector = String(args.selector ?? '')
+    const { waitForSelector } = await import('@main/app/agentBrowser')
+    const content = await waitForSelector(selector, {
+      signal,
+      timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined,
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined
+    })
+    throwIfAborted(signal)
+    return toolOk('browser_wait_for_selector', selector, content)
+  },
+  browser_wait_for_url: async (_workspace, args, signal) => {
+    throwIfAborted(signal)
+    const match = String(args.match ?? '')
+    const { waitForUrl } = await import('@main/app/agentBrowser')
+    const content = await waitForUrl(match, {
+      signal,
+      regex: args.regex === true,
+      timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined,
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined
+    })
+    throwIfAborted(signal)
+    return toolOk('browser_wait_for_url', match.slice(0, 80), content)
+  },
+  browser_press_key: async (_workspace, args, signal) => {
+    throwIfAborted(signal)
+    const key = String(args.key ?? '')
+    const { pressKey } = await import('@main/app/agentBrowser')
+    const modifiers = Array.isArray(args.modifiers)
+      ? args.modifiers.filter((m): m is string => typeof m === 'string')
+      : undefined
+    const content = await pressKey(key, {
+      signal,
+      modifiers,
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
+      settleMs: typeof args.settleMs === 'number' ? args.settleMs : undefined
+    })
+    throwIfAborted(signal)
+    return toolOk('browser_press_key', key, content)
+  },
+  browser_select_option: async (_workspace, args, signal) => {
+    throwIfAborted(signal)
+    const selector = String(args.selector ?? '')
+    const { selectOption } = await import('@main/app/agentBrowser')
+    const content = await selectOption(selector, {
+      signal,
+      value: typeof args.value === 'string' ? args.value : undefined,
+      label: typeof args.label === 'string' ? args.label : undefined,
+      pressEnter: args.pressEnter === true,
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
+      settleMs: typeof args.settleMs === 'number' ? args.settleMs : undefined
+    })
+    throwIfAborted(signal)
+    return toolOk('browser_select_option', selector, content)
+  },
+  mcp_list_tools: (_workspace, args, signal) => {
+    throwIfAborted(signal)
+    const filter =
+      typeof args.server_id === 'string' && args.server_id.trim()
+        ? args.server_id.trim().toLowerCase()
+        : ''
+    const defs = listMcpToolDefinitions().filter((t) =>
+      filter ? t.name.toLowerCase().includes(filter) : true
+    )
+    if (defs.length === 0) {
+      return toolOk(
+        'mcp_list_tools',
+        filter || 'mcp',
+        filter ? `No MCP tools matching server_id=${filter}` : 'No MCP tools connected.'
+      )
+    }
+    const lines = defs.map((t) => {
+      const hint = getMcpReadOnlyHint(t.name)
+      const hintNote =
+        hint === true ? ' readOnlyHint=true' : hint === false ? ' readOnlyHint=false' : ''
+      const desc = (t.description || '').replace(/\s+/g, ' ').trim().slice(0, 160)
+      return `- ${t.name}${hintNote}${desc ? `: ${desc}` : ''}`
+    })
+    return toolOk('mcp_list_tools', `${defs.length} tools`, lines.join('\n'))
   },
   subagent: async (workspace, args, signal, context) => {
     throwIfAborted(signal)
@@ -360,7 +490,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     if (!outcome.ok) return toolFail('subagent', summary, outcome.report)
     return toolOk('subagent', summary, outcome.report)
   },
-  terminal: async (workspace, args, signal) => {
+  terminal: async (workspace, args, signal, context) => {
     const sessionId =
       typeof args.session_id === 'string' && args.session_id.trim()
         ? args.session_id.trim()
@@ -369,6 +499,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const shell = getSettings().terminalShell ?? 'auto'
     const pattern = typeof args.pattern === 'string' ? args.pattern : undefined
     const useSessionApi = Boolean(sessionId) || typeof args.block_until_ms === 'number'
+    const onOutput = context.onTerminalOutput
 
     if (useSessionApi) {
       const { startBackgroundTerminal, pollTerminalSession } = await import('./terminalSessions')
@@ -379,7 +510,8 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
             sessionId,
             blockUntilMs,
             pattern,
-            signal
+            signal,
+            onOutput
           })
         : await startBackgroundTerminal({
             workspaceRoot: workspace,
@@ -387,7 +519,8 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
             signal,
             shell,
             pattern,
-            blockUntilMs
+            blockUntilMs,
+            onOutput
           })
       const summary = (command || sessionId).slice(0, 80)
       const ok = terminalResultOk(command || 'session', content)
@@ -397,7 +530,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
 
     const requested = typeof args.timeoutMs === 'number' ? args.timeoutMs : 60_000
     const timeoutMs = Math.min(TERMINAL_MAX_TIMEOUT_MS, Math.max(1, requested))
-    const content = await toolTerminal(workspace, command, signal, { timeoutMs, shell })
+    const content = await toolTerminal(workspace, command, signal, { timeoutMs, shell, onOutput })
     const summary = command.slice(0, 80)
     const ok = terminalResultOk(command, content)
     if (ok) return toolOk('terminal', summary, content)

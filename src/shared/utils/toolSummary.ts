@@ -33,6 +33,14 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   browser_type: { running: 'Typing', done: 'Typed' },
   browser_scroll: { running: 'Scrolling', done: 'Scrolled' },
   browser_fill: { running: 'Filling', done: 'Filled' },
+  browser_tabs: { running: 'Tabs', done: 'Tabs' },
+  browser_back: { running: 'Going back', done: 'Back' },
+  browser_forward: { running: 'Going forward', done: 'Forward' },
+  browser_wait_for_selector: { running: 'Waiting', done: 'Waited' },
+  browser_wait_for_url: { running: 'Waiting URL', done: 'URL ready' },
+  browser_press_key: { running: 'Pressing', done: 'Pressed' },
+  browser_select_option: { running: 'Selecting', done: 'Selected' },
+  mcp_list_tools: { running: 'Listing MCP', done: 'MCP tools' },
   subagent: { running: 'Investigating', done: 'Investigated' },
   terminal: { running: 'Running', done: 'Ran' },
   memory_list: { running: 'Listing memory', done: 'Listed memory' },
@@ -121,7 +129,7 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
     const query = args.query
     if (typeof query === 'string') return truncate(query)
   }
-  if (name === 'browser_click' || name === 'browser_type' || name === 'browser_fill' || name === 'browser_scroll') {
+  if (name === 'browser_click' || name === 'browser_type' || name === 'browser_fill' || name === 'browser_scroll' || name === 'browser_wait_for_selector' || name === 'browser_select_option') {
     const selector = args.selector
     if (typeof selector === 'string' && selector.trim()) return truncate(selector)
     if (name === 'browser_type') {
@@ -140,6 +148,23 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
   }
   if (name === 'browser_snapshot') {
     return 'page'
+  }
+  if (name === 'browser_tabs') {
+    const action = args.action
+    if (typeof action === 'string') return action
+  }
+  if (name === 'browser_wait_for_url') {
+    const match = args.match
+    if (typeof match === 'string') return truncate(match)
+  }
+  if (name === 'browser_press_key') {
+    const key = args.key
+    if (typeof key === 'string') return key
+  }
+  if (name === 'mcp_list_tools') {
+    const serverId = args.server_id
+    if (typeof serverId === 'string' && serverId.trim()) return truncate(serverId)
+    return 'mcp'
   }
   if (name === 'subagent') {
     const task = args.task
