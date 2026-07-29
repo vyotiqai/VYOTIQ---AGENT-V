@@ -28,6 +28,7 @@ export const IPC = {
   runsDelete: 'runs:delete',
   runsRename: 'runs:rename',
   runsActive: 'runs:active',
+  runsUndoWrites: 'runs:undoWrites',
   gitStatus: 'git:status',
   gitCommit: 'git:commit',
   windowMinimize: 'window:minimize',
@@ -55,6 +56,10 @@ export const IPC = {
   marketplaceSetEnabled: 'marketplace:setEnabled',
   marketplacePickLocal: 'marketplace:pickLocal',
   marketplaceGetContents: 'marketplace:getContents',
+  slashCommandsList: 'slash-commands:list',
+  slashCommandsResolve: 'slash-commands:resolve',
+  slashCommandsCreateRule: 'slash-commands:createRule',
+  slashCommandsOpenFile: 'slash-commands:openFile',
   themeChanged: 'theme:changed',
   getSystemTheme: 'theme:get-system'
 } as const

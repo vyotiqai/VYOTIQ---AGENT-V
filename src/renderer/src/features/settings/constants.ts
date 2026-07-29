@@ -12,6 +12,13 @@ export const TOOL_APPROVAL_OPTIONS = [
   { value: 'all', label: 'Ask for every tool' }
 ]
 
+export const TERMINAL_SHELL_OPTIONS = [
+  { value: 'auto', label: 'Auto (PowerShell on Windows when available)' },
+  { value: 'cmd', label: 'Windows cmd.exe' },
+  { value: 'powershell', label: 'PowerShell' },
+  { value: 'bash', label: 'Bash' }
+]
+
 export const ACTIVE_PROVIDER_OPTIONS = PROVIDER_DEFAULTS.map((p) => ({
   value: p.id,
   label: p.label

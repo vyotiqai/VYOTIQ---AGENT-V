@@ -22,7 +22,9 @@ export function MarketplaceView({
   activeWorkspacePath,
   settingsOverridesByPath,
   onSetSettingsOverride,
-  onClose
+  onClose,
+  focusServerId,
+  onFocusServerConsumed
 }: {
   settings: Settings
   onUpdate: (partial: Partial<Settings>) => Promise<{ ok: true } | { ok: false; error: string }>
@@ -34,15 +36,34 @@ export function MarketplaceView({
     override: WorkspaceSettingsOverride | null
   ) => Promise<{ ok: true } | { ok: false; error: string }>
   onClose?: () => void
+  focusServerId?: string | null
+  onFocusServerConsumed?: () => void
 }) {
-  const [pane, setPane] = useState<Pane>({ kind: 'home' })
+  const [pane, setPane] = useState<Pane>(() =>
+    focusServerId ? { kind: 'manage' } : { kind: 'home' }
+  )
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null)
-  const controller = useMarketplaceController({ settings, onUpdate, onReloadSettings })
+  const [manageFocusServerId, setManageFocusServerId] = useState<string | null>(
+    focusServerId ?? null
+  )
+  const controller = useMarketplaceController({
+    settings,
+    onUpdate,
+    onReloadSettings,
+    activeWorkspacePath
+  })
   const closeRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     window.setTimeout(() => closeRef.current?.focus(), 0)
   }, [])
+
+  useEffect(() => {
+    if (!focusServerId) return
+    setPane({ kind: 'manage' })
+    setManageFocusServerId(focusServerId)
+    onFocusServerConsumed?.()
+  }, [focusServerId, onFocusServerConsumed])
 
   const detailEntry =
     pane.kind === 'detail'
@@ -111,7 +132,9 @@ export function MarketplaceView({
               activeWorkspacePath={activeWorkspacePath}
               settingsOverridesByPath={settingsOverridesByPath}
               onSetSettingsOverride={onSetSettingsOverride}
+              focusServerId={manageFocusServerId}
               onBack={() => {
+                setManageFocusServerId(null)
                 if (pane.returnTo) {
                   setSelectedEntryId(pane.returnTo.entryId)
                   setPane({

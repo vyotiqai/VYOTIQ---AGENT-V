@@ -332,6 +332,27 @@ describe('stripToolShapedAssistantText', () => {
       )
     ).toBe('Here is what I found.')
   })
+
+  it('removes DeepSeek DSML tool_calls blocks (fullwidth pipes from V4 encoding docs)', () => {
+    const fw = '\uFF5C'
+    const block =
+      `Good — the CSS foundation is solid.\n` +
+      `<${fw}DSML${fw}tool_calls>\n` +
+      `<${fw}DSML${fw}invoke name="multi_edit">\n` +
+      `<${fw}DSML${fw}parameter name="edits" string="false">[{"path":"layout.tsx"}]</${fw}DSML${fw}parameter>\n` +
+      `</${fw}DSML${fw}invoke>\n` +
+      `</${fw}DSML${fw}tool_calls>`
+    expect(stripToolShapedAssistantText(block)).toBe('Good — the CSS foundation is solid.')
+  })
+
+  it('removes DSML markup with ASCII pipes as shown in the live UI', () => {
+    const leaked =
+      'Let me fix the remaining files.\n' +
+      '<|DSML|tool_calls><|DSML|invoke name="multi_edit">' +
+      '<|DSML|parameter name="edits" string="false">[{"path":"a.tsx"}]</|DSML|parameter>' +
+      '</|DSML|invoke></|DSML|tool_calls>'
+    expect(stripToolShapedAssistantText(leaked)).toBe('Let me fix the remaining files.')
+  })
 })
 
 describe('stripToolShapedAssistantTextForStream', () => {
@@ -354,6 +375,14 @@ describe('stripToolShapedAssistantTextForStream', () => {
       'The tool ran successfully.'
     )
   })
+
+  it('hides an in-progress DSML tool_calls block while streaming', () => {
+    expect(
+      stripToolShapedAssistantTextForStream(
+        'Applying edits.\n<|DSML|tool_calls>\n<|DSML|invoke name="multi_edit">'
+      )
+    ).toBe('Applying edits.')
+  })
 })
 
 describe('isToolShapedTextLeak', () => {
@@ -366,6 +395,14 @@ describe('isToolShapedTextLeak', () => {
   it('detects a buffer that is only tool-shaped leak after stripping', () => {
     expect(isToolShapedTextLeak('\n\ntool {"path":"a.ts"}\n')).toBe(true)
     expect(isToolShapedTextLeak('tool {"a":1}\ntool read x.ts')).toBe(true)
+  })
+
+  it('detects a buffer that is only DSML markup', () => {
+    expect(
+      isToolShapedTextLeak(
+        '<|DSML|tool_calls><|DSML|invoke name="multi_edit"></|DSML|invoke></|DSML|tool_calls>'
+      )
+    ).toBe(true)
   })
 })
 

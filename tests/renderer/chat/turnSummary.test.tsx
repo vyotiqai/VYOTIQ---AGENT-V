@@ -25,7 +25,7 @@ describe('TurnSummary', () => {
       />
     )
 
-    expect(screen.getByRole('button', { name: /Collapse turn work, 3s/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Collapse turn work, Thinking · 3s/i })).toBeTruthy()
     expect(document.querySelector('.vy-text-shimmer--active')).toBeTruthy()
   })
 

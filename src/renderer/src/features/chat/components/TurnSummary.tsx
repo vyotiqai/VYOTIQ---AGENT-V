@@ -36,20 +36,14 @@ export const TurnSummary = memo(function TurnSummary({
 
   const duration = elapsedMs != null && elapsedMs >= MIN_REPORTABLE_MS ? formatElapsed(elapsedMs) : ''
   const phaseLabel = activity ? formatRunActivityLabel(activity) : 'Working'
-  // When expanded with a duration, work rows already show verbs — duration only.
-  // Before the duration is reportable, keep the phase visible so the header is not blank.
-  const activeLabel = collapsed
-    ? duration
-      ? `${phaseLabel} · ${duration}`
-      : phaseLabel
-    : duration || phaseLabel
+  // Always keep the phase visible (collapsed or expanded) so the control stays
+  // readable once a duration appears — tools show verbs, this shows context.
+  const activeLabel = duration ? `${phaseLabel} · ${duration}` : phaseLabel
   const doneLabel = duration ? `Worked for ${duration}` : 'Worked'
   const accessibleName = active
     ? collapsed
-      ? activeLabel || phaseLabel
-      : activeLabel
-        ? `Collapse turn work, ${activeLabel}`
-        : 'Collapse turn work'
+      ? activeLabel
+      : `Collapse turn work, ${activeLabel}`
     : doneLabel
 
   return (

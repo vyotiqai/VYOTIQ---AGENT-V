@@ -59,7 +59,10 @@ function PackageCard({
         <div className="flex items-center gap-1.5">
           <p className="m-0 truncate text-sm font-medium text-fg">{entry.name}</p>
           {entry.verified ? (
-            <Icon name="check" size={12} className="shrink-0 text-secondary" aria-label="Verified" />
+            <span className="inline-flex shrink-0 items-center">
+              <Icon name="check" size={12} className="text-secondary" />
+              <span className="sr-only">Verified</span>
+            </span>
           ) : null}
         </div>
         <p className="m-0 mt-0.5 line-clamp-2 text-xs text-secondary">

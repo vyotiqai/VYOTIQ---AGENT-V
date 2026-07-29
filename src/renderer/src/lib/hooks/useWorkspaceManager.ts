@@ -1091,6 +1091,7 @@ export function useWorkspaceManager() {
         pendingRun: activeController.pendingRun,
         transcriptLoading: activeController.transcriptLoading,
         collapsedTurnIndices: activeController.collapsedTurnIndices,
+        writeCheckpoint: activeController.writeCheckpoint,
         subscribeItems: activeController.subscribeItems.bind(activeController),
         getItemsRevision: activeController.getItemsRevision.bind(activeController),
         getItems: () => activeController.items,
@@ -1112,6 +1113,7 @@ export function useWorkspaceManager() {
         pendingRun: false,
         transcriptLoading: false,
         collapsedTurnIndices: [] as number[],
+        writeCheckpoint: null as ChatStreamController['writeCheckpoint'],
         subscribeItems: (_listener: () => void) => () => {},
         getItemsRevision: () => 0,
         getItems: () => [] as ChatStreamController['items'],
@@ -1196,7 +1198,9 @@ export function useWorkspaceManager() {
             loadTranscript: activeController.loadTranscript.bind(activeController),
             loadToolContent: activeController.loadToolContent.bind(activeController),
             clearError: activeController.clearError.bind(activeController),
-            applyManualCompaction: activeController.applyManualCompaction.bind(activeController)
+            applyManualCompaction: activeController.applyManualCompaction.bind(activeController),
+            markWriteCheckpointUndone:
+              activeController.markWriteCheckpointUndone.bind(activeController)
           }
         : null,
     [activeController]

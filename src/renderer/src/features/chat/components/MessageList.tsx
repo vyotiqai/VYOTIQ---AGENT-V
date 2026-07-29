@@ -206,7 +206,10 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   onApprovalDecision,
   turnCollapsed = false,
   showThinking = true,
-  mcpServerNames
+  mcpServerNames,
+  canUndoWrites = false,
+  undoBusy = false,
+  onUndoWrites
 }: {
   row: TranscriptRow
   onImageClick: (url: string, label: string) => void
@@ -219,6 +222,9 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   turnCollapsed?: boolean
   showThinking?: boolean
   mcpServerNames?: ReadonlyMap<string, string>
+  canUndoWrites?: boolean
+  undoBusy?: boolean
+  onUndoWrites?: () => void | Promise<unknown>
 }) {
   if (row.kind === 'user') {
     return <UserPrompt item={row.item} onImageClick={onImageClick} />
@@ -259,7 +265,14 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   }
 
   if (row.kind === 'changes') {
-    return <ChangeSummary files={row.files} />
+    return (
+      <ChangeSummary
+        files={row.files}
+        canUndo={canUndoWrites}
+        undoBusy={undoBusy}
+        onUndo={onUndoWrites}
+      />
+    )
   }
 
   if (row.kind === 'approval') {
@@ -267,9 +280,13 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   }
 
   if (row.kind === 'activity') {
-    const expandedToolIds = new Set(
-      row.tools.filter((tool) => tool.toolExpanded).map((tool) => tool.id)
-    )
+    // Only pass expandedToolIds once a tool has an explicit expand flag.
+    // An empty Set would make Set.has() return false and block defaultExpanded
+    // auto-open for pending multi-tool groups (?? does not treat false as missing).
+    const anyExplicit = row.tools.some((tool) => typeof tool.toolExpanded === 'boolean')
+    const expandedToolIds = anyExplicit
+      ? new Set(row.tools.filter((tool) => tool.toolExpanded).map((tool) => tool.id))
+      : undefined
     const anchor = row.tools[0]!
     return (
       <ToolGroup
@@ -317,7 +334,10 @@ export function MessageList({
   mcpServerNames,
   pendingRun = false,
   running = false,
-  transcriptLoading = false
+  transcriptLoading = false,
+  canUndoWrites = false,
+  undoBusy = false,
+  onUndoWrites
 }: {
   items: UiItem[]
   reserveComposerSpace?: boolean
@@ -340,6 +360,9 @@ export function MessageList({
   running?: boolean
   /** True while the selected chat transcript is still loading. */
   transcriptLoading?: boolean
+  canUndoWrites?: boolean
+  undoBusy?: boolean
+  onUndoWrites?: () => void | Promise<unknown>
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const appliedRestoreRef = useRef<number | null>(null)
@@ -562,6 +585,14 @@ export function MessageList({
     [displayRows]
   )
 
+  // Streaming text_delta keeps the same item id, so structuralKey alone misses
+  // content growth. Re-pin while live when the user is already at the tail.
+  useEffect(() => {
+    if (!running && !pendingRun) return
+    if (!scrollRestored || restorePendingRef.current || !pinnedToBottomRef.current) return
+    scheduleTailFollow()
+  }, [rowsContentRevision, running, pendingRun, scheduleTailFollow, scrollRestored])
+
   const getItemKey = useCallback((index: number) => displayRows[index]?.id ?? index, [displayRows])
 
   const estimateSize = useCallback(
@@ -634,6 +665,14 @@ export function MessageList({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot pin
   }, [scrollRestored, scrollRestoreToken, shouldVirtualize])
 
+  const lastChangesRowId = useMemo(() => {
+    for (let i = displayRows.length - 1; i >= 0; i--) {
+      const row = displayRows[i]
+      if (row?.kind === 'changes') return row.id
+    }
+    return null
+  }, [displayRows])
+
   const renderRow = (row: TranscriptRow): ReactNode => (
     <TranscriptRowBlock
       row={row}
@@ -647,6 +686,11 @@ export function MessageList({
       turnCollapsed={collapsedTurnSet.has(row.turnIndex)}
       showThinking={showThinking}
       mcpServerNames={mcpServerNames}
+      canUndoWrites={Boolean(
+        canUndoWrites && lastChangesRowId && row.kind === 'changes' && row.id === lastChangesRowId
+      )}
+      undoBusy={undoBusy}
+      onUndoWrites={onUndoWrites}
     />
   )
 

@@ -1,11 +1,22 @@
 import { memo } from 'react'
 import { cn } from '@renderer/lib/ui'
+import { Button } from '@renderer/lib/ui'
 import { TOOL_CARD_HEADER, TOOL_CARD_SURFACE } from '@renderer/lib/utils/layout'
 import type { ChangedFile } from '../utils/transcriptRows'
 import { basename } from '../toolUi'
 import { FileBadge } from './FileBadge'
 
-export const ChangeSummary = memo(function ChangeSummary({ files }: { files: ChangedFile[] }) {
+export const ChangeSummary = memo(function ChangeSummary({
+  files,
+  canUndo = false,
+  undoBusy = false,
+  onUndo
+}: {
+  files: ChangedFile[]
+  canUndo?: boolean
+  undoBusy?: boolean
+  onUndo?: () => void | Promise<unknown>
+}) {
   if (files.length === 0) return null
 
   const totalAdded = files.reduce((sum, file) => sum + file.added, 0)
@@ -17,9 +28,21 @@ export const ChangeSummary = memo(function ChangeSummary({ files }: { files: Cha
         <span className="font-medium">
           {files.length} {files.length === 1 ? 'File Changed' : 'Files Changed'}
         </span>
-        <span className="ml-auto tabular-nums text-tertiary">
+        <span className="ml-auto flex items-center gap-2 tabular-nums text-tertiary">
           {totalAdded > 0 ? <span className="text-success">+{totalAdded}</span> : null}
           {totalRemoved > 0 ? <span className="ml-2 text-danger">-{totalRemoved}</span> : null}
+          {canUndo && onUndo ? (
+            <Button
+              variant="subtle"
+              className="ml-2 h-6 px-2 text-xs"
+              disabled={undoBusy}
+              onClick={() => {
+                void onUndo()
+              }}
+            >
+              {undoBusy ? 'Undoing…' : 'Undo'}
+            </Button>
+          ) : null}
         </span>
       </div>
       <ul className="m-0 list-none p-0">

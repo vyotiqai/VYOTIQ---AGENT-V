@@ -22,6 +22,7 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   grep: { running: 'Grepping', done: 'Grepped' },
   list_dir: { running: 'Listing', done: 'Listed' },
   multi_edit: { running: 'Editing', done: 'Edited' },
+  str_replace: { running: 'Editing', done: 'Edited' },
   delete: { running: 'Deleting', done: 'Deleted' },
   todo_write: { running: 'Updating tasks', done: 'Updated tasks' },
   web_fetch: { running: 'Fetching', done: 'Fetched' },
@@ -74,7 +75,7 @@ function formatPathTarget(path: string): string {
 
 export function normalizeToolTarget(name: string, args: Record<string, unknown> | null): string {
   if (!args) return ''
-  if (name === 'read' || name === 'edit' || name === 'delete') {
+  if (name === 'read' || name === 'edit' || name === 'str_replace' || name === 'delete') {
     const path = args.path ?? args.file
     if (typeof path === 'string') return formatPathTarget(path)
   }

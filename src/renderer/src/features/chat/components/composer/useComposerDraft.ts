@@ -1,5 +1,13 @@
-import { useState, type Dispatch, type FormEvent, type KeyboardEvent, type SetStateAction } from 'react'
-import type { AttachedFile } from '@shared/ipc'
+import {
+  useCallback,
+  useState,
+  type Dispatch,
+  type FormEvent,
+  type KeyboardEvent,
+  type SetStateAction
+} from 'react'
+import type { AttachedFile, SlashCommandDescriptor } from '@shared/ipc'
+import { parseSlashSubmit } from '@shared/slashCommands'
 
 export function useComposerDraft({
   draft,
@@ -12,7 +20,14 @@ export function useComposerDraft({
   setFileError,
   running,
   disabled,
-  onSend
+  onSend,
+  slashMenuOpen,
+  slashActiveCommand,
+  onSlashMove,
+  onSlashDismiss,
+  onSlashAccept,
+  onSlashSubmit,
+  findCommandByTrigger
 }: {
   draft?: string
   onDraftChange?: (draft: string) => void
@@ -29,6 +44,19 @@ export function useComposerDraft({
     images?: string[],
     files?: AttachedFile[]
   ) => boolean | void | Promise<boolean | void>
+  slashMenuOpen?: boolean
+  slashActiveCommand?: SlashCommandDescriptor | null
+  onSlashMove?: (delta: number) => void
+  onSlashDismiss?: () => void
+  onSlashAccept?: (command: SlashCommandDescriptor) => void
+  /** When set, intercepts submit that starts with `/command`. Return true if handled. */
+  onSlashSubmit?: (
+    command: SlashCommandDescriptor,
+    trailingText: string,
+    images: string[],
+    files: AttachedFile[]
+  ) => boolean | void | Promise<boolean | void>
+  findCommandByTrigger?: (trigger: string) => SlashCommandDescriptor | null
 }) {
   const [internalText, setInternalText] = useState('')
   const isDraftControlled = draft !== undefined && onDraftChange !== undefined
@@ -38,9 +66,12 @@ export function useComposerDraft({
   const hasAttachments = images.length > 0 || files.length > 0
   const canSend = (Boolean(text.trim()) || hasAttachments) && !disabled && !running
 
-  const submit = (e?: FormEvent): void => {
-    e?.preventDefault()
-    if ((!text.trim() && !hasAttachments) || running || disabled) return
+  const clearDraft = useCallback((): {
+    draftText: string
+    draftImages: string[]
+    draftFiles: AttachedFile[]
+    restore: () => void
+  } => {
     const draftText = text
     const draftImages = images
     const draftFiles = files
@@ -54,6 +85,29 @@ export function useComposerDraft({
     setImageError(null)
     setFiles([])
     setFileError(null)
+    return { draftText, draftImages, draftFiles, restore }
+  }, [text, images, files, setText, setImages, setImageError, setFiles, setFileError])
+
+  const submit = (e?: FormEvent): void => {
+    e?.preventDefault()
+    if ((!text.trim() && !hasAttachments) || running || disabled) return
+
+    const parsed = parseSlashSubmit(text)
+    if (parsed && onSlashSubmit && findCommandByTrigger) {
+      const cmd = findCommandByTrigger(parsed.trigger)
+      if (cmd) {
+        const { draftImages, draftFiles, restore } = clearDraft()
+        void Promise.resolve(
+          onSlashSubmit(cmd, parsed.trailingText, draftImages, draftFiles)
+        ).then((ok) => {
+          if (ok === false) restore()
+        }, restore)
+        return
+      }
+      // Unknown slash → fall through as normal chat message
+    }
+
+    const { draftText, draftImages, draftFiles, restore } = clearDraft()
     void Promise.resolve(
       onSend(
         draftText,
@@ -66,6 +120,31 @@ export function useComposerDraft({
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (slashMenuOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        onSlashMove?.(1)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        onSlashMove?.(-1)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        onSlashDismiss?.()
+        return
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+        if (slashActiveCommand) {
+          e.preventDefault()
+          onSlashAccept?.(slashActiveCommand)
+          return
+        }
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       submit()

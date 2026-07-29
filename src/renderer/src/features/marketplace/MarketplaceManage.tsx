@@ -16,6 +16,7 @@ import {
   mcpStatusClass,
   mcpStatusLabel
 } from '@renderer/features/settings/utils/settingsHelpers'
+import { handleTabListKeyDown } from '@renderer/lib/utils/tabListKeyboard'
 import { MarketplaceFeedbackBanner } from './MarketplaceFeedbackBanner'
 import { kindLabel } from './marketplaceLabels'
 import type { MarketplaceController } from './useMarketplaceController'
@@ -399,7 +400,8 @@ export function MarketplaceManage({
   activeWorkspacePath,
   settingsOverridesByPath,
   onSetSettingsOverride,
-  onBack
+  onBack,
+  focusServerId
 }: {
   controller: MarketplaceController
   settings: Settings
@@ -410,9 +412,23 @@ export function MarketplaceManage({
     override: WorkspaceSettingsOverride | null
   ) => Promise<{ ok: true } | { ok: false; error: string }>
   onBack: () => void
+  focusServerId?: string | null
 }) {
   const [tab, setTab] = useState<ManageTab>('installed')
   const [pasteInput, setPasteInput] = useState('')
+
+  useEffect(() => {
+    if (!focusServerId) return
+    setTab('installed')
+    const t = window.setTimeout(() => {
+      const el = document.querySelector<HTMLElement>(
+        `[data-mcp-server-id="${CSS.escape(focusServerId)}"]`
+      )
+      el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+      el?.focus?.()
+    }, 50)
+    return () => window.clearTimeout(t)
+  }, [focusServerId])
   const [detectResult, setDetectResult] = useState<McpDetectResult | null>(null)
   const [editServer, setEditServer] = useState<DetectedMcpServer | null>(null)
   const [serverDirty, setServerDirty] = useState(false)
@@ -577,12 +593,24 @@ export function MarketplaceManage({
           <Icon name="chevronRight" size={12} className="text-muted" />
           <span className="text-fg">Manage</span>
         </nav>
-        <div className="flex flex-wrap gap-1" role="tablist" aria-label="Manage marketplace">
+        <div
+          className="flex flex-wrap gap-1"
+          role="tablist"
+          aria-label="Manage marketplace"
+          onKeyDown={(e) =>
+            handleTabListKeyDown(e, {
+              tabs: ['installed', 'add'],
+              activeId: tab,
+              onSelect: (id) => setTab(id as ManageTab)
+            })
+          }
+        >
           {(['installed', 'add'] as ManageTab[]).map((t) => (
             <Button
               key={t}
               role="tab"
               aria-selected={tab === t}
+              tabIndex={tab === t ? 0 : -1}
               variant="subtle"
               className={tab === t ? 'bg-surface-2 text-fg-strong' : undefined}
               disabled={formLocked}
@@ -623,32 +651,38 @@ export function MarketplaceManage({
           ) : (
             <>
               {manualServers.map((server) => (
-                <ManualMcpInstalledItem
-                  key={server.id}
-                  server={server}
-                  controller={controller}
-                  settings={settings}
-                  ws={workspaceEnabledForId('mcp', server.id)}
-                  activeWorkspacePath={activeWorkspacePath}
-                  canOverride={!!onSetSettingsOverride}
-                  setWorkspaceEnable={setWorkspaceEnable}
-                  clearWorkspaceEnable={clearWorkspaceEnable}
-                />
+                <div key={server.id} data-mcp-server-id={server.id} tabIndex={-1}>
+                  <ManualMcpInstalledItem
+                    server={server}
+                    controller={controller}
+                    settings={settings}
+                    ws={workspaceEnabledForId('mcp', server.id)}
+                    activeWorkspacePath={activeWorkspacePath}
+                    canOverride={!!onSetSettingsOverride}
+                    setWorkspaceEnable={setWorkspaceEnable}
+                    clearWorkspaceEnable={clearWorkspaceEnable}
+                  />
+                </div>
               ))}
               {installed.items.map((item) => (
-                <InstalledMarketplaceItem
+                <div
                   key={item.id}
-                  item={item}
-                  controller={controller}
-                  settings={settings}
-                  linked={item.kind === 'mcp' ? mcpServerForPackage(item) : undefined}
-                  ws={workspaceEnabled(item)}
-                  activeWorkspacePath={activeWorkspacePath}
-                  canOverride={!!onSetSettingsOverride}
-                  setWorkspaceEnable={setWorkspaceEnable}
-                  clearWorkspaceEnable={clearWorkspaceEnable}
-                  workspaceEnabledForId={workspaceEnabledForId}
-                />
+                  data-mcp-server-id={item.kind === 'mcp' ? item.id : undefined}
+                  tabIndex={-1}
+                >
+                  <InstalledMarketplaceItem
+                    item={item}
+                    controller={controller}
+                    settings={settings}
+                    linked={item.kind === 'mcp' ? mcpServerForPackage(item) : undefined}
+                    ws={workspaceEnabled(item)}
+                    activeWorkspacePath={activeWorkspacePath}
+                    canOverride={!!onSetSettingsOverride}
+                    setWorkspaceEnable={setWorkspaceEnable}
+                    clearWorkspaceEnable={clearWorkspaceEnable}
+                    workspaceEnabledForId={workspaceEnabledForId}
+                  />
+                </div>
               ))}
             </>
           )}

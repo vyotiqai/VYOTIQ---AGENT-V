@@ -145,7 +145,8 @@ export const ToolGroup = memo(function ToolGroup({
       subagent: item.subagent,
       subagentContextUsage: item.subagentContextUsage
     })
-    const defaultExpanded = isPending || hasBody
+    // Bodies auto-open only while that tool is actively running (or host says so).
+    const defaultExpanded = item.tool.status === 'running'
     const isToolExpanded =
       item.toolExpanded ?? (groupExpanded ?? localOverride ?? defaultExpanded)
     const toggleSingle = (): void => {
@@ -223,11 +224,14 @@ export const ToolGroup = memo(function ToolGroup({
               subagent: item.subagent,
               subagentContextUsage: item.subagentContextUsage
             })
-            const defaultExpanded = isPending || hasBody
-            const isToolExpanded =
-              expandedToolIds?.has(item.id) ??
-              item.toolExpanded ??
-              defaultExpanded
+            // Bodies auto-open only for the running tool; completed siblings stay collapsed.
+            const defaultExpanded = item.tool.status === 'running'
+            // When the host passes expandedToolIds, membership is authoritative.
+            // MessageList omits the prop (undefined) until a tool has explicit
+            // toolExpanded so defaultExpanded can still auto-open running bodies.
+            const isToolExpanded = expandedToolIds
+              ? expandedToolIds.has(item.id)
+              : (item.toolExpanded ?? defaultExpanded)
             return (
               <NestedToolRow
                 key={item.id}

@@ -15,12 +15,20 @@ const PROMINENT_TOOLS = new Set([
   'terminal',
   'edit',
   'multi_edit',
+  'str_replace',
   'todo_write',
   'delete'
 ])
 
 const FILE_TOOLS = new Set(['read', 'memory_read'])
-const EDIT_TOOLS = new Set(['edit', 'multi_edit', 'memory_write', 'delete', 'todo_write'])
+const EDIT_TOOLS = new Set([
+  'edit',
+  'multi_edit',
+  'str_replace',
+  'memory_write',
+  'delete',
+  'todo_write'
+])
 const SEARCH_TOOLS = new Set(['search', 'grep', 'glob', 'web_fetch'])
 const BROWSE_TOOLS = new Set(['list_dir', 'memory_list'])
 const COMMAND_TOOLS = new Set(['terminal', 'subagent'])
@@ -112,6 +120,7 @@ const TOOL_ICON_BY_NAME: Record<string, IconName> = {
   read: 'file',
   edit: 'edit',
   multi_edit: 'edit',
+  str_replace: 'edit',
   search: 'fileSearch',
   grep: 'scanSearch',
   glob: 'folderSearch',

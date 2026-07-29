@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AppShell } from './AppShell'
 import { ChatView } from '../features/chat/ChatView'
 import { SettingsView, type SettingsSection } from '../features/settings'
@@ -81,6 +81,7 @@ export function App() {
   } = workspace
 
   const [view, setView] = useState<'chat' | 'settings' | 'marketplace'>('chat')
+  const [marketplaceFocusServerId, setMarketplaceFocusServerId] = useState<string | null>(null)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
   const [modelsRefreshNonce, setModelsRefreshNonce] = useState(0)
   const chatHeadingRef = useRef<HTMLHeadingElement>(null)
@@ -249,6 +250,7 @@ export function App() {
   }, [])
 
   const activeRunId = chat.runId
+  const [undoBusy, setUndoBusy] = useState(false)
   const onCompactContext = useCallback(async () => {
     if (!activeWorkspace || !activeRunId) {
       return { ok: false as const, message: 'Compaction is unavailable.' }
@@ -262,6 +264,126 @@ export function App() {
     }
   }, [activeWorkspace, activeRunId])
 
+  const onUndoWrites = useCallback(async () => {
+    if (!activeWorkspace || !activeRunId) {
+      setSettingsError('Undo is unavailable.')
+      return
+    }
+    if (chat.running) {
+      setSettingsError('Stop the run before undoing agent writes.')
+      return
+    }
+    setUndoBusy(true)
+    try {
+      const checkpointId = chat.writeCheckpoint?.undone
+        ? undefined
+        : chat.writeCheckpoint?.checkpointId
+      const res = await window.vyotiq.undoWrites(activeWorkspace, activeRunId, checkpointId)
+      if (!res.ok) {
+        setSettingsError(res.error)
+        return
+      }
+      chatActionsRef.current?.markWriteCheckpointUndone?.(res.data.checkpointId)
+      setSettingsError(null)
+      logger.info('Undid agent writes', {
+        scope: 'chat',
+        checkpointId: res.data.checkpointId,
+        restored: res.data.restored.length
+      })
+    } finally {
+      setUndoBusy(false)
+    }
+  }, [activeWorkspace, activeRunId, chat.running, chat.writeCheckpoint])
+
+  const slashHandlersValue = useMemo(
+    () => ({
+      onCompact: () => {
+        void onCompactContext()
+      },
+      onUndoWrites: () => {
+        void onUndoWrites()
+      },
+      onOpenMarketplace: (mcpServerId?: string) => {
+        setMarketplaceFocusServerId(mcpServerId ?? null)
+        setView('marketplace')
+      },
+      onOpenSettings: () => {
+        setView('settings')
+      },
+      onCreateRule: async (title?: string) => {
+        if (!activeWorkspace) {
+          setSettingsError('Open a workspace to create a rule.')
+          return
+        }
+        const res = await window.vyotiq.slashCommandsCreateRule({
+          workspacePath: activeWorkspace,
+          title
+        })
+        if (!res.ok) {
+          setSettingsError(res.error)
+          return
+        }
+        setSettingsError(null)
+        logger.info('Created workspace rule', {
+          scope: 'slash',
+          path: res.data.relativePath
+        })
+      },
+      onMarketplaceAction: async (packageId: string, intent: 'install' | 'enable') => {
+        if (intent === 'enable') {
+          const res = await window.vyotiq.marketplaceSetEnabled(packageId, true)
+          if (!res.ok) setSettingsError(res.error)
+          return
+        }
+        const browse = await window.vyotiq.marketplaceBrowse({})
+        if (!browse.ok) {
+          setSettingsError(browse.error)
+          return
+        }
+        const entry = browse.data.packages.find((p) => p.id === packageId)
+        if (!entry) {
+          setSettingsError(`Package not found in catalog: ${packageId}`)
+          return
+        }
+        if (entry.installable === false) {
+          setSettingsError(`Package is not installable: ${packageId}`)
+          return
+        }
+        const payload =
+          entry.bundledPath != null && entry.bundledPath !== ''
+            ? {
+                source: 'bundled' as const,
+                target: entry.bundledPath,
+                kind: entry.kind,
+                version: entry.version
+              }
+            : {
+                source: 'registry' as const,
+                target: entry.id,
+                kind: entry.kind,
+                version: entry.version
+              }
+        const res = await window.vyotiq.marketplaceInstall(payload)
+        if (!res.ok) setSettingsError(res.error)
+      },
+      onOpenFile: async (path: string) => {
+        if (!activeWorkspace) {
+          setSettingsError('Open a workspace to open files.')
+          return
+        }
+        const res = await window.vyotiq.slashCommandsOpenFile({
+          workspacePath: activeWorkspace,
+          path
+        })
+        if (!res.ok) setSettingsError(res.error)
+      },
+      onNotice: (message: string) => {
+        setSettingsError(message)
+      }
+    }),
+    [activeWorkspace, onCompactContext, onUndoWrites]
+  )
+
   const operationalError = settingsError ?? workspaceError
 
   const [mcpServerNames, setMcpServerNames] = useState(() => new Map<string, string>())
@@ -274,7 +396,9 @@ export function App() {
     setMcpServerNames(map)
     let cancelled = false
     void (async () => {
-      const res = await window.vyotiq?.mcpStatus?.()
+      const res = await window.vyotiq?.mcpStatus?.({
+        workspacePath: activeWorkspace
+      })
       if (cancelled || !res?.ok) return
       setMcpServerNames((prev) => {
         const next = new Map(prev)
@@ -289,7 +413,7 @@ export function App() {
     return () => {
       cancelled = true
     }
-  }, [settings.mcpServers])
+  }, [settings.mcpServers, activeWorkspace])
 
   const onDismissChatBanner = (): void => {
     setSettingsError(null)
@@ -474,6 +598,8 @@ export function App() {
           activeWorkspacePath={activeWorkspace}
           settingsOverridesByPath={registry?.settingsOverridesByPath ?? {}}
           onSetSettingsOverride={setSettingsOverride}
+          focusServerId={marketplaceFocusServerId}
+          onFocusServerConsumed={() => setMarketplaceFocusServerId(null)}
           onClose={() => setView('chat')}
         />
       ) : (
@@ -543,6 +669,12 @@ export function App() {
             collapsedTurns={collapsedTurns}
             onApprovalDecision={onApprovalDecision}
             mcpServerNames={mcpServerNames}
+            slashHandlers={slashHandlersValue}
+            canUndoWrites={Boolean(
+              chat.writeCheckpoint && !chat.writeCheckpoint.undone && !chat.running
+            )}
+            undoBusy={undoBusy}
+            onUndoWrites={onUndoWrites}
           />
         </ErrorBoundary>
       )}

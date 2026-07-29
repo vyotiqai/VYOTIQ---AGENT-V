@@ -1,0 +1,292 @@
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'fs'
+import { dirname, join, relative } from 'path'
+import { randomUUID } from 'crypto'
+import { resolveInsideWorkspace } from '../workspace/safePath'
+import { atomicWriteFile, atomicWriteJson } from '@main/storage/atomicWrite'
+import { logger } from '../../shared/logger'
+
+export type CheckpointFileAction = 'created' | 'modified' | 'deleted'
+
+export type CheckpointFileEntry = {
+  /** Workspace-relative path using forward slashes. */
+  path: string
+  action: CheckpointFileAction
+  /** False for recursive directory deletes (v1 cannot restore). */
+  undoable: boolean
+}
+
+export type WriteCheckpointMeta = {
+  id: string
+  createdAt: string
+  undone?: boolean
+  files: CheckpointFileEntry[]
+}
+
+export type CheckpointIndex = {
+  checkpoints: Array<{ id: string; createdAt: string; undone?: boolean }>
+}
+
+const activeSessions = new Map<string, InvokeWriteCheckpoint>()
+
+function normalizeRelPath(rel: string): string {
+  return rel.replace(/\\/g, '/')
+}
+
+function blobPathFor(checkpointDir: string, relPath: string): string {
+  const parts = normalizeRelPath(relPath).split('/').filter(Boolean)
+  if (parts.some((p) => p === '..')) {
+    throw new Error('Invalid checkpoint path')
+  }
+  return join(checkpointDir, 'files', ...parts)
+}
+
+function loadIndex(runDir: string): CheckpointIndex {
+  const p = join(runDir, 'checkpoints', 'index.json')
+  if (!existsSync(p)) return { checkpoints: [] }
+  try {
+    const raw = JSON.parse(readFileSync(p, 'utf8')) as CheckpointIndex
+    return {
+      checkpoints: Array.isArray(raw.checkpoints) ? raw.checkpoints : []
+    }
+  } catch {
+    return { checkpoints: [] }
+  }
+}
+
+function saveIndex(runDir: string, index: CheckpointIndex): void {
+  const dir = join(runDir, 'checkpoints')
+  mkdirSync(dir, { recursive: true })
+  atomicWriteJson(join(dir, 'index.json'), index)
+}
+
+function loadMeta(runDir: string, id: string): WriteCheckpointMeta | null {
+  const p = join(runDir, 'checkpoints', id, 'meta.json')
+  if (!existsSync(p)) return null
+  try {
+    return JSON.parse(readFileSync(p, 'utf8')) as WriteCheckpointMeta
+  } catch {
+    return null
+  }
+}
+
+function saveMeta(runDir: string, meta: WriteCheckpointMeta): void {
+  const dir = join(runDir, 'checkpoints', meta.id)
+  mkdirSync(dir, { recursive: true })
+  atomicWriteJson(join(dir, 'meta.json'), meta)
+}
+
+/** One turn (invoke) of agent writes; first prior per path wins. */
+export class InvokeWriteCheckpoint {
+  readonly id: string
+  readonly createdAt: string
+  private readonly runDir: string
+  private readonly workspaceRoot: string
+  private readonly files = new Map<string, CheckpointFileEntry>()
+  private finalized = false
+
+  constructor(runDir: string, workspaceRoot: string) {
+    this.id = randomUUID()
+    this.createdAt = new Date().toISOString()
+    this.runDir = runDir
+    this.workspaceRoot = workspaceRoot
+  }
+
+  private checkpointDir(): string {
+    return join(this.runDir, 'checkpoints', this.id)
+  }
+
+  /**
+   * Snapshot prior content before a write or delete.
+   * @param pathArg Path as the tool received it (workspace-relative or absolute inside root).
+   */
+  recordPrior(
+    pathArg: string,
+    kind: 'write' | 'delete',
+    opts?: { recursiveDir?: boolean }
+  ): void {
+    if (this.finalized) return
+    const resolved = resolveInsideWorkspace(this.workspaceRoot, pathArg)
+    const rel = normalizeRelPath(relative(this.workspaceRoot, resolved))
+    if (!rel || rel.startsWith('..')) return
+    if (this.files.has(rel)) return
+
+    const exists = existsSync(resolved)
+    if (kind === 'write') {
+      if (!exists) {
+        this.files.set(rel, { path: rel, action: 'created', undoable: true })
+        return
+      }
+      const st = statSync(resolved)
+      if (st.isDirectory()) {
+        // Writing through edit tools targets files; ignore dirs.
+        return
+      }
+      const dest = blobPathFor(this.checkpointDir(), rel)
+      mkdirSync(dirname(dest), { recursive: true })
+      copyFileSync(resolved, dest)
+      this.files.set(rel, { path: rel, action: 'modified', undoable: true })
+      return
+    }
+
+    // delete
+    if (!exists) return
+    const st = statSync(resolved)
+    if (st.isDirectory()) {
+      this.files.set(rel, {
+        path: rel,
+        action: 'deleted',
+        undoable: false
+      })
+      return
+    }
+    const dest = blobPathFor(this.checkpointDir(), rel)
+    mkdirSync(dirname(dest), { recursive: true })
+    copyFileSync(resolved, dest)
+    this.files.set(rel, { path: rel, action: 'deleted', undoable: true })
+  }
+
+  /** Persist if any files were recorded; returns meta or null. */
+  finalize(): WriteCheckpointMeta | null {
+    if (this.finalized) return null
+    this.finalized = true
+    if (this.files.size === 0) return null
+
+    const meta: WriteCheckpointMeta = {
+      id: this.id,
+      createdAt: this.createdAt,
+      files: [...this.files.values()]
+    }
+    saveMeta(this.runDir, meta)
+    const index = loadIndex(this.runDir)
+    index.checkpoints.push({
+      id: meta.id,
+      createdAt: meta.createdAt
+    })
+    saveIndex(this.runDir, index)
+    return meta
+  }
+}
+
+export function beginWriteCheckpoint(
+  runDir: string,
+  workspaceRoot: string
+): InvokeWriteCheckpoint {
+  const existing = activeSessions.get(runDir)
+  if (existing) return existing
+  const session = new InvokeWriteCheckpoint(runDir, workspaceRoot)
+  activeSessions.set(runDir, session)
+  return session
+}
+
+export function getWriteCheckpoint(runDir: string | undefined): InvokeWriteCheckpoint | undefined {
+  if (!runDir) return undefined
+  return activeSessions.get(runDir)
+}
+
+export function finalizeWriteCheckpoint(runDir: string): WriteCheckpointMeta | null {
+  const session = activeSessions.get(runDir)
+  activeSessions.delete(runDir)
+  if (!session) return null
+  return session.finalize()
+}
+
+/** Drop an open session without persisting (e.g. tests). */
+export function discardWriteCheckpoint(runDir: string): void {
+  activeSessions.delete(runDir)
+}
+
+export type UndoWritesResult = {
+  checkpointId: string
+  restored: string[]
+  skipped: string[]
+}
+
+/**
+ * Restore files from a checkpoint. If checkpointId is omitted, uses the latest
+ * not-yet-undone checkpoint.
+ */
+export function undoWrites(
+  runDir: string,
+  workspaceRoot: string,
+  checkpointId?: string
+): UndoWritesResult {
+  const index = loadIndex(runDir)
+  let id = checkpointId
+  if (!id) {
+    for (let i = index.checkpoints.length - 1; i >= 0; i--) {
+      const entry = index.checkpoints[i]!
+      const meta = loadMeta(runDir, entry.id)
+      if (meta && !meta.undone) {
+        id = entry.id
+        break
+      }
+    }
+  }
+  if (!id) {
+    throw new Error('No undoable write checkpoint found for this run')
+  }
+
+  const meta = loadMeta(runDir, id)
+  if (!meta) throw new Error(`Checkpoint not found: ${id}`)
+  if (meta.undone) throw new Error('That checkpoint was already undone')
+
+  const checkpointDir = join(runDir, 'checkpoints', id)
+  const restored: string[] = []
+  const skipped: string[] = []
+
+  // Restore in reverse order so later overwrites undo first conceptually;
+  // paths are unique so order is mostly for deletes vs creates.
+  for (const file of [...meta.files].reverse()) {
+    if (!file.undoable) {
+      skipped.push(file.path)
+      continue
+    }
+    const resolved = resolveInsideWorkspace(workspaceRoot, file.path)
+    try {
+      if (file.action === 'created') {
+        if (existsSync(resolved)) {
+          rmSync(resolved, { force: true })
+        }
+        restored.push(file.path)
+        continue
+      }
+      const blob = blobPathFor(checkpointDir, file.path)
+      if (!existsSync(blob)) {
+        skipped.push(file.path)
+        continue
+      }
+      mkdirSync(dirname(resolved), { recursive: true })
+      copyFileSync(blob, resolved)
+      restored.push(file.path)
+    } catch (err) {
+      logger.warn('Failed to restore checkpoint file', {
+        scope: 'agent',
+        path: file.path,
+        err
+      })
+      skipped.push(file.path)
+    }
+  }
+
+  meta.undone = true
+  saveMeta(runDir, meta)
+  const idx = loadIndex(runDir)
+  const entry = idx.checkpoints.find((c) => c.id === id)
+  if (entry) entry.undone = true
+  saveIndex(runDir, idx)
+
+  return { checkpointId: id, restored, skipped }
+}
+
+/** Test helper: clear all active sessions. */
+export function resetWriteCheckpointsForTests(): void {
+  activeSessions.clear()
+}

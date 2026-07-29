@@ -479,6 +479,7 @@ export function ModelPicker({
                           : 'text-muted hover:bg-surface hover:text-fg'
                       )}
                       title={SERVICE_TIER_DESCRIPTIONS[tier]}
+                      aria-pressed={serviceTier === tier}
                       onClick={() => onServiceTierChange(tier)}
                     >
                       {SERVICE_TIER_LABELS[tier]}

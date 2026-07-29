@@ -162,18 +162,47 @@ describe('ToolGroup', () => {
     expect(screen.getByText('8s')).toBeTruthy()
   })
 
-  it('auto-expands nested tool bodies while a multi-tool group is pending', () => {
+  it('auto-expands only the running nested body while a group is pending', () => {
     const tools = [
-      toolItem('s1', 'subagent', 'Audit core', 'running', { startedAt: Date.now() }),
+      toolItem('t1', 'read', 'a.ts', 'done', { startedAt: Date.now() }),
+      toolItem('t2', 'read', 'b.ts', 'running')
+    ]
+    tools[0]!.tool.content = 'alpha output'
+    tools[1]!.tool.content = 'beta output'
+
+    render(<ToolGroup tools={tools} />)
+
+    expect(screen.getByRole('button', { name: /Reading 2 files/i }).getAttribute('aria-expanded')).toBe(
+      'true'
+    )
+    expect(screen.getByText(/a\.ts/)).toBeTruthy()
+    expect(screen.getByText(/b\.ts/)).toBeTruthy()
+    expect(screen.queryByText('alpha output')).toBeNull()
+    expect(screen.getByText('beta output')).toBeTruthy()
+  })
+
+  it('auto-expands nested bodies for running tools when MessageList omits expandedToolIds', () => {
+    // MessageList passes undefined until a tool has an explicit toolExpanded flag.
+    // An empty Set would make Set.has() return false and block defaultExpanded.
+    const tools = [
+      toolItem('s1', 'subagent', 'Audit core', 'done', { startedAt: Date.now() }),
       toolItem('s2', 'subagent', 'Audit API', 'running')
     ]
+    tools[0]!.tool.content = 'core done'
+    tools[1]!.tool.content = 'api running'
 
     render(<ToolGroup tools={tools} />)
 
     expect(screen.getByRole('button', { name: /Investigating/i }).getAttribute('aria-expanded')).toBe(
       'true'
     )
-    expect(screen.getByText('Audit core')).toBeTruthy()
-    expect(screen.getByText('Audit API')).toBeTruthy()
+    const nested = screen.getAllByRole('button', { name: /Audit/i })
+    expect(nested.length).toBeGreaterThanOrEqual(2)
+    const core = nested.find((btn) => /Audit core/i.test(btn.textContent ?? ''))
+    const api = nested.find((btn) => /Audit API/i.test(btn.textContent ?? ''))
+    expect(core?.getAttribute('aria-expanded')).toBe('false')
+    expect(api?.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.queryByText('core done')).toBeNull()
+    expect(screen.getByText('api running')).toBeTruthy()
   })
 })

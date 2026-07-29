@@ -74,6 +74,23 @@ describe('parseEditCardData', () => {
     expect(data.removed).toBe(1)
     expect(data.changeLabel).toBe('+3 -1')
   })
+
+  it('counts str_replace old/new strings for the header totals', () => {
+    const data = parseEditCardData(
+      tool({
+        name: 'str_replace',
+        argsPreview: JSON.stringify({
+          path: 'x.ts',
+          old_string: 'old\nline',
+          new_string: 'new'
+        })
+      })
+    )
+    expect(data.path).toBe('x.ts')
+    expect(data.added).toBe(1)
+    expect(data.removed).toBe(2)
+    expect(data.changeLabel).toBe('+1 -2')
+  })
 })
 
 describe('parseDiffPreview', () => {

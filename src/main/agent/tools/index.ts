@@ -12,12 +12,15 @@ import { toolGlob } from './glob'
 import { toolGrep } from './grep'
 import { toolListDir } from './listDir'
 import { toolMultiEdit, type MultiEditEntry } from './multiEdit'
+import { toolStrReplace } from './strReplace'
 import { toolDelete } from './deletePath'
 import { toolTodoWrite, type TodoItem } from './todo'
 import { toolWebFetch } from './webFetch'
 import { isFindstrNoMatchContent, isDirMissingPathContent, toolTerminal, TERMINAL_MAX_TIMEOUT_MS } from './terminal'
 import { runSubagent, SubagentDepthError, type SubagentContextUsage } from '../subagent'
 import { toolMemoryList, toolMemoryRead, toolMemoryWrite } from './memory'
+import { getSettings } from '@main/settings/settings'
+import { getWriteCheckpoint } from '../checkpoints'
 
 export interface ToolResult {
   ok: boolean
@@ -98,6 +101,10 @@ function logToolFailure(name: string, err: unknown): void {
 export function terminalResultOk(command: string, content: string): boolean {
   if (!content.includes('exit_code: ')) return true
   if (/exit_code: 0\b/.test(content)) return true
+  // Soft-success helpers are cmd-oriented only.
+  const shellLine = /^shell:\s*(\S+)/m.exec(content)
+  const shell = shellLine?.[1]
+  if (shell && shell !== 'cmd') return false
   if (isFindstrNoMatchContent(command, content)) return true
   return isDirMissingPathContent(command, content)
 }
@@ -114,9 +121,10 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     throwIfAborted(signal)
     return toolOk('read', path, content.slice(0, READ_CONTENT_CAP))
   },
-  edit: (workspace, args, signal) => {
+  edit: (workspace, args, signal, context) => {
     throwIfAborted(signal)
     const path = String(args.path ?? '')
+    getWriteCheckpoint(context.runDir)?.recordPrior(path, 'write')
     const contents = typeof args.contents === 'string' ? args.contents : undefined
     const diff = typeof args.diff === 'string' ? args.diff : undefined
     const content = toolEdit(workspace, path, contents, diff)
@@ -163,16 +171,40 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const path = typeof args.path === 'string' && args.path.trim() ? args.path : '.'
     return toolOk('list_dir', path, toolListDir(workspace, path))
   },
-  multi_edit: (workspace, args, signal) => {
+  multi_edit: (workspace, args, signal, context) => {
     throwIfAborted(signal)
     const edits = (Array.isArray(args.edits) ? args.edits : []) as MultiEditEntry[]
+    const cp = getWriteCheckpoint(context.runDir)
+    if (cp) {
+      for (const edit of edits) {
+        if (typeof edit.path === 'string' && edit.path.trim()) {
+          cp.recordPrior(edit.path, 'write')
+        }
+      }
+    }
     const content = toolMultiEdit(workspace, edits)
     return toolOk('multi_edit', `${edits.length} files`, content)
   },
-  delete: (workspace, args, signal) => {
+  str_replace: (workspace, args, signal, context) => {
     throwIfAborted(signal)
     const path = String(args.path ?? '')
-    const content = toolDelete(workspace, path, args.recursive === true)
+    getWriteCheckpoint(context.runDir)?.recordPrior(path, 'write')
+    const content = toolStrReplace(
+      workspace,
+      path,
+      String(args.old_string ?? ''),
+      typeof args.new_string === 'string' ? args.new_string : '',
+      args.replace_all === true
+    )
+    throwIfAborted(signal)
+    return toolOk('str_replace', path, content)
+  },
+  delete: (workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    const path = String(args.path ?? '')
+    const recursive = args.recursive === true
+    getWriteCheckpoint(context.runDir)?.recordPrior(path, 'delete', { recursiveDir: recursive })
+    const content = toolDelete(workspace, path, recursive)
     return toolOk('delete', path, content)
   },
   todo_write: (_workspace, args, signal, context) => {
@@ -222,7 +254,8 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const requested =
       typeof args.timeoutMs === 'number' ? args.timeoutMs : 60_000
     const timeoutMs = Math.min(TERMINAL_MAX_TIMEOUT_MS, Math.max(1, requested))
-    const content = await toolTerminal(workspace, command, signal, timeoutMs)
+    const shell = getSettings().terminalShell ?? 'auto'
+    const content = await toolTerminal(workspace, command, signal, { timeoutMs, shell })
     const summary = command.slice(0, 80)
     const ok = terminalResultOk(command, content)
     if (ok) return toolOk('terminal', summary, content)

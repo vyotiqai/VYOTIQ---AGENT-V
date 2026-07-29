@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
-import type { AttachedFile, ProviderId, ServiceTier } from '@shared/ipc'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { AttachedFile, ProviderId, ServiceTier, SlashCommandDescriptor } from '@shared/ipc'
 import { buildUserContent } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
+import { triggerKey } from '@shared/slashCommands'
 import { Alert, cn } from '@renderer/lib/ui'
 import { CHAT_COLUMN, CHAT_GUTTER, FLOATING_CHROME, FLOATING_CHROME_SHADOW_BOTTOM } from '@renderer/lib/utils/layout'
 import { ComposerTextarea } from './ComposerTextarea'
@@ -14,9 +15,15 @@ import { useComposerFiles, ATTACHMENT_ACCEPT, MAX_FILES, isImageFile } from './u
 import { useComposerModels } from './useComposerModels'
 import { pickVisionFallback } from './composerModelUtils'
 import { useWorkspaceHotUi } from '@renderer/lib/hooks/workspaceHotUiStore'
+import { SlashCommandMenu } from './SlashCommandMenu'
+import { useSlashCommands } from './useSlashCommands'
+import {
+  executeSlashResolveResult,
+  type SlashClientHandlers
+} from './slashCommandExecute'
 
 const HERO_HINT =
-  'Use /create-rule to control agent behavior through system-level instructions'
+  'Type / for commands — try /code-review, /compact, /create-rule'
 
 export function Composer({
   provider,
@@ -52,7 +59,8 @@ export function Composer({
   leading,
   trailing,
   variant = 'dock',
-  className
+  className,
+  slashHandlers
 }: {
   provider: ProviderId
   model: string
@@ -96,12 +104,19 @@ export function Composer({
   trailing?: React.ReactNode
   variant?: ComposerVariant
   className?: string
+  slashHandlers?: SlashClientHandlers
 }) {
   const taRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const locked = Boolean(disabled || running)
   const hotUi = useWorkspaceHotUi(workspacePath)
   const resolvedDraft = workspacePath ? hotUi.composerDraft : (draft ?? '')
+  const [cursor, setCursor] = useState(0)
+
+  const syncCursor = useCallback((): void => {
+    const el = taRef.current
+    if (el) setCursor(el.selectionStart ?? 0)
+  }, [])
 
   const {
     images,
@@ -122,6 +137,136 @@ export function Composer({
     removeFile
   } = useComposerFiles()
 
+  const slash = useSlashCommands({
+    workspacePath,
+    text: resolvedDraft,
+    cursor,
+    enabled: !locked && Boolean(hasWorkspace),
+    onListError: slashHandlers?.onNotice
+  })
+
+  const findCommandByTrigger = useCallback(
+    (trigger: string): SlashCommandDescriptor | null => {
+      const key = triggerKey(trigger)
+      return slash.commands.find((c) => triggerKey(c.trigger) === key) ?? null
+    },
+    [slash.commands]
+  )
+
+  const resolveAndExecute = useCallback(
+    async (
+      command: SlashCommandDescriptor,
+      trailingText: string,
+      sendImages: string[],
+      sendFiles: AttachedFile[]
+    ): Promise<boolean> => {
+      if (!window.vyotiq?.slashCommandsResolve) return false
+
+      if (command.availability === 'not_installed' && command.packageId) {
+        await slashHandlers?.onMarketplaceAction?.(command.packageId, 'install')
+        await slash.reload()
+        return false
+      }
+      if (command.availability === 'disabled' && command.packageId) {
+        await slashHandlers?.onMarketplaceAction?.(command.packageId, 'enable')
+        await slash.reload()
+        return false
+      }
+      if (
+        command.availability === 'disconnected' ||
+        command.availability === 'needs_auth'
+      ) {
+        slashHandlers?.onOpenMarketplace?.(command.mcpServerId)
+        return false
+      }
+
+      const res = await window.vyotiq.slashCommandsResolve({
+        id: command.id,
+        workspacePath: workspacePath ?? null,
+        trailingText
+      })
+      if (!res.ok) {
+        slashHandlers?.onNotice?.(res.error)
+        return false
+      }
+
+      const outcome = await executeSlashResolveResult(res.data, {
+        ...slashHandlers,
+        onCompact: async () => {
+          if (slashHandlers?.onCompact) await slashHandlers.onCompact()
+          else if (onCompactContext) await onCompactContext()
+        }
+      })
+
+      if (outcome === 'sent' && res.data.action === 'send') {
+        const ok = await Promise.resolve(
+          onSend(
+            res.data.message,
+            sendImages.length ? sendImages : undefined,
+            sendFiles.length ? sendFiles : undefined
+          )
+        )
+        return ok !== false
+      }
+      if (outcome === 'pending') {
+        await slash.reload()
+        return false
+      }
+      return true
+    },
+    [workspacePath, slashHandlers, onCompactContext, onSend, slash]
+  )
+
+  const onSlashAccept = useCallback(
+    (command: SlashCommandDescriptor): void => {
+      const token = slash.token
+      const trailingForResolve = token?.trailingText ?? ''
+      const snapshot = resolvedDraft
+      if (token && onDraftChange) {
+        const before = resolvedDraft.slice(0, token.start)
+        const afterToken = resolvedDraft.slice(token.end).replace(/^\s+/, '')
+        onDraftChange(`${before}${afterToken}`.trimStart())
+      }
+
+      void resolveAndExecute(command, trailingForResolve, images, files).then((ok) => {
+        if (ok) {
+          onDraftChange?.('')
+          setImages([])
+          setImageError(null)
+          setFiles([])
+          setFileError(null)
+        } else {
+          // Restore pre-strip draft on CTA / IPC failure / pending marketplace.
+          onDraftChange?.(snapshot)
+        }
+      })
+    },
+    [
+      slash.token,
+      resolvedDraft,
+      onDraftChange,
+      resolveAndExecute,
+      images,
+      files,
+      setImages,
+      setImageError,
+      setFiles,
+      setFileError
+    ]
+  )
+
+  const onSlashSubmit = useCallback(
+    async (
+      command: SlashCommandDescriptor,
+      trailingText: string,
+      sendImages: string[],
+      sendFiles: AttachedFile[]
+    ): Promise<boolean> => {
+      return resolveAndExecute(command, trailingText, sendImages, sendFiles)
+    },
+    [resolveAndExecute]
+  )
+
   const { text, setText, canSend, submit, onKeyDown } = useComposerDraft({
     draft: resolvedDraft,
     onDraftChange,
@@ -133,7 +278,14 @@ export function Composer({
     setFileError,
     running,
     disabled,
-    onSend
+    onSend,
+    slashMenuOpen: slash.open,
+    slashActiveCommand: slash.activeCommand,
+    onSlashMove: slash.moveActive,
+    onSlashDismiss: slash.dismiss,
+    onSlashAccept,
+    onSlashSubmit,
+    findCommandByTrigger
   })
 
   const [refreshingCatalog, setRefreshingCatalog] = useState(false)
@@ -200,6 +352,7 @@ export function Composer({
         className
       )}
       data-composer-dock={isDock ? true : undefined}
+      data-composer-hero={!isDock ? true : undefined}
     >
       <div
         className={cn(isDock && CHAT_COLUMN, 'flex flex-col gap-2')}
@@ -216,7 +369,7 @@ export function Composer({
         <form
           onSubmit={submit}
           className={cn(
-            '@container grid gap-2 p-2.5',
+            '@container relative grid gap-2 p-2.5',
             FLOATING_CHROME,
             FLOATING_CHROME_SHADOW_BOTTOM,
             isDock && 'pointer-events-auto'
@@ -252,12 +405,42 @@ export function Composer({
             ref={taRef}
             className="col-span-full min-h-[32px] max-h-40 min-w-0 border-0 bg-transparent p-0 text-md leading-relaxed shadow-none focus-visible:ring-0"
             value={text}
-            onChange={setText}
-            onKeyDown={onKeyDown}
+            onChange={(next) => {
+              setText(next)
+              requestAnimationFrame(syncCursor)
+            }}
+            onKeyDown={(e) => {
+              onKeyDown(e)
+              requestAnimationFrame(syncCursor)
+            }}
+            onSelect={syncCursor}
+            onClick={syncCursor}
+            onKeyUp={syncCursor}
             placeholder={
               composerPlaceholder ?? (hasTranscript ? 'Send follow-up' : 'Send a message')
             }
             disabled={locked}
+            aria-expanded={slash.open}
+            aria-controls={slash.open ? 'slash-command-menu' : undefined}
+            aria-autocomplete={slash.open ? 'list' : undefined}
+            aria-activedescendant={
+              slash.open && slash.activeCommand
+                ? `slash-command-menu-opt-${slash.activeCommand.id}`
+                : undefined
+            }
+          />
+
+          <SlashCommandMenu
+            open={slash.open}
+            commands={slash.filtered}
+            activeIndex={slash.activeIndex}
+            onActiveIndexChange={slash.setActiveIndex}
+            onPick={onSlashAccept}
+            onDismiss={slash.dismiss}
+            anchorRef={taRef}
+            listId="slash-command-menu"
+            loading={slash.loading}
+            listError={slash.listError}
           />
 
           <ComposerToolbar
@@ -317,9 +500,9 @@ export function Composer({
         {isDock ? trailing : null}
 
         {!isDock ? (
-        <p className="m-0 mt-4 text-center text-xs leading-relaxed tracking-[var(--vy-tracking)] text-muted">
-          {HERO_HINT}
-        </p>
+          <p className="m-0 mt-4 text-center text-xs leading-relaxed tracking-[var(--vy-tracking)] text-muted">
+            {HERO_HINT}
+          </p>
         ) : null}
       </div>
     </div>

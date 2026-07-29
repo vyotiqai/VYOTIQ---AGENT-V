@@ -70,7 +70,7 @@ const terminalArgs = z.object({
   command: z
     .string()
     .describe(
-      'Shell command to run at workspace root. On Windows this is cmd.exe — prefer dir, type, findstr, where; avoid ls/grep/head/find/cat/which unless bash is available.'
+      'Shell command to run at workspace root. Shell comes from Settings → Agent → Terminal shell (auto prefers PowerShell on Windows when available; cmd blocks common Unix builtins). Prefer shell-native commands for the active shell.'
     ),
   timeoutMs: z
     .number()
@@ -198,6 +198,19 @@ const webFetchArgs = z.object({
     .optional()
 })
 
+const strReplaceArgs = z.object({
+  path: z.string().describe('File path inside the workspace'),
+  old_string: z
+    .string()
+    .min(1)
+    .describe('Exact text to find. Must be unique in the file unless replace_all is true.'),
+  new_string: z.string().describe('Replacement text (may be empty to delete the match)'),
+  replace_all: z
+    .boolean()
+    .describe('Replace every occurrence (default false — fails if old_string matches more than once)')
+    .optional()
+})
+
 const subagentArgs = z.object({
   task: z
     .string()
@@ -265,6 +278,11 @@ const TOOL_REGISTRY = {
     description:
       'Apply several file edits atomically: if any edit fails to validate or match, no file is written.',
     schema: multiEditArgs
+  },
+  str_replace: {
+    description:
+      'Replace exact text in a workspace file. Prefer for surgical edits; use edit for new files or unified diffs.',
+    schema: strReplaceArgs
   },
   delete: {
     description: 'Delete a workspace file, or a directory when recursive=true.',

@@ -5,9 +5,9 @@ export type ParsedTerminalOutput = {
   exitCode: number | null
 }
 
-/** Strip cwd header injected by toolTerminal before parsing exit metadata. */
+/** Strip cwd/shell headers injected by toolTerminal before parsing exit metadata. */
 export function stripTerminalCwdHeader(content: string): string {
-  return content.replace(/^cwd:.*\n\n?/m, '')
+  return content.replace(/^cwd:.*\n(?:shell:.*\n)?\n?/m, '')
 }
 
 /**

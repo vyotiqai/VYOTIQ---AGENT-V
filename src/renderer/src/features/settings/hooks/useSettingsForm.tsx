@@ -389,6 +389,7 @@ export function useSettingsForm({
   return {
     section,
     navigateSection,
+    settings,
     keyProvider,
     keyDraft,
     setKeyDraft,

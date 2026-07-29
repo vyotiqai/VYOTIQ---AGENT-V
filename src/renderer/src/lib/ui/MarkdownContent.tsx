@@ -120,6 +120,9 @@ function scheduleIdle(cb: () => void, timeoutMs: number): () => void {
   return () => globalThis.clearTimeout(id)
 }
 
+const CODE_SHELL =
+  'overflow-x-auto rounded-md border border-border bg-surface font-mono text-[0.85em]'
+
 function FencedCodeBlock({
   text,
   className,
@@ -139,6 +142,7 @@ function FencedCodeBlock({
 
   useEffect(() => {
     if (unstable) {
+      // Drop stale highlight while the fence is still growing; plain shell stays.
       setHtml(null)
       return
     }
@@ -147,8 +151,10 @@ function FencedCodeBlock({
       setHtml(cached)
       return
     }
-    let cancelled = false
+    // Invalidate any prior highlight so plain text matches `text` until ready.
+    // Unified shell keeps the bordered container — this is not an empty flash.
     setHtml(null)
+    let cancelled = false
     const cancelIdle = scheduleIdle(() => {
       void highlightCode(text, lang).then((result) => {
         if (cancelled) return
@@ -163,24 +169,21 @@ function FencedCodeBlock({
     }
   }, [text, lang, unstable, theme, cacheKey])
 
-  if (html) {
-    return (
-      <div className="group/code relative my-2">
-        <CodeBlockCopyButton text={text} />
-        <div
-          className="overflow-x-auto rounded-md border border-border bg-surface font-mono text-[0.85em] [&>pre]:m-0 [&>pre]:overflow-x-auto [&>pre]:bg-transparent [&>pre]:p-3"
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
-      </div>
-    )
-  }
-
   return (
     <div className="group/code relative my-2">
       <CodeBlockCopyButton text={text} />
-      <pre className="overflow-x-auto rounded-md border border-border bg-surface p-3 font-mono text-[0.85em]">
-        <code className={cn('block', className)}>{text}</code>
-      </pre>
+      <div className={CODE_SHELL}>
+        {html ? (
+          <div
+            className="vy-transition [&>pre]:m-0 [&>pre]:overflow-x-auto [&>pre]:bg-transparent [&>pre]:p-3"
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
+        ) : (
+          <pre className="m-0 overflow-x-auto bg-transparent p-3">
+            <code className={cn('block', className)}>{text}</code>
+          </pre>
+        )}
+      </div>
     </div>
   )
 }
@@ -282,12 +285,11 @@ export function MarkdownContent({
       {blocks.map((block, index) => {
         const isLast = index === blocks.length - 1
         const blockOpenFence = streaming && isLast ? openFenceBody : null
+        // Stable keys so streaming deltas update `source` instead of remounting.
+        const key =
+          streaming && isLast ? `md-block-${index}-tail` : `md-block-${index}`
         return (
-          <MemoMarkdownBlock
-            key={`${index}:${block.length}:${isLast && streaming ? 's' : 'd'}:${block.slice(0, 24)}`}
-            source={block}
-            openFenceBody={blockOpenFence}
-          />
+          <MemoMarkdownBlock key={key} source={block} openFenceBody={blockOpenFence} />
         )
       })}
       {streaming ? (

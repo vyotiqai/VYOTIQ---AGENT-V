@@ -203,14 +203,54 @@ export function isToolShapedTextLeak(content: string): boolean {
   const trimmed = content.trimStart()
   if (!trimmed) return false
   if (/^tool\s*(\{|[a-z_]+\b)/i.test(trimmed)) return true
-  // Whole buffer is only tool-shaped leak (possibly after whitespace / multiple blobs).
-  if (
-    /\btool\s*(\{|[a-z_]+\b)/i.test(trimmed) &&
-    stripToolShapedAssistantTextForStream(content).trim() === ''
-  ) {
-    return true
+  // Whole buffer is only tool-shaped / DSML leak after scrubbing.
+  if (stripToolShapedAssistantTextForStream(content).trim() === '') {
+    if (/\btool\s*(\{|[a-z_]+\b)/i.test(trimmed)) return true
+    if (hasDsmlMarkup(trimmed)) return true
   }
   return false
+}
+
+/**
+ * DeepSeek DSML token. Official V4 encoding uses fullwidth U+FF5C (`｜`);
+ * screenshots of the live UI also show ASCII `|` after decode/display.
+ */
+const DSML_MARK = String.raw`(?:\uFF5C|\|)DSML(?:\uFF5C|\|)`
+
+const DSML_TOOL_CALLS_BLOCK = new RegExp(
+  String.raw`<${DSML_MARK}(?:tool_calls|function_calls)\s*>[\s\S]*?</${DSML_MARK}(?:tool_calls|function_calls)\s*>`,
+  'gi'
+)
+const DSML_INVOKE_BLOCK = new RegExp(
+  String.raw`<${DSML_MARK}invoke\b[^>]*>[\s\S]*?</${DSML_MARK}invoke\s*>`,
+  'gi'
+)
+const DSML_PARAMETER_BLOCK = new RegExp(
+  String.raw`<${DSML_MARK}parameter\b[^>]*>[\s\S]*?</${DSML_MARK}parameter\s*>`,
+  'gi'
+)
+const DSML_ANY_TAG = new RegExp(String.raw`</?${DSML_MARK}[^>\n]*>`, 'gi')
+const DSML_OPEN_RE = new RegExp(String.raw`<(/)?${DSML_MARK}`, 'i')
+
+function hasDsmlMarkup(content: string): boolean {
+  return DSML_OPEN_RE.test(content)
+}
+
+/** Remove complete DeepSeek DSML tool-call markup from assistant text. */
+export function stripDsmlToolMarkup(content: string): string {
+  if (!content || !hasDsmlMarkup(content)) return content
+  let out = content
+  // Repeat in case multiple sibling blocks appear (screenshot spam).
+  for (let n = 0; n < 32; n++) {
+    const next = out
+      .replace(DSML_TOOL_CALLS_BLOCK, '')
+      .replace(DSML_INVOKE_BLOCK, '')
+      .replace(DSML_PARAMETER_BLOCK, '')
+    if (next === out) break
+    out = next
+  }
+  out = out.replace(DSML_ANY_TAG, '')
+  return out
 }
 
 /**
@@ -259,32 +299,68 @@ export function stripIncompleteToolPrefix(content: string): string {
     return content.slice(0, start).replace(/[ \t]*(?:\r?\n)+$/, '')
   }
 
+  // Incomplete DSML: open tag without `>`, or open tool_calls/invoke without close.
+  const dsmlStart = content.search(DSML_OPEN_RE)
+  if (dsmlStart >= 0) {
+    const fromTag = content.slice(dsmlStart)
+    const tagEnd = fromTag.indexOf('>')
+    if (tagEnd < 0) {
+      return content.slice(0, dsmlStart).replace(/[ \t]*(?:\r?\n)+$/, '')
+    }
+    const openTag = fromTag.slice(0, tagEnd + 1)
+    const isToolCalls = new RegExp(
+      String.raw`^<${DSML_MARK}(?:tool_calls|function_calls)\s*>`,
+      'i'
+    ).test(openTag)
+    const isInvoke = new RegExp(String.raw`^<${DSML_MARK}invoke\b`, 'i').test(openTag)
+    const isParameter = new RegExp(String.raw`^<${DSML_MARK}parameter\b`, 'i').test(openTag)
+    if (isToolCalls || isInvoke || isParameter) {
+      const closeRe = isToolCalls
+        ? new RegExp(String.raw`</${DSML_MARK}(?:tool_calls|function_calls)\s*>`, 'i')
+        : isInvoke
+          ? new RegExp(String.raw`</${DSML_MARK}invoke\s*>`, 'i')
+          : new RegExp(String.raw`</${DSML_MARK}parameter\s*>`, 'i')
+      if (!closeRe.test(fromTag)) {
+        return content.slice(0, dsmlStart).replace(/[ \t]*(?:\r?\n)+$/, '')
+      }
+    }
+  }
+
+  // Trailing partial DSML opener: `<｜`, `<|DS`, `<｜DSML｜inv`…
+  const partialOpen = content.search(
+    new RegExp(String.raw`<(?:/)?(?:(?:\uFF5C|\|)(?:D(?:S(?:M(?:L(?:(?:\uFF5C|\|)[^>\n]*)?)?)?)?)?)?$`, 'i')
+  )
+  if (partialOpen >= 0 && !content.slice(partialOpen).includes('>')) {
+    return content.slice(0, partialOpen).replace(/[ \t]*(?:\r?\n)+$/, '')
+  }
+
   return content
 }
 
 function stripToolShapedAssistantTextInner(content: string, options?: { trim?: boolean }): string {
   if (!content) return content
+  const withoutDsml = stripDsmlToolMarkup(content)
   let result = ''
   let i = 0
-  while (i < content.length) {
-    const rest = content.slice(i)
+  while (i < withoutDsml.length) {
+    const rest = withoutDsml.slice(i)
     const jsonMatch = rest.match(/^(\s*)tool\s*\{/)
     if (jsonMatch) {
       i += jsonMatch[0].length
       let depth = 1
-      while (i < content.length && depth > 0) {
-        const ch = content[i]!
+      while (i < withoutDsml.length && depth > 0) {
+        const ch = withoutDsml[i]!
         i += 1
         if (ch === '{') depth += 1
         else if (ch === '}') depth -= 1
       }
-      while (i < content.length && (content[i] === ' ' || content[i] === '\t')) i += 1
-      if (content[i] === '\r') i += 1
-      if (content[i] === '\n') i += 1
+      while (i < withoutDsml.length && (withoutDsml[i] === ' ' || withoutDsml[i] === '\t')) i += 1
+      if (withoutDsml[i] === '\r') i += 1
+      if (withoutDsml[i] === '\n') i += 1
       continue
     }
 
-    const atLineStart = i === 0 || content[i - 1] === '\n'
+    const atLineStart = i === 0 || withoutDsml[i - 1] === '\n'
     if (atLineStart) {
       const lineMatch = rest.match(/^tool\s+([a-z_]+)\s+(\S.+?)(?:\r?\n|$)/i)
       if (lineMatch) {
@@ -293,7 +369,7 @@ function stripToolShapedAssistantTextInner(content: string, options?: { trim?: b
       }
     }
 
-    result += content[i]!
+    result += withoutDsml[i]!
     i += 1
   }
   const collapsed = result.replace(/\n{3,}/g, '\n\n')
@@ -302,7 +378,8 @@ function stripToolShapedAssistantTextInner(content: string, options?: { trim?: b
 
 /**
  * Drop model-emitted pseudo tool calls that leaked into the text channel
- * (e.g. `tool {"edits":[...]}`) so they do not render as plain transcript text.
+ * (e.g. `tool {"edits":[...]}` or DeepSeek `<｜DSML｜tool_calls>` blocks)
+ * so they do not render as plain transcript text.
  */
 export function stripToolShapedAssistantText(content: string): string {
   return stripToolShapedAssistantTextInner(content, { trim: true })

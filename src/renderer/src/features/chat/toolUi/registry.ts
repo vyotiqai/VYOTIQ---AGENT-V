@@ -121,6 +121,20 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
       }
     }
   },
+  str_replace: {
+    Body: EditBody,
+    hasBody: editHasBody,
+    headerMeta: (tool) => {
+      const edit = parseEditCardData(tool)
+      return {
+        verb: toolLabel(tool.name, tool.status),
+        target: basename(edit.path),
+        added: edit.added,
+        removed: edit.removed,
+        filePath: edit.path
+      }
+    }
+  },
   search: {
     Body: SearchBody,
     hasBody: defaultHasBody,

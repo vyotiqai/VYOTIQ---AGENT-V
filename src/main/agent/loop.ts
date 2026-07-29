@@ -20,6 +20,7 @@ import {
 } from './providers/fetchWithRetry'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
 import { resolveServiceTier } from '../../shared/domain/modelSelection'
+import { stripToolShapedAssistantText } from '../../shared/transcript'
 import { createApprovalGate } from './toolApproval'
 import { persistAlwaysAllow } from './toolApprovalStore'
 import { getSecret, hasStoredSecretBlob, secretStatus } from '@main/settings/secrets'
@@ -80,6 +81,7 @@ import { AGENT_TOOLS } from './types'
 import { listMcpToolDefinitions, parseMcpToolName, syncMcpServers } from './mcp'
 import { resolveEffectiveMcpServers, resolveMcpServersForSessionMap } from '../marketplace/resolve'
 import { buildSkillsSection, loadEnabledSkills, loadPluginRules } from './skills'
+import { beginWriteCheckpoint, finalizeWriteCheckpoint } from './checkpoints'
 import { isMcpToolPermitted } from '../../shared/utils/mcpToolPolicy'
 
 export { cancelRun, clearRunAbort, registerRunAbort, resetActiveRunsForTests }
@@ -180,7 +182,8 @@ function* flushPartialAssistant(
   toolCalls: ToolCall[],
   interruption: 'cancelled' | 'interrupted'
 ): Generator<AgentEvent> {
-  if (!assistantText && !thinkingText && toolCalls.length === 0) return
+  const scrubbedText = stripToolShapedAssistantText(assistantText)
+  if (!scrubbedText && !thinkingText && toolCalls.length === 0) return
 
   const stub = interruption === 'cancelled' ? 'Cancelled' : 'Interrupted'
   const mappedCalls = toolCalls.map((t) => ({
@@ -190,7 +193,7 @@ function* flushPartialAssistant(
   }))
   const assistant: ChatMessage = {
     role: 'assistant',
-    content: assistantText,
+    content: scrubbedText,
     ...(thinkingText ? { thinking: thinkingText } : {}),
     ...(reasoningState ? { reasoningState } : {}),
     ...(mappedCalls.length ? { toolCalls: mappedCalls } : {})
@@ -200,7 +203,7 @@ function* flushPartialAssistant(
   const assistantEv: AgentEvent = {
     type: 'assistant_message',
     runId,
-    content: assistantText,
+    content: scrubbedText,
     ...(thinkingText ? { thinking: thinkingText } : {}),
     ...(mappedCalls.length ? { toolCalls: mappedCalls } : {})
   }
@@ -250,9 +253,24 @@ export async function* runAgent(input: {
 
   // Entire body in try/finally so early returns (missing key, etc.) always clear the abort map.
   let runDir: string | null = null
+  let checkpointFlushed = false
   const writeStatus = (patch: Parameters<typeof updateStatus>[1]): void => {
     if (!runDir || !isCurrentInvoke(runId, invokeId)) return
     updateStatus(runDir, patch)
+  }
+  const flushWriteCheckpoint = function* (): Generator<AgentEvent, void, unknown> {
+    if (!runDir || checkpointFlushed) return
+    checkpointFlushed = true
+    const meta = finalizeWriteCheckpoint(runDir)
+    if (!meta) return
+    const ev: AgentEvent = {
+      type: 'writes_checkpoint',
+      runId,
+      checkpointId: meta.id,
+      files: meta.files
+    }
+    appendEvent(runDir, ev)
+    yield ev
   }
   try {
     const lastUser = [...(input.messages ?? input.newMessages ?? [])]
@@ -282,6 +300,8 @@ export async function* runAgent(input: {
       runDir = createRun(workspace, runId, goal)
       for (const m of messages) appendMessage(runDir, m)
     }
+
+    beginWriteCheckpoint(runDir, workspace)
 
     let compaction: CompactionRecord | null = loadCompaction(runDir)
     // Everything before the watermark is already represented by the summary, so it
@@ -353,6 +373,7 @@ export async function* runAgent(input: {
           provider: providerId
         })
         yield { type: 'error', runId, message, code }
+        yield* flushWriteCheckpoint()
         yield { type: 'status', runId, status: 'error' }
         writeStatus({ status: 'error', error: message })
         appendEvent(runDir, { type: 'error', runId, message, code })
@@ -429,6 +450,7 @@ export async function* runAgent(input: {
     )
 
     if (controller.signal.aborted) {
+      yield* flushWriteCheckpoint()
       yield { type: 'status', runId, status: 'cancelled' }
       writeStatus({ status: 'cancelled' })
       appendEvent(runDir, { type: 'status', runId, status: 'cancelled' })
@@ -847,6 +869,7 @@ export async function* runAgent(input: {
               'interrupted'
             )
             yield { type: 'error', runId, message, code: 'PROVIDER_STREAM' }
+            yield* flushWriteCheckpoint()
             yield { type: 'status', runId, status: 'error' }
             writeStatus({ status: 'error', error: message })
             appendEvent(runDir, { type: 'error', runId, message, code: 'PROVIDER_STREAM' })
@@ -926,9 +949,10 @@ export async function* runAgent(input: {
           appendEvent(runDir, thinkingDoneEv)
           yield thinkingDoneEv
         }
+        const scrubbedAssistantText = stripToolShapedAssistantText(assistantText)
         const assistant: ChatMessage = {
           role: 'assistant',
-          content: assistantText,
+          content: scrubbedAssistantText,
           ...(thinkingText ? { thinking: thinkingText } : {}),
           ...(stepReasoningState ? { reasoningState: stepReasoningState } : {})
         }
@@ -937,13 +961,13 @@ export async function* runAgent(input: {
         const assistantMsgEv: AgentEvent = {
           type: 'assistant_message',
           runId,
-          content: assistantText,
+          content: scrubbedAssistantText,
           ...(thinkingText ? { thinking: thinkingText } : {})
         }
         appendEvent(runDir, assistantMsgEv)
         yield assistantMsgEv
 
-        const incomplete = classifyIncompleteTurn(stepStopReason, assistantText, thinkingText)
+        const incomplete = classifyIncompleteTurn(stepStopReason, scrubbedAssistantText, thinkingText)
         if (
           incomplete === 'truncated' &&
           truncationContinues < MAX_TRUNCATION_CONTINUES &&
@@ -990,6 +1014,7 @@ export async function* runAgent(input: {
           yield incompleteEv
         }
 
+        yield* flushWriteCheckpoint()
         yield { type: 'status', runId, status: 'done' }
         writeStatus({ status: 'done' })
         appendEvent(runDir, { type: 'status', runId, status: 'done' })
@@ -1001,9 +1026,10 @@ export async function* runAgent(input: {
         name: t.name,
         arguments: t.arguments
       }))
+      const scrubbedAssistantText = stripToolShapedAssistantText(assistantText)
       const assistantWithTools: ChatMessage = {
         role: 'assistant',
-        content: assistantText,
+        content: scrubbedAssistantText,
         toolCalls: mappedCalls,
         ...(thinkingText ? { thinking: thinkingText } : {}),
         ...(stepReasoningState ? { reasoningState: stepReasoningState } : {})
@@ -1024,7 +1050,7 @@ export async function* runAgent(input: {
       const assistantMsgEv: AgentEvent = {
         type: 'assistant_message',
         runId,
-        content: assistantText,
+        content: scrubbedAssistantText,
         ...(thinkingText ? { thinking: thinkingText } : {}),
         toolCalls: mappedCalls
       }
@@ -1117,6 +1143,7 @@ export async function* runAgent(input: {
     }
 
     if (controller.signal.aborted) {
+      yield* flushWriteCheckpoint()
       yield { type: 'status', runId, status: 'cancelled' }
       writeStatus({ status: 'cancelled' })
       appendEvent(runDir, { type: 'status', runId, status: 'cancelled' })
@@ -1124,6 +1151,7 @@ export async function* runAgent(input: {
   } catch (err) {
     if (isAbortError(err)) {
       logger.warn('Agent run cancelled', { scope: 'agent', correlationId: runId })
+      yield* flushWriteCheckpoint()
       yield { type: 'status', runId, status: 'cancelled' }
       if (runDir) {
         writeStatus({ status: 'cancelled' })
@@ -1138,6 +1166,7 @@ export async function* runAgent(input: {
         err
       })
       yield { type: 'error', runId, message, code: 'AGENT_LOOP' }
+      yield* flushWriteCheckpoint()
       yield { type: 'status', runId, status: 'error' }
       if (runDir) {
         writeStatus({ status: 'error', error: message })
@@ -1149,6 +1178,10 @@ export async function* runAgent(input: {
     // Always drain the per-run append chain so a superseded invoke cannot leave
     // events buffered when a follow-up turn starts immediately.
     if (runDir) {
+      if (!checkpointFlushed) {
+        finalizeWriteCheckpoint(runDir)
+        checkpointFlushed = true
+      }
       await flushMessageAppends(runDir)
       await flushEventAppends(runDir)
     }

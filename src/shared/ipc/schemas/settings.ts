@@ -92,6 +92,9 @@ const ThinkingPrefsSchema = z.object({
 export const ToolApprovalModeSchema = z.enum(['off', 'mutating', 'all'])
 export type ToolApprovalMode = z.infer<typeof ToolApprovalModeSchema>
 
+export const TerminalShellSchema = z.enum(['auto', 'cmd', 'powershell', 'bash'])
+export type TerminalShell = z.infer<typeof TerminalShellSchema>
+
 export const ToolApprovalSettingsSchema = z.object({
   mode: ToolApprovalModeSchema.default('off'),
   /** Tool names the user chose to always allow, persisted per workspace. */
@@ -120,6 +123,8 @@ export const SettingsSchema = z.object({
   serviceTierByModel: z.record(z.string(), ServiceTierSchema).default({}),
   serviceTier: ServiceTierSchema.default('default'),
   toolApproval: ToolApprovalSettingsSchema.default(DEFAULT_TOOL_APPROVAL),
+  /** Shell used by the terminal tool. `auto` prefers PowerShell on Windows when available. */
+  terminalShell: TerminalShellSchema.default('auto'),
   /** When set, sub-agents use this provider instead of `provider`. */
   subagentProvider: ProviderIdSchema.optional(),
   /** When set, sub-agents use this model instead of `model`. */
@@ -147,6 +152,7 @@ export const DEFAULT_SETTINGS: Settings = {
   serviceTierByModel: {},
   serviceTier: 'default',
   toolApproval: DEFAULT_TOOL_APPROVAL,
+  terminalShell: 'auto',
   marketplace: DEFAULT_MARKETPLACE_SETTINGS
 }
 

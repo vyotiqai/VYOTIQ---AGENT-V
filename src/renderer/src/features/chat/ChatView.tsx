@@ -45,7 +45,10 @@ function TranscriptPane({
   collapsedTurns,
   showThinking,
   mcpServerNames,
-  surfaceKey
+  surfaceKey,
+  canUndoWrites,
+  undoBusy,
+  onUndoWrites
 }: {
   itemsStore?: ChatItemsStore
   items: UiItem[]
@@ -66,6 +69,9 @@ function TranscriptPane({
   showThinking?: boolean
   mcpServerNames?: ReadonlyMap<string, string>
   surfaceKey: string
+  canUndoWrites?: boolean
+  undoBusy?: boolean
+  onUndoWrites?: () => void | Promise<unknown>
 }) {
   const liveItems = useChatLiveItems(itemsStore, items)
   return (
@@ -89,6 +95,9 @@ function TranscriptPane({
       collapsedTurns={collapsedTurns}
       showThinking={showThinking}
       mcpServerNames={mcpServerNames}
+      canUndoWrites={canUndoWrites}
+      undoBusy={undoBusy}
+      onUndoWrites={onUndoWrites}
     />
   )
 }
@@ -146,7 +155,11 @@ export function ChatView({
   collapsedTurns,
   showThinking = true,
   chatSurfaceEpoch = 0,
-  mcpServerNames
+  mcpServerNames,
+  slashHandlers,
+  canUndoWrites = false,
+  undoBusy = false,
+  onUndoWrites
 }: {
   hasOpenWorkspaces: boolean
   recentPaths: string[]
@@ -211,6 +224,10 @@ export function ChatView({
    * transcript and composer remount without clearing mid-send attachments.
    */
   chatSurfaceEpoch?: number
+  slashHandlers?: import('./components/composer/slashCommandExecute').SlashClientHandlers
+  canUndoWrites?: boolean
+  undoBusy?: boolean
+  onUndoWrites?: () => void | Promise<unknown>
 }) {
   // Boolean presence only — stays Object.is-stable across pure text_delta frames.
   const hasItems = useHasChatItems(itemsStore, items)
@@ -271,7 +288,8 @@ export function ChatView({
     contextUsage: metaStore ? undefined : contextUsage,
     metaStore,
     onCompactContext,
-    composerPlaceholder: transcriptLoading ? 'Loading chat…' : undefined
+    composerPlaceholder: transcriptLoading ? 'Loading chat…' : undefined,
+    slashHandlers
   }
 
   if (!hasOpenWorkspaces) {
@@ -356,6 +374,9 @@ export function ChatView({
               showThinking={showThinking}
               mcpServerNames={mcpServerNames}
               surfaceKey={surfaceKey}
+              canUndoWrites={canUndoWrites}
+              undoBusy={undoBusy}
+              onUndoWrites={onUndoWrites}
             />
 
             <MemoComposer

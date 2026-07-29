@@ -5,6 +5,7 @@ import type {
   ChatStartRequest,
   ChatStartResult,
   CompactRunResult,
+  UndoWritesResult,
   GitCommitResult,
   GitStatus,
   IpcResult,
@@ -37,7 +38,10 @@ import type {
   PackageContents,
   WorkspaceSettingsOverride,
   WorkspacesState,
-  WorkspaceUiState
+  WorkspaceUiState,
+  SlashCommandDescriptor,
+  SlashCommandResolveResult,
+  SlashCommandsCreateRuleResult
 } from './ipc'
 
 /** Host OS from preload `process.platform`. */
@@ -74,6 +78,11 @@ export interface VyotiqApi {
   chatStart: (payload: ChatStartRequest) => Promise<IpcResult<ChatStartResult>>
   chatCancel: (runId: string) => Promise<IpcResult<true>>
   chatCompact: (workspacePath: string, runId: string) => Promise<IpcResult<CompactRunResult>>
+  undoWrites: (
+    workspacePath: string,
+    runId: string,
+    checkpointId?: string
+  ) => Promise<IpcResult<UndoWritesResult>>
   onChatEvent: (handler: (event: AgentEvent) => void) => () => void
   onToolApprovalRequest: (handler: (request: ToolApprovalRequest) => void) => () => void
   respondToolApproval: (
@@ -119,8 +128,8 @@ export interface VyotiqApi {
   openLogsDir: () => Promise<IpcResult<true>>
   getLogsPath: () => Promise<IpcResult<string>>
   telemetryStatus: () => Promise<IpcResult<TelemetryStatus>>
-  mcpStatus: () => Promise<IpcResult<McpStatusResult>>
-  mcpRefresh: () => Promise<IpcResult<McpStatusResult>>
+  mcpStatus: (payload?: { workspacePath?: string | null }) => Promise<IpcResult<McpStatusResult>>
+  mcpRefresh: (payload?: { workspacePath?: string | null }) => Promise<IpcResult<McpStatusResult>>
   mcpSetAuthToken: (serverId: string, token: string) => Promise<IpcResult<true>>
   mcpClearAuthToken: (serverId: string) => Promise<IpcResult<true>>
   mcpStartOAuth: (serverId: string) => Promise<IpcResult<McpStatusResult>>
@@ -153,6 +162,22 @@ export interface VyotiqApi {
   ) => Promise<IpcResult<MarketplaceIndex>>
   marketplacePickLocal: () => Promise<IpcResult<string | null>>
   marketplaceGetContents: (id: string) => Promise<IpcResult<PackageContents>>
+  slashCommandsList: (payload?: {
+    workspacePath?: string | null
+  }) => Promise<IpcResult<{ commands: SlashCommandDescriptor[] }>>
+  slashCommandsResolve: (payload: {
+    id: string
+    workspacePath?: string | null
+    trailingText?: string
+  }) => Promise<IpcResult<SlashCommandResolveResult>>
+  slashCommandsCreateRule: (payload: {
+    workspacePath: string
+    title?: string
+  }) => Promise<IpcResult<SlashCommandsCreateRuleResult>>
+  slashCommandsOpenFile: (payload: {
+    workspacePath: string
+    path: string
+  }) => Promise<IpcResult<true>>
   getSystemTheme: () => Promise<IpcResult<boolean>>
   onSystemThemeChanged: (handler: (prefersDark: boolean) => void) => () => void
 }

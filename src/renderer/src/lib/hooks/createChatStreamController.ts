@@ -452,12 +452,34 @@ function errorFromPersisted(events: PersistedEvent[]): string | null {
   return null
 }
 
+/** A turn that ended before the work was finished, offering a Continue affordance. */
+export type IncompleteTurnState = {
+  reason: IncompleteReason
+  message: string
+}
+
+export type WriteCheckpointState = {
+  checkpointId: string
+  undone: boolean
+}
+
 function incompleteFromPersisted(events: PersistedEvent[]): IncompleteTurnState | null {
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i]?.event
     if (!isAgentEvent(event)) continue
     if (event.type === 'incomplete') {
       return { reason: event.reason, message: event.message }
+    }
+  }
+  return null
+}
+
+function writeCheckpointFromPersisted(events: PersistedEvent[]): WriteCheckpointState | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]?.event
+    if (!isAgentEvent(event)) continue
+    if (event.type === 'writes_checkpoint') {
+      return { checkpointId: event.checkpointId, undone: false }
     }
   }
   return null
@@ -482,14 +504,9 @@ function hydrateFromDisk(kept: ChatMessage[], events: PersistedEvent[]) {
     error: errorFromPersisted(events),
     incomplete: incompleteFromPersisted(events),
     contextUsage: summarizeContextUsageFromEvents(events),
-    items: finalizeHydratedTranscript(items, events)
+    items: finalizeHydratedTranscript(items, events),
+    writeCheckpoint: writeCheckpointFromPersisted(events)
   }
-}
-
-/** A turn that ended before the work was finished, offering a Continue affordance. */
-export type IncompleteTurnState = {
-  reason: IncompleteReason
-  message: string
 }
 
 export type ChatStreamState = {
@@ -508,6 +525,8 @@ export type ChatStreamState = {
   transcriptLoading: boolean
   /** Turn summary disclosure — survives transcript remounts like tool/group expand state. */
   collapsedTurnIndices: number[]
+  /** Latest turn write checkpoint for Undo on the Files Changed card. */
+  writeCheckpoint: WriteCheckpointState | null
 }
 
 export type ChatStreamController = ChatStreamState & {
@@ -542,6 +561,8 @@ export type ChatStreamController = ChatStreamState & {
     contentWindow?: number
     tokenEstimate: number
   }) => void
+  /** Mark the live write checkpoint as undone after a successful IPC undo. */
+  markWriteCheckpointUndone: (checkpointId?: string) => void
   handleEvent: (event: AgentEvent) => void
   subscribe: (listener: () => void) => () => void
   subscribeItems: (listener: () => void) => () => void
@@ -830,7 +851,8 @@ export function createChatStreamController(
     runTerminalTick: 0,
     pendingRun: false,
     transcriptLoading: false,
-    collapsedTurnIndices: []
+    collapsedTurnIndices: [],
+    writeCheckpoint: null
   }
 
   const notify = (): void => {
@@ -905,7 +927,8 @@ export function createChatStreamController(
       running: false,
       runStartedAt: null,
       pendingRun: false,
-      collapsedTurnIndices: []
+      collapsedTurnIndices: [],
+      writeCheckpoint: null
     })
   }
 
@@ -1133,6 +1156,8 @@ export function createChatStreamController(
                   ...item,
                   // The call is settled, so any prompt it was waiting on is moot.
                   approval: undefined,
+                  // Drop auto-expand so finished bodies collapse; user toggle still wins via false.
+                  toolExpanded: item.toolExpanded === false ? false : undefined,
                   tool: {
                     ...item.tool,
                     name: event.name,
@@ -1194,8 +1219,13 @@ export function createChatStreamController(
         items: replaceAt(state.items, idx, {
           ...item,
           subagent: entries,
-          // Preserve explicit user collapse; otherwise keep/auto-expand.
-          toolExpanded: item.toolExpanded === false ? false : true
+          // Auto-expand only while the subagent is still running; preserve user collapse.
+          toolExpanded:
+            item.toolExpanded === false
+              ? false
+              : item.tool.status === 'running'
+                ? true
+                : item.toolExpanded
         })
       })
     } else if (event.type === 'subagent_context_usage') {
@@ -1253,6 +1283,10 @@ export function createChatStreamController(
     } else if (event.type === 'compaction') {
       patch({
         runNotice: 'Context summarized to stay within the model window.'
+      })
+    } else if (event.type === 'writes_checkpoint') {
+      patch({
+        writeCheckpoint: { checkpointId: event.checkpointId, undone: false }
       })
     } else if (event.type === 'step_usage') {
       const usage = stepUsageFromEvent(event)
@@ -1561,7 +1595,10 @@ export function createChatStreamController(
     activeInvokeId = null
     usageTotals = emptyStepUsageTotals()
     toolContentCache.clear()
-    patch(hydrateFromDisk(kept, rows))
+    patch({
+      ...hydrateFromDisk(kept, rows),
+      collapsedTurnIndices: []
+    })
   }
 
   /** Replace session UI and cancel any in-flight run on this controller. */
@@ -1862,6 +1899,14 @@ export function createChatStreamController(
     })
   }
 
+  const markWriteCheckpointUndone = (checkpointId?: string): void => {
+    if (disposed) return
+    const current = state.writeCheckpoint
+    if (!current) return
+    if (checkpointId && current.checkpointId !== checkpointId) return
+    patch({ writeCheckpoint: { ...current, undone: true } })
+  }
+
   const dispose = (): void => {
     disposed = true
     flushStreamingPatches()
@@ -1910,6 +1955,9 @@ export function createChatStreamController(
     get collapsedTurnIndices() {
       return state.collapsedTurnIndices
     },
+    get writeCheckpoint() {
+      return state.writeCheckpoint
+    },
     get disposed() {
       return disposed
     },
@@ -1930,6 +1978,7 @@ export function createChatStreamController(
     respondToApproval,
     syncFromDisk,
     applyManualCompaction,
+    markWriteCheckpointUndone,
     handleEvent,
     subscribe,
     subscribeItems,

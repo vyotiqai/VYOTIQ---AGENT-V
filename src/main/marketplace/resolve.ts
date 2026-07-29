@@ -40,10 +40,29 @@ function marketplaceIndexFingerprint(): string {
 function settingsMcpFingerprint(): string {
   const settings = getSettings()
   return (settings.mcpServers ?? [])
-    .map(
-      (s) =>
-        `${s.id}:${s.enabled}:${s.source ?? ''}:${s.command ?? ''}:${(s.args ?? []).join(',')}:${s.url ?? ''}`
-    )
+    .map((s) => {
+      const envKeys = Object.keys(s.env ?? {})
+        .sort()
+        .join(',')
+      const headerKeys = Object.keys(s.headers ?? {})
+        .sort()
+        .join(',')
+      const allowed = (s.allowedTools ?? []).join(',')
+      const denied = (s.deniedTools ?? []).join(',')
+      return [
+        s.id,
+        s.enabled,
+        s.source ?? '',
+        s.transport ?? '',
+        s.command ?? '',
+        (s.args ?? []).join(','),
+        s.url ?? '',
+        envKeys,
+        headerKeys,
+        allowed,
+        denied
+      ].join(':')
+    })
     .join('|')
 }
 

@@ -21,12 +21,14 @@ const QUERY_DEBOUNCE_MS = 250
 export function useMarketplaceController({
   settings,
   onUpdate,
-  onReloadSettings
+  onReloadSettings,
+  activeWorkspacePath
 }: {
   settings: Settings
   onUpdate: (partial: Partial<Settings>) => Promise<{ ok: true } | { ok: false; error: string }>
   /** Reload settings from main after marketplace mutations that write mcpServers on disk. */
   onReloadSettings?: () => Promise<void>
+  activeWorkspacePath?: string | null
 }) {
   const [kindFilter, setKindFilter] = useState<MarketplaceKind | 'all'>('all')
   const [query, setQuery] = useState('')
@@ -61,16 +63,17 @@ export function useMarketplaceController({
     const reqId = ++mcpStatusReqIdRef.current
     setMcpStatusLoading(true)
     try {
+      const payload = { workspacePath: activeWorkspacePath ?? null }
       const res =
         refresh && window.vyotiq.mcpRefresh
-          ? await window.vyotiq.mcpRefresh()
-          : await window.vyotiq.mcpStatus()
+          ? await window.vyotiq.mcpRefresh(payload)
+          : await window.vyotiq.mcpStatus(payload)
       if (reqId !== mcpStatusReqIdRef.current) return
       if (res.ok) setMcpStatus(res.data.servers)
     } finally {
       if (reqId === mcpStatusReqIdRef.current) setMcpStatusLoading(false)
     }
-  }, [])
+  }, [activeWorkspacePath])
 
   const runUpdate = useCallback(
     async (partial: Partial<Settings>): Promise<boolean> => {

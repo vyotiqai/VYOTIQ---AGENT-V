@@ -5,6 +5,7 @@ import {
   ChatStartRequestSchema,
   CancelRunRequestSchema,
   CompactRunRequestSchema,
+  UndoWritesRequestSchema,
   SetSettingsRequestSchema,
   SetSecretRequestSchema,
   ClearSecretRequestSchema,
@@ -32,6 +33,10 @@ import {
   McpApplyDetectedRequestSchema,
   McpImportExternalRequestSchema,
   McpScanExternalRequestSchema,
+  SlashCommandsListRequestSchema,
+  SlashCommandsResolveRequestSchema,
+  SlashCommandsCreateRuleRequestSchema,
+  SlashCommandsOpenFileRequestSchema,
   ok,
   fail,
   type ExtractAttachmentResult,
@@ -41,6 +46,7 @@ import {
   type ChatStartResult,
   type ChatMessage,
   type CompactRunResult,
+  type UndoWritesResult,
   type ListRunsResult,
   type RunSummary,
   type SecretsStatus,
@@ -75,8 +81,15 @@ import {
   detectMcpInput,
   applyDetectedManualMcp,
   scanExternalMcpConfigs,
-  importExternalMcpServers
+  importExternalMcpServers,
+  invalidateMcpResolveCache
 } from '@main/marketplace'
+import {
+  listSlashCommands,
+  resolveSlashCommand,
+  createWorkspaceRule,
+  openSlashFile
+} from '@main/agent/slashCommands'
 import {
   setSecret,
   clearSecret,
@@ -89,6 +102,8 @@ import {
 import { ChatEventBatcher, getChatEventBatchStats, resetChatEventBatchStats } from './streamBatch'
 import { runAgent, createRunId } from '../agent/loop'
 import { compactRunNow, CompactionUnavailableError } from '../agent/compactRun'
+import { undoWrites } from '../agent/checkpoints'
+import { resolveRunDir } from '@main/storage/paths'
 import { extractAttachment } from '../attachments/extract'
 import {
   cancelPendingApprovals,
@@ -121,9 +136,11 @@ import {
   removeWorkspace,
   setActiveWorkspace,
   updateWorkspaceUiState,
-  setWorkspaceSettingsOverride
+  setWorkspaceSettingsOverride,
+  findWorkspaceSettingsOverride
 } from '@main/workspace/workspaces'
-import { workspacePathsEqual } from '../../shared/workspacePath'
+import { canonicalizeWorkspacePath, workspacePathsEqual } from '../../shared/workspacePath'
+import { relative, isAbsolute } from 'path'
 import { commitAll, readGitStatus } from '@main/git/git'
 import { applyTitleBarTheme } from '@main/app/window'
 import { logsDirectory } from '../logging/init'
@@ -310,6 +327,7 @@ export function registerIpc(): void {
         applySentryTelemetry(next.telemetryEnabled)
       }
       if (partial.mcpServers !== undefined || partial.marketplace !== undefined) {
+        invalidateMcpResolveCache()
         await syncMcpServers(resolveMcpServersForSessionMap())
       }
       return ok(next)
@@ -544,6 +562,29 @@ export function registerIpc(): void {
     }
   })
 
+  ipcMain.handle(IPC.runsUndoWrites, async (event, raw): Promise<IpcResult<UndoWritesResult>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = UndoWritesRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      if (isActive(req.runId)) {
+        return fail('Stop the run before undoing agent writes.')
+      }
+      const runDir = resolveRunDir(req.workspacePath, req.runId)
+      const result = undoWrites(runDir, req.workspacePath, req.checkpointId)
+      logger.info('Undid agent writes', {
+        scope: 'ipc',
+        correlationId: req.runId,
+        channel: IPC.runsUndoWrites,
+        checkpointId: result.checkpointId,
+        restored: result.restored.length
+      })
+      return ok(result)
+    } catch (err) {
+      return failFrom(err, IPC.runsUndoWrites)
+    }
+  })
+
   ipcMain.handle(IPC.listRuns, async (event, raw): Promise<IpcResult<ListRunsResult>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
@@ -710,22 +751,37 @@ export function registerIpc(): void {
     }
   })
 
-  ipcMain.handle(IPC.mcpStatus, async (event): Promise<IpcResult<McpStatusResult>> => {
+  ipcMain.handle(IPC.mcpStatus, async (event, raw): Promise<IpcResult<McpStatusResult>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
-      // List all configured servers for UI; connection map may be a subset (N6).
-      const servers = resolveEffectiveMcpServers()
+      const workspacePath =
+        typeof (raw as { workspacePath?: unknown } | null)?.workspacePath === 'string'
+          ? ((raw as { workspacePath: string }).workspacePath.trim() || null)
+          : getWorkspaces().activePath
+      const overrides = workspacePath
+        ? findWorkspaceSettingsOverride(getWorkspaces(), workspacePath)?.marketplaceOverrides ??
+          null
+        : null
+      const servers = resolveEffectiveMcpServers(overrides)
       return ok({ servers: getMcpServerStatus(servers) })
     } catch (err) {
       return failFrom(err, IPC.mcpStatus)
     }
   })
 
-  ipcMain.handle(IPC.mcpRefresh, async (event): Promise<IpcResult<McpStatusResult>> => {
+  ipcMain.handle(IPC.mcpRefresh, async (event, raw): Promise<IpcResult<McpStatusResult>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
+      const workspacePath =
+        typeof (raw as { workspacePath?: unknown } | null)?.workspacePath === 'string'
+          ? ((raw as { workspacePath: string }).workspacePath.trim() || null)
+          : getWorkspaces().activePath
+      const overrides = workspacePath
+        ? findWorkspaceSettingsOverride(getWorkspaces(), workspacePath)?.marketplaceOverrides ??
+          null
+        : null
       await refreshMcpServers(resolveMcpServersForSessionMap())
-      return ok({ servers: getMcpServerStatus(resolveEffectiveMcpServers()) })
+      return ok({ servers: getMcpServerStatus(resolveEffectiveMcpServers(overrides)) })
     } catch (err) {
       return failFrom(err, IPC.mcpRefresh)
     }
@@ -738,6 +794,7 @@ export function registerIpc(): void {
         .object({ serverId: z.string().min(1), token: z.string().min(1) })
         .parse(raw)
       setMcpAuthToken(serverId, token)
+      invalidateMcpResolveCache()
       const settings = getSettings()
       const nextServers = (settings.mcpServers ?? []).map((s) =>
         s.id === serverId
@@ -758,6 +815,7 @@ export function registerIpc(): void {
       const { serverId } = z.object({ serverId: z.string().min(1) }).parse(raw)
       clearMcpAuthToken(serverId)
       clearMcpOAuthState(serverId)
+      invalidateMcpResolveCache()
       const settings = getSettings()
       const nextServers = (settings.mcpServers ?? []).map((s) =>
         s.id === serverId
@@ -777,6 +835,7 @@ export function registerIpc(): void {
     try {
       const { serverId } = z.object({ serverId: z.string().min(1) }).parse(raw)
       await startMcpOAuth(serverId)
+      invalidateMcpResolveCache()
       await syncMcpServers(resolveMcpServersForSessionMap())
       return ok({ servers: getMcpServerStatus(resolveEffectiveMcpServers()) })
     } catch (err) {
@@ -820,6 +879,7 @@ export function registerIpc(): void {
     try {
       const req = MarketplaceInstallRequestSchema.parse(raw)
       const result = await installMarketplacePackage(req)
+      invalidateMcpResolveCache()
       await syncMcpServers(resolveMcpServersForSessionMap())
       return ok(result)
     } catch (err) {
@@ -887,6 +947,7 @@ export function registerIpc(): void {
       const { id } = MarketplaceUninstallRequestSchema.parse(raw)
       const index = removeInstalledItem(id)
       syncMarketplaceMcpIntoSettings()
+      invalidateMcpResolveCache()
       await syncMcpServers(resolveMcpServersForSessionMap())
       return ok(index)
     } catch (err) {
@@ -899,6 +960,7 @@ export function registerIpc(): void {
     try {
       const { id, enabled } = MarketplaceSetEnabledRequestSchema.parse(raw)
       const index = setInstalledEnabled(id, enabled)
+      invalidateMcpResolveCache()
       const item = index.items.find((i) => i.id === id)
       if (item?.kind === 'mcp' || item?.kind === 'plugin') {
         if (item.kind === 'mcp') syncMarketplaceMcpIntoSettings()
@@ -941,6 +1003,73 @@ export function registerIpc(): void {
       return ok(contents)
     } catch (err) {
       return failFrom(err, IPC.marketplaceGetContents)
+    }
+  })
+
+  ipcMain.handle(IPC.slashCommandsList, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = SlashCommandsListRequestSchema.parse(raw ?? {})
+      const workspacePath = req.workspacePath?.trim() || null
+      if (workspacePath && !isOpenWorkspace(workspacePath)) {
+        return fail('Workspace is not open')
+      }
+      const commands = await listSlashCommands(workspacePath)
+      return ok({ commands })
+    } catch (err) {
+      return failFrom(err, IPC.slashCommandsList)
+    }
+  })
+
+  ipcMain.handle(IPC.slashCommandsResolve, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = SlashCommandsResolveRequestSchema.parse(raw)
+      const workspacePath = req.workspacePath?.trim() || null
+      if (workspacePath && !isOpenWorkspace(workspacePath)) {
+        return fail('Workspace is not open')
+      }
+      const result = await resolveSlashCommand(req.id, {
+        workspacePath,
+        trailingText: req.trailingText
+      })
+      return ok(result)
+    } catch (err) {
+      return failFrom(err, IPC.slashCommandsResolve)
+    }
+  })
+
+  ipcMain.handle(IPC.slashCommandsCreateRule, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = SlashCommandsCreateRuleRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) {
+        return fail('Workspace is not open')
+      }
+      const result = await createWorkspaceRule(req.workspacePath, req.title)
+      return ok(result)
+    } catch (err) {
+      return failFrom(err, IPC.slashCommandsCreateRule)
+    }
+  })
+
+  ipcMain.handle(IPC.slashCommandsOpenFile, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = SlashCommandsOpenFileRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) {
+        return fail('Workspace is not open')
+      }
+      const root = canonicalizeWorkspacePath(req.workspacePath)
+      const target = canonicalizeWorkspacePath(req.path)
+      const rel = relative(root, target)
+      if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+        return fail('Path is outside the workspace')
+      }
+      await openSlashFile(target)
+      return ok(true)
+    } catch (err) {
+      return failFrom(err, IPC.slashCommandsOpenFile)
     }
   })
 

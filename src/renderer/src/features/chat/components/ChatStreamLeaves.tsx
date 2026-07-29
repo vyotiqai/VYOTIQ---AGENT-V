@@ -14,6 +14,7 @@ import type { ChatItemsStore } from '../chatStores'
 const MUTATING_GIT_TOOLS = new Set([
   'edit',
   'multi_edit',
+  'str_replace',
   'delete',
   'terminal',
   'memory_write'

@@ -135,6 +135,49 @@ describe('MarkdownContent streaming', () => {
     expect(screen.queryByText('```js')).toBeNull()
   })
 
+  it('keeps plain code visible until highlight is ready after stream ends', async () => {
+    const { container, rerender } = render(
+      <MarkdownContent content={'```js\nconst x = 1'} streaming />
+    )
+
+    expect(container.textContent).toContain('const x = 1')
+    expect(container.querySelector('pre.shiki')).toBeNull()
+
+    rerender(<MarkdownContent content={'```js\nconst x = 1\n```'} streaming={false} />)
+
+    // Soft swap: plain shell stays until highlight HTML arrives — never an empty shell.
+    expect(container.textContent).toContain('const x = 1')
+    expect(container.querySelector('.group\\/code')).toBeTruthy()
+
+    await waitFor(() => {
+      expect(container.querySelector('pre.shiki')).toBeTruthy()
+    })
+    expect(container.textContent).toContain('const x = 1')
+  })
+
+  it('keeps an earlier finished fence highlighted across streaming deltas', async () => {
+    const { container, rerender } = render(
+      <MarkdownContent
+        content={'```js\nconst done = 1\n```\n\nMore text'}
+        streaming
+      />
+    )
+
+    await waitFor(() => {
+      expect(container.querySelector('pre.shiki')).toBeTruthy()
+    })
+    const finished = container.querySelector('pre.shiki')
+
+    rerender(
+      <MarkdownContent
+        content={'```js\nconst done = 1\n```\n\nMore text grows'}
+        streaming
+      />
+    )
+
+    expect(container.querySelector('pre.shiki')).toBe(finished)
+  })
+
   it('renders GFM tables', () => {
     render(
       <MarkdownContent

@@ -7,6 +7,7 @@ import { toolGrep } from '@main/agent/tools/grep'
 import { toolListDir } from '@main/agent/tools/listDir'
 import { toolMultiEdit } from '@main/agent/tools/multiEdit'
 import { toolDelete } from '@main/agent/tools/deletePath'
+import { toolStrReplace } from '@main/agent/tools/strReplace'
 import { readTodos, toolTodoWrite } from '@main/agent/tools/todo'
 import { htmlToMarkdown } from '@main/agent/tools/webFetch'
 import { globToRegExp } from '@main/agent/tools/walk'
@@ -190,6 +191,26 @@ describe('toolDelete', () => {
   it('refuses to escape the workspace or delete its root', () => {
     expect(() => toolDelete(root, '..')).toThrow()
     expect(() => toolDelete(root, '.')).toThrow(/workspace root/)
+  })
+})
+
+describe('toolStrReplace', () => {
+  it('replaces a unique occurrence', () => {
+    const out = toolStrReplace(root, 'src/a.ts', 'alpha', 'gamma')
+    expect(out).toContain('1 occurrence')
+    expect(readFileSync(join(root, 'src', 'a.ts'), 'utf8')).toContain('gamma')
+  })
+
+  it('fails when old_string matches more than once unless replace_all', () => {
+    writeFileSync(join(root, 'dup.ts'), 'aa aa aa\n', 'utf8')
+    expect(() => toolStrReplace(root, 'dup.ts', 'aa', 'bb')).toThrow(/matched 3 times/)
+    const out = toolStrReplace(root, 'dup.ts', 'aa', 'bb', true)
+    expect(out).toContain('3 occurrences')
+    expect(readFileSync(join(root, 'dup.ts'), 'utf8')).toBe('bb bb bb\n')
+  })
+
+  it('fails when old_string is missing', () => {
+    expect(() => toolStrReplace(root, 'src/a.ts', 'nope', 'x')).toThrow(/not found/)
   })
 })
 

@@ -76,6 +76,16 @@ export function parseEditCardData(tool: UiToolRow): EditCardData {
 
   const path = typeof args?.path === 'string' ? args.path : tool.summary?.trim() || 'file'
 
+  if (tool.name === 'str_replace' || (typeof args?.old_string === 'string' && typeof args?.new_string === 'string')) {
+    const oldString = typeof args?.old_string === 'string' ? args.old_string : ''
+    const newString = typeof args?.new_string === 'string' ? args.new_string : ''
+    if (oldString || newString) {
+      const removed = countLines(oldString)
+      const added = countLines(newString)
+      return { path, added, removed, changeLabel: changeLabelFor(added, removed) }
+    }
+  }
+
   if (typeof args?.contents === 'string') {
     const added = countLines(args.contents)
     return { path, added, removed: 0, changeLabel: changeLabelFor(added, 0) }
@@ -89,7 +99,25 @@ export function parseEditCardData(tool: UiToolRow): EditCardData {
   return { path, added: 0, removed: 0, changeLabel: '' }
 }
 
+function diffLinesFromStrReplace(args: Record<string, unknown>): DiffLine[] {
+  const oldString = typeof args.old_string === 'string' ? args.old_string : ''
+  const newString = typeof args.new_string === 'string' ? args.new_string : ''
+  if (!oldString && !newString) return []
+  const out: DiffLine[] = []
+  for (const text of splitLines(oldString)) {
+    out.push({ kind: 'del', text, lineNumber: null })
+  }
+  for (const [index, text] of splitLines(newString).entries()) {
+    out.push({ kind: 'add', text, lineNumber: index + 1 })
+  }
+  return out
+}
+
 function diffLinesFromEditArgs(args: Record<string, unknown>): DiffLine[] {
+  if (typeof args.old_string === 'string' || typeof args.new_string === 'string') {
+    return diffLinesFromStrReplace(args)
+  }
+
   if (typeof args.contents === 'string') {
     return splitLines(args.contents).map((text, index) => ({
       kind: 'add' as const,

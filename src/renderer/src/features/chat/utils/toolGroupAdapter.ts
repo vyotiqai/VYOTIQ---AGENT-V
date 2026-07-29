@@ -122,7 +122,7 @@ function toolSubtitle(tool: UiToolRow): string {
   const summary = tool.summary?.trim() || summarizeToolArgs(tool.name, tool.argsPreview)
   if (!summary) return '…'
   if (tool.name === 'terminal') return summary.slice(0, 80)
-  if (tool.name === 'read' || tool.name === 'edit' || tool.name === 'delete') {
+  if (tool.name === 'read' || tool.name === 'edit' || tool.name === 'str_replace' || tool.name === 'delete') {
     const parts = summary.split(/[/\\]/)
     const file = parts[parts.length - 1] || summary
     const range = tool.name === 'read' ? parseReadLineRange(tool) : ''

@@ -299,7 +299,7 @@ export function stabilizeTranscriptRows(
 }
 
 /** Tools that write files, and so contribute to a turn's change summary. */
-const WRITING_TOOLS = new Set(['edit', 'multi_edit', 'delete'])
+const WRITING_TOOLS = new Set(['edit', 'multi_edit', 'str_replace', 'delete'])
 
 function writingToolChanges(item: ToolItem): ChangedFile[] {
   if (!WRITING_TOOLS.has(item.tool.name) || item.tool.status !== 'done') return []
@@ -329,8 +329,8 @@ function withChangeSummaries(rows: TranscriptRow[]): TranscriptRow[] {
   let totals = new Map<string, ChangedFile>()
 
   const closeTurn = (): void => {
-    // A single edit already has its own card; only roll up multi-file turns.
-    if (turnIndex != null && totals.size >= 2) {
+    // Roll up whenever the turn wrote files so Undo has a home (single-file too).
+    if (turnIndex != null && totals.size >= 1) {
       out.push({
         kind: 'changes',
         id: `changes:${turnIndex}`,

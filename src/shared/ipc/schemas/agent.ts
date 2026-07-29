@@ -240,6 +240,19 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
       tools: z.number().int().min(0),
       buffer: z.number().int().min(0)
     })
+  }),
+  z.object({
+    /** Turn-level snapshot of agent file writes; used for Undo on the Files Changed card. */
+    type: z.literal('writes_checkpoint'),
+    ...eventBase,
+    checkpointId: z.string().min(1),
+    files: z.array(
+      z.object({
+        path: z.string().min(1),
+        action: z.enum(['created', 'modified', 'deleted']),
+        undoable: z.boolean()
+      })
+    )
   })
 ])
 export type AgentEvent = z.infer<typeof AgentEventSchema>
@@ -334,6 +347,20 @@ export const CompactRunResultSchema = z.object({
   contentWindow: z.number().int().min(1).optional()
 })
 export type CompactRunResult = z.infer<typeof CompactRunResultSchema>
+
+export const UndoWritesRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  runId: RunIdSchema,
+  checkpointId: z.string().min(1).optional()
+})
+export type UndoWritesRequest = z.infer<typeof UndoWritesRequestSchema>
+
+export const UndoWritesResultSchema = z.object({
+  checkpointId: z.string().min(1),
+  restored: z.array(z.string()),
+  skipped: z.array(z.string())
+})
+export type UndoWritesResult = z.infer<typeof UndoWritesResultSchema>
 
 /**
  * A gated tool call waiting on the user. The loop is parked on this request, so

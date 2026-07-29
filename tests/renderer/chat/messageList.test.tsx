@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import {
   estimateTranscriptRowSize,
   MessageList,
@@ -226,6 +226,134 @@ describe('MessageList', () => {
     })
     expect(scrollTopSet).toHaveBeenCalledWith(4000)
     expect(scroll.style.paddingBottom).toBe('var(--vy-dock-h, 8rem)')
+
+    vi.unstubAllGlobals()
+  })
+
+  it('follows content growth on the same message id while streaming and pinned', async () => {
+    class ResizeObserverStub {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub)
+
+    const { rerender } = render(
+      <MessageList
+        items={[
+          {
+            kind: 'message',
+            id: 'msg-stream',
+            role: 'assistant',
+            content: 'Hello',
+            streaming: true
+          }
+        ]}
+        running
+        reserveComposerSpace
+        dockReservePx={180}
+      />
+    )
+    const scroll = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
+    let scrollTop = 0
+    const scrollTopSet = vi.fn((value: number) => {
+      scrollTop = value
+    })
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 400 })
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 2000 })
+    Object.defineProperty(scroll, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: scrollTopSet
+    })
+    // Outside pin slack so content-revision follow must call followTail.
+    // nearBottom ≈ dockReserve (180); distance must exceed that.
+    scrollTop = 1000
+    scrollTopSet.mockClear()
+
+    rerender(
+      <MessageList
+        items={[
+          {
+            kind: 'message',
+            id: 'msg-stream',
+            role: 'assistant',
+            content: 'Hello world, still streaming more tokens here',
+            streaming: true
+          }
+        ]}
+        running
+        reserveComposerSpace
+        dockReservePx={180}
+      />
+    )
+
+    await vi.waitFor(() => {
+      expect(scrollTopSet).toHaveBeenCalledWith(2000)
+    })
+
+    vi.unstubAllGlobals()
+  })
+
+  it('does not follow content growth when the user has scrolled away', async () => {
+    class ResizeObserverStub {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub)
+
+    const { rerender } = render(
+      <MessageList
+        items={[
+          {
+            kind: 'message',
+            id: 'msg-stream',
+            role: 'assistant',
+            content: 'Hello',
+            streaming: true
+          }
+        ]}
+        running
+        reserveComposerSpace
+        dockReservePx={120}
+      />
+    )
+    const scroll = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
+    let scrollTop = 0
+    const scrollTopSet = vi.fn((value: number) => {
+      scrollTop = value
+    })
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 400 })
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 2000 })
+    Object.defineProperty(scroll, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: scrollTopSet
+    })
+    scrollTop = 200
+    fireEvent.scroll(scroll)
+    scrollTopSet.mockClear()
+
+    rerender(
+      <MessageList
+        items={[
+          {
+            kind: 'message',
+            id: 'msg-stream',
+            role: 'assistant',
+            content: 'Hello world grew a lot without pin',
+            streaming: true
+          }
+        ]}
+        running
+        reserveComposerSpace
+        dockReservePx={120}
+      />
+    )
+
+    await new Promise((r) => setTimeout(r, 40))
+    expect(scrollTopSet).not.toHaveBeenCalled()
 
     vi.unstubAllGlobals()
   })

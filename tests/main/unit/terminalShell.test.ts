@@ -6,11 +6,14 @@ import {
   isDirMissingPathContent,
   lastPipelineCommandToken,
   primaryCommandToken,
+  resolveTerminalShell,
   sanitizedTerminalEnv,
+  terminalSpawnSpec,
   unixShellInvocation,
   unsupportedUnixOnWindowsMessage
 } from '@main/agent/tools/terminal'
 import { executeTool } from '@main/agent/tools'
+import { toolTerminal } from '@main/agent/tools/terminal'
 import { getLoggerBackend, setLoggerBackend } from '@shared/logger'
 import { mkdtempSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
@@ -173,37 +176,57 @@ describe('isDirMissingPath', () => {
   })
 })
 
+describe('resolveTerminalShell / terminalSpawnSpec', () => {
+  it('maps preferences to resolved shells', () => {
+    expect(resolveTerminalShell('cmd', 'win32')).toBe('cmd')
+    expect(resolveTerminalShell('cmd', 'linux')).toBe('unix')
+    expect(resolveTerminalShell('powershell', 'win32')).toBe('powershell')
+    expect(resolveTerminalShell('bash', 'darwin')).toBe('bash')
+    expect(resolveTerminalShell('auto', 'linux')).toBe('unix')
+  })
+
+  it('builds spawn args for each resolved shell', () => {
+    expect(terminalSpawnSpec('echo hi', 'cmd')).toEqual({
+      resolved: 'cmd',
+      bin: 'cmd.exe',
+      args: ['/c', 'echo hi']
+    })
+    expect(terminalSpawnSpec('Get-ChildItem', 'powershell').args).toEqual([
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      'Get-ChildItem'
+    ])
+    expect(terminalSpawnSpec('ls', 'bash')).toEqual({
+      resolved: 'bash',
+      bin: 'bash',
+      args: ['-lc', 'ls']
+    })
+  })
+})
+
 describe('Windows terminal executeTool behavior', () => {
-  it('intercepts Unix primaries before spawn on win32', async () => {
+  it('intercepts Unix primaries before spawn on win32 when shell is cmd', async () => {
     if (process.platform !== 'win32') return
     const dir = mkdtempSync(join(tmpdir(), 'vyotiq-term-unix-'))
     const signal = new AbortController().signal
-    const result = await executeTool(
-      'terminal',
-      JSON.stringify({ command: 'ls -la' }),
-      dir,
-      signal
-    )
-    expect(result.ok).toBe(false)
-    expect(result.content).toMatch(/Unsupported Unix command/)
-    expect(result.content).toMatch(/dir/)
-    expect(result.content).toMatch(/exit_code: 1/)
+    const content = await toolTerminal(dir, 'ls -la', signal, { shell: 'cmd' })
+    expect(content).toMatch(/Unsupported Unix command/)
+    expect(content).toMatch(/dir/)
+    expect(content).toMatch(/exit_code: 1/)
   })
 
-  it('treats findstr no-match as soft success on win32', async () => {
+  it('treats findstr no-match as soft success on win32 with cmd', async () => {
     if (process.platform !== 'win32') return
     const dir = mkdtempSync(join(tmpdir(), 'vyotiq-term-findstr-'))
     writeFileSync(join(dir, 'a.txt'), 'hello\n', 'utf8')
     const signal = new AbortController().signal
-    const result = await executeTool(
-      'terminal',
-      JSON.stringify({ command: 'findstr /i zzznomatch123 a.txt' }),
-      dir,
-      signal
-    )
-    expect(result.ok).toBe(true)
-    expect(result.content).toMatch(/findstr: no matches/)
-    expect(result.content).toMatch(/exit_code: 1/)
+    const content = await toolTerminal(dir, 'findstr /i zzznomatch123 a.txt', signal, {
+      shell: 'cmd'
+    })
+    expect(content).toMatch(/findstr: no matches/)
+    expect(content).toMatch(/shell: cmd/)
+    expect(content).toMatch(/exit_code: 1/)
   })
 })
 

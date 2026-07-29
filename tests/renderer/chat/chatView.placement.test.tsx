@@ -71,6 +71,7 @@ describe('ChatView composer placement', () => {
     expect(composers).toHaveLength(1)
 
     expect(document.querySelector('[data-composer-hero]')).toBeTruthy()
+    expect(screen.getByText(/Type \/ for commands/i)).toBeTruthy()
     expect(screen.getByText(/\/create-rule/)).toBeTruthy()
 
     const composerRoot = composers[0].closest('.shrink-0')

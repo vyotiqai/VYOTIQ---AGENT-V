@@ -1,8 +1,12 @@
-import type { ProviderId, ToolApprovalMode } from '@shared/ipc'
+import type { ProviderId, TerminalShell, ToolApprovalMode } from '@shared/ipc'
 import { defaultModelFor } from '@shared/providers'
 import { Input, Menu, Button } from '@renderer/lib/ui'
 import type { SettingsFormState } from '../hooks/useSettingsForm'
-import { ACTIVE_PROVIDER_OPTIONS, TOOL_APPROVAL_OPTIONS } from '../constants'
+import {
+  ACTIVE_PROVIDER_OPTIONS,
+  TERMINAL_SHELL_OPTIONS,
+  TOOL_APPROVAL_OPTIONS
+} from '../constants'
 import { SettingsRow } from '../components/SettingsRow'
 
 const SUBAGENT_PROVIDER_OPTIONS = [
@@ -173,6 +177,23 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
             </ul>
           ) : null}
         </div>
+      </SettingsRow>
+
+      <SettingsRow
+        title="Terminal shell"
+        description="Shell for the terminal tool. Auto prefers PowerShell on Windows when available. Global setting (not per-workspace)."
+      >
+        <Menu
+          aria-label="Terminal shell"
+          value={form.settings.terminalShell ?? 'auto'}
+          options={TERMINAL_SHELL_OPTIONS}
+          searchable={false}
+          placement="down"
+          disabled={form.formLocked}
+          onChange={(v) => {
+            void form.runUpdate({ terminalShell: v as TerminalShell })
+          }}
+        />
       </SettingsRow>
 
       <SettingsRow
