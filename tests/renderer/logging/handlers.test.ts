@@ -49,7 +49,7 @@ describe('renderer error handlers', () => {
       })
     )
     expect(fatal).toHaveBeenCalledWith(
-      'Uncaught renderer error',
+      expect.stringMatching(/^Uncaught renderer error:/),
       expect.objectContaining({ scope: 'renderer', code: 'UNCAUGHT' })
     )
   })
@@ -60,7 +60,7 @@ describe('renderer error handlers', () => {
     Object.defineProperty(event, 'reason', { value: new Error('reject') })
     window.dispatchEvent(event)
     expect(fatal).toHaveBeenCalledWith(
-      'Unhandled renderer rejection',
+      expect.stringMatching(/^Unhandled renderer rejection:/),
       expect.objectContaining({ scope: 'renderer', code: 'UNCAUGHT' })
     )
   })

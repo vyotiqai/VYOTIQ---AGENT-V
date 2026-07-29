@@ -12,6 +12,7 @@ export const ASK_SAFE_BUILTIN = new Set([
   'list_dir',
   'web_fetch',
   'web_search',
+  'ask_question',
   // Browse-only: click/type/fill/press_key/select can mutate live sites.
   'browser_navigate',
   'browser_snapshot',
@@ -22,6 +23,10 @@ export const ASK_SAFE_BUILTIN = new Set([
   'browser_wait_for_selector',
   'browser_wait_for_url',
   'mcp_list_tools',
+  'mcp_list_resources',
+  'mcp_read_resource',
+  'mcp_list_prompts',
+  'mcp_get_prompt',
   'memory_list',
   'memory_read',
   'subagent',
@@ -32,6 +37,9 @@ export const ASK_SAFE_BUILTIN = new Set([
 
 /** Plan mode also allows todos + plan-artifact edits. */
 const PLAN_EXTRA_BUILTIN = new Set(['todo_write', 'edit', 'str_replace'])
+
+/** Allowed in every interaction mode (not read-only, but mode control). */
+const ALL_MODE_BUILTIN = new Set(['switch_mode'])
 
 /** Filenames Plan mode may write inside the run directory. */
 export const PLAN_ARTIFACT_NAMES = new Set(['contract.md', 'plan.md'])
@@ -73,6 +81,7 @@ export function modeSectionMarkdown(mode: AgentInteractionMode): string | null {
 
 export function isBuiltinAllowedInMode(mode: AgentInteractionMode, name: string): boolean {
   if (mode === 'agent') return true
+  if (ALL_MODE_BUILTIN.has(name)) return true
   if (ASK_SAFE_BUILTIN.has(name)) return true
   if (mode === 'plan' && PLAN_EXTRA_BUILTIN.has(name)) return true
   return false
@@ -155,7 +164,12 @@ const ASK_SAFE_SERIAL_OK = new Set([
   'browser_back',
   'browser_forward',
   'browser_wait_for_selector',
-  'browser_wait_for_url'
+  'browser_wait_for_url',
+  'ask_question',
+  'mcp_list_resources',
+  'mcp_read_resource',
+  'mcp_list_prompts',
+  'mcp_get_prompt'
 ])
 
 export function askSafeAlignsWithParallelSafe(): boolean {

@@ -274,8 +274,28 @@ describe('runSubagent', () => {
       depth: 0
     })
 
-    const req = streamChat.mock.calls[0]![0] as { tools: { name: string }[] }
+    const req = streamChat.mock.calls[0]![0] as { tools: { name: string }[]; system?: string }
     expect(req.tools.map((t) => t.name).sort()).toEqual([...SUBAGENT_TOOLS].sort())
+  })
+
+  it('lists every SUBAGENT_TOOLS name in the system prompt', async () => {
+    streamChat.mockImplementation(stream([{ type: 'text', text: 'done' }, { type: 'done' }]))
+
+    await runSubagent({
+      task: 'look around',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0
+    })
+
+    const req = streamChat.mock.calls[0]![0] as { system?: string; messages?: { role: string; content?: string }[] }
+    const system =
+      req.system ??
+      req.messages?.find((m) => m.role === 'system')?.content ??
+      ''
+    for (const name of SUBAGENT_TOOLS) {
+      expect(system).toContain(name)
+    }
   })
 
   it('runs tool calls and reports progress before the report', async () => {

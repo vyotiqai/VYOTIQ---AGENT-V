@@ -376,6 +376,34 @@ const mcpListToolsArgs = z.object({
     .optional()
 })
 
+const mcpListResourcesArgs = z.object({
+  serverId: z
+    .string()
+    .describe('Optional MCP server id (omit to list all connected enabled servers)')
+    .optional()
+})
+
+const mcpReadResourceArgs = z.object({
+  serverId: z.string().min(1).describe('MCP server id'),
+  uri: z.string().min(1).describe('Resource URI to read')
+})
+
+const mcpListPromptsArgs = z.object({
+  serverId: z
+    .string()
+    .describe('Optional MCP server id (omit to list all connected enabled servers)')
+    .optional()
+})
+
+const mcpGetPromptArgs = z.object({
+  serverId: z.string().min(1).describe('MCP server id'),
+  name: z.string().min(1).describe('Prompt name'),
+  arguments: z
+    .record(z.string(), z.string())
+    .describe('Prompt argument values')
+    .optional()
+})
+
 const strReplaceArgs = z.object({
   path: z.string().describe('File path inside the workspace'),
   old_string: z
@@ -399,6 +427,28 @@ const subagentArgs = z.object({
     .string()
     .describe('Findings so far that save the sub-agent re-deriving them')
     .optional()
+})
+
+const askQuestionArgs = z.object({
+  question: z.string().min(1).describe('Clear question for the user'),
+  options: z
+    .array(z.string().min(1))
+    .describe('Fixed choices; omit for a free-text answer')
+    .optional(),
+  allowMultiple: z
+    .boolean()
+    .describe('When options are set, allow selecting more than one (default false)')
+    .optional(),
+  allowCustom: z
+    .boolean()
+    .describe('When options are set, allow a custom text answer (default true)')
+    .optional()
+})
+
+const switchModeArgs = z.object({
+  mode: z
+    .enum(['ask', 'plan', 'agent'])
+    .describe('Target interaction mode for the rest of this run')
 })
 
 const memoryListArgs = z.object({})
@@ -565,10 +615,38 @@ const TOOL_REGISTRY = {
       'List connected MCP tools (name, description, readOnlyHint). Use when MCP defs were trimmed from context.',
     schema: mcpListToolsArgs
   },
+  mcp_list_resources: {
+    description:
+      'List MCP resources (uri, name, description) from one server or all connected enabled servers.',
+    schema: mcpListResourcesArgs
+  },
+  mcp_read_resource: {
+    description: 'Read an MCP resource by server id and URI.',
+    schema: mcpReadResourceArgs
+  },
+  mcp_list_prompts: {
+    description:
+      'List MCP prompts (name, description, arguments) from one server or all connected enabled servers.',
+    schema: mcpListPromptsArgs
+  },
+  mcp_get_prompt: {
+    description: 'Fetch a rendered MCP prompt by server id and name (optional arguments).',
+    schema: mcpGetPromptArgs
+  },
   subagent: {
     description:
       'Delegate a read-only investigation to a nested agent that returns one written report.',
     schema: subagentArgs
+  },
+  ask_question: {
+    description:
+      'Pause and ask the user a structured question in the transcript. Blocks until they answer.',
+    schema: askQuestionArgs
+  },
+  switch_mode: {
+    description:
+      'Switch this run between Ask (read-only), Plan (plan artifacts only), and Agent (full tools).',
+    schema: switchModeArgs
   },
   terminal: {
     description:

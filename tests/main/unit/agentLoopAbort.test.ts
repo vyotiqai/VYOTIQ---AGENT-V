@@ -127,13 +127,17 @@ describe('runAgent abort during provider stream', () => {
     }
 
     expect(events.some((e) => e.type === 'text_delta' && e.text === 'partial ')).toBe(true)
-    expect(events.some((e) => e.type === 'assistant_message' && e.content === 'partial ')).toBe(
-      true
-    )
+    expect(
+      events.some(
+        (e) => e.type === 'assistant_message' && String(e.content).trim() === 'partial'
+      )
+    ).toBe(true)
     expect(events.some((e) => e.type === 'status' && e.status === 'cancelled')).toBe(true)
 
     const messages = loadMessages(workspace, runId)
-    expect(messages.some((m) => m.role === 'assistant' && m.content === 'partial ')).toBe(true)
+    expect(
+      messages.some((m) => m.role === 'assistant' && String(m.content).trim() === 'partial')
+    ).toBe(true)
 
     const eventsPath = join(resolveRunDir(workspace, runId), 'events.jsonl')
     const persisted = readFileSync(eventsPath, 'utf8')

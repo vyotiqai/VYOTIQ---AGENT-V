@@ -32,9 +32,14 @@ describe('toolUi meta', () => {
     expect(toolLabel('mcp__github__list_allowed_directories', 'done')).toBe('Listed directories')
   })
 
+  it('labels ask_question from TOOL_LABELS', () => {
+    expect(toolLabel('ask_question', 'running')).toBe('Asking')
+    expect(toolLabel('ask_question', 'done')).toBe('Asked')
+  })
+
   it('humanizes unknown built-in tool names', () => {
-    expect(toolLabel('ask_question', 'running')).toBe('Running Ask Question')
-    expect(toolLabel('ask_question', 'done')).toBe('Ask Question')
+    expect(toolLabel('future_unknown_tool', 'running')).toBe('Running Future Unknown Tool')
+    expect(toolLabel('future_unknown_tool', 'done')).toBe('Future Unknown Tool')
   })
 
   it('labels unresolved streaming tool names as Preparing', () => {

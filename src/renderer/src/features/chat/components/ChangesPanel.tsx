@@ -1,48 +1,12 @@
 import { useMemo } from 'react'
-import { cn } from '@renderer/lib/ui/cn'
+import { cn } from '@renderer/lib/ui'
 import type { UiItem } from '@shared/transcript'
-import type { DiffLine } from '../toolUi'
-import { parseDiffPreview, parseEditCardData } from '../toolUi'
 import { ChangeSummary } from './ChangeSummary'
-import { collectChangedFiles } from './FilesPanel'
-import { EmptyPanel, PanelHeader } from './TerminalPanel'
-import type { ToolItem } from '../utils/transcriptRows'
-
-function isToolItem(item: UiItem): item is ToolItem {
-  return item.kind === 'tool'
-}
-
-function collectFileDiffs(items: UiItem[]): Map<string, DiffLine[]> {
-  const out = new Map<string, DiffLine[]>()
-  for (const item of items) {
-    if (!isToolItem(item) || item.tool.status !== 'done') continue
-    if (
-      item.tool.name !== 'edit' &&
-      item.tool.name !== 'multi_edit' &&
-      item.tool.name !== 'str_replace'
-    ) {
-      continue
-    }
-    if (item.tool.name === 'multi_edit') {
-      // multi_edit diffs are best-effort via parseDiffPreview on the whole tool.
-      const lines = parseDiffPreview(item.tool)
-      const { path } = parseEditCardData(item.tool)
-      if (path && lines.length) {
-        const key = path.replace(/\\/g, '/')
-        const existing = out.get(key) ?? []
-        out.set(key, [...existing, ...lines])
-      }
-      continue
-    }
-    const { path } = parseEditCardData(item.tool)
-    const lines = parseDiffPreview(item.tool)
-    if (!path || lines.length === 0) continue
-    const key = path.replace(/\\/g, '/')
-    const existing = out.get(key) ?? []
-    out.set(key, [...existing, ...lines])
-  }
-  return out
-}
+import { EmptyPanel, PanelHeader } from './PanelChrome'
+import {
+  collectSessionChangedFiles,
+  collectSessionFileDiffs
+} from '../utils/turnFileDiffs'
 
 /**
  * Docked panel showing a ChangeSummary for the latest agent write rollup.
@@ -70,8 +34,8 @@ export function ChangesPanel({
   onKeepAllWrites?: () => void | Promise<unknown>
   onDiscardAllWrites?: () => void | Promise<unknown>
 }) {
-  const files = useMemo(() => collectChangedFiles(items), [items])
-  const fileDiffs = useMemo(() => collectFileDiffs(items), [items])
+  const files = useMemo(() => collectSessionChangedFiles(items), [items])
+  const fileDiffs = useMemo(() => collectSessionFileDiffs(items), [items])
 
   return (
     <aside

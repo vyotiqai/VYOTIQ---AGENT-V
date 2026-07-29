@@ -12,9 +12,9 @@ import { TextShimmer } from './TextShimmer'
 const THINKING_BODY_MAX =
   'max-h-[min(4.5rem,12vh)] sm:max-h-[min(5.5rem,14vh)] overflow-y-auto overscroll-contain'
 
-/** Subtle but readable — dimmer than answer text-fg, brighter than gray-400 on black. */
+/** Subtle but readable — dimmer than answer text-fg. */
 const THINKING_INK =
-  '!text-[11px] !leading-snug !text-[var(--vy-gray-500)] [&_*]:!text-[var(--vy-gray-500)] [&_a]:!underline [&_a]:!decoration-[var(--vy-gray-500)]'
+  '!text-[11px] !leading-snug !text-tertiary [&_*]:!text-tertiary [&_a]:!underline [&_a]:!decoration-tertiary'
 
 export function ThinkingBlock({
   content,
@@ -52,20 +52,20 @@ export function ThinkingBlock({
     <div className="w-full min-w-0">
       <button
         type="button"
-        className={cn(DISCLOSURE_ROW, 'text-[var(--vy-gray-500)]')}
+        className={cn(DISCLOSURE_ROW, 'text-tertiary')}
         aria-expanded={isExpanded}
         onClick={toggle}
       >
         {streaming ? (
-          <TextShimmer className="font-medium text-[var(--vy-gray-500)]">Thinking</TextShimmer>
+          <TextShimmer className="font-medium text-tertiary">Thinking</TextShimmer>
         ) : (
-          <span className="font-medium text-[var(--vy-gray-500)]">Thought</span>
+          <span className="font-medium text-tertiary">Thought</span>
         )}
         <Icon
           name="chevronRight"
           size={14}
           className={cn(
-            'self-center text-[var(--vy-gray-500)]/80 vy-transition',
+            'self-center text-tertiary/80 vy-transition',
             isExpanded && 'rotate-90'
           )}
         />
@@ -73,7 +73,7 @@ export function ThinkingBlock({
       {isExpanded ? (
         <div
           ref={bodyRef}
-          className={cn('mt-0.5 border-l border-[var(--vy-gray-300)] pl-3', THINKING_BODY_MAX)}
+          className={cn('mt-0.5 border-l border-border pl-3', THINKING_BODY_MAX)}
         >
           <MarkdownContent content={content} streaming={streaming} className={THINKING_INK} />
         </div>

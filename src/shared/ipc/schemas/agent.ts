@@ -251,6 +251,12 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     })
   }),
   z.object({
+    /** Agent switched Ask / Plan / Agent mid-run; composer syncs from this. */
+    type: z.literal('mode_changed'),
+    ...eventBase,
+    mode: AgentInteractionModeSchema
+  }),
+  z.object({
     /** Turn-level snapshot of agent file writes; used for Undo on the Files Changed card. */
     type: z.literal('writes_checkpoint'),
     ...eventBase,
@@ -438,6 +444,27 @@ export const ToolApprovalResponseSchema = z.object({
   decision: ToolApprovalDecisionSchema
 })
 export type ToolApprovalResponse = z.infer<typeof ToolApprovalResponseSchema>
+
+/**
+ * A structured question waiting on the user. The loop is parked on this request,
+ * so the renderer must answer it or cancel the run.
+ */
+export const AgentQuestionRequestSchema = z.object({
+  requestId: z.string().min(1),
+  runId: z.string().min(1),
+  toolCallId: z.string().min(1),
+  question: z.string().min(1),
+  options: z.array(z.string().min(1)).optional(),
+  allowMultiple: z.boolean().optional(),
+  allowCustom: z.boolean().optional()
+})
+export type AgentQuestionRequest = z.infer<typeof AgentQuestionRequestSchema>
+
+export const AgentQuestionResponseSchema = z.object({
+  requestId: z.string().min(1),
+  answers: z.array(z.string())
+})
+export type AgentQuestionResponse = z.infer<typeof AgentQuestionResponseSchema>
 
 export const ListRunsRequestSchema = z.object({
   workspacePath: z.string().min(1)

@@ -1,47 +1,15 @@
 import { useMemo } from 'react'
-import { cn } from '@renderer/lib/ui/cn'
+import { cn } from '@renderer/lib/ui'
 import { Icon } from '@renderer/lib/icons'
 import type { UiItem } from '@shared/transcript'
-import { basename, collectWritingChanges, parseDeleteData } from '../toolUi'
+import { basename } from '../toolUi'
 import { FileBadge } from './FileBadge'
-import { EmptyPanel, PanelHeader } from './TerminalPanel'
-import type { ChangedFile, ToolItem } from '../utils/transcriptRows'
+import { EmptyPanel, PanelHeader } from './PanelChrome'
+import {
+  collectSessionChangedFiles
+} from '../utils/turnFileDiffs'
 
-function isToolItem(item: UiItem): item is ToolItem {
-  return item.kind === 'tool'
-}
-
-function collectChangedFiles(items: UiItem[]): ChangedFile[] {
-  const totals = new Map<string, ChangedFile>()
-  for (const item of items) {
-    if (!isToolItem(item) || item.tool.status !== 'done') continue
-    if (item.tool.name === 'delete') {
-      const { path } = parseDeleteData(item.tool)
-      if (!path) continue
-      const existing = totals.get(path)
-      if (existing) existing.removed += 1
-      else totals.set(path, { path, added: 0, removed: 1 })
-      continue
-    }
-    if (
-      item.tool.name !== 'edit' &&
-      item.tool.name !== 'multi_edit' &&
-      item.tool.name !== 'str_replace'
-    ) {
-      continue
-    }
-    for (const change of collectWritingChanges(item.tool)) {
-      const existing = totals.get(change.path)
-      if (existing) {
-        existing.added += change.added
-        existing.removed += change.removed
-      } else {
-        totals.set(change.path, { ...change })
-      }
-    }
-  }
-  return [...totals.values()].sort((a, b) => a.path.localeCompare(b.path))
-}
+export { collectSessionChangedFiles as collectChangedFiles } from '../utils/turnFileDiffs'
 
 /**
  * Docked panel listing files touched by agent writes in the current transcript.
@@ -55,7 +23,7 @@ export function FilesPanel({
   className?: string
   onClose?: () => void
 }) {
-  const files = useMemo(() => collectChangedFiles(items), [items])
+  const files = useMemo(() => collectSessionChangedFiles(items), [items])
 
   return (
     <aside
@@ -94,16 +62,6 @@ export function FilesPanel({
           </ul>
         )}
       </div>
-      {files.length > 0 ? (
-        <div className="flex items-center gap-2 border-t border-border/40 px-3 py-1.5 text-[11px] text-muted">
-          <Icon name="file" size={12} />
-          <span>
-            {files.length} {files.length === 1 ? 'file' : 'files'}
-          </span>
-        </div>
-      ) : null}
     </aside>
   )
 }
-
-export { collectChangedFiles }

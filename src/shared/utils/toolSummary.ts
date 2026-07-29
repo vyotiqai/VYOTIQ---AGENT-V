@@ -41,6 +41,10 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   browser_press_key: { running: 'Pressing', done: 'Pressed' },
   browser_select_option: { running: 'Selecting', done: 'Selected' },
   mcp_list_tools: { running: 'Listing MCP', done: 'MCP tools' },
+  mcp_list_resources: { running: 'Listing MCP resources', done: 'MCP resources' },
+  mcp_read_resource: { running: 'Reading MCP resource', done: 'MCP resource' },
+  mcp_list_prompts: { running: 'Listing MCP prompts', done: 'MCP prompts' },
+  mcp_get_prompt: { running: 'Fetching MCP prompt', done: 'MCP prompt' },
   subagent: { running: 'Investigating', done: 'Investigated' },
   terminal: { running: 'Running', done: 'Ran' },
   memory_list: { running: 'Listing memory', done: 'Listed memory' },
@@ -48,7 +52,9 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   memory_write: { running: 'Writing memory', done: 'Wrote memory' },
   git_status: { running: 'Checking git', done: 'Git status' },
   git_diff: { running: 'Diffing', done: 'Git diff' },
-  diagnostics: { running: 'Checking', done: 'Diagnostics' }
+  diagnostics: { running: 'Checking', done: 'Diagnostics' },
+  ask_question: { running: 'Asking', done: 'Asked' },
+  switch_mode: { running: 'Switching mode', done: 'Switched mode' }
 }
 
 export function parseMcpToolDisplay(
@@ -166,9 +172,30 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
     if (typeof serverId === 'string' && serverId.trim()) return truncate(serverId)
     return 'mcp'
   }
+  if (name === 'mcp_list_resources' || name === 'mcp_list_prompts') {
+    const serverId = args.serverId
+    if (typeof serverId === 'string' && serverId.trim()) return truncate(serverId)
+    return 'mcp'
+  }
+  if (name === 'mcp_read_resource') {
+    const uri = args.uri
+    if (typeof uri === 'string' && uri.trim()) return truncate(uri)
+  }
+  if (name === 'mcp_get_prompt') {
+    const promptName = args.name
+    if (typeof promptName === 'string' && promptName.trim()) return truncate(promptName)
+  }
   if (name === 'subagent') {
     const task = args.task
     if (typeof task === 'string') return truncate(task)
+  }
+  if (name === 'ask_question') {
+    const question = args.question
+    if (typeof question === 'string') return truncate(question)
+  }
+  if (name === 'switch_mode') {
+    const mode = args.mode
+    if (typeof mode === 'string') return mode
   }
   if (name === 'terminal') {
     const command = args.command ?? args.cmd

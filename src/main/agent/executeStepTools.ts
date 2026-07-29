@@ -22,8 +22,12 @@ export type ToolStepContext = {
   maxParallelReadTools?: number
   /** Present only when the workspace opted into tool approval. */
   approval?: ToolApprovalGate
-  /** Ask / Plan / Agent for this invoke. */
+  /** ChatStart invoke that owns this step; scopes interactive cancel. */
+  invokeId?: number
+  /** Ask / Plan / Agent for this invoke (mutable via switch_mode). */
   agentMode?: AgentInteractionMode
+  getAgentMode?: () => AgentInteractionMode
+  setAgentMode?: (mode: AgentInteractionMode) => void
   /** Streams events while a tool is still running (sub-agent progress). */
   emitLiveEvent?: (ev: AgentEvent) => void
   /**
@@ -201,8 +205,14 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
 
     const result = await executeTool(call.name, call.arguments, ctx.workspace, ctx.signal, {
       runDir: ctx.runDir,
+      runId: ctx.runId,
+      toolCallId: call.id,
+      invokeId: ctx.invokeId,
       depth: 0,
-      agentMode: ctx.agentMode,
+      agentMode: ctx.getAgentMode?.() ?? ctx.agentMode,
+      getAgentMode: ctx.getAgentMode,
+      setAgentMode: ctx.setAgentMode,
+      emitAgentEvent: ctx.emitLiveEvent,
       runEnabledMcpIds: ctx.runEnabledMcpIds,
       mcpToolPolicies: ctx.mcpToolPolicies,
       onProgress: ctx.emitLiveEvent

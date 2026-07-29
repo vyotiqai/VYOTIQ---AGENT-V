@@ -6,6 +6,7 @@ import type {
   RunSummary,
   ToolApprovalRequest,
   ToolApprovalDecision,
+  AgentQuestionRequest,
   WorkspaceSettingsOverride,
   WorkspaceUiState,
   WorkspacesState
@@ -32,13 +33,14 @@ const OPEN_RUN_TAB_LIMIT = 10
 /** Cap orphan IPC buffers for runIds not yet mapped to a controller. */
 const ORPHAN_EVENT_BUFFER_MAX = 128
 const ORPHAN_APPROVAL_BUFFER_MAX = 16
-/** Prefer dropping these when the orphan buffer is full — keep terminals and tool chrome. */
+const ORPHAN_QUESTION_BUFFER_MAX = 16
+/** Low-value telemetry — always prefer dropping these under orphan backpressure. */
 const ORPHAN_DROPPABLE_TYPES = new Set<AgentEvent['type']>([
-  'text_delta',
-  'thinking_delta',
   'step_usage',
   'context_usage'
 ])
+
+const ORPHAN_DELTA_TYPES = new Set<AgentEvent['type']>(['text_delta', 'thinking_delta'])
 const UI_PERSIST_DEBOUNCE_MS = 300
 const LIST_RUNS_DEBOUNCE_MS = 300
 
@@ -46,7 +48,8 @@ const LIST_RUNS_DEBOUNCE_MS = 300
 export const WORKSPACE_MANAGER_LIMITS = {
   OPEN_RUN_TAB_LIMIT,
   ORPHAN_EVENT_BUFFER_MAX,
-  ORPHAN_APPROVAL_BUFFER_MAX
+  ORPHAN_APPROVAL_BUFFER_MAX,
+  ORPHAN_QUESTION_BUFFER_MAX
 } as const
 
 export type WorkspaceUiSlice = {
@@ -152,6 +155,7 @@ export function useWorkspaceManager() {
   const persistTimersRef = useRef(new Map<string, number>())
   const eventBufferRef = useRef(new Map<string, AgentEvent[]>())
   const approvalBufferRef = useRef(new Map<string, ToolApprovalRequest[]>())
+  const questionBufferRef = useRef(new Map<string, AgentQuestionRequest[]>())
   const switchReqIdRef = useRef(0)
   const runIdToWorkspaceRef = useRef(new Map<string, string>())
   /** Runs whose controller/routing was disposed; drop late events until reopened. */
@@ -271,13 +275,29 @@ export function useWorkspaceManager() {
     []
   )
 
+  const flushBufferedQuestions = useCallback(
+    (runId: string, ctrl: ChatStreamController) => {
+      const buffered = questionBufferRef.current.get(runId)
+      if (!buffered?.length) return
+      questionBufferRef.current.delete(runId)
+      for (const request of buffered) ctrl.handleQuestionRequest(request)
+    },
+    []
+  )
+
   const bufferOrphanEvent = useCallback((runId: string, event: AgentEvent): void => {
     if (forgottenRunIdsRef.current.has(runId)) return
     const buffered = eventBufferRef.current.get(runId) ?? []
     if (buffered.length >= ORPHAN_EVENT_BUFFER_MAX) {
       const droppableIdx = buffered.findIndex((ev) => ORPHAN_DROPPABLE_TYPES.has(ev.type))
-      if (droppableIdx >= 0) buffered.splice(droppableIdx, 1)
-      else buffered.shift()
+      if (droppableIdx >= 0) {
+        buffered.splice(droppableIdx, 1)
+      } else {
+        // Prefer freeing a stream delta over dropping tool/terminal/status chrome.
+        const deltaIdx = buffered.findIndex((ev) => ORPHAN_DELTA_TYPES.has(ev.type))
+        if (deltaIdx >= 0) buffered.splice(deltaIdx, 1)
+        else buffered.shift()
+      }
     }
     buffered.push(event)
     eventBufferRef.current.set(runId, buffered)
@@ -293,10 +313,21 @@ export function useWorkspaceManager() {
     approvalBufferRef.current.set(runId, buffered)
   }, [])
 
+  const bufferOrphanQuestion = useCallback((runId: string, request: AgentQuestionRequest): void => {
+    if (forgottenRunIdsRef.current.has(runId)) return
+    const buffered = questionBufferRef.current.get(runId) ?? []
+    if (buffered.length >= ORPHAN_QUESTION_BUFFER_MAX) {
+      buffered.shift()
+    }
+    buffered.push(request)
+    questionBufferRef.current.set(runId, buffered)
+  }, [])
+
   const forgetRunRouting = useCallback((runId: string): void => {
     forgottenRunIdsRef.current.add(runId)
     eventBufferRef.current.delete(runId)
     approvalBufferRef.current.delete(runId)
+    questionBufferRef.current.delete(runId)
     runIdToWorkspaceRef.current.delete(runId)
     controllersRef.current.get(runId)?.dispose()
     controllersRef.current.delete(runId)
@@ -320,9 +351,10 @@ export function useWorkspaceManager() {
       if (ctrl) {
         flushBufferedEvents(runId, ctrl)
         flushBufferedApprovals(runId, ctrl)
+        flushBufferedQuestions(runId, ctrl)
       }
     },
-    [flushBufferedApprovals, flushBufferedEvents, touchLru]
+    [flushBufferedApprovals, flushBufferedEvents, flushBufferedQuestions, touchLru]
   )
 
   const maybeEvictControllers = useCallback(
@@ -409,13 +441,24 @@ export function useWorkspaceManager() {
         runId,
         onRunIdAssigned,
         onTerminal,
-        getAgentMode: () => contextsRef.current[workspacePath]?.ui.agentMode ?? 'agent'
+        getAgentMode: () => contextsRef.current[workspacePath]?.ui.agentMode ?? 'agent',
+        onAgentModeChange: (mode) => {
+          const ctx = contextsRef.current[workspacePath]
+          if (!ctx || ctx.ui.agentMode === mode) return
+          const nextCtx: WorkspaceContext = {
+            ...ctx,
+            ui: { ...ctx.ui, agentMode: mode }
+          }
+          contextsRef.current = { ...contextsRef.current, [workspacePath]: nextCtx }
+          setContexts((prev) => ({ ...prev, [workspacePath]: nextCtx }))
+          schedulePersistUiState(workspacePath, nextCtx)
+        }
       })
       controllersRef.current.set(key, controller)
       if (runId) registerRunId(runId, workspacePath)
       return controller
     },
-    [bump, maybeEvictControllers, registerRunId, touchLru]
+    [bump, maybeEvictControllers, registerRunId, schedulePersistUiState, touchLru]
   )
 
   const refreshRuns = useCallback(
@@ -766,6 +809,21 @@ export function useWorkspaceManager() {
   }, [bufferOrphanApproval, ensureController])
 
   useEffect(() => {
+    if (!window.vyotiq?.onAgentQuestionRequest) return
+    return window.vyotiq.onAgentQuestionRequest((request) => {
+      const workspacePath = runIdToWorkspaceRef.current.get(request.runId)
+      const ctrl =
+        controllersRef.current.get(request.runId) ??
+        (workspacePath ? ensureController(workspacePath, request.runId) : undefined)
+      if (!ctrl) {
+        bufferOrphanQuestion(request.runId, request)
+        return
+      }
+      ctrl.handleQuestionRequest(request)
+    })
+  }, [bufferOrphanQuestion, ensureController])
+
+  useEffect(() => {
     void pollActiveRuns()
     const id = window.setInterval(() => void pollActiveRuns(), ACTIVE_RUNS_POLL_MS)
     const onFocus = (): void => {
@@ -1087,6 +1145,12 @@ export function useWorkspaceManager() {
     []
   )
 
+  const onQuestionSubmit = useCallback(
+    (requestId: string, answers: string[]) =>
+      activeControllerRef.current?.respondToQuestion(requestId, answers) ?? Promise.resolve(),
+    []
+  )
+
   const subscribeActiveController = useCallback(
     (onStoreChange: () => void) => activeController?.subscribeMeta(onStoreChange) ?? (() => {}),
     [activeController]
@@ -1273,6 +1337,7 @@ export function useWorkspaceManager() {
     onGroupToggle,
     onTurnToggle,
     onApprovalDecision,
+    onQuestionSubmit,
     collapsedTurns,
     chatActions
   }

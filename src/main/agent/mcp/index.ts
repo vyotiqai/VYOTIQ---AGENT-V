@@ -68,10 +68,129 @@ export function parseMcpToolName(
   return { serverId: rest.slice(0, sep), toolName: rest.slice(sep + 2) }
 }
 
+type McpResourceSummary = {
+  uri: string
+  name?: string
+  description?: string
+  mimeType?: string
+}
+
+type McpPromptSummary = {
+  name: string
+  description?: string
+  arguments?: Array<{ name: string; description?: string; required?: boolean }>
+}
+
 type McpSession = {
   client: Client
   transport: Transport
   tools: ToolDefinition[]
+  resources?: McpResourceSummary[]
+  prompts?: McpPromptSummary[]
+}
+
+export type McpResourceEntry = McpResourceSummary & { serverId: string }
+export type McpPromptEntry = McpPromptSummary & { serverId: string }
+
+const MCP_CONTENT_CAP = 100_000
+
+async function probeResourcesAndPrompts(client: Client): Promise<{
+  resources: McpResourceSummary[]
+  prompts: McpPromptSummary[]
+}> {
+  const resources: McpResourceSummary[] = []
+  const prompts: McpPromptSummary[] = []
+  const caps = client.getServerCapabilities()
+  if (caps?.resources) {
+    try {
+      const listed = await client.listResources()
+      for (const resource of listed.resources ?? []) {
+        resources.push({
+          uri: resource.uri,
+          name: resource.name,
+          description: resource.description,
+          mimeType: resource.mimeType
+        })
+      }
+    } catch {
+      // Server may advertise resources but fail list — ignore on connect.
+    }
+  }
+  if (caps?.prompts) {
+    try {
+      const listed = await client.listPrompts()
+      for (const prompt of listed.prompts ?? []) {
+        prompts.push({
+          name: prompt.name,
+          description: prompt.description,
+          arguments: prompt.arguments
+        })
+      }
+    } catch {
+      // Server may advertise prompts but fail list — ignore on connect.
+    }
+  }
+  return { resources, prompts }
+}
+
+function resolveTargetServerIds(
+  serverId: string | undefined,
+  enabledIds?: ReadonlySet<string>
+): string[] {
+  let ids = [...sessions.keys()].sort()
+  if (enabledIds) ids = ids.filter((id) => enabledIds.has(id))
+  if (serverId?.trim()) {
+    const want = serverId.trim().toLowerCase()
+    ids = ids.filter((id) => id.toLowerCase() === want)
+  }
+  return ids
+}
+
+export function assertMcpServerAccess(
+  serverId: string,
+  enabledIds?: ReadonlySet<string>
+): { ok: true; session: McpSession } | { ok: false; error: string } {
+  const session = sessions.get(serverId)
+  if (!session) {
+    return { ok: false, error: `MCP server not connected: ${serverId}` }
+  }
+  if (enabledIds && !enabledIds.has(serverId)) {
+    return {
+      ok: false,
+      error: `MCP server "${serverId}" is not enabled for this workspace run`
+    }
+  }
+  return { ok: true, session }
+}
+
+function formatResourceContents(
+  contents: Array<{ type?: string; text?: string; blob?: string; mimeType?: string }>
+): string {
+  return contents
+    .map((part) => {
+      if (part.type === 'text' && part.text) return part.text
+      if (part.blob) {
+        return `[binary blob mime=${part.mimeType ?? 'unknown'} base64 len=${part.blob.length}]`
+      }
+      return JSON.stringify(part)
+    })
+    .join('\n')
+    .slice(0, MCP_CONTENT_CAP)
+}
+
+function formatPromptMessages(
+  messages: Array<{ role?: string; content?: { type?: string; text?: string } | string }>
+): string {
+  return messages
+    .map((message) => {
+      const role = message.role ?? 'unknown'
+      const content = message.content
+      if (typeof content === 'string') return `${role}: ${content}`
+      if (content?.type === 'text' && content.text) return `${role}: ${content.text}`
+      return `${role}: ${JSON.stringify(content)}`
+    })
+    .join('\n\n')
+    .slice(0, MCP_CONTENT_CAP)
 }
 
 const sessions = new Map<string, McpSession>()
@@ -407,7 +526,8 @@ export async function connectMcpServer(server: McpServer): Promise<void> {
         parameters: (t.inputSchema as Record<string, unknown>) ?? { type: 'object', properties: {} }
       }
     })
-    sessions.set(server.id, { client, transport, tools })
+    const { resources, prompts } = await probeResourcesAndPrompts(client)
+    sessions.set(server.id, { client, transport, tools, resources, prompts })
     rebuildToolsByNameIndex()
     sessionConfigKeys.set(server.id, mcpServerConfigKey(server))
     connectErrors.delete(server.id)
@@ -415,7 +535,9 @@ export async function connectMcpServer(server: McpServer): Promise<void> {
       scope: 'mcp',
       serverId: server.id,
       transport: server.transport ?? 'stdio',
-      toolCount: tools.length
+      toolCount: tools.length,
+      resourceCount: resources.length,
+      promptCount: prompts.length
     })
   })()
 
@@ -547,6 +669,128 @@ export function listMcpToolDefinitions(): ToolDefinition[] {
   return out
 }
 
+export async function listMcpResources(
+  serverId?: string,
+  enabledIds?: ReadonlySet<string>,
+  signal?: AbortSignal
+): Promise<McpResourceEntry[]> {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+  const targetIds = resolveTargetServerIds(serverId, enabledIds)
+  const out: McpResourceEntry[] = []
+  for (const id of targetIds) {
+    const session = sessions.get(id)
+    if (!session) continue
+    try {
+      const listed = await session.client.listResources(undefined, { signal })
+      for (const resource of listed.resources ?? []) {
+        out.push({
+          serverId: id,
+          uri: resource.uri,
+          name: resource.name,
+          description: resource.description,
+          mimeType: resource.mimeType
+        })
+      }
+    } catch (err) {
+      if (signal?.aborted || isAbortError(err)) throw err
+      for (const resource of session.resources ?? []) {
+        out.push({ serverId: id, ...resource })
+      }
+    }
+  }
+  return out
+}
+
+export async function readMcpResource(
+  serverId: string,
+  uri: string,
+  signal: AbortSignal,
+  enabledIds?: ReadonlySet<string>
+): Promise<{ ok: true; content: string } | { ok: false; error: string }> {
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+  const access = assertMcpServerAccess(serverId, enabledIds)
+  if (!access.ok) return access
+  try {
+    const result = await access.session.client.readResource({ uri }, { signal })
+    const text = formatResourceContents(
+      (result.contents ?? []) as Array<{
+        type?: string
+        text?: string
+        blob?: string
+        mimeType?: string
+      }>
+    )
+    return { ok: true, content: text || '(empty)' }
+  } catch (err) {
+    if (signal.aborted || isAbortError(err)) throw err
+    connectErrors.set(serverId, formatError(err))
+    await disconnectMcpServer(serverId)
+    return { ok: false, error: formatError(err) }
+  }
+}
+
+export async function listMcpPrompts(
+  serverId?: string,
+  enabledIds?: ReadonlySet<string>,
+  signal?: AbortSignal
+): Promise<McpPromptEntry[]> {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+  const targetIds = resolveTargetServerIds(serverId, enabledIds)
+  const out: McpPromptEntry[] = []
+  for (const id of targetIds) {
+    const session = sessions.get(id)
+    if (!session) continue
+    try {
+      const listed = await session.client.listPrompts(undefined, { signal })
+      for (const prompt of listed.prompts ?? []) {
+        out.push({
+          serverId: id,
+          name: prompt.name,
+          description: prompt.description,
+          arguments: prompt.arguments
+        })
+      }
+    } catch (err) {
+      if (signal?.aborted || isAbortError(err)) throw err
+      for (const prompt of session.prompts ?? []) {
+        out.push({ serverId: id, ...prompt })
+      }
+    }
+  }
+  return out
+}
+
+export async function getMcpPrompt(
+  serverId: string,
+  name: string,
+  promptArgs: Record<string, string> | undefined,
+  signal: AbortSignal,
+  enabledIds?: ReadonlySet<string>
+): Promise<{ ok: true; content: string } | { ok: false; error: string }> {
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+  const access = assertMcpServerAccess(serverId, enabledIds)
+  if (!access.ok) return access
+  try {
+    const result = await access.session.client.getPrompt(
+      { name, arguments: promptArgs },
+      { signal }
+    )
+    const header = result.description ? `${result.description}\n\n` : ''
+    const body = formatPromptMessages(
+      (result.messages ?? []) as Array<{
+        role?: string
+        content?: { type?: string; text?: string } | string
+      }>
+    )
+    return { ok: true, content: (header + body).trim() || '(empty)' }
+  } catch (err) {
+    if (signal.aborted || isAbortError(err)) throw err
+    connectErrors.set(serverId, formatError(err))
+    await disconnectMcpServer(serverId)
+    return { ok: false, error: formatError(err) }
+  }
+}
+
 export function getMcpToolDefinition(fullName: string): ToolDefinition | undefined {
   return toolsByName.get(fullName)
 }
@@ -616,4 +860,25 @@ export function setMcpReadOnlyHintsForTests(hints: Record<string, boolean>): voi
 /** Test helper — connected MCP server ids. */
 export function listConnectedMcpServerIdsForTests(): string[] {
   return [...sessions.keys()]
+}
+
+/** Test helper — register a mock MCP session without a live transport. */
+export function registerMcpSessionForTests(
+  serverId: string,
+  client: Pick<
+    Client,
+    | 'listTools'
+    | 'listResources'
+    | 'readResource'
+    | 'listPrompts'
+    | 'getPrompt'
+    | 'getServerCapabilities'
+    | 'close'
+  >
+): void {
+  sessions.set(serverId, {
+    client: client as Client,
+    transport: {} as Transport,
+    tools: []
+  })
 }

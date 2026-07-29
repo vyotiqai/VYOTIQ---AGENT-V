@@ -65,6 +65,6 @@ describe('ThinkingBlock', () => {
   it('forces muted ink on markdown so reasoning does not use bright text-fg', () => {
     const { container } = render(<ThinkingBlock content="Let me reason about this." streaming />)
     const md = container.querySelector('.markdown-body')
-    expect(md?.className).toMatch(/vy-gray-500/)
+    expect(md?.className).toMatch(/text-tertiary/)
   })
 })

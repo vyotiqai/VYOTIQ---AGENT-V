@@ -50,6 +50,7 @@ function TranscriptPane({
   onGroupToggle,
   onTurnToggle,
   onApprovalDecision,
+  onQuestionSubmit,
   collapsedTurns,
   showThinking,
   mcpServerNames,
@@ -77,6 +78,7 @@ function TranscriptPane({
   onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
   onTurnToggle?: (turnIndex: number) => void
   onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
+  onQuestionSubmit?: (requestId: string, answers: string[]) => void | Promise<void>
   collapsedTurns?: ReadonlySet<number>
   showThinking?: boolean
   mcpServerNames?: ReadonlyMap<string, string>
@@ -108,6 +110,7 @@ function TranscriptPane({
       onGroupToggle={onGroupToggle}
       onTurnToggle={onTurnToggle}
       onApprovalDecision={onApprovalDecision}
+      onQuestionSubmit={onQuestionSubmit}
       collapsedTurns={collapsedTurns}
       showThinking={showThinking}
       mcpServerNames={mcpServerNames}
@@ -175,6 +178,7 @@ export function ChatView({
   onGroupToggle,
   onTurnToggle,
   onApprovalDecision,
+  onQuestionSubmit,
   collapsedTurns,
   showThinking = true,
   chatSurfaceEpoch = 0,
@@ -246,6 +250,7 @@ export function ChatView({
   onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
   onTurnToggle?: (turnIndex: number) => void
   onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
+  onQuestionSubmit?: (requestId: string, answers: string[]) => void | Promise<void>
   collapsedTurns?: ReadonlySet<number>
   showThinking?: boolean
   mcpServerNames?: ReadonlyMap<string, string>
@@ -308,14 +313,14 @@ export function ChatView({
   useEffect(() => {
     let cancelled = false
     let wasOpen = false
-    void window.vyotiq.browserGetState?.().then((res) => {
+    void window.vyotiq?.browserGetState?.().then((res) => {
       if (cancelled || !res.ok) return
       wasOpen = Boolean(res.data.open)
       setBrowserActive(wasOpen)
       // Only auto-open on first load when no panel preference is restored yet.
       // Do not override a persisted Terminal/Files/Changes selection.
     })
-    const unsub = window.vyotiq.onBrowserState?.((next) => {
+    const unsub = window.vyotiq?.onBrowserState?.((next) => {
       if (cancelled) return
       const open = Boolean(next.open)
       setBrowserActive(open)
@@ -481,6 +486,7 @@ export function ChatView({
                 onGroupToggle={onGroupToggle}
                 onTurnToggle={onTurnToggle}
                 onApprovalDecision={onApprovalDecision}
+                onQuestionSubmit={onQuestionSubmit}
                 collapsedTurns={collapsedTurns}
                 showThinking={showThinking}
                 mcpServerNames={mcpServerNames}

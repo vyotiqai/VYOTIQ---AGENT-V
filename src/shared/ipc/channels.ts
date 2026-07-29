@@ -20,6 +20,8 @@ export const IPC = {
   chatCompact: 'chat:compact',
   toolApprovalRequest: 'tool:approval-request',
   toolApprovalResponse: 'tool:approval-response',
+  agentQuestionRequest: 'agent:question-request',
+  agentQuestionResponse: 'agent:question-response',
   attachmentExtract: 'attachment:extract',
   listRuns: 'runs:list',
   loadRun: 'runs:load',

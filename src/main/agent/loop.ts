@@ -15,10 +15,11 @@ import { formatError, isAbortError } from '../../shared/errors'
 import { logger, logErrorSummary } from '../../shared/logger'
 import { workspaceIdFromPath } from '../../shared/workspaceId'
 import {
-  isRetriableNetworkError,
-  isRetriableProviderMessage,
-  RetriableStreamError
-} from './providers/fetchWithRetry'
+  MAX_STREAM_ATTEMPTS,
+  shouldRetryProviderStreamError,
+  shouldRetryThrownStreamError,
+  sleepStreamRetryBackoff
+} from './streamRetry'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
 import { resolveServiceTier } from '../../shared/domain/modelSelection'
 import { stripToolShapedAssistantText } from '../../shared/transcript'
@@ -242,7 +243,6 @@ export async function* runAgent(input: {
   runId: string
   messages?: ChatMessage[]
   newMessages?: ChatMessage[]
-  incremental?: boolean
   workspacePath: string
   resume?: boolean
   /** Ask / Plan / Agent — defaults to agent when omitted. */
@@ -253,7 +253,7 @@ export async function* runAgent(input: {
   const override = findWorkspaceSettingsOverride(workspaces, input.workspacePath)
   const effective = resolveEffectiveSettings(globalSettings, override)
   const settings = { ...DEFAULT_SETTINGS, ...globalSettings, ...effective }
-  const agentMode: AgentInteractionMode = input.mode ?? 'agent'
+  let agentMode: AgentInteractionMode = input.mode ?? 'agent'
   const workspace = input.workspacePath
   const runId = input.runId
   const { controller, invokeId } = registerRunAbort(runId, workspace)
@@ -688,8 +688,6 @@ export async function* runAgent(input: {
       appendEvent(runDir, contextUsageEv)
       yield contextUsageEv
 
-      const STREAM_RETRY_BACKOFF_MS = 750
-      const MAX_STREAM_ATTEMPTS = 2
       let streamAttempt = 0
       let streamFinished = false
 
@@ -876,10 +874,7 @@ export async function* runAgent(input: {
             }
           } else if (chunk.type === 'error') {
             const message = chunk.error ?? 'Provider error'
-            if (
-              streamAttempt < MAX_STREAM_ATTEMPTS &&
-              isRetriableProviderMessage(message)
-            ) {
+            if (shouldRetryProviderStreamError(message, streamAttempt)) {
               logger.warn('Provider stream error (retrying)', {
                 scope: 'agent',
                 code: 'PROVIDER_STREAM',
@@ -918,11 +913,7 @@ export async function* runAgent(input: {
           }
         }
       } catch (err) {
-          if (
-            !isAbortError(err) &&
-            streamAttempt < MAX_STREAM_ATTEMPTS &&
-            (isRetriableNetworkError(err) || err instanceof RetriableStreamError)
-          ) {
+          if (shouldRetryThrownStreamError(err, streamAttempt)) {
             logger.warn('Provider stream disconnected (retrying)', {
               scope: 'agent',
               code: 'PROVIDER_STREAM',
@@ -932,7 +923,7 @@ export async function* runAgent(input: {
               attempt: streamAttempt,
               err
             })
-            await new Promise((resolve) => setTimeout(resolve, STREAM_RETRY_BACKOFF_MS))
+            await sleepStreamRetryBackoff()
             continue
           }
           // Providers rethrow AbortError from SSE readers — treat like an in-loop cancel.
@@ -955,7 +946,7 @@ export async function* runAgent(input: {
         }
 
         if (retryStream) {
-          await new Promise((resolve) => setTimeout(resolve, STREAM_RETRY_BACKOFF_MS))
+          await sleepStreamRetryBackoff()
           continue
         }
         streamFinished = true
@@ -1109,6 +1100,7 @@ export async function* runAgent(input: {
         runDir: runDir!,
         workspace,
         signal: controller.signal,
+        invokeId,
         failedToolKeys,
         maxParallelReadTools: maxParallelReadToolsForFailureStreak(
           consecutiveToolFailureSteps,
@@ -1118,6 +1110,10 @@ export async function* runAgent(input: {
         appendEvent: (ev: AgentEvent) => appendEvent(runDir!, ev),
         approval: approvalGate,
         agentMode,
+        getAgentMode: () => agentMode,
+        setAgentMode: (mode: AgentInteractionMode) => {
+          agentMode = mode
+        },
         runEnabledMcpIds,
         mcpToolPolicies,
         emitLiveEvent: (ev: AgentEvent) => {

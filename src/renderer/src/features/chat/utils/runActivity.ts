@@ -9,6 +9,7 @@ export type RunActivityPhase =
   | { kind: 'thinking' }
   | { kind: 'writing' }
   | { kind: 'awaiting_approval' }
+  | { kind: 'awaiting_question' }
   | { kind: 'tool'; label: string; detail?: string }
 
 /** Match tool-group subtitle truncation so timeline detail agrees with chrome. */
@@ -80,6 +81,8 @@ export function formatRunActivityLabel(phase: RunActivityPhase): string {
       return 'Writing'
     case 'awaiting_approval':
       return 'Awaiting approval'
+    case 'awaiting_question':
+      return 'Awaiting answer'
     case 'tool':
       return phase.detail ? `${phase.label} ${phase.detail}` : phase.label
     default: {
@@ -136,6 +139,9 @@ export function deriveRunActivity(
 
   const pendingApproval = lastActiveRow(turnRows, (row) => row.kind === 'approval')
   if (pendingApproval) return { kind: 'awaiting_approval' }
+
+  const pendingQuestion = lastActiveRow(turnRows, (row) => row.kind === 'question')
+  if (pendingQuestion) return { kind: 'awaiting_question' }
 
   if (pendingRun) {
     // Between agent steps the turn already has work rows; keep "Working", not "Planning".

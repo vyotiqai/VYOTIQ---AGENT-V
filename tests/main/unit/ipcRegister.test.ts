@@ -321,7 +321,7 @@ describe('registerIpc', () => {
       expect(runAgentMock).not.toHaveBeenCalled()
     })
 
-    it('marks turn complete on terminal status without clearing the invoke early', async () => {
+    it('marks turn complete on terminal status; clearRunAbort owned by runAgent', async () => {
       runAgentMock.mockImplementation(async function* () {
         yield { type: 'status', runId: 'run-test', status: 'done' } satisfies AgentEvent
       })
@@ -331,7 +331,8 @@ describe('registerIpc', () => {
       await flushAsync()
 
       expect(markRunTurnCompleteMock).toHaveBeenCalledWith('run-test', 42)
-      expect(clearRunAbortMock).toHaveBeenCalledWith('run-test', 42)
+      // clearRunAbort is owned by runAgent's finally (mocked here).
+      expect(clearRunAbortMock).not.toHaveBeenCalled()
     })
   })
 })

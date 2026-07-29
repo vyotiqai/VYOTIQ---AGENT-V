@@ -71,6 +71,18 @@ describe('tool classify', () => {
     expect(isApprovalExemptTool('mcp_list_tools')).toBe(true)
   })
 
+  it('treats MCP resource/prompt built-ins as serial and approval-exempt', () => {
+    for (const name of [
+      'mcp_list_resources',
+      'mcp_read_resource',
+      'mcp_list_prompts',
+      'mcp_get_prompt'
+    ]) {
+      expect(isParallelSafeTool(name)).toBe(false)
+      expect(isApprovalExemptTool(name)).toBe(true)
+    }
+  })
+
   it('treats MCP tools as untrusted regardless of readOnlyHint', () => {
     expect(isParallelSafeTool('mcp__fs__read_file')).toBe(false)
     expect(isApprovalExemptTool('mcp__fs__read_file')).toBe(false)

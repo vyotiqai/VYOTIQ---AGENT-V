@@ -25,12 +25,27 @@ import { ChangeSummary } from './ChangeSummary'
 import { MessageFooter } from './MessageFooter'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolApprovalCard } from './ToolApprovalCard'
+import { AskQuestionCard } from './AskQuestionCard'
 import { ToolCard } from './ToolCard'
 import { ToolGroup } from './ToolGroup'
 import { TurnSummary } from './TurnSummary'
 import { UserPrompt } from './UserPrompt'
 import { MarkdownContent } from '@renderer/lib/ui'
 import { shouldRenderThinking } from '@shared/transcript'
+
+/** One aria-controls target per turn — only the first work row gets the id. */
+function turnWorkPanelId(
+  row: TranscriptRow,
+  rows: readonly TranscriptRow[],
+  index: number
+): string | undefined {
+  if (!isTurnWorkRow(row)) return undefined
+  for (let i = 0; i < index; i += 1) {
+    const prior = rows[i]!
+    if (isTurnWorkRow(prior) && prior.turnIndex === row.turnIndex) return undefined
+  }
+  return `turn-work-${row.turnIndex}`
+}
 
 /** ~chars per visual line in the 720px chat column at text-sm. */
 const CHARS_PER_LINE = 56
@@ -101,6 +116,8 @@ export function estimateTranscriptRowSize(
       )
     case 'approval':
       return 120
+    case 'question':
+      return 160
     default: {
       const _exhaustive: never = row
       return _exhaustive
@@ -212,6 +229,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   onGroupToggle,
   onTurnToggle,
   onApprovalDecision,
+  onQuestionSubmit,
   turnCollapsed = false,
   showThinking = true,
   mcpServerNames,
@@ -233,6 +251,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
   onTurnToggle?: (turnIndex: number) => void
   onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
+  onQuestionSubmit?: (requestId: string, answers: string[]) => void | Promise<void>
   turnCollapsed?: boolean
   showThinking?: boolean
   mcpServerNames?: ReadonlyMap<string, string>
@@ -305,6 +324,10 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
     return <ToolApprovalCard approval={row.approval} onDecide={onApprovalDecision} />
   }
 
+  if (row.kind === 'question') {
+    return <AskQuestionCard question={row.question} onSubmit={onQuestionSubmit} />
+  }
+
   if (row.kind === 'activity') {
     // Only pass expandedToolIds once a tool has an explicit expand flag.
     // An empty Set would make Set.has() return false and block defaultExpanded
@@ -355,6 +378,7 @@ export function MessageList({
   onGroupToggle,
   onTurnToggle,
   onApprovalDecision,
+  onQuestionSubmit,
   collapsedTurns,
   showThinking = true,
   mcpServerNames,
@@ -382,6 +406,7 @@ export function MessageList({
   onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
   onTurnToggle?: (turnIndex: number) => void
   onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
+  onQuestionSubmit?: (requestId: string, answers: string[]) => void | Promise<void>
   /** Persisted turn-summary collapse state from the chat stream controller. */
   collapsedTurns?: ReadonlySet<number>
   showThinking?: boolean
@@ -725,6 +750,7 @@ export function MessageList({
       onGroupToggle={onGroupToggle}
       onTurnToggle={handleTurnToggle}
       onApprovalDecision={onApprovalDecision}
+      onQuestionSubmit={onQuestionSubmit}
       turnCollapsed={collapsedTurnSet.has(row.turnIndex)}
       showThinking={showThinking}
       mcpServerNames={mcpServerNames}
@@ -758,7 +784,7 @@ export function MessageList({
       <div
         ref={containerRef}
         data-transcript-scroll
-        className={cn('min-h-0 flex-1 overflow-auto pt-4', CHAT_GUTTER)}
+        className={cn('relative min-h-0 flex-1 overflow-auto pt-4', CHAT_GUTTER)}
         style={dockReserveStyle}
         onScroll={(e) => handleScroll(e.currentTarget.scrollTop)}
       >
@@ -789,43 +815,64 @@ export function MessageList({
               !shouldVirtualize ||
               (virtualItems.length === 0 && displayRows.length > 0 && allowFullFallback)
 
+            const loadingOverlay =
+              transcriptLoading && items.length > 0 ? (
+                <div
+                  className="pointer-events-none absolute inset-x-0 top-2 z-10 flex justify-center"
+                  role="status"
+                  aria-live="polite"
+                  aria-busy="true"
+                >
+                  <span className="inline-flex items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-1 text-[11px] text-muted shadow-sm">
+                    <Icon name="loader" size={12} className="motion-safe:animate-spin" />
+                    Loading chat…
+                  </span>
+                </div>
+              ) : null
+
             if (useFlowLayout) {
               return (
-                <div className={cn('flex w-full flex-col', CHAT_COLUMN)} data-chat-column>
-                  {displayRows.map((row) => (
-                    <div
-                      key={row.id}
-                      id={isTurnWorkRow(row) ? `turn-work-${row.turnIndex}` : undefined}
-                      className={rowSpacingClass(row)}
-                    >
-                      {renderRow(row)}
-                    </div>
-                  ))}
-                </div>
+                <>
+                  {loadingOverlay}
+                  <div className={cn('flex w-full flex-col', CHAT_COLUMN)} data-chat-column>
+                    {displayRows.map((row, index) => (
+                      <div
+                        key={row.id}
+                        id={turnWorkPanelId(row, displayRows, index)}
+                        className={rowSpacingClass(row)}
+                      >
+                        {renderRow(row)}
+                      </div>
+                    ))}
+                  </div>
+                </>
               )
             }
             return (
-              <div
-                className={cn('relative w-full', CHAT_COLUMN)}
-                data-chat-column
-                style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
-              >
-                {virtualItems.map((virtualItem) => {
-                  const row = displayRows[virtualItem.index]!
-                  return (
-                    <div
-                      key={virtualItem.key}
-                      data-index={virtualItem.index}
-                      ref={rowVirtualizer.measureElement}
-                      id={isTurnWorkRow(row) ? `turn-work-${row.turnIndex}` : undefined}
-                      className={cn('absolute left-0 top-0 w-full', rowSpacingClass(row))}
-                      style={{ transform: `translateY(${virtualItem.start}px)` }}
-                    >
-                      {renderRow(row)}
-                    </div>
-                  )
-                })}
-              </div>
+              <>
+                {loadingOverlay}
+                <div
+                  className={cn('relative w-full', CHAT_COLUMN)}
+                  data-chat-column
+                  style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+                >
+                  {virtualItems.map((virtualItem) => {
+                    const row = displayRows[virtualItem.index]!
+                    return (
+                      <div
+                        key={virtualItem.key}
+                        data-index={virtualItem.index}
+                        ref={rowVirtualizer.measureElement}
+                        id={turnWorkPanelId(row, displayRows, virtualItem.index)}
+                        className={cn('absolute left-0 top-0 w-full', rowSpacingClass(row))}
+                        style={{ transform: `translateY(${virtualItem.start}px)` }}
+                      >
+                        {renderRow(row)}
+                      </div>
+                    )
+                  })}
+                </div>
+              </>
             )
           })()
         )}

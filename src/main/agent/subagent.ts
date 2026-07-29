@@ -11,10 +11,9 @@ import { getSettings } from '@main/settings/settings'
 import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/workspace/workspaces'
 import { getProvider } from './providers'
 import {
-  isRetriableNetworkError,
-  isRetriableProviderMessage,
-  RetriableStreamError
-} from './providers/fetchWithRetry'
+  runWithStreamRetry,
+  shouldRetryProviderStreamError
+} from './streamRetry'
 import { requestMaxOutputTokens } from './providers/requestLimits'
 import { resolveModelInfo } from './modelResolve'
 import { AGENT_TOOLS } from './types'
@@ -69,7 +68,7 @@ export const MAX_SUBAGENT_DEPTH = 1
 
 const SUBAGENT_SYSTEM = `You are a research sub-agent working inside a larger coding agent.
 
-You have read-only tools: read, search, glob, grep, list_dir. You cannot edit files or run commands.
+You have read-only tools: read, search, glob, grep, list_dir, web_fetch, git_status, git_diff, diagnostics, memory_read. You cannot edit files, run terminal commands, or call MCP tools.
 
 Investigate the task you are given and finish with a single self-contained report:
 - Answer the question directly in the first sentence.
@@ -207,21 +206,27 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 
     let text = ''
     const toolCalls: ToolCall[] = []
+    let streamFailure: SubagentOutcome | null = null
 
-    const STREAM_RETRY_BACKOFF_MS = 750
-    const MAX_STREAM_ATTEMPTS = 2
-    let streamAttempt = 0
-    let streamFinished = false
-
-    while (!streamFinished && streamAttempt < MAX_STREAM_ATTEMPTS) {
-      streamAttempt++
-      if (streamAttempt > 1) {
-        text = ''
-        toolCalls.length = 0
-      }
-
-      let retryStream = false
-      try {
+    try {
+      await runWithStreamRetry({
+      onAttemptStart: (attempt) => {
+        if (attempt > 1) {
+          text = ''
+          toolCalls.length = 0
+        }
+      },
+      onRetriableFailure: (err, attempt) => {
+        logger.warn('Sub-agent stream disconnected (retrying)', {
+          scope: 'agent',
+          code: 'PROVIDER_STREAM',
+          provider: providerId,
+          step: steps,
+          attempt,
+          err
+        })
+      },
+      runAttempt: async (attempt) => {
         for await (const chunk of provider.streamChat({
           model: modelId,
           messages: preparedMessages,
@@ -246,19 +251,15 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
             toolCalls.push(chunk.toolCall)
           } else if (chunk.type === 'error') {
             const message = chunk.error ?? 'Provider error'
-            if (
-              streamAttempt < MAX_STREAM_ATTEMPTS &&
-              isRetriableProviderMessage(message)
-            ) {
+            if (shouldRetryProviderStreamError(message, attempt)) {
               logger.warn('Sub-agent stream error (retrying)', {
                 scope: 'agent',
                 code: 'PROVIDER_STREAM',
                 provider: providerId,
                 step: steps,
-                attempt: streamAttempt
+                attempt
               })
-              retryStream = true
-              break
+              return 'retry'
             }
             logger.warn('Sub-agent stream error', {
               scope: 'agent',
@@ -266,36 +267,19 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
               provider: providerId,
               step: steps
             })
-            return { ok: false, report: `Sub-agent failed: ${message}`, steps }
+            streamFailure = { ok: false, report: `Sub-agent failed: ${message}`, steps }
+            return 'complete'
           }
         }
-      } catch (err) {
-        if (
-          !isAbortError(err) &&
-          streamAttempt < MAX_STREAM_ATTEMPTS &&
-          (isRetriableNetworkError(err) || err instanceof RetriableStreamError)
-        ) {
-          logger.warn('Sub-agent stream disconnected (retrying)', {
-            scope: 'agent',
-            code: 'PROVIDER_STREAM',
-            provider: providerId,
-            step: steps,
-            attempt: streamAttempt,
-            err
-          })
-          await new Promise((resolve) => setTimeout(resolve, STREAM_RETRY_BACKOFF_MS))
-          continue
-        }
-        if (isAbortError(err)) break
-        throw err
+        return 'complete'
       }
-
-      if (retryStream) {
-        await new Promise((resolve) => setTimeout(resolve, STREAM_RETRY_BACKOFF_MS))
-        continue
-      }
-      streamFinished = true
+      })
+    } catch (err) {
+      if (isAbortError(err)) break
+      throw err
     }
+
+    if (streamFailure) return streamFailure
 
     if (options.signal.aborted) break
 

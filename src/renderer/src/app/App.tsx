@@ -56,6 +56,7 @@ export function App() {
     onGroupToggle,
     onTurnToggle,
     onApprovalDecision,
+    onQuestionSubmit,
     collapsedTurns,
     openRunTab,
     openRunInWorkspace,
@@ -716,6 +717,7 @@ export function App() {
             onTurnToggle={onTurnToggle}
             collapsedTurns={collapsedTurns}
             onApprovalDecision={onApprovalDecision}
+            onQuestionSubmit={onQuestionSubmit}
             mcpServerNames={mcpServerNames}
             slashHandlers={slashHandlersValue}
             canUndoWrites={Boolean(

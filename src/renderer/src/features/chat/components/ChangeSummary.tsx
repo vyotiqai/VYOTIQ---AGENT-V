@@ -5,6 +5,7 @@ import { TOOL_CARD_HEADER, TOOL_CARD_SURFACE } from '@renderer/lib/utils/layout'
 import type { ChangedFile } from '../utils/transcriptRows'
 import { basename } from '../toolUi'
 import type { DiffLine } from '../toolUi'
+import { normalizeRelPath } from '../utils/turnFileDiffs'
 import { FileBadge } from './FileBadge'
 import { DiffPreview } from './DiffPreview'
 
@@ -96,7 +97,7 @@ export const ChangeSummary = memo(function ChangeSummary({
       <ul className="m-0 list-none p-0">
         {files.map((file) => {
           const resolution = fileResolutions?.get(file.path)
-          const norm = file.path.replace(/\\/g, '/')
+          const norm = normalizeRelPath(file.path)
           const lines = fileDiffs?.get(norm) ?? fileDiffs?.get(file.path)
           const expanded = expandedPaths.has(file.path)
           const canExpand = Boolean(lines && lines.length > 0) || file.removed > 0

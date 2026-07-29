@@ -4,15 +4,18 @@ import { join } from 'path'
 import { IPC } from '@shared/channels'
 import type { VyotiqApi } from '@shared/vyotiqApi'
 
-/** Invoke channels exposed on VyotiqApi (push listeners excluded). */
+/** Invoke channels exposed on VyotiqApi (push listeners + sync send excluded). */
 const VYOTIQ_INVOKE_MAP: Record<
   Exclude<
     keyof VyotiqApi,
     | 'platform'
     | 'onChatEvent'
     | 'onToolApprovalRequest'
+    | 'onAgentQuestionRequest'
     | 'onWindowMaximizedChanged'
     | 'onSystemThemeChanged'
+    | 'onBrowserState'
+    | 'updateWorkspaceUiStateSync'
   >,
   string
 > = {
@@ -32,7 +35,11 @@ const VYOTIQ_INVOKE_MAP: Record<
   chatStart: IPC.chatStart,
   chatCancel: IPC.chatCancel,
   chatCompact: IPC.chatCompact,
+  undoWrites: IPC.runsUndoWrites,
+  resolveWrites: IPC.runsResolveWrites,
+  readRunArtifact: IPC.runsReadArtifact,
   respondToolApproval: IPC.toolApprovalResponse,
+  respondAgentQuestion: IPC.agentQuestionResponse,
   extractAttachment: IPC.attachmentExtract,
   listRuns: IPC.listRuns,
   loadRun: IPC.loadRun,
@@ -41,6 +48,17 @@ const VYOTIQ_INVOKE_MAP: Record<
   deleteRun: IPC.runsDelete,
   renameRun: IPC.runsRename,
   listActiveRuns: IPC.runsActive,
+  browserGetState: IPC.browserGetState,
+  browserFocus: IPC.browserFocus,
+  browserClose: IPC.browserClose,
+  browserSelectTab: IPC.browserSelectTab,
+  browserBack: IPC.browserBack,
+  browserForward: IPC.browserForward,
+  browserSetBounds: IPC.browserSetBounds,
+  browserNavigate: IPC.browserNavigate,
+  browserReload: IPC.browserReload,
+  browserTakeScreenshot: IPC.browserTakeScreenshot,
+  browserClearBrowsingData: IPC.browserClearBrowsingData,
   gitStatus: IPC.gitStatus,
   gitCommit: IPC.gitCommit,
   windowMinimize: IPC.windowMinimize,
@@ -67,14 +85,20 @@ const VYOTIQ_INVOKE_MAP: Record<
   marketplaceSetEnabled: IPC.marketplaceSetEnabled,
   marketplacePickLocal: IPC.marketplacePickLocal,
   marketplaceGetContents: IPC.marketplaceGetContents,
+  slashCommandsList: IPC.slashCommandsList,
+  slashCommandsResolve: IPC.slashCommandsResolve,
+  slashCommandsCreateRule: IPC.slashCommandsCreateRule,
+  slashCommandsOpenFile: IPC.slashCommandsOpenFile,
   getSystemTheme: IPC.getSystemTheme
 }
 
 const PUSH_CHANNELS = new Set<string>([
   IPC.chatEvent,
   IPC.toolApprovalRequest,
+  IPC.agentQuestionRequest,
   IPC.windowMaximizedChanged,
-  IPC.themeChanged
+  IPC.themeChanged,
+  IPC.browserState
 ])
 
 const VYOTIQ_SYNC_SEND_MAP: Record<'updateWorkspaceUiStateSync', string> = {
@@ -82,13 +106,20 @@ const VYOTIQ_SYNC_SEND_MAP: Record<'updateWorkspaceUiStateSync', string> = {
 }
 
 const VYOTIQ_PUSH_MAP: Record<
-  'onChatEvent' | 'onToolApprovalRequest' | 'onWindowMaximizedChanged' | 'onSystemThemeChanged',
+  | 'onChatEvent'
+  | 'onToolApprovalRequest'
+  | 'onAgentQuestionRequest'
+  | 'onWindowMaximizedChanged'
+  | 'onSystemThemeChanged'
+  | 'onBrowserState',
   string
 > = {
   onChatEvent: IPC.chatEvent,
   onToolApprovalRequest: IPC.toolApprovalRequest,
+  onAgentQuestionRequest: IPC.agentQuestionRequest,
   onWindowMaximizedChanged: IPC.windowMaximizedChanged,
-  onSystemThemeChanged: IPC.themeChanged
+  onSystemThemeChanged: IPC.themeChanged,
+  onBrowserState: IPC.browserState
 }
 
 describe('main/renderer IPC contract', () => {
@@ -98,7 +129,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(false)
     }
-    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(52)
+    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(71)
   })
 
   it('maps every VyotiqApi push listener to a push channel', () => {
@@ -107,7 +138,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(true)
     }
-    expect(Object.keys(VYOTIQ_PUSH_MAP)).toHaveLength(4)
+    expect(Object.keys(VYOTIQ_PUSH_MAP)).toHaveLength(6)
   })
 
   it('accounts for every IPC channel as invoke or push', () => {

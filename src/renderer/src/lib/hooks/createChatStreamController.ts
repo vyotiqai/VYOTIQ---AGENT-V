@@ -6,7 +6,8 @@ import type {
   IncompleteReason,
   PersistedEvent,
   ToolApprovalDecision,
-  ToolApprovalRequest
+  ToolApprovalRequest,
+  AgentQuestionRequest
 } from '@shared/ipc'
 import {
   emptyStepUsageTotals,
@@ -376,6 +377,15 @@ function replaceAt(items: UiItem[], index: number, next: UiItem): UiItem[] {
   return copy
 }
 
+/** Drop pending question prompts, either one answered or all of them. */
+function clearQuestions(items: UiItem[], requestId?: string): UiItem[] {
+  return items.filter((item) => {
+    if (item.kind !== 'question') return true
+    if (requestId && item.question.requestId !== requestId) return true
+    return false
+  })
+}
+
 /** Drop pending approval prompts, either one answered or all of them. */
 function clearApprovals(items: UiItem[], requestId?: string): UiItem[] {
   let changed = false
@@ -573,6 +583,8 @@ export type ChatStreamController = ChatStreamState & {
   /** Park a gated tool call on its transcript row until the reader answers. */
   handleApprovalRequest: (request: ToolApprovalRequest) => void
   respondToApproval: (requestId: string, decision: ToolApprovalDecision) => Promise<void>
+  handleQuestionRequest: (request: AgentQuestionRequest) => void
+  respondToQuestion: (requestId: string, answers: string[]) => Promise<void>
   /** Reload transcript from disk when a run finished but IPC was missed. */
   syncFromDisk: (runId: string) => Promise<boolean>
   /** Update meter + notice after a manual Compact now. */
@@ -612,12 +624,14 @@ export type CreateChatStreamControllerOptions = {
   onTerminal?: () => void
   /** Current Ask / Plan / Agent mode for chatStart. */
   getAgentMode?: () => AgentInteractionMode
+  /** Sync composer mode when the agent calls switch_mode. */
+  onAgentModeChange?: (mode: AgentInteractionMode) => void
 }
 
 export function createChatStreamController(
   options: CreateChatStreamControllerOptions
 ): ChatStreamController {
-  const { workspacePath, onRunIdAssigned, onTerminal, getAgentMode } = options
+  const { workspacePath, onRunIdAssigned, onTerminal, getAgentMode, onAgentModeChange } = options
   const listeners = new Set<() => void>()
   const itemsListeners = new Set<() => void>()
   const metaListeners = new Set<() => void>()
@@ -1295,6 +1309,8 @@ export function createChatStreamController(
           subagentContextUsage: usage
         })
       })
+    } else if (event.type === 'mode_changed') {
+      onAgentModeChange?.(event.mode)
     } else if (event.type === 'error') {
       lastRunErrorMessage = event.message
       logger.warn('Agent run error', {
@@ -1330,6 +1346,8 @@ export function createChatStreamController(
               }
             : item
         )
+      // Keep pending question cards — provider retry must not strand the run
+      // without a way to answer (approvals already survive via the filter above).
       patch({ items: nextItems })
     } else if (event.type === 'incomplete') {
       patch({
@@ -1842,9 +1860,62 @@ export function createChatStreamController(
       patch({ error: res.error })
       throw new Error(res.error)
     }
-    // Only clear the card after main accepted the decision — otherwise the run
-    // stays parked with no way to answer again.
+    // Main returns ok(false) when the requestId is unknown — leave the card so
+    // the user can retry; otherwise the run stays parked with no UI.
+    if (res.data !== true) {
+      const message = 'Tool approval was not accepted. Try again.'
+      logger.warn('Tool approval response not accepted', { scope: 'chat' })
+      patch({ error: message })
+      throw new Error(message)
+    }
     patch({ items: clearApprovals(state.items, requestId), error: null })
+  }
+
+  const handleQuestionRequest = (request: AgentQuestionRequest): void => {
+    if (closedRuns.has(request.runId)) return
+    if (runId && request.runId !== runId) return
+
+    const questionItem: Extract<UiItem, { kind: 'question' }> = {
+      kind: 'question',
+      id: `question:${request.requestId}`,
+      question: {
+        requestId: request.requestId,
+        toolCallId: request.toolCallId,
+        question: request.question,
+        ...(request.options?.length ? { options: request.options } : {}),
+        ...(request.allowMultiple ? { allowMultiple: true } : {}),
+        ...(request.allowCustom === false ? { allowCustom: false } : {})
+      },
+      at: new Date().toISOString()
+    }
+    patch({ items: [...state.items, questionItem] })
+  }
+
+  const respondToQuestion = async (requestId: string, answers: string[]): Promise<void> => {
+    const res = await window.vyotiq?.respondAgentQuestion?.(requestId, answers)
+    if (!res) {
+      const message = 'Question response is unavailable.'
+      logger.warn('Agent question response unavailable', { scope: 'chat' })
+      patch({ error: message })
+      throw new Error(message)
+    }
+    if (!res.ok) {
+      logger.warn('Agent question response rejected', {
+        scope: 'chat',
+        err: toLogErr(res.error)
+      })
+      patch({ error: res.error })
+      throw new Error(res.error)
+    }
+    // Main returns ok(false) when the requestId is unknown — leave the card so
+    // the user can retry; otherwise the run stays parked with no UI.
+    if (res.data !== true) {
+      const message = 'Question answer was not accepted. Try again.'
+      logger.warn('Agent question response not accepted', { scope: 'chat' })
+      patch({ error: message })
+      throw new Error(message)
+    }
+    patch({ items: clearQuestions(state.items, requestId), error: null })
   }
 
   const clearError = (): void => {
@@ -2079,6 +2150,8 @@ export function createChatStreamController(
     toggleTurnCollapsed,
     handleApprovalRequest,
     respondToApproval,
+    handleQuestionRequest,
+    respondToQuestion,
     syncFromDisk,
     applyManualCompaction,
     markWriteCheckpointUndone,

@@ -2,7 +2,7 @@ import { logger, logErrorSummary } from '../../../shared/logger'
 import { formatError, isAbortError, isExpectedToolError } from '../../../shared/errors'
 import { summarizeToolArgsFromRecord } from '../../../shared/toolSummary'
 import { validateToolArgs, type AgentToolName } from '../schemas/tools'
-import { invokeMcpTool, parseMcpToolName, getMcpToolDefinition, listMcpToolDefinitions, getMcpReadOnlyHint } from '../mcp'
+import { invokeMcpTool, parseMcpToolName, getMcpToolDefinition, listMcpToolDefinitions, getMcpReadOnlyHint, assertMcpServerAccess, listMcpResources, readMcpResource, listMcpPrompts, getMcpPrompt } from '../mcp'
 import { isMcpToolPermitted } from '../../../shared/utils/mcpToolPolicy'
 import { validateAgainstJsonSchema } from '../schemas/jsonSchemaValidate'
 import { toolRead, READ_CONTENT_CAP } from './read'
@@ -28,8 +28,10 @@ import {
   assertToolAllowedInMode,
   isPlanArtifactPath
 } from './modePolicy'
-import type { AgentInteractionMode } from '../../../shared/ipc'
+import type { AgentEvent, AgentInteractionMode, AgentQuestionRequest } from '../../../shared/ipc'
 import { basename } from 'path'
+import { randomUUID } from 'crypto'
+import { askQuestionThroughRenderer } from '../agentQuestion'
 
 export interface ToolResult {
   ok: boolean
@@ -43,10 +45,22 @@ export interface ToolResult {
 export type ToolExecutionContext = {
   /** Directory of the run that issued the call; absent outside a run. */
   runDir?: string
+  /** Run that owns this call; required for ask_question. */
+  runId?: string
+  /** Provider tool-call id; required for ask_question. */
+  toolCallId?: string
+  /** ChatStart invoke that owns this call; scopes cancel on abort. */
+  invokeId?: number
   /** Nesting level of the caller: 0 for the top-level run, 1 inside a sub-agent. */
   depth?: number
-  /** Ask / Plan / Agent mode for this invoke. */
+  /** Ask / Plan / Agent mode for this invoke (prefer getAgentMode when mutable). */
   agentMode?: AgentInteractionMode
+  getAgentMode?: () => AgentInteractionMode
+  setAgentMode?: (mode: AgentInteractionMode) => void
+  /** Emit live agent events (e.g. mode_changed) while a tool is running. */
+  emitAgentEvent?: (event: AgentEvent) => void
+  /** Overridable in tests; defaults to renderer IPC round trip. */
+  askQuestion?: (request: AgentQuestionRequest, signal: AbortSignal) => Promise<string[]>
   /** Skip write-checkpoint priors (Plan run artifacts are not workspace writes). */
   skipWriteCheckpoint?: boolean
   /** Live progress from a long-running tool, surfaced under its transcript row. */
@@ -122,6 +136,57 @@ export function terminalResultOk(command: string, content: string): boolean {
   if (shell && shell !== 'cmd') return false
   if (isFindstrNoMatchContent(command, content)) return true
   return isDirMissingPathContent(command, content)
+}
+
+function formatQuestionAnswers(answers: string[]): string {
+  if (answers.length === 0) return 'User provided no answer.'
+  if (answers.length === 1) return `User answered: ${answers[0]}`
+  return `User answered:\n${answers.map((a) => `- ${a}`).join('\n')}`
+}
+
+function resolveAgentMode(context: ToolExecutionContext): AgentInteractionMode {
+  return context.getAgentMode?.() ?? context.agentMode ?? 'agent'
+}
+
+function optionalMcpServerId(args: Record<string, unknown>): string | undefined {
+  const value = args.serverId ?? args.server_id
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function mcpServerGate(
+  toolName: string,
+  serverId: string,
+  summary: string,
+  context: ToolExecutionContext
+): { ok: true } | { ok: false; result: ToolResult } {
+  const access = assertMcpServerAccess(serverId, context.runEnabledMcpIds)
+  if (!access.ok) {
+    return { ok: false, result: toolFail(toolName, summary, access.error) }
+  }
+  return { ok: true }
+}
+
+function formatMcpResourceLines(entries: Awaited<ReturnType<typeof listMcpResources>>): string {
+  return entries
+    .map((entry) => {
+      const label = entry.name ? `${entry.uri} (${entry.name})` : entry.uri
+      const meta = [entry.mimeType, entry.description?.replace(/\s+/g, ' ').trim()]
+        .filter(Boolean)
+        .join(' — ')
+      return `- [${entry.serverId}] ${label}${meta ? `: ${meta}` : ''}`
+    })
+    .join('\n')
+}
+
+function formatMcpPromptLines(entries: Awaited<ReturnType<typeof listMcpPrompts>>): string {
+  return entries
+    .map((entry) => {
+      const argNames = (entry.arguments ?? []).map((arg) => arg.name).filter(Boolean)
+      const argsNote = argNames.length ? ` args=[${argNames.join(', ')}]` : ''
+      const desc = entry.description?.replace(/\s+/g, ' ').trim()
+      return `- [${entry.serverId}] ${entry.name}${argsNote}${desc ? `: ${desc}` : ''}`
+    })
+    .join('\n')
 }
 
 const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
@@ -468,6 +533,76 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     })
     return toolOk('mcp_list_tools', `${defs.length} tools`, lines.join('\n'))
   },
+  mcp_list_resources: async (_workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    const serverId = optionalMcpServerId(args)
+    if (serverId) {
+      const gate = mcpServerGate('mcp_list_resources', serverId, serverId, context)
+      if (!gate.ok) return gate.result
+    }
+    const entries = await listMcpResources(serverId, context.runEnabledMcpIds, signal)
+    if (entries.length === 0) {
+      return toolOk(
+        'mcp_list_resources',
+        serverId || 'mcp',
+        serverId ? `No MCP resources for server ${serverId}` : 'No MCP resources connected.'
+      )
+    }
+    return toolOk(
+      'mcp_list_resources',
+      `${entries.length} resources`,
+      formatMcpResourceLines(entries)
+    )
+  },
+  mcp_read_resource: async (_workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    const serverId = String(args.serverId ?? '').trim()
+    const uri = String(args.uri ?? '').trim()
+    if (!serverId) return toolFail('mcp_read_resource', uri || 'resource', 'serverId is required')
+    if (!uri) return toolFail('mcp_read_resource', serverId, 'uri is required')
+    const gate = mcpServerGate('mcp_read_resource', serverId, uri, context)
+    if (!gate.ok) return gate.result
+    const result = await readMcpResource(serverId, uri, signal, context.runEnabledMcpIds)
+    if (!result.ok) return toolFail('mcp_read_resource', uri, result.error)
+    return toolOk('mcp_read_resource', uri, result.content)
+  },
+  mcp_list_prompts: async (_workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    const serverId = optionalMcpServerId(args)
+    if (serverId) {
+      const gate = mcpServerGate('mcp_list_prompts', serverId, serverId, context)
+      if (!gate.ok) return gate.result
+    }
+    const entries = await listMcpPrompts(serverId, context.runEnabledMcpIds, signal)
+    if (entries.length === 0) {
+      return toolOk(
+        'mcp_list_prompts',
+        serverId || 'mcp',
+        serverId ? `No MCP prompts for server ${serverId}` : 'No MCP prompts connected.'
+      )
+    }
+    return toolOk('mcp_list_prompts', `${entries.length} prompts`, formatMcpPromptLines(entries))
+  },
+  mcp_get_prompt: async (_workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    const serverId = String(args.serverId ?? '').trim()
+    const name = String(args.name ?? '').trim()
+    if (!serverId) return toolFail('mcp_get_prompt', name || 'prompt', 'serverId is required')
+    if (!name) return toolFail('mcp_get_prompt', serverId, 'name is required')
+    const gate = mcpServerGate('mcp_get_prompt', serverId, name, context)
+    if (!gate.ok) return gate.result
+    const promptArgs =
+      args.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)
+        ? Object.fromEntries(
+            Object.entries(args.arguments).filter(
+              (entry): entry is [string, string] => typeof entry[1] === 'string'
+            )
+          )
+        : undefined
+    const result = await getMcpPrompt(serverId, name, promptArgs, signal, context.runEnabledMcpIds)
+    if (!result.ok) return toolFail('mcp_get_prompt', name, result.error)
+    return toolOk('mcp_get_prompt', name, result.content)
+  },
   subagent: async (workspace, args, signal, context) => {
     throwIfAborted(signal)
     const task = String(args.task ?? '')
@@ -489,6 +624,54 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     }
     if (!outcome.ok) return toolFail('subagent', summary, outcome.report)
     return toolOk('subagent', summary, outcome.report)
+  },
+  ask_question: async (_workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    const question = String(args.question ?? '').trim()
+    if (!question) return toolFail('ask_question', 'question', 'question is required')
+    if (!context.runId || !context.toolCallId) {
+      return toolFail('ask_question', question, 'ask_question requires an active run')
+    }
+    const options = Array.isArray(args.options)
+      ? args.options.filter((o): o is string => typeof o === 'string' && o.trim().length > 0)
+      : undefined
+    const request: AgentQuestionRequest = {
+      requestId: randomUUID(),
+      runId: context.runId,
+      toolCallId: context.toolCallId,
+      question,
+      ...(options?.length ? { options } : {}),
+      ...(args.allowMultiple === true ? { allowMultiple: true } : {}),
+      ...(args.allowCustom === false ? { allowCustom: false } : {})
+    }
+    const ask =
+      context.askQuestion ??
+      ((req, sig) => askQuestionThroughRenderer(req, sig, context.invokeId))
+    try {
+      const answers = await ask(request, signal)
+      return toolOk('ask_question', question.slice(0, 80), formatQuestionAnswers(answers))
+    } catch (err) {
+      if (isAbortError(err)) throw err
+      const message = err instanceof Error ? err.message : 'Question failed'
+      return toolFail('ask_question', question.slice(0, 80), message)
+    }
+  },
+  switch_mode: (_workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    const mode = args.mode
+    if (mode !== 'ask' && mode !== 'plan' && mode !== 'agent') {
+      return toolFail('switch_mode', 'mode', 'mode must be ask, plan, or agent')
+    }
+    const previous = resolveAgentMode(context)
+    context.setAgentMode?.(mode)
+    if (context.runId) {
+      context.emitAgentEvent?.({ type: 'mode_changed', runId: context.runId, mode })
+    }
+    const content =
+      previous === mode
+        ? `Already in ${mode} mode.`
+        : `Mode switched from ${previous} to ${mode}. Tool availability updated for subsequent steps.`
+    return toolOk('switch_mode', mode, content)
   },
   terminal: async (workspace, args, signal, context) => {
     const sessionId =
@@ -594,7 +777,7 @@ export async function executeTool(
 ): Promise<ToolResult> {
   throwIfAborted(signal)
 
-  const agentMode: AgentInteractionMode = context.agentMode ?? 'agent'
+  const agentMode: AgentInteractionMode = resolveAgentMode(context)
 
   const mcp = parseMcpToolName(name)
   if (mcp) {

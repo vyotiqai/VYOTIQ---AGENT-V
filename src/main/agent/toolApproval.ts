@@ -5,6 +5,7 @@ import type {
   ToolApprovalRequest,
   ToolApprovalResponse
 } from '../../shared/ipc'
+import { isAbortError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
 import { summarizeToolArgs } from '../../shared/toolSummary'
 import { isApprovalExemptTool } from './tools/classify'
@@ -104,7 +105,11 @@ function askThroughRenderer(
       correlationId: request.runId,
       tool: request.name
     })
-    return Promise.resolve('deny')
+    return Promise.reject(
+      new Error(
+        'Tool approval required but no app window is listening. Reopen Vyotiq and retry, or turn off tool approval in Settings.'
+      )
+    )
   }
 
   return new Promise<ToolApprovalDecision>((resolve, reject) => {
@@ -163,7 +168,19 @@ export function createApprovalGate(options: ApprovalGateOptions): ToolApprovalGa
         mutating: !isApprovalExemptTool(call.name)
       }
 
-      const decision = await ask(request)
+      const decision = await ask(request).catch((err: unknown) => {
+        if (isAbortError(err) || (err instanceof Error && err.name === 'AbortError')) {
+          throw err
+        }
+        const message =
+          err instanceof Error
+            ? err.message
+            : 'Tool approval failed because no app window is listening.'
+        return { __denyReason: message } as const
+      })
+      if (typeof decision === 'object' && decision && '__denyReason' in decision) {
+        return { allowed: false, reason: decision.__denyReason }
+      }
       logger.info('Tool approval decision', {
         scope: 'agent',
         correlationId: options.runId,

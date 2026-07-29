@@ -64,6 +64,9 @@ describe('sub-agent transcript row', () => {
     render(<MessageList items={[item]} />)
 
     expect(screen.getByText('Investigated')).toBeTruthy()
+    // Completed tool bodies stay collapsed by default — expand then assert.
+    const header = screen.getByRole('button', { expanded: false })
+    fireEvent.click(header)
     expect(screen.getByText('Auth lives in src/auth.ts:12.')).toBeTruthy()
   })
 

@@ -34,7 +34,8 @@ vi.mock('@main/settings/settings', () => ({
     theme: 'system',
     telemetryEnabled: false
   }),
-  readLegacyWorkspacePath: () => null
+  readLegacyWorkspacePath: () => null,
+  clearSettingsCacheForTests: () => undefined
 }))
 
 vi.mock('@main/settings/secrets', () => ({

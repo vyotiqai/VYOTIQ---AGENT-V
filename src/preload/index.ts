@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import { IPC } from '../shared/channels'
-import { AgentEventSchema, ToolApprovalRequestSchema, AgentBrowserStateSchema } from '../shared/ipc'
+import { AgentEventSchema, ToolApprovalRequestSchema, AgentQuestionRequestSchema, AgentBrowserStateSchema } from '../shared/ipc'
 import type { VyotiqApi } from '../shared/vyotiqApi'
 
 export type { HostPlatform, VyotiqApi } from '../shared/vyotiqApi'
@@ -68,6 +68,22 @@ const api: VyotiqApi = {
   },
   respondToolApproval: (requestId, decision) =>
     ipcRenderer.invoke(IPC.toolApprovalResponse, { requestId, decision }),
+  onAgentQuestionRequest: (handler) => {
+    const listener = (_: IpcRendererEvent, raw: unknown): void => {
+      const parsed = AgentQuestionRequestSchema.safeParse(raw)
+      if (!parsed.success) {
+        console.warn('[vyotiq] Invalid question request dropped', parsed.error.issues[0]?.message)
+        return
+      }
+      handler(parsed.data)
+    }
+    ipcRenderer.on(IPC.agentQuestionRequest, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.agentQuestionRequest, listener)
+    }
+  },
+  respondAgentQuestion: (requestId, answers) =>
+    ipcRenderer.invoke(IPC.agentQuestionResponse, { requestId, answers }),
   extractAttachment: (payload) => ipcRenderer.invoke(IPC.attachmentExtract, payload),
   listRuns: (workspacePath) => {
     const path = workspacePath?.trim() ?? ''
@@ -103,7 +119,10 @@ const api: VyotiqApi = {
   onBrowserState: (handler) => {
     const listener = (_: IpcRendererEvent, raw: unknown): void => {
       const parsed = AgentBrowserStateSchema.safeParse(raw)
-      if (!parsed.success) return
+      if (!parsed.success) {
+        console.warn('[vyotiq] Invalid browser state dropped', parsed.error.issues[0]?.message)
+        return
+      }
       handler(parsed.data)
     }
     ipcRenderer.on(IPC.browserState, listener)

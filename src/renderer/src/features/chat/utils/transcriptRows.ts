@@ -1,4 +1,4 @@
-import type { UiItem, UiToolApproval } from '@shared/transcript'
+import type { UiAgentQuestion, UiItem, UiToolApproval } from '@shared/transcript'
 import {
   duplicatesReasoning,
   mergeThinkingContent,
@@ -30,6 +30,7 @@ export type TranscriptRow =
   | { kind: 'card'; id: string; item: ToolItem; turnIndex: number }
   | { kind: 'changes'; id: string; turnIndex: number; files: ChangedFile[] }
   | { kind: 'approval'; id: string; approval: UiToolApproval; turnIndex: number }
+  | { kind: 'question'; id: string; question: UiAgentQuestion; turnIndex: number }
 
 export type ChangedFile = {
   path: string
@@ -53,7 +54,7 @@ export type TurnSpan = {
  * (composer locked, no Allow/Deny).
  */
 export function isTurnWorkRow(row: TranscriptRow): boolean {
-  if (row.kind === 'approval') return false
+  if (row.kind === 'approval' || row.kind === 'question') return false
   // Collapsed turns rely on TurnSummary for live phase; hide cards/activity so
   // running tools are not duplicated beside the timeline label.
   if (
@@ -132,12 +133,25 @@ export function buildTranscriptRows(
   }
 
   for (const item of items) {
+    if (item.kind === 'question') {
+      flush()
+      rows.push({
+        kind: 'question',
+        id: item.id,
+        question: item.question,
+        turnIndex: Math.max(turnIndex, 0)
+      })
+      continue
+    }
     if (item.kind === 'tool') {
-      pending.push(item)
+      const gatedByQuestion = items.some(
+        (entry) => entry.kind === 'question' && entry.question.toolCallId === item.id
+      )
+      if (!gatedByQuestion) pending.push(item)
       continue
     }
 
-    if (item.role === 'user') {
+    if (item.kind === 'message' && item.role === 'user') {
       flush()
       turnIndex += 1
       rows.push({ kind: 'user', id: item.id, item: item as UserItem, turnIndex })
@@ -269,6 +283,8 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
       return `changes:${row.id}:${row.files.map((f) => `${f.path}:${f.added}:${f.removed}`).join('|')}`
     case 'approval':
       return `approval:${row.id}:${row.approval.requestId}`
+    case 'question':
+      return `question:${row.id}:${row.question.requestId}`
     default: {
       const _exhaustive: never = row
       return _exhaustive
@@ -449,6 +465,7 @@ function rowTimestamps(row: TranscriptRow): { at: number | null; endedAt: number
     case 'turn':
     case 'changes':
     case 'approval':
+    case 'question':
       return { at: null, endedAt: null }
   }
 }
@@ -463,6 +480,7 @@ function isRowActive(row: TranscriptRow): boolean {
     case 'activity':
       return row.tools.some((tool) => tool.tool.status === 'running')
     case 'approval':
+    case 'question':
       return true
     case 'user':
     case 'turn':

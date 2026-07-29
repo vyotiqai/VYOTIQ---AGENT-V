@@ -26,6 +26,7 @@ import {
   GitStatusRequestSchema,
   GitCommitRequestSchema,
   ToolApprovalResponseSchema,
+  AgentQuestionResponseSchema,
   ExtractAttachmentRequestSchema,
   MarketplaceBrowseRequestSchema,
   MarketplaceInstallRequestSchema,
@@ -116,6 +117,11 @@ import {
   registerApprovalSender,
   resolveToolApproval
 } from '../agent/toolApproval'
+import {
+  cancelPendingQuestions,
+  registerQuestionSender,
+  resolveAgentQuestion
+} from '../agent/agentQuestion'
 import { listProviderModels } from '../agent/providers'
 import { clearModelCache } from '../agent/providers/modelCache'
 import {
@@ -123,7 +129,6 @@ import {
   listActiveRuns,
   registerRunAbort,
   isActive,
-  clearRunAbort,
   markRunTurnComplete
 } from '../agent/runRegistry'
 import {
@@ -456,13 +461,14 @@ export function registerIpc(): void {
 
       ;(async () => {
         let terminalSent = false
+        // IPC `incremental` stays on the schema for client stability; the loop
+        // keys off resume + newMessages (not a separate incremental branch).
         const agentInput =
           req.incremental && req.runId && req.newMessages?.length
             ? {
                 runId,
                 workspacePath: req.workspacePath,
                 resume,
-                incremental: true as const,
                 newMessages: req.newMessages,
                 mode: req.mode
               }
@@ -483,6 +489,10 @@ export function registerIpc(): void {
           // The gate is parked on this prompt, so it has to jump the event batcher.
           batcher.flush()
           if (!wc.isDestroyed()) wc.send(IPC.toolApprovalRequest, request)
+        })
+        const releaseQuestionSender = registerQuestionSender(runId, (request) => {
+          batcher.flush()
+          if (!wc.isDestroyed()) wc.send(IPC.agentQuestionRequest, request)
         })
         try {
           for await (const ev of runAgent(agentInput)) {
@@ -523,8 +533,10 @@ export function registerIpc(): void {
             resetChatEventBatchStats()
           }
           releaseApprovalSender()
+          releaseQuestionSender()
           cancelPendingApprovals(runId, invokeId)
-          clearRunAbort(runId, invokeId)
+          cancelPendingQuestions(runId, invokeId)
+          // clearRunAbort lives in runAgent's finally (single owner).
         }
       })()
 
@@ -541,6 +553,16 @@ export function registerIpc(): void {
       return ok(resolveToolApproval(response))
     } catch (err) {
       return failFrom(err, IPC.toolApprovalResponse)
+    }
+  })
+
+  ipcMain.handle(IPC.agentQuestionResponse, async (event, raw): Promise<IpcResult<boolean>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const response = AgentQuestionResponseSchema.parse(raw)
+      return ok(resolveAgentQuestion(response))
+    } catch (err) {
+      return failFrom(err, IPC.agentQuestionResponse)
     }
   })
 

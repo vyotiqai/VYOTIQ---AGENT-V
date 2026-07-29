@@ -1,13 +1,22 @@
-import type { UiToolRow } from '@shared/transcript'
+import type { UiItem, UiToolRow } from '@shared/transcript'
 import { parseArgsRecord } from '@shared/toolSummary'
 import type { DiffLine } from '../toolUi'
-import { parseDiffPreview, parseEditCardData } from '../toolUi'
-import type { TranscriptRow } from './transcriptRows'
+import {
+  parseDiffPreview,
+  parseEditCardData,
+  parseDeleteData,
+  collectWritingChanges
+} from '../toolUi'
+import type { ChangedFile, ToolItem, TranscriptRow } from './transcriptRows'
 
-const WRITING_TOOLS = new Set(['edit', 'multi_edit', 'str_replace', 'delete'])
+export const WRITING_TOOLS = new Set(['edit', 'multi_edit', 'str_replace', 'delete'])
 
-function normalizePath(path: string): string {
+export function normalizeRelPath(path: string): string {
   return path.replace(/\\/g, '/').replace(/^\.\//, '')
+}
+
+function isToolItem(item: UiItem): item is ToolItem {
+  return item.kind === 'tool'
 }
 
 function appendLines(
@@ -16,7 +25,7 @@ function appendLines(
   lines: DiffLine[]
 ): void {
   if (!path || lines.length === 0) return
-  const key = normalizePath(path)
+  const key = normalizeRelPath(path)
   const existing = map.get(key)
   if (!existing) {
     map.set(key, lines)
@@ -25,14 +34,14 @@ function appendLines(
   existing.push({ kind: 'gap', text: '', lineNumber: null }, ...lines)
 }
 
-function diffLinesByPath(tool: UiToolRow): Map<string, DiffLine[]> {
+export function diffLinesByPath(tool: UiToolRow): Map<string, DiffLine[]> {
   const out = new Map<string, DiffLine[]>()
   if (!WRITING_TOOLS.has(tool.name)) return out
 
   if (tool.name === 'delete') {
     const args = parseArgsRecord(tool.argsPreview)
     const path = typeof args?.path === 'string' ? args.path : tool.summary?.trim() || ''
-    if (path) out.set(normalizePath(path), [])
+    if (path) out.set(normalizeRelPath(path), [])
     return out
   }
 
@@ -45,7 +54,6 @@ function diffLinesByPath(tool: UiToolRow): Map<string, DiffLine[]> {
       const edit = entry as Record<string, unknown>
       const path = typeof edit.path === 'string' ? edit.path : ''
       if (!path) continue
-      // Reuse single-edit preview by wrapping as a pseudo tool.
       const chunk = parseDiffPreview({
         ...tool,
         name: 'edit',
@@ -98,4 +106,49 @@ export function collectTurnFileDiffs(
   }
 
   return byTurn
+}
+
+/** Session-wide file diffs from writing tools (Changes panel). */
+export function collectSessionFileDiffs(items: UiItem[]): Map<string, DiffLine[]> {
+  const out = new Map<string, DiffLine[]>()
+  for (const item of items) {
+    if (!isToolItem(item) || item.tool.status !== 'done') continue
+    mergeToolDiffs(out, diffLinesByPath(item.tool))
+  }
+  return out
+}
+
+/** Session-wide changed files with +/- counts (Files / Changes panels). */
+export function collectSessionChangedFiles(items: UiItem[]): ChangedFile[] {
+  const totals = new Map<string, ChangedFile>()
+  for (const item of items) {
+    if (!isToolItem(item) || item.tool.status !== 'done') continue
+    if (item.tool.name === 'delete') {
+      const { path } = parseDeleteData(item.tool)
+      if (!path) continue
+      const key = normalizeRelPath(path)
+      const existing = totals.get(key)
+      if (existing) existing.removed += 1
+      else totals.set(key, { path: key, added: 0, removed: 1 })
+      continue
+    }
+    if (
+      item.tool.name !== 'edit' &&
+      item.tool.name !== 'multi_edit' &&
+      item.tool.name !== 'str_replace'
+    ) {
+      continue
+    }
+    for (const change of collectWritingChanges(item.tool)) {
+      const key = normalizeRelPath(change.path)
+      const existing = totals.get(key)
+      if (existing) {
+        existing.added += change.added
+        existing.removed += change.removed
+      } else {
+        totals.set(key, { path: key, added: change.added, removed: change.removed })
+      }
+    }
+  }
+  return [...totals.values()].sort((a, b) => a.path.localeCompare(b.path))
 }

@@ -22,6 +22,7 @@ import type {
   TelemetryStatus,
   ToolApprovalDecision,
   ToolApprovalRequest,
+  AgentQuestionRequest,
   ExtractAttachmentRequest,
   ExtractAttachmentResult,
   McpStatusResult,
@@ -102,6 +103,11 @@ export interface VyotiqApi {
   respondToolApproval: (
     requestId: string,
     decision: ToolApprovalDecision
+  ) => Promise<IpcResult<boolean>>
+  onAgentQuestionRequest: (handler: (request: AgentQuestionRequest) => void) => () => void
+  respondAgentQuestion: (
+    requestId: string,
+    answers: string[]
   ) => Promise<IpcResult<boolean>>
   extractAttachment: (
     payload: ExtractAttachmentRequest

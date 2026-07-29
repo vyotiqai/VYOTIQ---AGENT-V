@@ -56,6 +56,16 @@ export type UiToolApproval = {
   mutating: boolean
 }
 
+/** A structured question the agent is waiting on in the transcript. */
+export type UiAgentQuestion = {
+  requestId: string
+  toolCallId: string
+  question: string
+  options?: string[]
+  allowMultiple?: boolean
+  allowCustom?: boolean
+}
+
 export type UiItem =
   | {
       kind: 'message'
@@ -89,6 +99,12 @@ export type UiItem =
       subagent?: UiSubagentEntry[]
       /** Latest context fill for this nested sub-agent run. */
       subagentContextUsage?: UiSubagentContextUsage
+    }
+  | {
+      kind: 'question'
+      id: string
+      question: UiAgentQuestion
+      at?: string
     }
 
 /** Attachment chips for a message: names and sizes only, never the quoted text. */

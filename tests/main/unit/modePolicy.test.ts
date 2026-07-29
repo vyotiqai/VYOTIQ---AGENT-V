@@ -89,6 +89,8 @@ describe('modePolicy', () => {
     expect(isBuiltinAllowedInMode('ask', 'browser_wait_for_selector')).toBe(true)
     expect(isBuiltinAllowedInMode('ask', 'browser_wait_for_url')).toBe(true)
     expect(isBuiltinAllowedInMode('ask', 'mcp_list_tools')).toBe(true)
+    expect(isBuiltinAllowedInMode('ask', 'mcp_list_resources')).toBe(true)
+    expect(isBuiltinAllowedInMode('ask', 'mcp_read_resource')).toBe(true)
     expect(isBuiltinAllowedInMode('ask', 'browser_press_key')).toBe(false)
     expect(isBuiltinAllowedInMode('ask', 'browser_select_option')).toBe(false)
   })
