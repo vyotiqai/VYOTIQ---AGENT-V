@@ -38,6 +38,12 @@ describe('tool classify', () => {
     expect(isToolGated('read', 'mutating', new Set(), [])).toBe(false)
   })
 
+  it('gates web_search like web_fetch', () => {
+    expect(isParallelSafeTool('web_search')).toBe(true)
+    expect(isApprovalExemptTool('web_search')).toBe(false)
+    expect(isToolGated('web_search', 'mutating', new Set(), [])).toBe(true)
+  })
+
   it('serializes browser tools on the shared window and gates approval', () => {
     expect(isParallelSafeTool('browser_navigate')).toBe(false)
     expect(isParallelSafeTool('browser_snapshot')).toBe(false)

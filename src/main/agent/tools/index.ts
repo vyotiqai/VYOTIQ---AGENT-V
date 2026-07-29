@@ -16,6 +16,7 @@ import { toolStrReplace } from './strReplace'
 import { toolDelete } from './deletePath'
 import { toolTodoWrite, type TodoItem } from './todo'
 import { toolWebFetch } from './webFetch'
+import { toolWebSearch } from './webSearch'
 import { isFindstrNoMatchContent, isDirMissingPathContent, toolTerminal, TERMINAL_MAX_TIMEOUT_MS } from './terminal'
 import { runSubagent, SubagentDepthError, type SubagentContextUsage } from '../subagent'
 import { toolMemoryList, toolMemoryRead, toolMemoryWrite } from './memory'
@@ -242,6 +243,20 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     )
     throwIfAborted(signal)
     return toolOk('web_fetch', url, content)
+  },
+  web_search: async (_workspace, args, signal) => {
+    throwIfAborted(signal)
+    const query = String(args.query ?? '')
+    const content = await toolWebSearch(
+      query,
+      {
+        maxResults: typeof args.maxResults === 'number' ? args.maxResults : undefined,
+        timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined
+      },
+      signal
+    )
+    throwIfAborted(signal)
+    return toolOk('web_search', query, content)
   },
   browser_navigate: async (_workspace, args, signal) => {
     throwIfAborted(signal)

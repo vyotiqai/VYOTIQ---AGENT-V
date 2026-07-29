@@ -6,6 +6,7 @@ const PARALLEL_SAFE_BUILTIN = new Set([
   'grep',
   'list_dir',
   'web_fetch',
+  'web_search',
   'memory_list',
   'memory_read',
   'subagent',
@@ -16,11 +17,11 @@ const PARALLEL_SAFE_BUILTIN = new Set([
 
 /**
  * Tools that skip approval in `mutating` mode.
- * Same as parallel-safe except network egress (`web_fetch`).
+ * Same as parallel-safe except network egress (`web_fetch`, `web_search`).
  * Browser tools are serial (shared BrowserWindow) and always gated.
  */
 const APPROVAL_EXEMPT_BUILTIN = new Set(
-  [...PARALLEL_SAFE_BUILTIN].filter((name) => name !== 'web_fetch')
+  [...PARALLEL_SAFE_BUILTIN].filter((name) => name !== 'web_fetch' && name !== 'web_search')
 )
 
 /**
@@ -33,7 +34,7 @@ export function isParallelSafeTool(name: string): boolean {
 
 /**
  * Tools that do not require approval when mode is `mutating`.
- * `web_fetch` is parallel-safe but not approval-exempt (outbound network).
+ * `web_fetch` / `web_search` are parallel-safe but not approval-exempt (outbound network).
  * `browser_*` tools are serial-only and always gated (shared window + egress).
  * MCP tools always require approval in `mutating`/`all` — hint is untrusted.
  */

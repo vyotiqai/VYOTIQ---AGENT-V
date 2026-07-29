@@ -286,7 +286,8 @@ export async function toolWebFetch(
 
 async function fetchWithValidatedRedirects(
   startUrl: URL,
-  signal: AbortSignal
+  signal: AbortSignal,
+  headers?: HeadersInit
 ): Promise<{ response: Response; finalUrl: URL }> {
   let currentUrl = startUrl
 
@@ -295,7 +296,7 @@ async function fetchWithValidatedRedirects(
     const res = await fetch(validated, {
       signal,
       redirect: 'manual',
-      headers: { accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5' }
+      headers: headers ?? { accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5' }
     })
 
     if (res.status >= 300 && res.status < 400) {
@@ -336,4 +337,15 @@ async function readCapped(res: Response, cap: number): Promise<Buffer> {
   }
 
   return Buffer.concat(chunks).subarray(0, cap)
+}
+
+/** Shared by web_search — public SSRF-safe fetch with redirect validation. */
+export async function fetchPublicResponse(
+  startUrl: URL,
+  signal: AbortSignal,
+  headers?: HeadersInit
+): Promise<{ response: Response; finalUrl: URL; body: Buffer }> {
+  const { response, finalUrl } = await fetchWithValidatedRedirects(startUrl, signal, headers)
+  const body = await readCapped(response, MAX_BYTES)
+  return { response, finalUrl, body }
 }

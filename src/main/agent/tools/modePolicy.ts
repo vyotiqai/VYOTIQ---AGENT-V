@@ -11,6 +11,7 @@ export const ASK_SAFE_BUILTIN = new Set([
   'grep',
   'list_dir',
   'web_fetch',
+  'web_search',
   'browser_navigate',
   'browser_snapshot',
   'memory_list',
@@ -132,9 +133,15 @@ export function assertToolAllowedInMode(
 }
 
 /** Sanity: Ask-safe set should match parallel-safe built-ins used for reads. */
+/**
+ * Ask-safe tools are normally parallel-safe. Exception: agent-browser tools share
+ * one BrowserWindow and must stay serial while remaining Ask-readable.
+ */
+const ASK_SAFE_SERIAL_OK = new Set(['browser_navigate', 'browser_snapshot'])
+
 export function askSafeAlignsWithParallelSafe(): boolean {
   for (const name of ASK_SAFE_BUILTIN) {
-    if (!isParallelSafeTool(name)) return false
+    if (!isParallelSafeTool(name) && !ASK_SAFE_SERIAL_OK.has(name)) return false
   }
   return true
 }

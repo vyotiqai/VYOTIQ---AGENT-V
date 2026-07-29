@@ -198,6 +198,23 @@ const webFetchArgs = z.object({
     .optional()
 })
 
+const webSearchArgs = z.object({
+  query: z.string().min(1).describe('Search query string.'),
+  maxResults: z
+    .number()
+    .int()
+    .min(1)
+    .max(15)
+    .describe('Max results to return (default 8, max 15)')
+    .optional(),
+  timeoutMs: z
+    .number()
+    .int()
+    .min(1000)
+    .describe('Request timeout in ms (default 20000)')
+    .optional()
+})
+
 const browserNavigateArgs = z.object({
   url: z
     .string()
@@ -337,6 +354,11 @@ const TOOL_REGISTRY = {
     description:
       'Fetch a public http(s) URL as text. HTML responses are converted to markdown; other text types are returned as trimmed text.',
     schema: webFetchArgs
+  },
+  web_search: {
+    description:
+      'Search the public web (DuckDuckGo HTML). Returns titles, URLs, and snippets. Prefer web_fetch or browser_navigate to read a specific result.',
+    schema: webSearchArgs
   },
   browser_navigate: {
     description:
