@@ -36,14 +36,19 @@ export function AgentBrowserPanel({ className }: { className?: string }) {
   }, [])
 
   useLayoutEffect(() => {
-    const el = viewportRef.current
-    if (!state.open || !el) {
+    if (!state.open) {
       void window.vyotiq.browserSetBounds?.(null)
       return undefined
     }
 
+    const el = viewportRef.current
+    if (!el) return undefined
+
+    let cancelled = false
     const report = (): void => {
+      if (cancelled) return
       const r = el.getBoundingClientRect()
+      if (r.width < 2 || r.height < 2) return
       void window.vyotiq.browserSetBounds?.({
         x: Math.round(r.x),
         y: Math.round(r.y),
@@ -53,15 +58,18 @@ export function AgentBrowserPanel({ className }: { className?: string }) {
     }
 
     report()
+    const raf = requestAnimationFrame(report)
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(report) : null
     ro?.observe(el)
     window.addEventListener('resize', report)
     return () => {
+      cancelled = true
+      cancelAnimationFrame(raf)
       ro?.disconnect()
       window.removeEventListener('resize', report)
-      void window.vyotiq.browserSetBounds?.(null)
+      // Only clear when the panel closes (see !state.open branch), not on every re-run.
     }
-  }, [state.open, state.tabs?.length, state.url])
+  }, [state.open])
 
   if (!state.open) return null
 

@@ -85,26 +85,66 @@ function destroyTab(tab: BrowserTab): void {
   tabs.delete(tab.id)
 }
 
+function attachTabView(tab: BrowserTab): void {
+  const main = getMainWindow()
+  if (!main || main.isDestroyed()) return
+  try {
+    main.contentView.removeChildView(tab.view)
+  } catch {
+    // not attached yet
+  }
+  // Later children paint above the window's main WebContentsView.
+  main.contentView.addChildView(tab.view)
+}
+
 function applyActiveViewBounds(): void {
+  const main = getMainWindow()
   for (const tab of tabs.values()) {
     if (isTabDestroyed(tab)) continue
-    const active =
-      tab.id === activeTabId &&
-      embedBounds != null &&
-      embedBounds.width > 0 &&
-      embedBounds.height > 0
-    if (active && embedBounds) {
-      tab.view.setBounds(embedBounds)
-      tab.view.setVisible(true)
-    } else {
-      tab.view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+    const active = tab.id === activeTabId && tabs.size > 0
+    if (!active) {
       tab.view.setVisible(false)
+      tab.view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+      continue
+    }
+
+    let bounds = embedBounds
+    if ((!bounds || bounds.width < 1 || bounds.height < 1) && main && !main.isDestroyed()) {
+      // Fallback until the renderer reports the viewport slot — right ~42% of content.
+      // setBounds is relative to contentView (origin 0,0), not screen coordinates.
+      const [contentW, contentH] = main.getContentSize()
+      const width = Math.max(280, Math.round(contentW * 0.42))
+      bounds = {
+        x: Math.max(0, contentW - width),
+        y: 0,
+        width,
+        height: contentH
+      }
+    }
+    if (!bounds || bounds.width < 1 || bounds.height < 1) {
+      tab.view.setVisible(false)
+      tab.view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+      continue
+    }
+
+    attachTabView(tab)
+    tab.view.setBounds(bounds)
+    tab.view.setVisible(true)
+    try {
+      tab.view.webContents.setBackgroundThrottling(false)
+    } catch {
+      // older Electron
     }
   }
 }
 
 export function setAgentBrowserBounds(bounds: EmbedBounds | null): void {
-  if (!bounds || bounds.width < 1 || bounds.height < 1) {
+  if (!bounds || bounds.width < 2 || bounds.height < 2) {
+    // Keep prior bounds if the renderer reports a transient empty rect during layout.
+    if (bounds != null && embedBounds) {
+      applyActiveViewBounds()
+      return
+    }
     embedBounds = null
   } else {
     embedBounds = {
@@ -259,12 +299,14 @@ function createTab(): BrowserTab {
   const tab: BrowserTab = { id, view, lastRefs: new Map() }
   tabs.set(id, tab)
 
-  const main = getMainWindow()
-  if (main && !main.isDestroyed()) {
-    main.contentView.addChildView(view)
-  }
+  attachTabView(tab)
   view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
   view.setVisible(false)
+  try {
+    view.webContents.setBackgroundThrottling(false)
+  } catch {
+    // ignore
+  }
 
   view.webContents.on('destroyed', () => {
     tabs.delete(id)
