@@ -53,8 +53,9 @@ let lastState: AgentBrowserState = {
   canGoBack: false,
   canGoForward: false
 }
-/** Serialize navigate/click/type/snapshot across concurrent runs sharing the browser. */
-let browserOpChain: Promise<void> = Promise.resolve()
+/** Serialize navigate/click/type/snapshot per workspace (shared browser; cross-workspace concurrent). */
+const browserOpChains = new Map<string, Promise<void>>()
+const GLOBAL_BROWSER_LOCK_KEY = '__global__'
 let tabSeq = 0
 let embedBounds: EmbedBounds | null = null
 
@@ -138,12 +139,18 @@ export function setAgentBrowserBounds(bounds: EmbedBounds | null): void {
   applyActiveViewBounds()
 }
 
-function withBrowserLock<T>(fn: () => Promise<T>): Promise<T> {
-  const run = browserOpChain.then(fn, fn)
-  browserOpChain = run.then(
+function withBrowserLock<T>(fn: () => Promise<T>, workspacePath?: string): Promise<T> {
+  const key = workspacePath && workspacePath.length > 0 ? workspacePath : GLOBAL_BROWSER_LOCK_KEY
+  const prev = browserOpChains.get(key) ?? Promise.resolve()
+  const run = prev.then(fn, fn)
+  const tail = run.then(
     () => undefined,
     () => undefined
   )
+  browserOpChains.set(key, tail)
+  void tail.finally(() => {
+    if (browserOpChains.get(key) === tail) browserOpChains.delete(key)
+  })
   return run
 }
 
@@ -442,9 +449,14 @@ async function waitForLoad(
 /** Navigate the agent browser to a public http(s) URL. */
 export async function navigateUrl(
   rawUrl: string,
-  opts: { signal?: AbortSignal; timeoutMs?: number; tabId?: string } = {}
+  opts: {
+    signal?: AbortSignal
+    timeoutMs?: number
+    tabId?: string
+    workspacePath?: string
+  } = {}
 ): Promise<string> {
-  return withBrowserLock(() => navigateUrlUnlocked(rawUrl, opts))
+  return withBrowserLock(() => navigateUrlUnlocked(rawUrl, opts), opts.workspacePath)
 }
 
 async function navigateUrlUnlocked(
@@ -498,9 +510,10 @@ export async function snapshotPage(
     maxChars?: number
     runDir?: string
     tabId?: string
+    workspacePath?: string
   } = {}
 ): Promise<string> {
-  return withBrowserLock(() => snapshotPageUnlocked(opts))
+  return withBrowserLock(() => snapshotPageUnlocked(opts), opts.workspacePath)
 }
 
 async function snapshotPageUnlocked(
@@ -810,9 +823,10 @@ export async function clickSelector(
     button?: 'left' | 'right' | 'middle'
     tabId?: string
     settleMs?: number
+    workspacePath?: string
   } = {}
 ): Promise<string> {
-  return withBrowserLock(() => clickSelectorUnlocked(selector, opts))
+  return withBrowserLock(() => clickSelectorUnlocked(selector, opts), opts.workspacePath)
 }
 
 async function clickSelectorUnlocked(
@@ -871,9 +885,10 @@ export async function typeText(
     pressEnter?: boolean
     tabId?: string
     settleMs?: number
+    workspacePath?: string
   } = {}
 ): Promise<string> {
-  return withBrowserLock(() => typeTextUnlocked(text, opts))
+  return withBrowserLock(() => typeTextUnlocked(text, opts), opts.workspacePath)
 }
 
 async function typeTextUnlocked(
@@ -996,9 +1011,10 @@ export async function scrollPage(
     deltaY?: number
     tabId?: string
     settleMs?: number
+    workspacePath?: string
   } = {}
 ): Promise<string> {
-  return withBrowserLock(() => scrollPageUnlocked(opts))
+  return withBrowserLock(() => scrollPageUnlocked(opts), opts.workspacePath)
 }
 
 async function scrollPageUnlocked(
@@ -1044,9 +1060,15 @@ async function scrollPageUnlocked(
 export async function fillSelector(
   selector: string,
   value: string,
-  opts: { signal?: AbortSignal; pressEnter?: boolean; tabId?: string; settleMs?: number } = {}
+  opts: {
+    signal?: AbortSignal
+    pressEnter?: boolean
+    tabId?: string
+    settleMs?: number
+    workspacePath?: string
+  } = {}
 ): Promise<string> {
-  return withBrowserLock(() => fillSelectorUnlocked(selector, value, opts))
+  return withBrowserLock(() => fillSelectorUnlocked(selector, value, opts), opts.workspacePath)
 }
 
 async function fillSelectorUnlocked(
@@ -1195,6 +1217,7 @@ export async function clearAgentBrowserData(
 export async function takeBrowserScreenshot(opts: {
   runDir: string
   tabId?: string
+  workspacePath?: string
 }): Promise<{ path: string }> {
   return withBrowserLock(async () => {
     const tab = requireTab(opts.tabId)
@@ -1211,7 +1234,7 @@ export async function takeBrowserScreenshot(opts: {
     const path = join(dir, 'snapshot.jpg')
     writeFileSync(path, jpeg)
     return { path }
-  })
+  }, opts.workspacePath)
 }
 
 export function getAgentBrowserState(): AgentBrowserState {
@@ -1258,7 +1281,7 @@ export function resetAgentBrowserForTests(): void {
     canGoBack: false,
     canGoForward: false
   }
-  browserOpChain = Promise.resolve()
+  browserOpChains.clear()
   tabSeq = 0
 }
 
@@ -1268,9 +1291,9 @@ function clampWaitTimeout(timeoutMs?: number): number {
 
 export async function manageTabs(
   action: 'list' | 'open' | 'close' | 'select',
-  opts: { tabId?: string; url?: string; signal?: AbortSignal } = {}
+  opts: { tabId?: string; url?: string; signal?: AbortSignal; workspacePath?: string } = {}
 ): Promise<string> {
-  return withBrowserLock(() => manageTabsUnlocked(action, opts))
+  return withBrowserLock(() => manageTabsUnlocked(action, opts), opts.workspacePath)
 }
 
 async function manageTabsUnlocked(
@@ -1314,15 +1337,15 @@ async function manageTabsUnlocked(
 }
 
 export async function goBack(
-  opts: { tabId?: string; signal?: AbortSignal } = {}
+  opts: { tabId?: string; signal?: AbortSignal; workspacePath?: string } = {}
 ): Promise<string> {
-  return withBrowserLock(() => goHistoryUnlocked('back', opts))
+  return withBrowserLock(() => goHistoryUnlocked('back', opts), opts.workspacePath)
 }
 
 export async function goForward(
-  opts: { tabId?: string; signal?: AbortSignal } = {}
+  opts: { tabId?: string; signal?: AbortSignal; workspacePath?: string } = {}
 ): Promise<string> {
-  return withBrowserLock(() => goHistoryUnlocked('forward', opts))
+  return withBrowserLock(() => goHistoryUnlocked('forward', opts), opts.workspacePath)
 }
 
 async function goHistoryUnlocked(
@@ -1365,9 +1388,9 @@ async function goHistoryUnlocked(
 
 export async function waitForSelector(
   selector: string,
-  opts: { tabId?: string; timeoutMs?: number; signal?: AbortSignal } = {}
+  opts: { tabId?: string; timeoutMs?: number; signal?: AbortSignal; workspacePath?: string } = {}
 ): Promise<string> {
-  return withBrowserLock(() => waitForSelectorUnlocked(selector, opts))
+  return withBrowserLock(() => waitForSelectorUnlocked(selector, opts), opts.workspacePath)
 }
 
 async function waitForSelectorUnlocked(
@@ -1397,9 +1420,15 @@ async function waitForSelectorUnlocked(
 
 export async function waitForUrl(
   match: string,
-  opts: { tabId?: string; timeoutMs?: number; signal?: AbortSignal; regex?: boolean } = {}
+  opts: {
+    tabId?: string
+    timeoutMs?: number
+    signal?: AbortSignal
+    regex?: boolean
+    workspacePath?: string
+  } = {}
 ): Promise<string> {
-  return withBrowserLock(() => waitForUrlUnlocked(match, opts))
+  return withBrowserLock(() => waitForUrlUnlocked(match, opts), opts.workspacePath)
 }
 
 async function waitForUrlUnlocked(
@@ -1440,9 +1469,10 @@ export async function pressKey(
     modifiers?: string[]
     signal?: AbortSignal
     settleMs?: number
+    workspacePath?: string
   } = {}
 ): Promise<string> {
-  return withBrowserLock(() => pressKeyUnlocked(key, opts))
+  return withBrowserLock(() => pressKeyUnlocked(key, opts), opts.workspacePath)
 }
 
 async function pressKeyUnlocked(
@@ -1492,9 +1522,10 @@ export async function selectOption(
     signal?: AbortSignal
     pressEnter?: boolean
     settleMs?: number
+    workspacePath?: string
   } = {}
 ): Promise<string> {
-  return withBrowserLock(() => selectOptionUnlocked(selector, opts))
+  return withBrowserLock(() => selectOptionUnlocked(selector, opts), opts.workspacePath)
 }
 
 async function selectOptionUnlocked(

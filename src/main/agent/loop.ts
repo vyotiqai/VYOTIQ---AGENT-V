@@ -96,7 +96,9 @@ import {
   syncMessagesAsync,
   updateStatus,
   flushEventAppends,
-  flushMessageAppends
+  flushMessageAppends,
+  flushStatusWrites,
+  loadMessagesAsync
 } from './state'
 import { writeRunReceiptBestEffort } from './runReceipt'
 import { writeTrajectoryArtifactsBestEffort } from './runTrajectory'
@@ -407,7 +409,7 @@ export async function* runAgent(input: {
       initialStep = persisted?.step ?? 0
       // Prefer chatStart mode when the UI sent one; otherwise restore last run mode.
       agentMode = input.mode ?? persisted?.mode ?? 'agent'
-      const diskMessages = loadMessages(workspace, runId)
+      const diskMessages = await loadMessagesAsync(workspace, runId)
       // Always merge from durable disk history on resume so a stale client
       // payload cannot silently rewrite messages.jsonl.
       if (input.newMessages?.length) {
@@ -658,6 +660,9 @@ export async function* runAgent(input: {
     const readBeforeEditMode = settings.readBeforeEdit ?? 'notice'
 
     while (true) {
+      if (controller.signal.aborted) break
+      // Fairness under many concurrent runs — yield before sync-heavy step work.
+      await new Promise<void>((resolve) => setImmediate(resolve))
       if (controller.signal.aborted) break
       // Inject any queued user follow-ups before the next model call.
       yield* applyDrainedFollowUps(runId, runDir, messages)
@@ -1750,6 +1755,7 @@ export async function* runAgent(input: {
       }
       await flushMessageAppends(runDir)
       await flushEventAppends(runDir)
+      await flushStatusWrites(runDir)
       const receipt = writeRunReceiptBestEffort({
         runDir,
         runId,

@@ -4,6 +4,7 @@ import { join, basename } from 'path'
 import { atomicWriteFile, atomicWriteJson } from '../storage/atomicWrite'
 import { enqueueEventAppend, flushEventAppends } from './eventAppendQueue'
 import { enqueueMessageAppend, flushMessageAppends } from './messageAppendQueue'
+import { enqueueStatusPatch, writeStatusImmediateSync } from './statusWriteQueue'
 import { getCachedListRuns, invalidateListRunsCache } from './runListCache'
 import {
   ChatMessageSchema,
@@ -27,6 +28,7 @@ import { CompactionRecordSchema, type CompactionRecord } from './context/types'
 
 export { flushEventAppends } from './eventAppendQueue'
 export { flushMessageAppends } from './messageAppendQueue'
+export { flushStatusWrites } from './statusWriteQueue'
 
 const CONTRACT_CAP = 4000
 
@@ -152,12 +154,16 @@ export async function resumeRun(workspacePath: string, runId: string): Promise<s
   // Close any unfinished tool pairing from a previous crash before continuing.
   appendOrphanToolStubs(dir, runId)
   const prior = loadStatus(dir)
-  updateStatus(dir, {
-    status: 'running',
-    // Keep prior step count across invokes (do not reset progress metadata).
-    step: prior?.step ?? 0,
-    error: undefined
-  })
+  updateStatus(
+    dir,
+    {
+      status: 'running',
+      // Keep prior step count across invokes (do not reset progress metadata).
+      step: prior?.step ?? 0,
+      error: undefined
+    },
+    { sync: true }
+  )
   return dir
 }
 
@@ -232,28 +238,35 @@ export function appendEvent(dir: string, event: unknown): void {
   enqueueEventAppend(dir, event)
 }
 
-export function updateStatus(dir: string, patch: Partial<RunStatus>): void {
-  const p = join(dir, 'status.json')
-  let current: RunStatus = {
-    status: 'running',
-    step: 0,
-    updatedAt: new Date().toISOString()
+export function updateStatus(
+  dir: string,
+  patch: Partial<RunStatus>,
+  options?: { sync?: boolean }
+): void {
+  if (options?.sync) {
+    writeStatusImmediateSync(
+      dir,
+      patch,
+      (path, next) => atomicWriteJson(path, next),
+      (path) => {
+        let current: RunStatus = {
+          status: 'running',
+          step: 0,
+          updatedAt: new Date().toISOString()
+        }
+        try {
+          const raw = JSON.parse(readFileSync(path, 'utf8')) as unknown
+          const parsed = RunStatusSchema.safeParse(raw)
+          if (parsed.success) current = parsed.data
+        } catch {
+          // keep default
+        }
+        return current
+      }
+    )
+    return
   }
-  try {
-    const raw = JSON.parse(readFileSync(p, 'utf8')) as unknown
-    const parsed = RunStatusSchema.safeParse(raw)
-    if (parsed.success) current = parsed.data
-  } catch {
-    // keep default
-  }
-  const next: RunStatus = {
-    ...current,
-    ...patch,
-    updatedAt: new Date().toISOString()
-  }
-  atomicWriteJson(p, next)
-  const workspacePath = next.workspacePath ?? current.workspacePath
-  if (workspacePath) invalidateListRunsCache(workspacePath)
+  enqueueStatusPatch(dir, patch)
 }
 
 function parseMessagesJsonl(content: string): ChatMessage[] {
@@ -698,10 +711,14 @@ export function interruptOrphanRuns(workspacePaths: string[]): number {
         appendOrphanToolStubs(dir, name)
         finalizeInterruptedTodos(dir)
         patchInterruptedTodoMessage(dir)
-        updateStatus(dir, {
-          status: 'cancelled',
-          error: 'Interrupted: app exited while run was active'
-        })
+        updateStatus(
+          dir,
+          {
+            status: 'cancelled',
+            error: 'Interrupted: app exited while run was active'
+          },
+          { sync: true }
+        )
         appendEvent(dir, { type: 'status', status: 'cancelled', runId: name })
         count += 1
       } catch {

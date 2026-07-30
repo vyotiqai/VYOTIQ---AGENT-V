@@ -577,7 +577,10 @@ export function registerIpc(): void {
         const sendEvent = (ev: AgentEvent): void => {
           sendToCurrentRenderer(IPC.chatEvent, { ...ev, invokeId }, wc)
         }
-        const batcher = new ChatEventBatcher(sendEvent)
+        const batcher = new ChatEventBatcher(sendEvent, {
+          runId,
+          workspacePath: req.workspacePath
+        })
         const releaseApprovalSender = registerApprovalSender(runId, (request) => {
           // The gate is parked on this prompt, so it has to jump the event batcher.
           batcher.flush()
@@ -620,6 +623,7 @@ export function registerIpc(): void {
           }
         } finally {
           batcher.flush()
+          batcher.dispose()
           if (process.env.VYOTIQ_PERF === '1') {
             const stats = getChatEventBatchStats()
             console.info('[vyotiq-perf] chatEvent batch', JSON.stringify(stats))

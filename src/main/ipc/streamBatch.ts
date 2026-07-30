@@ -1,6 +1,10 @@
 import type { AgentEvent } from '../../shared/ipc'
+import { workspacePathsEqual } from '../../shared/workspacePathMatch'
 
-const BATCH_MS = 16
+const ACTIVE_BATCH_MS = 16
+const BACKGROUND_BATCH_MS = 80
+/** Drop intermediate background usage events when total pending segment queues exceed this. */
+const USAGE_DROP_QUEUE_DEPTH = 64
 
 type PendingSegment =
   | { kind: 'text'; text: string; invokeId?: number }
@@ -19,6 +23,14 @@ type PendingSegment =
       stream?: 'stdout' | 'stderr'
       invokeId?: number
     }
+
+type RunSlot = {
+  workspacePath: string
+  send: (ev: AgentEvent) => void
+  pendingSegments: PendingSegment[]
+  /** Latest usage event held for background coalesce / pressure drop. */
+  pendingUsage: AgentEvent | null
+}
 
 /** Dev/test counters for IPC send rate (Electron: measure before optimizing). */
 export type ChatEventBatchStats = {
@@ -52,67 +64,216 @@ function recordSend(type: string): void {
   stats.byType[key] = (stats.byType[key] ?? 0) + 1
 }
 
-export class ChatEventBatcher {
-  private pendingSegments = new Map<string, PendingSegment[]>()
+type ActivePathResolver = () => string | null
+
+let resolveActivePath: ActivePathResolver = defaultActivePathResolver
+
+function defaultActivePathResolver(): string | null {
+  try {
+    // Lazy require avoids circular import at module load (workspaces ↔ ipc).
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getWorkspaces } = require('../workspace/workspaces') as {
+      getWorkspaces: () => { activePath: string | null }
+    }
+    return getWorkspaces().activePath
+  } catch {
+    return null
+  }
+}
+
+/** @internal Override active-path lookup in unit tests. */
+export function setChatEventActivePathResolver(resolver: ActivePathResolver | null): void {
+  resolveActivePath = resolver ?? defaultActivePathResolver
+}
+
+function isActiveWorkspace(workspacePath: string): boolean {
+  // Empty path = isolated/local batcher (unit tests) — treat as active (16ms).
+  if (!workspacePath) return true
+  const active = resolveActivePath()
+  if (!active) return true
+  return workspacePathsEqual(active, workspacePath)
+}
+
+function totalPendingDepth(slots: Map<string, RunSlot>): number {
+  let n = 0
+  for (const slot of slots.values()) {
+    n += slot.pendingSegments.length
+    if (slot.pendingUsage) n += 1
+  }
+  return n
+}
+
+/**
+ * Single shared chat-event dispatcher: one timer, active-workspace runs flush first,
+ * background runs coalesce longer and may drop intermediate usage under pressure.
+ */
+export class ChatEventDispatcher {
+  private readonly slots = new Map<string, RunSlot>()
   private timer: ReturnType<typeof setTimeout> | null = null
+  private nextDueMs = 0
 
-  constructor(private readonly send: (ev: AgentEvent) => void) {}
+  attach(runId: string, workspacePath: string, send: (ev: AgentEvent) => void): void {
+    const existing = this.slots.get(runId)
+    if (existing) {
+      existing.workspacePath = workspacePath
+      existing.send = send
+      return
+    }
+    this.slots.set(runId, {
+      workspacePath,
+      send,
+      pendingSegments: [],
+      pendingUsage: null
+    })
+  }
 
-  push(ev: AgentEvent): void {
+  detach(runId: string): void {
+    this.flushRun(runId)
+    this.slots.delete(runId)
+    if (this.slots.size === 0 && this.timer) {
+      clearTimeout(this.timer)
+      this.timer = null
+      this.nextDueMs = 0
+    }
+  }
+
+  push(runId: string, ev: AgentEvent): void {
+    const slot = this.slots.get(runId)
+    if (!slot) {
+      recordPush(ev.type)
+      recordSend(ev.type)
+      return
+    }
     recordPush(ev.type)
 
     if (ev.type === 'text_delta') {
-      this.appendSegment(ev.runId, { kind: 'text', text: ev.text, invokeId: ev.invokeId })
-      this.schedule()
+      this.appendSegment(slot, { kind: 'text', text: ev.text, invokeId: ev.invokeId })
+      this.schedule(slot.workspacePath)
       return
     }
 
     if (ev.type === 'thinking_delta') {
-      this.appendSegment(ev.runId, {
+      this.appendSegment(slot, {
         kind: 'thinking',
         text: ev.text,
         step: ev.step,
         invokeId: ev.invokeId
       })
-      this.schedule()
+      this.schedule(slot.workspacePath)
       return
     }
 
     if (ev.type === 'tool_call_delta') {
-      this.appendSegment(ev.runId, {
+      this.appendSegment(slot, {
         kind: 'tool_call_delta',
         toolCallId: ev.toolCallId,
         name: ev.name,
         argumentsDelta: ev.argumentsDelta,
         invokeId: ev.invokeId
       })
-      this.schedule()
+      this.schedule(slot.workspacePath)
       return
     }
 
     if (ev.type === 'terminal_output_delta') {
-      this.appendSegment(ev.runId, {
+      this.appendSegment(slot, {
         kind: 'terminal_output_delta',
         toolCallId: ev.toolCallId,
         text: ev.text,
         stream: ev.stream,
         invokeId: ev.invokeId
       })
-      this.schedule()
+      this.schedule(slot.workspacePath)
       return
     }
 
-    this.flush()
-    this.emit(ev)
+    if (ev.type === 'step_usage' || ev.type === 'context_usage') {
+      if (!isActiveWorkspace(slot.workspacePath)) {
+        // Keep only the latest usage event; under deep queues this still caps at one.
+        if (
+          slot.pendingUsage &&
+          totalPendingDepth(this.slots) > USAGE_DROP_QUEUE_DEPTH
+        ) {
+          // Replace without growing queue depth further.
+        }
+        slot.pendingUsage = ev
+        this.schedule(slot.workspacePath)
+        return
+      }
+      this.flushAllDeltas()
+      this.emit(slot, ev)
+      return
+    }
+
+    this.flushAllDeltas()
+    this.emit(slot, ev)
   }
 
-  private emit(ev: AgentEvent): void {
+  /** Flush one run (approvals / end of turn), or all runs when omitted. */
+  flush(runId?: string): void {
+    if (runId) {
+      this.flushRun(runId)
+      return
+    }
+    this.flushAllDeltas()
+  }
+
+  private flushRun(runId: string): void {
+    const slot = this.slots.get(runId)
+    if (!slot) return
+    this.emitSegments(slot, runId, slot.pendingSegments)
+    slot.pendingSegments = []
+    if (slot.pendingUsage) {
+      this.emit(slot, slot.pendingUsage)
+      slot.pendingUsage = null
+    }
+  }
+
+  private flushAllDeltas(): void {
+    if (this.timer) {
+      clearTimeout(this.timer)
+      this.timer = null
+      this.nextDueMs = 0
+    }
+
+    const ordered = [...this.slots.entries()].sort(([, a], [, b]) => {
+      const aActive = isActiveWorkspace(a.workspacePath) ? 0 : 1
+      const bActive = isActiveWorkspace(b.workspacePath) ? 0 : 1
+      return aActive - bActive
+    })
+
+    for (const [runId, slot] of ordered) {
+      if (slot.pendingSegments.length) {
+        this.emitSegments(slot, runId, slot.pendingSegments)
+        slot.pendingSegments = []
+      }
+      if (slot.pendingUsage) {
+        this.emit(slot, slot.pendingUsage)
+        slot.pendingUsage = null
+      }
+    }
+  }
+
+  private schedule(workspacePath: string): void {
+    const delay = isActiveWorkspace(workspacePath) ? ACTIVE_BATCH_MS : BACKGROUND_BATCH_MS
+    const due = Date.now() + delay
+    if (this.timer && this.nextDueMs > 0 && this.nextDueMs <= due) return
+    if (this.timer) clearTimeout(this.timer)
+    this.nextDueMs = due
+    this.timer = setTimeout(() => {
+      this.timer = null
+      this.nextDueMs = 0
+      this.flushAllDeltas()
+    }, delay)
+  }
+
+  private emit(slot: RunSlot, ev: AgentEvent): void {
     recordSend(ev.type)
-    this.send(ev)
+    slot.send(ev)
   }
 
-  private appendSegment(runId: string, segment: PendingSegment): void {
-    const queue = this.pendingSegments.get(runId) ?? []
+  private appendSegment(slot: RunSlot, segment: PendingSegment): void {
+    const queue = slot.pendingSegments
     const last = queue[queue.length - 1]
     if (
       last &&
@@ -159,45 +320,21 @@ export class ChatEventBatcher {
     } else {
       queue.push(segment)
     }
-    this.pendingSegments.set(runId, queue)
   }
 
-  flush(): void {
-    if (this.timer) {
-      clearTimeout(this.timer)
-      this.timer = null
-    }
-
-    for (const [runId, segments] of this.pendingSegments) {
-      this.emitSegments(runId, segments)
-    }
-    this.pendingSegments.clear()
-  }
-
-  private schedule(): void {
-    if (this.timer) return
-    this.timer = setTimeout(() => {
-      this.timer = null
-      this.flushDeltas()
-    }, BATCH_MS)
-  }
-
-  private flushDeltas(): void {
-    for (const [runId, segments] of this.pendingSegments) {
-      if (!segments.length) continue
-      this.emitSegments(runId, segments)
-      this.pendingSegments.set(runId, [])
-    }
-  }
-
-  private emitSegments(runId: string, segments: PendingSegment[]): void {
+  private emitSegments(slot: RunSlot, runId: string, segments: PendingSegment[]): void {
     for (const segment of segments) {
       if (segment.kind === 'text') {
         if (!segment.text) continue
-        this.emit({ type: 'text_delta', runId, text: segment.text, invokeId: segment.invokeId })
+        this.emit(slot, {
+          type: 'text_delta',
+          runId,
+          text: segment.text,
+          invokeId: segment.invokeId
+        })
       } else if (segment.kind === 'thinking') {
         if (!segment.text) continue
-        this.emit({
+        this.emit(slot, {
           type: 'thinking_delta',
           runId,
           text: segment.text,
@@ -205,7 +342,7 @@ export class ChatEventBatcher {
           invokeId: segment.invokeId
         })
       } else if (segment.kind === 'tool_call_delta') {
-        this.emit({
+        this.emit(slot, {
           type: 'tool_call_delta',
           runId,
           toolCallId: segment.toolCallId,
@@ -215,7 +352,7 @@ export class ChatEventBatcher {
         })
       } else {
         if (!segment.text) continue
-        this.emit({
+        this.emit(slot, {
           type: 'terminal_output_delta',
           runId,
           toolCallId: segment.toolCallId,
@@ -224,6 +361,79 @@ export class ChatEventBatcher {
           invokeId: segment.invokeId
         })
       }
+    }
+  }
+}
+
+let sharedDispatcher: ChatEventDispatcher | null = null
+
+export function getChatEventDispatcher(): ChatEventDispatcher {
+  if (!sharedDispatcher) sharedDispatcher = new ChatEventDispatcher()
+  return sharedDispatcher
+}
+
+/** @internal Reset singleton between tests. */
+export function resetChatEventDispatcher(): void {
+  if (sharedDispatcher) {
+    sharedDispatcher.flush()
+  }
+  sharedDispatcher = null
+  resetChatEventBatchStats()
+}
+
+export type ChatEventBatcherOptions = {
+  runId: string
+  workspacePath: string
+  /** Default true when options provided. */
+  shared?: boolean
+}
+
+/**
+ * Per-run facade. Production chatStart uses the shared prioritized dispatcher.
+ * Unit tests construct without options for an isolated local dispatcher.
+ */
+export class ChatEventBatcher {
+  private readonly send: (ev: AgentEvent) => void
+  private readonly fixedRunId: string | null
+  private readonly workspacePath: string
+  private readonly dispatcher: ChatEventDispatcher
+  private readonly shared: boolean
+
+  constructor(send: (ev: AgentEvent) => void, options?: ChatEventBatcherOptions) {
+    this.send = send
+    if (options?.runId && options.shared !== false) {
+      this.fixedRunId = options.runId
+      this.workspacePath = options.workspacePath
+      this.shared = true
+      this.dispatcher = getChatEventDispatcher()
+      this.dispatcher.attach(options.runId, options.workspacePath, send)
+    } else {
+      this.fixedRunId = null
+      this.workspacePath = ''
+      this.shared = false
+      this.dispatcher = new ChatEventDispatcher()
+    }
+  }
+
+  push(ev: AgentEvent): void {
+    const id = this.fixedRunId ?? ev.runId
+    this.dispatcher.attach(id, this.workspacePath, this.send)
+    this.dispatcher.push(id, { ...ev, runId: id })
+  }
+
+  flush(): void {
+    if (this.fixedRunId) {
+      this.dispatcher.flush(this.fixedRunId)
+      return
+    }
+    this.dispatcher.flush()
+  }
+
+  dispose(): void {
+    if (this.shared && this.fixedRunId) {
+      this.dispatcher.detach(this.fixedRunId)
+    } else {
+      this.dispatcher.flush()
     }
   }
 }

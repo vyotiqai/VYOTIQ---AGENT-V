@@ -642,6 +642,14 @@ export type ChatStreamController = ChatStreamState & {
     fullyResolved: boolean
   }) => void
   handleEvent: (event: AgentEvent) => void
+  /**
+   * When true, high-frequency stream events are ignored (agent still runs in main).
+   * Call `resumeUiIfNeeded` when the run becomes visible again.
+   */
+  setUiSuspended: (suspended: boolean) => void
+  /** Clear suspend and rehydrate transcript from disk if stream events were skipped. */
+  resumeUiIfNeeded: () => Promise<void>
+  readonly uiSuspended: boolean
   subscribe: (listener: () => void) => () => void
   subscribeItems: (listener: () => void) => () => void
   subscribeMeta: (listener: () => void) => () => void
@@ -654,6 +662,14 @@ export type ChatStreamController = ChatStreamState & {
   readonly disposed: boolean
   dispose: () => void
 }
+
+/** Events still applied while UI is suspended (approvals/questions use separate handlers). */
+const UI_SUSPEND_ALLOWED_EVENTS = new Set<AgentEvent['type']>([
+  'status',
+  'error',
+  'incomplete',
+  'mode_changed'
+])
 
 export type CreateChatStreamControllerOptions = {
   workspacePath: string
@@ -685,6 +701,10 @@ export function createChatStreamController(
   let awaitingRun = false
   let pendingCancel = false
   let ignoreStreamEvents = false
+  /** Skip transcript-mutating stream events while the run is not UI-visible. */
+  let uiSuspended = false
+  /** True after stream events were dropped while suspended — needs disk catch-up. */
+  let needsUiCatchUp = false
   // A run is reused across turns, so runId alone cannot separate the live turn from a
   // prior one still draining. Events carry the invoke that produced them.
   let activeInvokeId: number | null = null
@@ -1032,6 +1052,107 @@ export function createChatStreamController(
     return activeInvokeId != null && event.invokeId !== activeInvokeId
   }
 
+  const discardPendingStreamPatches = (): void => {
+    pendingTextDelta = ''
+    pendingThinkingDelta = ''
+    pendingToolCallDeltas = []
+    if (streamPatchRaf != null) {
+      cancelAnimationFrame(streamPatchRaf)
+      streamPatchRaf = null
+    }
+  }
+
+  const setUiSuspended = (suspended: boolean): void => {
+    if (disposed) return
+    if (suspended === uiSuspended) return
+    if (suspended) {
+      discardPendingStreamPatches()
+      uiSuspended = true
+      // needsUiCatchUp is set only when stream events are skipped while suspended.
+    } else {
+      uiSuspended = false
+    }
+  }
+
+  /** Force-reload transcript while preserving live running state (after UI suspend). */
+  const catchUpUiFromDisk = async (id: string): Promise<void> => {
+    if (closedRuns.has(id) || disposed) return
+    let liveInvokeId: number | null = null
+    let stillActive = false
+    let pendingFromMain: { id: string; preview: string }[] = []
+    if (window.vyotiq?.listActiveRuns) {
+      const active = await window.vyotiq.listActiveRuns()
+      if (closedRuns.has(id) || disposed) return
+      if (active.ok) {
+        const live = active.data.find((entry) => entry.runId === id)
+        stillActive = Boolean(live)
+        liveInvokeId = live?.invokeId ?? null
+        pendingFromMain = live?.pendingFollowUps ?? []
+      }
+    } else {
+      stillActive = state.running || state.pendingRun
+    }
+    if (!window.vyotiq?.loadRun) return
+    const res = await window.vyotiq.loadRun(workspacePath, id)
+    if (closedRuns.has(id) || disposed) return
+    if (!res.ok) {
+      logger.warn('catchUpUiFromDisk loadRun failed', {
+        scope: 'chat',
+        correlationId: id,
+        err: toLogErr(res.error)
+      })
+      return
+    }
+    let events: PersistedEvent[] = []
+    let eventsLoadError: string | null = null
+    if (window.vyotiq.loadRunEvents) {
+      const eventsRes = await window.vyotiq.loadRunEvents(workspacePath, id)
+      if (closedRuns.has(id) || disposed) return
+      if (eventsRes.ok) events = eventsRes.data
+      else eventsLoadError = eventsRes.error
+    }
+    const kept = messagesForNextTurn(res.data.messages)
+    assistantId = null
+    reasoningId = null
+    runId = id
+    contentRunId = id
+    if (liveInvokeId != null) activeInvokeId = liveInvokeId
+    const mode = modeFromPersisted(events)
+    if (mode) onAgentModeChange?.(mode)
+    const hydratedPending: PendingFollowUpState[] =
+      pendingFromMain.length > 0
+        ? pendingFromMain.map((entry) => {
+            const local = state.pendingFollowUps.find((p) => p.id === entry.id)
+            return {
+              id: entry.id,
+              itemId: local?.itemId ?? `followup-${entry.id}`,
+              preview: local?.preview ?? entry.preview
+            }
+          })
+        : state.pendingFollowUps
+    patch({
+      ...hydrateFromDisk(kept, events),
+      pendingFollowUps: hydratedPending,
+      runId: id,
+      pendingRun: false,
+      running: stillActive,
+      runStartedAt: stillActive ? state.runStartedAt ?? Date.now() : null,
+      ...(eventsLoadError ? { error: eventsLoadError } : {})
+    })
+    if (!stillActive) onTerminal?.()
+  }
+
+  const resumeUiIfNeeded = async (): Promise<void> => {
+    if (disposed) return
+    const hadCatchUp = needsUiCatchUp
+    setUiSuspended(false)
+    needsUiCatchUp = false
+    if (!hadCatchUp) return
+    const id = runId ?? contentRunId
+    if (!id) return
+    await catchUpUiFromDisk(id)
+  }
+
   const handleEvent = (event: AgentEvent): void => {
     if (disposed) return
     if (closedRuns.has(event.runId)) return
@@ -1046,6 +1167,11 @@ export function createChatStreamController(
     }
 
     if (ignoreStreamEvents) return
+
+    if (uiSuspended && !UI_SUSPEND_ALLOWED_EVENTS.has(event.type)) {
+      needsUiCatchUp = true
+      return
+    }
 
     if (
       event.type !== 'text_delta' &&
@@ -2492,6 +2618,9 @@ export function createChatStreamController(
     get disposed() {
       return disposed
     },
+    get uiSuspended() {
+      return uiSuspended
+    },
     workspacePath,
     send,
     removeFollowUp,
@@ -2515,6 +2644,8 @@ export function createChatStreamController(
     markWriteCheckpointUndone,
     applyWriteCheckpointResolution,
     handleEvent,
+    setUiSuspended,
+    resumeUiIfNeeded,
     subscribe,
     subscribeItems,
     subscribeMeta,

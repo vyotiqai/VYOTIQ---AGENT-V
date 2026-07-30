@@ -210,6 +210,7 @@ export function useWorkspaceManager() {
 
   const controllersRef = useRef(new Map<string, ChatStreamController>())
   const contextsRef = useRef(contexts)
+  const registryRef = useRef(registry)
   const persistTimersRef = useRef(new Map<string, number>())
   const eventBufferRef = useRef(new Map<string, AgentEvent[]>())
   const approvalBufferRef = useRef(new Map<string, ToolApprovalRequest[]>())
@@ -226,6 +227,46 @@ export function useWorkspaceManager() {
   const orphanSyncTimersRef = useRef(new Map<string, number>())
 
   const bump = useCallback(() => setRevision((r) => r + 1), [])
+
+  useEffect(() => {
+    registryRef.current = registry
+  }, [registry])
+
+  /** True when this run's transcript is the mounted chat surface. */
+  const isRunUiVisible = useCallback((runId: string): boolean => {
+    if (backgroundRunIdsRef.current.has(runId)) return false
+    const ws = runIdToWorkspaceRef.current.get(runId)
+    if (!ws) return false
+    const activePath = registryRef.current?.activePath
+    if (!activePath || !workspacePathsEqual(ws, activePath)) return false
+    const ctx = contextsRef.current[ws]
+    if (!ctx) return false
+    if (ctx.activeRunId === runId) return true
+    // Draft composer (activeRunId null): accept events for a new/pending run on this
+    // workspace so the chatStart → first-event race is not suspended.
+    if (ctx.activeRunId == null) return true
+    return false
+  }, [])
+
+  const applyUiSuspendForController = useCallback(
+    (runId: string, ctrl: ChatStreamController): void => {
+      if (isRunUiVisible(runId)) {
+        void ctrl.resumeUiIfNeeded()
+      } else {
+        ctrl.setUiSuspended(true)
+      }
+    },
+    [isRunUiVisible]
+  )
+
+  const suspendAllExcept = useCallback((visibleRunId: string | null): void => {
+    for (const [key, ctrl] of controllersRef.current.entries()) {
+      if (key.startsWith('__draft__:')) continue
+      const id = ctrl.runId ?? (key.startsWith('__draft__:') ? null : key)
+      if (!id || id === visibleRunId) continue
+      ctrl.setUiSuspended(true)
+    }
+  }, [])
 
   useEffect(() => {
     const merged: Record<string, WorkspaceContext> = { ...contexts }
@@ -637,16 +678,19 @@ export function useWorkspaceManager() {
 
   const reattachActiveRuns = useCallback(
     async (entries: { runId: string; workspacePath: string }[]): Promise<void> => {
+      let didReattach = false
       for (const entry of entries) {
         runIdToWorkspaceRef.current.set(entry.runId, entry.workspacePath)
         const ctrl = ensureController(entry.workspacePath, entry.runId)
         if (!ctrl.running) {
           await ctrl.reattachActiveRun(entry.runId)
+          didReattach = true
         }
+        applyUiSuspendForController(entry.runId, ctrl)
       }
-      bump()
+      if (didReattach) bump()
     },
-    [bump, ensureController]
+    [applyUiSuspendForController, bump, ensureController]
   )
 
   const pollActiveRuns = useCallback(async (): Promise<void> => {
@@ -868,9 +912,12 @@ export function useWorkspaceManager() {
         bufferOrphanEvent(event.runId, event)
         return
       }
+      if (!isRunUiVisible(event.runId)) {
+        ctrl.setUiSuspended(true)
+      }
       ctrl.handleEvent(event)
     })
-  }, [bufferOrphanEvent, ensureController])
+  }, [bufferOrphanEvent, ensureController, isRunUiVisible])
 
   useEffect(() => {
     if (!window.vyotiq?.onToolApprovalRequest) return
@@ -938,13 +985,21 @@ export function useWorkspaceManager() {
       if (res.ok) {
         setWorkspaceError(null)
         applyRegistry(res.data)
+        const ctx = contextsRef.current[path]
+        const visibleRunId = ctx?.activeRunId ?? null
+        suspendAllExcept(visibleRunId)
+        if (visibleRunId) {
+          backgroundRunIdsRef.current.delete(visibleRunId)
+          const ctrl = ensureController(path, visibleRunId)
+          void ctrl.resumeUiIfNeeded()
+        }
         setChatSurfaceEpoch((t) => t + 1)
         setScrollRestoreToken((t) => t + 1)
       } else {
         setWorkspaceError(res.error)
       }
     },
-    [activeWorkspace, applyRegistry, flushPersistUiState]
+    [activeWorkspace, applyRegistry, ensureController, flushPersistUiState, suspendAllExcept]
   )
 
   const addWorkspace = useCallback(
@@ -1028,13 +1083,18 @@ export function useWorkspaceManager() {
         openRunIds
       }
       maybeEvictControllers(workspacePath, openRunIds, runId)
-      ensureController(workspacePath, runId)
+      if (runId) backgroundRunIdsRef.current.delete(runId)
+      const ctrl = ensureController(workspacePath, runId)
       contextsRef.current = { ...contextsRef.current, [workspacePath]: nextCtx }
       setContexts((prev) => ({
         ...prev,
         [workspacePath]: nextCtx
       }))
       schedulePersistUiState(workspacePath, nextCtx)
+      suspendAllExcept(runId)
+      if (runId) {
+        void ctrl.resumeUiIfNeeded()
+      }
       if (!sameTab) {
         flushPersistUiState(workspacePath)
         setChatSurfaceEpoch((t) => t + 1)
@@ -1042,7 +1102,14 @@ export function useWorkspaceManager() {
       }
       bump()
     },
-    [bump, ensureController, flushPersistUiState, maybeEvictControllers, schedulePersistUiState]
+    [
+      bump,
+      ensureController,
+      flushPersistUiState,
+      maybeEvictControllers,
+      schedulePersistUiState,
+      suspendAllExcept
+    ]
   )
 
   const openRunTab = useCallback(
@@ -1071,6 +1138,7 @@ export function useWorkspaceManager() {
       const ctrl = controllersRef.current.get(runId)
       if (ctrl?.running || ctrl?.pendingRun) {
         backgroundRunIdsRef.current.add(runId)
+        ctrl.setUiSuspended(true)
       } else {
         forgetRunRouting(runId)
       }
@@ -1084,6 +1152,10 @@ export function useWorkspaceManager() {
         [activeWorkspace]: nextCtx
       }))
       schedulePersistUiState(activeWorkspace, nextCtx)
+      if (activeRunId) {
+        const nextCtrl = controllersRef.current.get(activeRunId)
+        if (nextCtrl) void nextCtrl.resumeUiIfNeeded()
+      }
       if (ctx.activeRunId === runId) {
         setChatSurfaceEpoch((t) => t + 1)
         setScrollRestoreToken((t) => t + 1)

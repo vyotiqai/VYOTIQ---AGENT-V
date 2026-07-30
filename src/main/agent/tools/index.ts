@@ -361,31 +361,33 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     throwIfAborted(signal)
     return toolOk('web_search', query, content)
   },
-  browser_navigate: async (_workspace, args, signal) => {
+  browser_navigate: async (workspace, args, signal) => {
     throwIfAborted(signal)
     const url = String(args.url ?? '')
     const { navigateUrl } = await import('@main/app/agentBrowser')
     const content = await navigateUrl(url, {
       signal,
       timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined,
-      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
+      workspacePath: workspace
     })
     throwIfAborted(signal)
     return toolOk('browser_navigate', url, content)
   },
-  browser_snapshot: async (_workspace, args, signal, context) => {
+  browser_snapshot: async (workspace, args, signal, context) => {
     throwIfAborted(signal)
     const { snapshotPage } = await import('@main/app/agentBrowser')
     const content = await snapshotPage({
       signal,
       maxChars: typeof args.maxChars === 'number' ? args.maxChars : undefined,
       runDir: context.runDir,
-      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
+      workspacePath: workspace
     })
     throwIfAborted(signal)
     return toolOk('browser_snapshot', 'page', content)
   },
-  browser_click: async (_workspace, args, signal) => {
+  browser_click: async (workspace, args, signal) => {
     throwIfAborted(signal)
     const selector = String(args.selector ?? '')
     const { clickSelector } = await import('@main/app/agentBrowser')
@@ -397,12 +399,13 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       signal,
       button,
       tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
-      settleMs: typeof args.settleMs === 'number' ? args.settleMs : undefined
+      settleMs: typeof args.settleMs === 'number' ? args.settleMs : undefined,
+      workspacePath: workspace
     })
     throwIfAborted(signal)
     return toolOk('browser_click', selector, content)
   },
-  browser_type: async (_workspace, args, signal) => {
+  browser_type: async (workspace, args, signal) => {
     throwIfAborted(signal)
     const text = String(args.text ?? '')
     const { typeText } = await import('@main/app/agentBrowser')
@@ -412,7 +415,8 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       clear: args.clear === true,
       pressEnter: args.pressEnter === true,
       tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
-      settleMs: typeof args.settleMs === 'number' ? args.settleMs : undefined
+      settleMs: typeof args.settleMs === 'number' ? args.settleMs : undefined,
+      workspacePath: workspace
     })
     throwIfAborted(signal)
     const target =
@@ -421,7 +425,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
         : 'active element'
     return toolOk('browser_type', target, content)
   },
-  browser_scroll: async (_workspace, args, signal) => {
+  browser_scroll: async (workspace, args, signal) => {
     throwIfAborted(signal)
     const { scrollPage } = await import('@main/app/agentBrowser')
     const content = await scrollPage({
@@ -430,7 +434,8 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       deltaX: typeof args.deltaX === 'number' ? args.deltaX : undefined,
       deltaY: typeof args.deltaY === 'number' ? args.deltaY : undefined,
       tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
-      settleMs: typeof args.settleMs === 'number' ? args.settleMs : undefined
+      settleMs: typeof args.settleMs === 'number' ? args.settleMs : undefined,
+      workspacePath: workspace
     })
     throwIfAborted(signal)
     const target =
@@ -439,7 +444,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
         : `Δ(${Number(args.deltaX) || 0},${Number(args.deltaY) || 0})`
     return toolOk('browser_scroll', target, content)
   },
-  browser_fill: async (_workspace, args, signal) => {
+  browser_fill: async (workspace, args, signal) => {
     throwIfAborted(signal)
     const selector = String(args.selector ?? '')
     const value = String(args.value ?? '')
@@ -448,12 +453,13 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       signal,
       pressEnter: args.pressEnter === true,
       tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
-      settleMs: typeof args.settleMs === 'number' ? args.settleMs : undefined
+      settleMs: typeof args.settleMs === 'number' ? args.settleMs : undefined,
+      workspacePath: workspace
     })
     throwIfAborted(signal)
     return toolOk('browser_fill', selector, content)
   },
-  browser_tabs: async (_workspace, args, signal) => {
+  browser_tabs: async (workspace, args, signal) => {
     throwIfAborted(signal)
     const action = args.action
     if (action !== 'list' && action !== 'open' && action !== 'close' && action !== 'select') {
@@ -463,44 +469,48 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const content = await manageTabs(action, {
       signal,
       tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
-      url: typeof args.url === 'string' ? args.url : undefined
+      url: typeof args.url === 'string' ? args.url : undefined,
+      workspacePath: workspace
     })
     throwIfAborted(signal)
     return toolOk('browser_tabs', action, content)
   },
-  browser_back: async (_workspace, args, signal) => {
+  browser_back: async (workspace, args, signal) => {
     throwIfAborted(signal)
     const { goBack } = await import('@main/app/agentBrowser')
     const content = await goBack({
       signal,
-      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
+      workspacePath: workspace
     })
     throwIfAborted(signal)
     return toolOk('browser_back', 'back', content)
   },
-  browser_forward: async (_workspace, args, signal) => {
+  browser_forward: async (workspace, args, signal) => {
     throwIfAborted(signal)
     const { goForward } = await import('@main/app/agentBrowser')
     const content = await goForward({
       signal,
-      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
+      workspacePath: workspace
     })
     throwIfAborted(signal)
     return toolOk('browser_forward', 'forward', content)
   },
-  browser_wait_for_selector: async (_workspace, args, signal) => {
+  browser_wait_for_selector: async (workspace, args, signal) => {
     throwIfAborted(signal)
     const selector = String(args.selector ?? '')
     const { waitForSelector } = await import('@main/app/agentBrowser')
     const content = await waitForSelector(selector, {
       signal,
       timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined,
-      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
+      workspacePath: workspace
     })
     throwIfAborted(signal)
     return toolOk('browser_wait_for_selector', selector, content)
   },
-  browser_wait_for_url: async (_workspace, args, signal) => {
+  browser_wait_for_url: async (workspace, args, signal) => {
     throwIfAborted(signal)
     const match = String(args.match ?? '')
     const { waitForUrl } = await import('@main/app/agentBrowser')
@@ -508,12 +518,13 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       signal,
       regex: args.regex === true,
       timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined,
-      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined
+      tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
+      workspacePath: workspace
     })
     throwIfAborted(signal)
     return toolOk('browser_wait_for_url', match.slice(0, 80), content)
   },
-  browser_press_key: async (_workspace, args, signal) => {
+  browser_press_key: async (workspace, args, signal) => {
     throwIfAborted(signal)
     const key = String(args.key ?? '')
     const { pressKey } = await import('@main/app/agentBrowser')
@@ -524,12 +535,13 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       signal,
       modifiers,
       tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
-      settleMs: typeof args.settleMs === 'number' ? args.settleMs : undefined
+      settleMs: typeof args.settleMs === 'number' ? args.settleMs : undefined,
+      workspacePath: workspace
     })
     throwIfAborted(signal)
     return toolOk('browser_press_key', key, content)
   },
-  browser_select_option: async (_workspace, args, signal) => {
+  browser_select_option: async (workspace, args, signal) => {
     throwIfAborted(signal)
     const selector = String(args.selector ?? '')
     const { selectOption } = await import('@main/app/agentBrowser')
@@ -539,7 +551,8 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       label: typeof args.label === 'string' ? args.label : undefined,
       pressEnter: args.pressEnter === true,
       tabId: typeof args.tab_id === 'string' ? args.tab_id : undefined,
-      settleMs: typeof args.settleMs === 'number' ? args.settleMs : undefined
+      settleMs: typeof args.settleMs === 'number' ? args.settleMs : undefined,
+      workspacePath: workspace
     })
     throwIfAborted(signal)
     return toolOk('browser_select_option', selector, content)
@@ -649,13 +662,13 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
         signal,
         depth: context.depth ?? 0,
         parentMode: resolveAgentMode(context),
-          runDir: context.runDir,
-          runId: context.runId,
-          invokeId: context.invokeId,
-          parentToolCallId: context.toolCallId,
-          emit: context.onProgress,
-          onContextUsage: context.onSubagentContextUsage
-        })
+        runDir: context.runDir,
+        runId: context.runId,
+        invokeId: context.invokeId,
+        parentToolCallId: context.toolCallId,
+        emit: context.onProgress,
+        onContextUsage: context.onSubagentContextUsage
+      })
     } catch (err) {
       if (err instanceof SubagentDepthError) return toolFail('subagent', summary, err.message)
       throw err

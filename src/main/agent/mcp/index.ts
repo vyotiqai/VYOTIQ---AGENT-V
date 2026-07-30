@@ -219,6 +219,9 @@ const connecting = new Map<string, Promise<void>>()
 
 /** Serialize syncMcpServers so overlapping IPC/startup callers cannot race reconnects. */
 let syncChain: Promise<void> = Promise.resolve()
+/** Fingerprint of the last successfully synced payload — skip syncChain when unchanged. */
+let lastSyncedServersFp: string | null = null
+let lastSyncInflight: Promise<void> | null = null
 
 /** True only when the MCP server declared readOnlyHint for this tool. */
 export function getMcpReadOnlyHint(name: string): boolean | undefined {
@@ -612,10 +615,24 @@ export async function disconnectMcpServer(serverId: string): Promise<void> {
 }
 
 export async function syncMcpServers(servers: McpServer[]): Promise<void> {
+  const fp = servers
+    .map((s) => `${s.id}:${s.enabled ? 1 : 0}:${mcpServerConfigKey(s)}`)
+    .sort()
+    .join('|')
+  if (fp === lastSyncedServersFp) {
+    if (lastSyncInflight) await lastSyncInflight
+    return
+  }
   const run = syncChain.then(() => syncMcpServersUnlocked(servers))
   // Keep the chain alive even when a sync rejects so later callers still queue.
   syncChain = run.then(
     () => undefined,
+    () => undefined
+  )
+  lastSyncInflight = run.then(
+    () => {
+      lastSyncedServersFp = fp
+    },
     () => undefined
   )
   await run

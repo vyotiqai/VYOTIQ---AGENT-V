@@ -289,9 +289,14 @@ describe('useWorkspaceManager', () => {
     expect(result.current.isRunActiveInBackground('run-tab')).toBe(true)
     expect(chatCancel).not.toHaveBeenCalled()
 
+    const itemsBefore = result.current.getRunController('run-tab')?.items.length ?? 0
+
     await act(async () => {
       handler?.({ type: 'text_delta', runId: 'run-tab', text: 'bg' })
     })
+
+    // Suspended background runs ignore stream deltas (agent keeps running in main).
+    expect(result.current.getRunController('run-tab')?.items.length ?? 0).toBe(itemsBefore)
   })
 
   it('restores ui state and loads active run transcript on mount', async () => {
