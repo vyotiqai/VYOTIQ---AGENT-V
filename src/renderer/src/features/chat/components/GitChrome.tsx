@@ -4,6 +4,7 @@ import { cn } from '@renderer/lib/ui'
 import { FLOATING_CHROME } from '@renderer/lib/utils/layout'
 import type { GitStatus } from '@shared/ipc'
 import { useGitStatus } from './useGitStatus'
+import { CommitComposer } from './CommitComposer'
 
 const PILL =
   'inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-2.5 py-1 text-[11px] vy-transition'
@@ -105,38 +106,16 @@ export function GitChangePills({ chrome }: { chrome: GitChrome }) {
   return (
     <div className="pointer-events-auto flex flex-col items-start gap-1.5">
       {composing ? (
-        <div className={cn(FLOATING_CHROME, 'flex w-full items-center gap-1.5 p-1.5')}>
-          <input
-            type="text"
-            value={message}
-            autoFocus
-            className="min-w-0 flex-1 rounded-md bg-transparent px-1.5 py-1 text-xs text-fg outline-none focus-visible:vy-focus-ring"
-            placeholder="Commit message"
-            aria-label="Commit message"
-            onChange={(event) => setMessage(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') send(false)
-              if (event.key === 'Escape') setComposing(false)
-            }}
+        <div className={cn(FLOATING_CHROME, 'w-full p-1.5')}>
+          <CommitComposer
+            message={message}
+            onMessageChange={setMessage}
+            busy={busy}
+            hasRemote={status.hasRemote}
+            primaryPushes={false}
+            onCommit={send}
+            onCancel={() => setComposing(false)}
           />
-          <button
-            type="button"
-            className={cn(PILL, 'text-fg hover:bg-surface-2')}
-            disabled={busy || !message.trim()}
-            onClick={() => send(false)}
-          >
-            Commit
-          </button>
-          {status.hasRemote ? (
-            <button
-              type="button"
-              className={cn(PILL, 'text-fg hover:bg-surface-2')}
-              disabled={busy || !message.trim()}
-              onClick={() => send(true)}
-            >
-              Commit &amp; Push
-            </button>
-          ) : null}
         </div>
       ) : null}
 

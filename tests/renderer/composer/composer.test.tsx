@@ -203,12 +203,13 @@ describe('Composer', () => {
     })
   })
 
-  it('disables composer input while a run is in progress', () => {
+  it('keeps composer editable while a run is in progress and shows Send with Stop', () => {
     render(
       <Composer
         provider="ollama"
         model="qwen2.5"
         running
+        hasWorkspace
         chatSettings={chatSettings}
         onChatSettingsChange={vi.fn()}
         onProviderModel={vi.fn()}
@@ -218,7 +219,31 @@ describe('Composer', () => {
     )
 
     const ta = screen.getByRole('textbox', { name: /^Message$/i })
-    expect(ta.getAttribute('contenteditable')).toBe('false')
+    expect(ta.getAttribute('contenteditable')).toBe('true')
     expect(screen.getByRole('button', { name: /^Stop$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Send follow-up$/i })).toBeTruthy()
+  })
+
+  it('shows queued follow-ups with remove', () => {
+    const onRemoveFollowUp = vi.fn()
+    render(
+      <Composer
+        provider="ollama"
+        model="qwen2.5"
+        running
+        hasWorkspace
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+        onProviderModel={vi.fn()}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+        pendingFollowUps={[{ id: 'fu-1', itemId: 'item-1', preview: 'Steer left' }]}
+        onRemoveFollowUp={onRemoveFollowUp}
+      />
+    )
+
+    expect(screen.getByText(/Queued: Steer left/i)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^Remove queued follow-up$/i }))
+    expect(onRemoveFollowUp).toHaveBeenCalledWith('fu-1')
   })
 })

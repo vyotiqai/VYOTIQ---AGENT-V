@@ -91,7 +91,10 @@ vi.mock('@main/agent/runRegistry', () => ({
   registerRunAbort: registerRunAbortMock,
   clearRunAbort: clearRunAbortMock,
   markRunTurnComplete: markRunTurnCompleteMock,
-  isActive: isActiveMock
+  isActive: isActiveMock,
+  enqueueFollowUp: vi.fn(),
+  removeFollowUp: vi.fn(),
+  getRunInvokeId: vi.fn(() => 1)
 }))
 
 vi.mock('@main/agent/state', () => ({

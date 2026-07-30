@@ -76,10 +76,10 @@ export function useComposerDraft({
   const isDraftControlled = draft !== undefined && onDraftChange !== undefined
   const text = isDraftControlled ? draft : internalText
   const setText = isDraftControlled ? onDraftChange : setInternalText
+  void running
 
   const hasAttachments = images.length > 0 || files.length > 0
-  const canSend =
-    (hasComposerContent(text) || hasAttachments) && !disabled && !running
+  const canSend = (hasComposerContent(text) || hasAttachments) && !disabled
 
   const clearDraft = useCallback((): {
     draftText: string
@@ -105,7 +105,7 @@ export function useComposerDraft({
 
   const submit = (e?: FormEvent): void => {
     e?.preventDefault()
-    if ((!hasComposerContent(text) && !hasAttachments) || running || disabled) return
+    if ((!hasComposerContent(text) && !hasAttachments) || disabled) return
 
     const parsed = parseSlashSubmit(text)
     if (parsed && onSlashSubmit && findCommandByTrigger) {

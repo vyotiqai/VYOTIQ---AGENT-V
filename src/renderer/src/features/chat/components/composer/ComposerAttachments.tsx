@@ -7,7 +7,7 @@ export function ComposerAttachments({
   files = [],
   fileError = null,
   extracting = false,
-  running,
+  attachLocked,
   onRemove,
   onRemoveFile
 }: {
@@ -16,7 +16,7 @@ export function ComposerAttachments({
   files?: AttachedFile[]
   fileError?: string | null
   extracting?: boolean
-  running: boolean
+  attachLocked: boolean
   onRemove: (index: number) => void
   onRemoveFile?: (index: number) => void
 }) {
@@ -33,7 +33,7 @@ export function ComposerAttachments({
               url={url}
               label={`Image ${i + 1}`}
               variant="compact"
-              disabled={running}
+              disabled={attachLocked}
               onRemove={() => onRemove(i)}
             />
           ))}
@@ -42,7 +42,7 @@ export function ComposerAttachments({
               key={`${i}-${file.name}`}
               name={file.name}
               chars={file.text.length}
-              disabled={running}
+              disabled={attachLocked}
               onRemove={onRemoveFile ? () => onRemoveFile(i) : undefined}
             />
           ))}

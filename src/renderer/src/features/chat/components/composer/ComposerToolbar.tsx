@@ -73,6 +73,7 @@ export function ComposerToolbar({
   variant,
   disabled,
   locked,
+  attachDisabled,
   imageCount,
   fileCount,
   onAttachClick,
@@ -106,6 +107,8 @@ export function ComposerToolbar({
   variant: ComposerVariant
   disabled?: boolean
   locked: boolean
+  /** When set, only blocks attach (input may stay open while settings stay locked). */
+  attachDisabled?: boolean
   imageCount: number
   fileCount: number
   onAttachClick: () => void
@@ -142,6 +145,7 @@ export function ComposerToolbar({
   const imagesFull = imageCount >= MAX_IMAGES
   const filesFull = fileCount >= MAX_FILES
   const attachFull = imagesFull && filesFull
+  const attachBlocked = Boolean(attachDisabled ?? locked)
   const attachLabel = attachFull
     ? `Attach files (limits reached: ${MAX_IMAGES} images, ${MAX_FILES} files)`
     : imagesFull
@@ -156,27 +160,30 @@ export function ComposerToolbar({
     knownContextWindow(model, provider) ??
     (modelMeta?.contextWindow && modelMeta.contextWindow > 0 ? modelMeta.contextWindow : null)
 
-  const sendOrStop = running ? (
-    <IconButton
-      icon="stop"
-      label="Stop"
-      size="sm"
-      variant="primary"
-      className="size-7 shrink-0 rounded-xl"
-      onClick={onStop}
-    />
-  ) : (
-    <button
-      type="submit"
-      className={cn(
-        sendCtl,
-        canSend ? 'bg-accent text-accent-fg hover:bg-fg-strong' : 'bg-surface-2 text-muted'
-      )}
-      aria-label="Send"
-      disabled={!canSend}
-    >
-      <Icon name="send" size={14} weight="fill" />
-    </button>
+  const sendOrStop = (
+    <div className="flex items-center gap-0.5">
+      {running ? (
+        <IconButton
+          icon="stop"
+          label="Stop"
+          size="sm"
+          variant="primary"
+          className="size-7 shrink-0 rounded-xl"
+          onClick={onStop}
+        />
+      ) : null}
+      <button
+        type="submit"
+        className={cn(
+          sendCtl,
+          canSend ? 'bg-accent text-accent-fg hover:bg-fg-strong' : 'bg-surface-2 text-muted'
+        )}
+        aria-label={running ? 'Send follow-up' : 'Send'}
+        disabled={!canSend}
+      >
+        <Icon name="send" size={14} weight="fill" />
+      </button>
+    </div>
   )
 
   return (
@@ -191,7 +198,7 @@ export function ComposerToolbar({
           className={iconCtl}
           aria-label={attachLabel}
           title={attachLabel}
-          disabled={locked || attachFull}
+          disabled={attachBlocked || attachFull}
           onClick={onAttachClick}
         >
           <Icon name="paperclip" size={15} />

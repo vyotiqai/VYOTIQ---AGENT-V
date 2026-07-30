@@ -18,6 +18,7 @@ export const ChangeSummary = memo(function ChangeSummary({
   resolvablePaths,
   canResolve = false,
   resolveBusy = false,
+  resolveBlockedReason = null,
   onKeepFile,
   onDiscardFile,
   onKeepAll,
@@ -36,6 +37,8 @@ export const ChangeSummary = memo(function ChangeSummary({
   resolvablePaths?: ReadonlySet<string>
   canResolve?: boolean
   resolveBusy?: boolean
+  /** When set, Keep/Discard stay visible but disabled (e.g. mid-run). */
+  resolveBlockedReason?: string | null
   onKeepFile?: (path: string) => void | Promise<unknown>
   onDiscardFile?: (path: string) => void | Promise<unknown>
   onKeepAll?: () => void | Promise<unknown>
@@ -47,6 +50,8 @@ export const ChangeSummary = memo(function ChangeSummary({
 
   if (files.length === 0) return null
 
+  const resolveDisabled = Boolean(resolveBusy || resolveBlockedReason)
+
   const isResolvablePath = (path: string): boolean => {
     if (!resolvablePaths) return true
     if (resolvablePaths.has(path)) return true
@@ -55,9 +60,11 @@ export const ChangeSummary = memo(function ChangeSummary({
 
   const totalAdded = files.reduce((sum, file) => sum + file.added, 0)
   const totalRemoved = files.reduce((sum, file) => sum + file.removed, 0)
-  const unresolved = files.filter(
-    (f) => isResolvablePath(f.path) && !fileResolutions?.get(f.path)
-  )
+  const unresolved = files.filter((f) => {
+    if (!isResolvablePath(f.path)) return false
+    const norm = normalizeRelPath(f.path)
+    return !(fileResolutions?.get(norm) ?? fileResolutions?.get(f.path))
+  })
 
   const togglePath = (path: string): void => {
     setExpandedPaths((prev) => {
@@ -80,11 +87,17 @@ export const ChangeSummary = memo(function ChangeSummary({
           {totalRemoved > 0 ? <span className="ml-2 text-danger">-{totalRemoved}</span> : null}
           {canResolve && unresolved.length > 0 ? (
             <>
+              {resolveBlockedReason ? (
+                <span className="ml-2 max-w-[12rem] truncate text-[10px] text-muted" title={resolveBlockedReason}>
+                  {resolveBlockedReason}
+                </span>
+              ) : null}
               {onKeepAll ? (
                 <Button
                   variant="subtle"
                   className="ml-2 h-6 px-2 text-xs"
-                  disabled={resolveBusy}
+                  disabled={resolveDisabled}
+                  title={resolveBlockedReason ?? undefined}
                   onClick={() => {
                     void onKeepAll()
                   }}
@@ -96,7 +109,8 @@ export const ChangeSummary = memo(function ChangeSummary({
                 <Button
                   variant="subtle"
                   className="h-6 px-2 text-xs"
-                  disabled={resolveBusy}
+                  disabled={resolveDisabled}
+                  title={resolveBlockedReason ?? undefined}
                   onClick={() => {
                     void onDiscardAll()
                   }}
@@ -110,8 +124,9 @@ export const ChangeSummary = memo(function ChangeSummary({
       </div>
       <ul className="m-0 list-none p-0">
         {files.map((file) => {
-          const resolution = fileResolutions?.get(file.path)
           const norm = normalizeRelPath(file.path)
+          const resolution =
+            fileResolutions?.get(norm) ?? fileResolutions?.get(file.path)
           const lines = fileDiffs?.get(norm) ?? fileDiffs?.get(file.path)
           const expanded = expandedPaths.has(file.path)
           const canExpand = Boolean(lines && lines.length > 0) || file.removed > 0
@@ -153,7 +168,8 @@ export const ChangeSummary = memo(function ChangeSummary({
                         <Button
                           variant="subtle"
                           className="h-5 px-1.5 text-[10px]"
-                          disabled={resolveBusy}
+                          disabled={resolveDisabled}
+                          title={resolveBlockedReason ?? undefined}
                           onClick={() => {
                             void onKeepFile(file.path)
                           }}
@@ -165,7 +181,8 @@ export const ChangeSummary = memo(function ChangeSummary({
                         <Button
                           variant="subtle"
                           className="h-5 px-1.5 text-[10px]"
-                          disabled={resolveBusy}
+                          disabled={resolveDisabled}
+                          title={resolveBlockedReason ?? undefined}
                           onClick={() => {
                             void onDiscardFile(file.path)
                           }}

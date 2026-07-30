@@ -4,6 +4,8 @@ import { IPC } from '../../shared/channels'
 import {
   ChatStartRequestSchema,
   CancelRunRequestSchema,
+  ChatFollowUpRequestSchema,
+  ChatFollowUpRemoveRequestSchema,
   CompactRunRequestSchema,
   UndoWritesRequestSchema,
   ResolveWritesRequestSchema,
@@ -29,9 +31,15 @@ import {
   GitStatusRequestSchema,
   GitCommitRequestSchema,
   GitDiffRequestSchema,
+  GitLogRequestSchema,
+  GitCommitFilesRequestSchema,
   PrViewRequestSchema,
   PrMergeRequestSchema,
+  PrDiffRequestSchema,
+  PrCloseRequestSchema,
+  PrEditTitleRequestSchema,
   PtyCreateRequestSchema,
+  PtyListRequestSchema,
   PtyIdRequestSchema,
   PtyWriteRequestSchema,
   PtyResizeRequestSchema,
@@ -67,6 +75,8 @@ import {
   type AgentQuestionRequest,
   type ToolApprovalRequest,
   type ChatStartResult,
+  type ChatFollowUpResult,
+  type ChatFollowUpRemoveResult,
   type ChatMessage,
   type CompactRunResult,
   type UndoWritesResult,
@@ -160,7 +170,11 @@ import {
   listActiveRuns,
   registerRunAbort,
   isActive,
-  markRunTurnComplete
+  markRunTurnComplete,
+  enqueueFollowUp,
+  removeFollowUp,
+  getRunInvokeId,
+  followUpPreview
 } from '../agent/runRegistry'
 import {
   listRuns,
@@ -184,10 +198,11 @@ import {
 } from '@main/workspace/workspaces'
 import { canonicalizeWorkspacePath, isCuratedDocPath, isSafeWorkspaceRelPath, workspacePathsEqual } from '../../shared/workspacePath'
 import { relative, isAbsolute, join } from 'path'
-import { commitAll, readGitDiff, readGitStatus } from '@main/git/git'
-import { prMerge, prView } from '@main/git/gh'
+import { commitAll, readGitCommitFiles, readGitDiff, readGitLog, readGitStatus } from '@main/git/git'
+import { prClose, prDiff, prEditTitle, prMerge, prView } from '@main/git/gh'
 import {
   createPtySession,
+  disposePtySessionsForWorkspace,
   killPty,
   listPtySessions,
   resizePty,
@@ -313,6 +328,7 @@ export function registerIpc(): void {
       if (!senderOk(event)) return fail('Invalid sender')
       try {
         const { path } = WorkspacesRemoveRequestSchema.parse(raw)
+        disposePtySessionsForWorkspace(path)
         return ok(removeWorkspace(path))
       } catch (err) {
         return failFrom(err, IPC.workspacesRemove)
@@ -655,6 +671,62 @@ export function registerIpc(): void {
     }
   })
 
+  ipcMain.handle(
+    IPC.chatFollowUp,
+    async (event, raw): Promise<IpcResult<ChatFollowUpResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = ChatFollowUpRequestSchema.parse(raw)
+        if (!isActive(req.runId)) {
+          return fail('Run is not active')
+        }
+        const result = enqueueFollowUp(req.runId, req.message)
+        if (!result.ok) return fail(result.error)
+        logger.info('Chat follow-up queued', {
+          scope: 'ipc',
+          correlationId: req.runId,
+          channel: IPC.chatFollowUp,
+          queueLength: result.queueLength
+        })
+        // Notify the renderer so queue chrome stays in sync across optimistic UI.
+        if (!event.sender.isDestroyed()) {
+          const invokeId = getRunInvokeId(req.runId)
+          event.sender.send(IPC.chatEvent, {
+            type: 'follow_up_queued',
+            runId: req.runId,
+            id: result.id,
+            position: result.position,
+            queueLength: result.queueLength,
+            preview: followUpPreview(req.message),
+            ...(invokeId != null ? { invokeId } : {})
+          } satisfies AgentEvent)
+        }
+        return ok({
+          id: result.id,
+          position: result.position,
+          queueLength: result.queueLength
+        })
+      } catch (err) {
+        return failFrom(err, IPC.chatFollowUp)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    IPC.chatFollowUpRemove,
+    async (event, raw): Promise<IpcResult<ChatFollowUpRemoveResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = ChatFollowUpRemoveRequestSchema.parse(raw)
+        const result = removeFollowUp(req.runId, req.id)
+        if (!result.ok) return fail(result.error)
+        return ok({ removed: result.removed, queueLength: result.queueLength })
+      } catch (err) {
+        return failFrom(err, IPC.chatFollowUpRemove)
+      }
+    }
+  )
+
   ipcMain.handle(IPC.chatCompact, async (event, raw): Promise<IpcResult<CompactRunResult>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
@@ -933,6 +1005,28 @@ export function registerIpc(): void {
     }
   })
 
+  ipcMain.handle(IPC.gitLog, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = GitLogRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      return ok(await readGitLog(req.workspacePath, req.limit))
+    } catch (err) {
+      return failFrom(err, IPC.gitLog)
+    }
+  })
+
+  ipcMain.handle(IPC.gitCommitFiles, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = GitCommitFilesRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      return ok({ files: await readGitCommitFiles(req.workspacePath, req.sha) })
+    } catch (err) {
+      return failFrom(err, IPC.gitCommitFiles)
+    }
+  })
+
   ipcMain.handle(IPC.gitDiff, async (event, raw) => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
@@ -940,7 +1034,9 @@ export function registerIpc(): void {
       if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
       const result = await readGitDiff(req.workspacePath, {
         path: req.path,
-        staged: req.staged
+        staged: req.staged,
+        ignoreWhitespace: req.ignoreWhitespace,
+        sha: req.sha
       })
       if (!result.ok) return fail(result.error)
       return ok({ content: result.content })
@@ -971,6 +1067,44 @@ export function registerIpc(): void {
     }
   })
 
+  ipcMain.handle(IPC.prDiff, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = PrDiffRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      return ok(
+        await prDiff(req.workspacePath, {
+          path: req.path,
+          ignoreWhitespace: req.ignoreWhitespace
+        })
+      )
+    } catch (err) {
+      return failFrom(err, IPC.prDiff)
+    }
+  })
+
+  ipcMain.handle(IPC.prClose, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = PrCloseRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      return ok(await prClose(req.workspacePath))
+    } catch (err) {
+      return failFrom(err, IPC.prClose)
+    }
+  })
+
+  ipcMain.handle(IPC.prEditTitle, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = PrEditTitleRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      return ok(await prEditTitle(req.workspacePath, req.title))
+    } catch (err) {
+      return failFrom(err, IPC.prEditTitle)
+    }
+  })
+
   ipcMain.handle(IPC.ptyCreate, async (event, raw) => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
@@ -991,10 +1125,11 @@ export function registerIpc(): void {
     }
   })
 
-  ipcMain.handle(IPC.ptyList, async (event) => {
+  ipcMain.handle(IPC.ptyList, async (event, raw) => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
-      return ok(listPtySessions())
+      const req = PtyListRequestSchema.parse(raw ?? {})
+      return ok(listPtySessions(req.workspacePath))
     } catch (err) {
       return failFrom(err, IPC.ptyList)
     }

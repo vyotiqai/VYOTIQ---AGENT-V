@@ -97,7 +97,9 @@ async function trackedChanges(cwd: string, hasCommits: boolean): Promise<Map<str
       status: 'modified',
       added: Number.isFinite(added) ? added : 0,
       removed: Number.isFinite(removed) ? removed : 0,
-      binary: addedRaw === '-'
+      binary: addedRaw === '-',
+      staged: false,
+      unstaged: true
     })
   }
   return out
@@ -107,6 +109,28 @@ function statusFor(code: string): GitChangedFile['status'] {
   if (code.includes('D')) return 'deleted'
   if (code.includes('A')) return 'added'
   return 'modified'
+}
+
+/** Map porcelain XY columns to staged / unstaged sides. */
+function flagsFromPorcelain(code: string): { staged: boolean; unstaged: boolean } {
+  if (code === '??' || code === '!!') {
+    return { staged: false, unstaged: true }
+  }
+  const x = code[0] ?? ' '
+  const y = code[1] ?? ' '
+  if (
+    x === 'U' ||
+    y === 'U' ||
+    code === 'DD' ||
+    code === 'AU' ||
+    code === 'UD' ||
+    code === 'UA' ||
+    code === 'DU' ||
+    code === 'AA'
+  ) {
+    return { staged: true, unstaged: true }
+  }
+  return { staged: x !== ' ', unstaged: y !== ' ' }
 }
 
 export async function readGitStatus(cwd: string): Promise<GitStatus | null> {
@@ -129,15 +153,35 @@ export async function readGitStatus(cwd: string): Promise<GitStatus | null> {
       const code = record.slice(0, 2)
       const path = record.slice(3)
       if (!path) continue
+      const flags = flagsFromPorcelain(code)
 
       if (code === '??') {
         const added = countFileLines(cwd, path)
-        tracked.set(path, { path, status: 'untracked', added, removed: 0, binary: false })
+        tracked.set(path, {
+          path,
+          status: 'untracked',
+          added,
+          removed: 0,
+          binary: false,
+          ...flags
+        })
         continue
       }
       const existing = tracked.get(path)
-      if (existing) existing.status = statusFor(code)
-      else tracked.set(path, { path, status: statusFor(code), added: 0, removed: 0, binary: false })
+      if (existing) {
+        existing.status = statusFor(code)
+        existing.staged = flags.staged
+        existing.unstaged = flags.unstaged
+      } else {
+        tracked.set(path, {
+          path,
+          status: statusFor(code),
+          added: 0,
+          removed: 0,
+          binary: false,
+          ...flags
+        })
+      }
     }
   }
 
@@ -170,18 +214,45 @@ const DIFF_CAP_CHARS = 100_000
 export type GitDiffOptions = {
   path?: string
   staged?: boolean
+  ignoreWhitespace?: boolean
+  sha?: string
 }
 
-/** Unified diff against HEAD (or staged index). Capped for tool output. */
+function capDiff(text: string): string {
+  if (text.length <= DIFF_CAP_CHARS) return text
+  return text.slice(0, DIFF_CAP_CHARS) + `\n… (diff truncated at ${DIFF_CAP_CHARS} chars)`
+}
+
+/** Unified diff against HEAD (or staged index / commit). Capped for tool output. */
 export async function readGitDiff(
   cwd: string,
   opts: GitDiffOptions = {}
 ): Promise<{ ok: true; content: string } | { ok: false; error: string }> {
   if (!isGitRepo(cwd)) return { ok: false, error: 'Not a git repository' }
 
+  const sha = opts.sha?.trim()
+  if (sha) {
+    const args = ['show', '--no-color', '--no-ext-diff', '--format=']
+    if (opts.ignoreWhitespace) args.push('-w')
+    args.push(sha)
+    if (opts.path?.trim()) {
+      args.push('--', opts.path.trim())
+    }
+    try {
+      const stdout = await git(args, cwd, READ_TIMEOUT_MS)
+      const text = stdout.trimEnd()
+      if (!text) return { ok: true, content: '(no changes in commit)' }
+      return { ok: true, content: capDiff(text) }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: message }
+    }
+  }
+
   const hasCommits =
     (await gitQuiet(['rev-parse', '--verify', 'HEAD'], cwd, READ_TIMEOUT_MS)) != null
   const args = ['diff', '--no-color', '--no-ext-diff']
+  if (opts.ignoreWhitespace) args.push('-w')
   if (opts.staged || !hasCommits) args.push('--cached')
   if (opts.path?.trim()) {
     args.push('--', opts.path.trim())
@@ -196,15 +267,79 @@ export async function readGitDiff(
         content: opts.staged || !hasCommits ? '(no staged changes)' : '(no unstaged changes)'
       }
     }
-    if (text.length <= DIFF_CAP_CHARS) return { ok: true, content: text }
-    return {
-      ok: true,
-      content: text.slice(0, DIFF_CAP_CHARS) + `\n… (diff truncated at ${DIFF_CAP_CHARS} chars)`
-    }
+    return { ok: true, content: capDiff(text) }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     return { ok: false, error: message }
   }
+}
+
+export type GitLogEntry = {
+  sha: string
+  shortSha: string
+  subject: string
+  author: string
+  relativeDate: string
+}
+
+/** Recent commits for the Changes → Commits scope. */
+export async function readGitLog(cwd: string, limit = 40): Promise<GitLogEntry[]> {
+  if (!isGitRepo(cwd)) return []
+  const capped = Math.min(Math.max(1, limit), 100)
+  const stdout = await gitQuiet(
+    ['log', `-n${capped}`, '--format=%H%x09%h%x09%s%x09%an%x09%cr'],
+    cwd,
+    READ_TIMEOUT_MS
+  )
+  if (!stdout?.trim()) return []
+  const out: GitLogEntry[] = []
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) continue
+    const [sha, shortSha, subject, author, relativeDate] = line.split('\t')
+    if (!sha || !shortSha) continue
+    out.push({
+      sha,
+      shortSha,
+      subject: subject ?? '',
+      author: author ?? '',
+      relativeDate: relativeDate ?? ''
+    })
+  }
+  return out
+}
+
+/** Files changed in a single commit (numstat). */
+export async function readGitCommitFiles(cwd: string, sha: string): Promise<GitChangedFile[]> {
+  if (!isGitRepo(cwd)) return []
+  const stdout = await gitQuiet(
+    ['show', '--numstat', '--format=', '--no-renames', sha.trim()],
+    cwd,
+    READ_TIMEOUT_MS
+  )
+  if (!stdout?.trim()) return []
+  const out: GitChangedFile[] = []
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) continue
+    const parts = line.split('\t')
+    if (parts.length < 3) continue
+    const [addedRaw, removedRaw, path] = parts as [string, string, string]
+    const added = addedRaw === '-' ? 0 : Number(addedRaw)
+    const removed = removedRaw === '-' ? 0 : Number(removedRaw)
+    const binary = addedRaw === '-'
+    let status: GitChangedFile['status'] = 'modified'
+    if (!binary && added > 0 && removed === 0) status = 'added'
+    if (!binary && added === 0 && removed > 0) status = 'deleted'
+    out.push({
+      path,
+      status,
+      added: Number.isFinite(added) ? added : 0,
+      removed: Number.isFinite(removed) ? removed : 0,
+      binary,
+      staged: false,
+      unstaged: false
+    })
+  }
+  return out.sort((a, b) => a.path.localeCompare(b.path))
 }
 
 export type CommitOutcome = { committed: boolean; pushed: boolean; detail: string }

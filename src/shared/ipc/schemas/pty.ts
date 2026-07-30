@@ -15,6 +15,10 @@ export const PtyCreateRequestSchema = z.object({
   rows: z.number().int().positive().optional()
 })
 
+export const PtyListRequestSchema = z.object({
+  workspacePath: z.string().min(1).optional()
+})
+
 export const PtyIdRequestSchema = z.object({
   id: z.string().min(1)
 })

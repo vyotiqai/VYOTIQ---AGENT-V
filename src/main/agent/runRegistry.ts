@@ -1,15 +1,34 @@
+import { randomUUID } from 'crypto'
+import { contentDisplayText, type ChatMessage } from '../../shared/ipc'
+
+export type FollowUpEntry = {
+  id: string
+  message: ChatMessage
+}
+
 type RunEntry = {
   controller: AbortController
   workspacePath: string
   invokeId: number
   /** True after a terminal event so follow-ups can start before cleanup finishes. */
   turnComplete: boolean
+  /** Mid-run user messages waiting to inject into the live loop. */
+  followUps: FollowUpEntry[]
+  /**
+   * Soft-abort for the current provider stream only. Distinct from `controller`
+   * so Stop still cancels the whole turn while follow-ups only interrupt the stream.
+   */
+  streamInterrupt: AbortController | null
 }
 
 export type RunAbortHandle = {
   controller: AbortController
   invokeId: number
 }
+
+export type EnqueueFollowUpResult =
+  | { ok: true; id: string; position: number; queueLength: number }
+  | { ok: false; error: string }
 
 const active = new Map<string, RunEntry>()
 let nextInvokeId = 1
@@ -23,7 +42,14 @@ export function registerRunAbort(runId: string, workspacePath: string): RunAbort
 
   const invokeId = nextInvokeId++
   const controller = new AbortController()
-  active.set(runId, { controller, workspacePath, invokeId, turnComplete: false })
+  active.set(runId, {
+    controller,
+    workspacePath,
+    invokeId,
+    turnComplete: false,
+    followUps: [],
+    streamInterrupt: null
+  })
   return { controller, invokeId }
 }
 
@@ -32,12 +58,19 @@ export function markRunTurnComplete(runId: string, invokeId: number): void {
   const entry = active.get(runId)
   if (entry && entry.invokeId === invokeId) {
     entry.turnComplete = true
+    // Do not clear followUps here — a follow-up can land in the TOCTOU window
+    // between the loop's last hasPendingFollowUps check and this mark. Queue is
+    // cleared on cancel, drain, or clearRunAbort.
+    entry.streamInterrupt = null
   }
 }
 
 export function cancelRun(runId: string): boolean {
   const entry = active.get(runId)
   if (!entry) return false
+  entry.followUps = []
+  entry.streamInterrupt?.abort()
+  entry.streamInterrupt = null
   entry.controller.abort()
   return true
 }
@@ -62,14 +95,40 @@ export function isCurrentInvoke(runId: string, invokeId: number): boolean {
   return entry?.invokeId === invokeId
 }
 
-export function listActiveRuns(): { runId: string; workspacePath: string; invokeId: number }[] {
+export type ActiveRunInfo = {
+  runId: string
+  workspacePath: string
+  invokeId: number
+  pendingFollowUps: { id: string; preview: string }[]
+}
+
+export function followUpPreview(message: ChatMessage): string {
+  const text = contentDisplayText(message.content).trim()
+  if (text) return text
+  const content = message.content
+  if (typeof content !== 'string') {
+    const file = content.find((part) => part.type === 'file')
+    if (file?.name) return file.name
+  }
+  return 'Follow-up'
+}
+
+export function listActiveRuns(): ActiveRunInfo[] {
   return [...active.entries()]
     .filter(([, entry]) => !entry.turnComplete)
     .map(([runId, entry]) => ({
       runId,
       workspacePath: entry.workspacePath,
-      invokeId: entry.invokeId
+      invokeId: entry.invokeId,
+      pendingFollowUps: entry.followUps.map((item) => ({
+        id: item.id,
+        preview: followUpPreview(item.message)
+      }))
     }))
+}
+
+export function getRunInvokeId(runId: string): number | undefined {
+  return active.get(runId)?.invokeId
 }
 
 export function clearRunAbort(runId: string, invokeId?: number): void {
@@ -79,9 +138,101 @@ export function clearRunAbort(runId: string, invokeId?: number): void {
   active.delete(runId)
 }
 
+/** Queue a user message for mid-run injection. Soft-aborts the live stream if any. */
+export function enqueueFollowUp(runId: string, message: ChatMessage): EnqueueFollowUpResult {
+  const entry = active.get(runId)
+  if (!entry || entry.turnComplete) {
+    return { ok: false, error: 'Run is not active' }
+  }
+  if (message.role !== 'user') {
+    return { ok: false, error: 'Follow-up must be a user message' }
+  }
+  const id = randomUUID()
+  entry.followUps.push({ id, message })
+  // Interrupt the current provider stream so the loop can drain promptly.
+  entry.streamInterrupt?.abort()
+  return {
+    ok: true,
+    id,
+    position: entry.followUps.length,
+    queueLength: entry.followUps.length
+  }
+}
+
+/** Remove a still-queued follow-up before the loop applies it. */
+export function removeFollowUp(
+  runId: string,
+  id: string
+): { ok: true; removed: boolean; queueLength: number } | { ok: false; error: string } {
+  const entry = active.get(runId)
+  if (!entry || entry.turnComplete) {
+    return { ok: false, error: 'Run is not active' }
+  }
+  const before = entry.followUps.length
+  entry.followUps = entry.followUps.filter((item) => item.id !== id)
+  return {
+    ok: true,
+    removed: entry.followUps.length < before,
+    queueLength: entry.followUps.length
+  }
+}
+
+export function hasPendingFollowUps(runId: string): boolean {
+  const entry = active.get(runId)
+  if (!entry || entry.turnComplete) return false
+  return entry.followUps.length > 0
+}
+
+export function peekFollowUps(runId: string): FollowUpEntry[] {
+  const entry = active.get(runId)
+  if (!entry) return []
+  return entry.followUps.slice()
+}
+
+/** Take all pending follow-ups (FIFO). */
+export function drainFollowUps(runId: string): FollowUpEntry[] {
+  const entry = active.get(runId)
+  if (!entry) return []
+  const drained = entry.followUps
+  entry.followUps = []
+  return drained
+}
+
+export function clearFollowUps(runId: string): void {
+  const entry = active.get(runId)
+  if (!entry) return
+  entry.followUps = []
+}
+
+/** Bind a soft-abort controller for the current stream step. */
+export function setStreamInterrupt(runId: string, controller: AbortController | null): void {
+  const entry = active.get(runId)
+  if (!entry) return
+  entry.streamInterrupt = controller
+}
+
+export function getStreamInterrupt(runId: string): AbortController | undefined {
+  return active.get(runId)?.streamInterrupt ?? undefined
+}
+
+/** Combined signal: run cancel OR soft stream interrupt. */
+export function streamSignalFor(runId: string, runSignal: AbortSignal): AbortSignal {
+  const entry = active.get(runId)
+  const soft = entry?.streamInterrupt?.signal
+  if (!soft) return runSignal
+  if (typeof AbortSignal.any === 'function') {
+    return AbortSignal.any([runSignal, soft])
+  }
+  // Fallback: prefer run signal; loop also polls hasPendingFollowUps.
+  return runSignal
+}
+
 /** Test helper — clear active controllers between tests. */
 export function resetActiveRunsForTests(): void {
-  for (const entry of active.values()) entry.controller.abort()
+  for (const entry of active.values()) {
+    entry.streamInterrupt?.abort()
+    entry.controller.abort()
+  }
   active.clear()
   nextInvokeId = 1
 }
@@ -94,6 +245,9 @@ export function chatCancelResult(
   if (!entry) {
     return { ok: false, error: 'Run not found' }
   }
+  entry.followUps = []
+  entry.streamInterrupt?.abort()
+  entry.streamInterrupt = null
   entry.controller.abort()
   return { ok: true, data: true }
 }

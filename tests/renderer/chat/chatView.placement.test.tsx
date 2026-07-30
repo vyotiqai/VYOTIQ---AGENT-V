@@ -12,6 +12,7 @@ beforeEach(() => {
     localStorage.removeItem('vyotiq.browserPanelOpen')
     localStorage.removeItem('vyotiq.rightPanel')
     localStorage.removeItem('vyotiq.browserRecents')
+    localStorage.removeItem('vyotiq.dockExpanded')
   } catch {
     /* ignore */
   }
@@ -23,9 +24,16 @@ beforeEach(() => {
       gitStatus: vi.fn().mockResolvedValue({ ok: true, data: null }),
       gitDiff: vi.fn().mockResolvedValue({ ok: true, data: { path: '', hunks: [] } }),
       gitCommit: vi.fn().mockResolvedValue({ ok: true, data: { pushed: false, detail: 'ok' } }),
+      gitLog: vi.fn().mockResolvedValue({ ok: true, data: [] }),
+      gitCommitFiles: vi.fn().mockResolvedValue({ ok: true, data: { files: [] } }),
       prView: vi.fn().mockResolvedValue({ ok: true, data: null }),
       prMerge: vi.fn().mockResolvedValue({ ok: true, data: { detail: 'merged' } }),
-      ptyList: vi.fn().mockResolvedValue({ ok: true, data: [] }),
+      prDiff: vi.fn().mockResolvedValue({ ok: true, data: { content: '' } }),
+      prClose: vi.fn().mockResolvedValue({ ok: true, data: { detail: 'closed' } }),
+      prEditTitle: vi.fn().mockResolvedValue({ ok: true, data: { title: 't' } }),
+      ptyList: vi.fn().mockImplementation((_workspacePath?: string) =>
+        Promise.resolve({ ok: true, data: [] })
+      ),
       ptyCreate: vi.fn().mockResolvedValue({ ok: false, error: 'pty unavailable in tests' }),
       ptyKill: vi.fn().mockResolvedValue({ ok: true, data: true }),
       ptyWrite: vi.fn().mockResolvedValue({ ok: true, data: true }),
@@ -108,7 +116,32 @@ describe('ChatView composer placement', () => {
     expect(document.querySelector('[data-agent-browser-viewport]')).toBeTruthy()
     expect(document.querySelector('[data-chat-side-rail]')).toBeTruthy()
     expect(screen.getByText('No page loaded')).toBeTruthy()
+    expect(
+      screen.getByText(/Enter a URL above, or ask the agent to open a page/i)
+    ).toBeTruthy()
+    const browserPanel = document.querySelector('[data-agent-browser-panel]')
+    expect(
+      browserPanel?.querySelector('[aria-label="Hide browser panel"]')
+    ).toBeNull()
+    expect(screen.getByRole('button', { name: /Close Browser/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Close panel/i })).toBeNull()
     expect(screen.getByPlaceholderText('Search or enter URL')).toBeTruthy()
+  })
+
+  it('closes one dock tab without clearing the remaining tabs', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Show changes panel/i }))
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Terminal$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^± Changes$/i })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /Close ± Changes/i }))
+    expect(document.querySelector('[data-right-dock]')).toBeTruthy()
+    expect(document.querySelector('[data-changes-panel]')).toBeNull()
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Terminal$/i })).toBeTruthy()
   })
 
   it('switches docked panels from the side rail', () => {
@@ -117,10 +150,17 @@ describe('ChatView composer placement', () => {
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
     expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
     expect(screen.getByText('No terminal')).toBeTruthy()
+    // Session strip: New terminal + session-list toggle (expand lives on DockTabBar).
+    expect(screen.getByRole('button', { name: /New terminal/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Show terminal list|Hide terminal list/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Maximize terminal/i })).toBeNull()
+    expect(screen.queryByText(/Agent commands/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /Split terminal/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /Expand panel/i })).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: /Show changes panel/i }))
     expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
-    // Dock keeps prior tabs mounted but hidden (Cursor-style tab strip).
+    // Keep-alive: prior panels stay mounted but hidden.
     expect(
       document.querySelector('[data-terminal-panel]')?.parentElement?.className
     ).toMatch(/\bhidden\b/)
@@ -131,7 +171,10 @@ describe('ChatView composer placement', () => {
     expect(screen.queryByRole('button', { name: /files panel/i })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: /^Hide changes panel$/i }))
-    expect(document.querySelector('[data-right-dock]')).toBeNull()
+    // Closing Changes via the rail leaves Terminal mounted.
+    expect(document.querySelector('[data-changes-panel]')).toBeNull()
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-right-dock]')).toBeTruthy()
   })
 
   it('does not steal Terminal when browser state keeps reporting open', () => {
@@ -270,13 +313,16 @@ describe('ChatView composer placement', () => {
     expect(document.querySelector('[data-plan-panel]')).toBeTruthy()
   })
 
-  it('switches dock tabs without closing the rail panels', () => {
+  it('switches panels via the side rail while keeping prior panels mounted', () => {
     render(<ChatView {...baseProps} items={[]} />)
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
     fireEvent.click(screen.getByRole('button', { name: /Show changes panel/i }))
     expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
     expect(document.querySelector('[data-dock-tab-bar]')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /^Terminal$/i }))
+    // Multi-tab strip keeps both Terminal and Changes.
+    expect(screen.getByRole('button', { name: /^Terminal$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^± Changes$/i })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
     expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
     expect(
       document.querySelector('[data-terminal-panel]')?.parentElement?.className
@@ -284,6 +330,27 @@ describe('ChatView composer placement', () => {
     expect(
       document.querySelector('[data-changes-panel]')?.parentElement?.className
     ).toMatch(/\bhidden\b/)
+  })
+
+  it('opens a missing panel from the dock Open panel menu', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Open panel/i }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Browser/i }))
+    expect(document.querySelector('[data-agent-browser-panel]')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Terminal$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Browser$/i })).toBeTruthy()
+  })
+
+  it('expands the dock width from the Expand panel control', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    const dock = document.querySelector('[data-right-dock]')
+    expect(dock?.getAttribute('data-dock-expanded')).toBe('0')
+    fireEvent.click(screen.getByRole('button', { name: /^Expand panel$/i }))
+    expect(document.querySelector('[data-right-dock]')?.getAttribute('data-dock-expanded')).toBe(
+      '1'
+    )
   })
 
   it('opens the pull request panel from the side rail', () => {

@@ -14,18 +14,29 @@ describe('useChatStream', () => {
   let handler: Handler | null = null
   const chatStart = vi.fn()
   const chatCancel = vi.fn()
+  const chatFollowUp = vi.fn()
+  const chatFollowUpRemove = vi.fn()
 
   beforeEach(() => {
     handler = null
     chatStart.mockReset()
     chatCancel.mockReset()
+    chatFollowUp.mockReset()
+    chatFollowUpRemove.mockReset()
     chatStart.mockResolvedValue({ ok: true, data: { runId: 'run-1', invokeId: 1 } })
     chatCancel.mockResolvedValue({ ok: true, data: true })
+    chatFollowUp.mockResolvedValue({
+      ok: true,
+      data: { id: 'fu-1', position: 1, queueLength: 1 }
+    })
+    chatFollowUpRemove.mockResolvedValue({ ok: true, data: { removed: true, queueLength: 0 } })
 
     // @ts-expect-error test bridge
     window.vyotiq = {
       chatStart,
       chatCancel,
+      chatFollowUp,
+      chatFollowUpRemove,
       onChatEvent: (h: Handler) => {
         handler = h
         return () => {
@@ -100,6 +111,31 @@ describe('useChatStream', () => {
         (m) => m.role === 'assistant' && Array.isArray(m.toolCalls) && m.toolCalls.length > 0
       )
     ).toBe(true)
+  })
+
+  it('routes send to chatFollowUp while a run is active', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('start')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running', invokeId: 1 })
+    })
+    expect(result.current.running).toBe(true)
+
+    chatStart.mockClear()
+    await act(async () => {
+      await result.current.send('steer now')
+    })
+
+    expect(chatStart).not.toHaveBeenCalled()
+    expect(chatFollowUp).toHaveBeenCalledWith({
+      runId: 'run-1',
+      message: { role: 'user', content: 'steer now' }
+    })
+    expect(result.current.pendingFollowUps.some((e) => e.preview === 'steer now')).toBe(true)
+    expect(result.current.running).toBe(true)
   })
 
   it('queues cancel when stop races chatStart', async () => {
@@ -1632,6 +1668,8 @@ describe('useChatStream', () => {
     window.vyotiq = {
       chatStart,
       chatCancel,
+      chatFollowUp,
+      chatFollowUpRemove,
       listActiveRuns,
       loadRun,
       loadRunEvents,

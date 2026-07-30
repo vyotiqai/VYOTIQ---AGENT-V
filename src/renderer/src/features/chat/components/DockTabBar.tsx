@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { IconButton, cn } from '@renderer/lib/ui'
 import { Icon, type IconName } from '@renderer/lib/icons'
 import type { ChatRightPanelId } from '@renderer/lib/utils/layout'
+import { DOCK_PANELS, dockPanelDef } from '@renderer/lib/utils/dockPanels'
 
 export type DockTabItem = {
   id: ChatRightPanelId
@@ -9,13 +10,11 @@ export type DockTabItem = {
   icon: IconName
 }
 
-const ADDABLE: DockTabItem[] = [
-  { id: 'terminal', label: 'Terminal', icon: 'terminal' },
-  { id: 'browser', label: 'Browser', icon: 'globe' },
-  { id: 'changes', label: 'Changes', icon: 'branch' },
-  { id: 'pr', label: 'Pull Request', icon: 'pullRequest' },
-  { id: 'plan', label: 'Plan', icon: 'listTodo' }
-]
+const ADDABLE: DockTabItem[] = DOCK_PANELS.map((p) => ({
+  id: p.id,
+  label: p.label,
+  icon: p.icon
+}))
 
 /**
  * Cursor-style horizontal tabs above the active right dock panel.
@@ -25,37 +24,42 @@ export function DockTabBar({
   active,
   tabs,
   onSelect,
-  onCloseDock,
+  onCloseTab,
   onOpenPanel,
+  expanded,
+  onToggleExpanded,
   className
 }: {
   active: ChatRightPanelId
   tabs: DockTabItem[]
   onSelect: (id: ChatRightPanelId) => void
-  onCloseDock: () => void
+  onCloseTab: (id: ChatRightPanelId) => void
   onOpenPanel: (id: ChatRightPanelId) => void
+  expanded?: boolean
+  onToggleExpanded?: () => void
   className?: string
 }) {
   const [addOpen, setAddOpen] = useState(false)
   const addRef = useRef<HTMLDivElement>(null)
+
   const openIds = useMemo(() => new Set(tabs.map((t) => t.id)), [tabs])
-  const addable = ADDABLE.filter((t) => !openIds.has(t.id))
+  const addable = useMemo(() => ADDABLE.filter((t) => !openIds.has(t.id)), [openIds])
 
   useEffect(() => {
     if (!addOpen) return undefined
-    const onPointerDown = (e: PointerEvent): void => {
+    const onDoc = (e: MouseEvent): void => {
       if (addRef.current && !addRef.current.contains(e.target as Node)) {
         setAddOpen(false)
       }
     }
-    document.addEventListener('pointerdown', onPointerDown)
-    return () => document.removeEventListener('pointerdown', onPointerDown)
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
   }, [addOpen])
 
   return (
     <div
       className={cn(
-        'flex min-w-0 shrink-0 items-center gap-0.5 border-b border-border/40 bg-surface px-1 py-0.5',
+        'flex min-w-0 shrink-0 items-center gap-0.5 border-b border-border/40 bg-bg px-1 py-0.5',
         className
       )}
       data-dock-tab-bar
@@ -64,26 +68,39 @@ export function DockTabBar({
         {tabs.map((tab) => {
           const selected = tab.id === active
           return (
-            <button
+            <div
               key={tab.id}
-              type="button"
               className={cn(
-                'inline-flex max-w-[9rem] shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px]',
+                'group inline-flex max-w-[9rem] shrink-0 items-center gap-0.5 rounded-md pl-2 pr-0.5 py-0.5 text-[11px]',
                 selected
-                  ? 'bg-bg font-medium text-fg'
-                  : 'text-muted hover:bg-bg/50 hover:text-fg'
+                  ? 'bg-surface font-medium text-fg'
+                  : 'text-muted hover:bg-surface/60 hover:text-fg'
               )}
-              aria-pressed={selected}
-              onClick={() => onSelect(tab.id)}
-              title={tab.label}
             >
-              <Icon name={tab.icon} size={12} className="shrink-0" />
-              <span className="min-w-0 truncate">{tab.label}</span>
-            </button>
+              <button
+                type="button"
+                className="inline-flex min-w-0 items-center gap-1 truncate"
+                aria-pressed={selected}
+                onClick={() => onSelect(tab.id)}
+              >
+                <Icon name={tab.icon} size={12} className="shrink-0 text-muted" />
+                <span className="truncate">{tab.label}</span>
+              </button>
+              <button
+                type="button"
+                className="shrink-0 rounded p-0.5 opacity-0 hover:bg-surface-2 group-hover:opacity-100"
+                aria-label={`Close ${tab.label}`}
+                onClick={() => onCloseTab(tab.id)}
+              >
+                <Icon name="close" size={10} />
+              </button>
+            </div>
           )
         })}
+      </div>
+      <div className="relative flex shrink-0 items-center gap-0.5" ref={addRef}>
         {addable.length > 0 ? (
-          <div ref={addRef} className="relative shrink-0">
+          <>
             <IconButton
               icon="plus"
               label="Open panel"
@@ -94,7 +111,7 @@ export function DockTabBar({
             />
             {addOpen ? (
               <div
-                className="absolute left-0 top-full z-dropdown mt-0.5 min-w-[10rem] rounded-md border border-border bg-bg py-1 shadow-lg"
+                className="absolute right-0 top-full z-dropdown mt-0.5 min-w-[10rem] rounded-md border border-border bg-bg py-1 shadow-lg"
                 role="menu"
               >
                 {addable.map((item) => (
@@ -102,52 +119,39 @@ export function DockTabBar({
                     key={item.id}
                     type="button"
                     role="menuitem"
-                    className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-fg hover:bg-surface"
+                    className="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[11px] text-fg hover:bg-surface-2"
                     onClick={() => {
-                      setAddOpen(false)
                       onOpenPanel(item.id)
+                      setAddOpen(false)
                     }}
                   >
-                    <Icon name={item.icon} size={12} />
+                    <Icon name={item.icon} size={12} className="text-muted" />
                     {item.label}
                   </button>
                 ))}
               </div>
             ) : null}
-          </div>
+          </>
+        ) : null}
+        {onToggleExpanded ? (
+          <IconButton
+            icon={expanded ? 'minimize' : 'maximize'}
+            label={expanded ? 'Collapse panel' : 'Expand panel'}
+            variant="bare"
+            size="sm"
+            className="text-muted"
+            onClick={onToggleExpanded}
+          />
         ) : null}
       </div>
-      <IconButton
-        icon="close"
-        label="Close panel"
-        variant="bare"
-        size="sm"
-        className="shrink-0 text-muted"
-        onClick={onCloseDock}
-      />
     </div>
   )
 }
 
 export function defaultDockTab(id: ChatRightPanelId, prNumber?: number | null): DockTabItem {
-  switch (id) {
-    case 'terminal':
-      return { id, label: 'Terminal', icon: 'terminal' }
-    case 'browser':
-      return { id, label: 'Browser', icon: 'globe' }
-    case 'changes':
-      return { id, label: 'Changes', icon: 'branch' }
-    case 'pr':
-      return {
-        id,
-        label: prNumber != null ? `PR #${prNumber}` : 'Pull Request',
-        icon: 'pullRequest'
-      }
-    case 'plan':
-      return { id, label: 'Plan', icon: 'listTodo' }
-    default: {
-      const _exhaustive: never = id
-      return _exhaustive
-    }
+  const def = dockPanelDef(id)
+  if (id === 'pr' && prNumber != null) {
+    return { id, label: `PR #${prNumber}`, icon: def.icon }
   }
+  return { id, label: def.label, icon: def.icon }
 }

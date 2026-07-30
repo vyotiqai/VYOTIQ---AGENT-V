@@ -2,6 +2,10 @@ import type {
   ActiveRunsResult,
   AgentEvent,
   ChatMessage,
+  ChatFollowUpRemoveRequest,
+  ChatFollowUpRemoveResult,
+  ChatFollowUpRequest,
+  ChatFollowUpResult,
   ChatStartRequest,
   ChatStartResult,
   CompactRunResult,
@@ -83,6 +87,10 @@ export interface VyotiqApi {
   }) => Promise<IpcResult<ListModelsResult>>
   chatStart: (payload: ChatStartRequest) => Promise<IpcResult<ChatStartResult>>
   chatCancel: (runId: string) => Promise<IpcResult<true>>
+  chatFollowUp: (payload: ChatFollowUpRequest) => Promise<IpcResult<ChatFollowUpResult>>
+  chatFollowUpRemove: (
+    payload: ChatFollowUpRemoveRequest
+  ) => Promise<IpcResult<ChatFollowUpRemoveResult>>
   chatCompact: (workspacePath: string, runId: string) => Promise<IpcResult<CompactRunResult>>
   undoWrites: (
     workspacePath: string,
@@ -158,22 +166,42 @@ export interface VyotiqApi {
     message: string,
     push: boolean
   ) => Promise<IpcResult<GitCommitResult>>
+  gitLog: (payload: {
+    workspacePath: string
+    limit?: number
+  }) => Promise<IpcResult<import('./ipc').GitLogEntry[]>>
+  gitCommitFiles: (payload: {
+    workspacePath: string
+    sha: string
+  }) => Promise<IpcResult<{ files: import('./ipc').GitChangedFile[] }>>
   gitDiff: (payload: {
     workspacePath: string
     path?: string
     staged?: boolean
+    ignoreWhitespace?: boolean
+    sha?: string
   }) => Promise<IpcResult<{ content: string }>>
   prView: (workspacePath: string) => Promise<IpcResult<import('./ipc').PrView | null>>
   prMerge: (
     workspacePath: string,
     method: import('./ipc').PrMergeMethod
   ) => Promise<IpcResult<{ detail: string }>>
+  prDiff: (payload: {
+    workspacePath: string
+    path?: string
+    ignoreWhitespace?: boolean
+  }) => Promise<IpcResult<{ content: string }>>
+  prClose: (workspacePath: string) => Promise<IpcResult<{ detail: string }>>
+  prEditTitle: (
+    workspacePath: string,
+    title: string
+  ) => Promise<IpcResult<{ title: string }>>
   ptyCreate: (payload: {
     workspacePath: string
     cols?: number
     rows?: number
   }) => Promise<IpcResult<import('./ipc').PtySessionInfo>>
-  ptyList: () => Promise<IpcResult<import('./ipc').PtySessionInfo[]>>
+  ptyList: (workspacePath?: string) => Promise<IpcResult<import('./ipc').PtySessionInfo[]>>
   ptyWrite: (id: string, data: string) => Promise<IpcResult<boolean>>
   ptyResize: (id: string, cols: number, rows: number) => Promise<IpcResult<boolean>>
   ptyKill: (id: string) => Promise<IpcResult<boolean>>

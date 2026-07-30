@@ -48,7 +48,13 @@ describe('git status', () => {
     writeFileSync(join(repo, 'kept.txt'), 'one\ntwo\nthree\nfour\n', 'utf8')
     const status = await readGitStatus(repo)
     const file = status?.files.find((entry) => entry.path === 'kept.txt')
-    expect(file).toMatchObject({ status: 'modified', added: 1, removed: 0 })
+    expect(file).toMatchObject({
+      status: 'modified',
+      added: 1,
+      removed: 0,
+      staged: false,
+      unstaged: true
+    })
     expect(status?.added).toBe(1)
   })
 
@@ -57,7 +63,21 @@ describe('git status', () => {
     writeFileSync(join(repo, 'sub', 'new.txt'), 'a\nb\n', 'utf8')
     const status = await readGitStatus(repo)
     const file = status?.files.find((entry) => entry.path === 'sub/new.txt')
-    expect(file).toMatchObject({ status: 'untracked', added: 2, removed: 0 })
+    expect(file).toMatchObject({
+      status: 'untracked',
+      added: 2,
+      removed: 0,
+      staged: false,
+      unstaged: true
+    })
+  })
+
+  it('marks staged-only index changes via porcelain XY', async () => {
+    writeFileSync(join(repo, 'kept.txt'), 'staged-only\n', 'utf8')
+    git(repo, 'add', 'kept.txt')
+    const status = await readGitStatus(repo)
+    const file = status?.files.find((entry) => entry.path === 'kept.txt')
+    expect(file).toMatchObject({ staged: true, unstaged: false })
   })
 
   it('commits everything and reports what it did', async () => {

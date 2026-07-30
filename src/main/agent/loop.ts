@@ -68,10 +68,15 @@ import { parseProviderReasoningState } from '../../shared/reasoning'
 import type { StopReason, TokenUsage, ToolCall } from './providers/types'
 import {
   cancelRun,
+  clearFollowUps,
   clearRunAbort,
+  drainFollowUps,
+  hasPendingFollowUps,
   isCurrentInvoke,
   registerRunAbort,
-  resetActiveRunsForTests
+  resetActiveRunsForTests,
+  setStreamInterrupt,
+  streamSignalFor
 } from './runRegistry'
 import {
   appendEvent,
@@ -250,6 +255,32 @@ function lastReasoningState(messages: ChatMessage[]): ProviderReasoningState | u
  * already watched arrive, because assistant messages are only written on a
  * completed step.
  */
+/** Persist and emit mid-run user follow-ups drained from the run registry. */
+function* applyDrainedFollowUps(
+  runId: string,
+  runDir: string,
+  messages: ChatMessage[]
+): Generator<AgentEvent> {
+  const drained = drainFollowUps(runId)
+  if (drained.length === 0) return
+  const ids: string[] = []
+  const applied: ChatMessage[] = []
+  for (const entry of drained) {
+    messages.push(entry.message)
+    appendMessage(runDir, entry.message)
+    ids.push(entry.id)
+    applied.push(entry.message)
+  }
+  const ev: AgentEvent = {
+    type: 'follow_up_applied',
+    runId,
+    ids,
+    messages: applied
+  }
+  appendEvent(runDir, ev)
+  yield ev
+}
+
 function* flushPartialAssistant(
   runId: string,
   runDir: string,
@@ -637,6 +668,8 @@ export async function* runAgent(input: {
 
     while (true) {
       if (controller.signal.aborted) break
+      // Inject any queued user follow-ups before the next model call.
+      yield* applyDrainedFollowUps(runId, runDir, messages)
       step++
       writeStatus({ step, status: 'running' })
       // Steps after the first pick up MCP servers enabled/reconnected mid-run.
@@ -864,6 +897,11 @@ export async function* runAgent(input: {
             appendEvent(runDir, overflowEv)
             yield overflowEv
             yield* flushWriteCheckpoint()
+            // Follow-ups can land during assembleContext awaits — drain before done.
+            if (hasPendingFollowUps(runId)) {
+              yield* applyDrainedFollowUps(runId, runDir, messages)
+              continue
+            }
             yield { type: 'status', runId, status: 'done' }
             writeStatus({ status: 'done' })
             appendEvent(runDir, { type: 'status', runId, status: 'done' })
@@ -888,6 +926,10 @@ export async function* runAgent(input: {
           appendEvent(runDir, overflowEv)
           yield overflowEv
           yield* flushWriteCheckpoint()
+          if (hasPendingFollowUps(runId)) {
+            yield* applyDrainedFollowUps(runId, runDir, messages)
+            continue
+          }
           yield { type: 'status', runId, status: 'done' }
           writeStatus({ status: 'done' })
           appendEvent(runDir, { type: 'status', runId, status: 'done' })
@@ -897,6 +939,7 @@ export async function* runAgent(input: {
 
       let streamAttempt = 0
       let streamFinished = false
+      let streamSteered = false
 
       while (!streamFinished && streamAttempt < MAX_STREAM_ATTEMPTS) {
         streamAttempt++
@@ -913,15 +956,18 @@ export async function* runAgent(input: {
         stepMalformedChunks = 0
         toolCalls.length = 0
         liveForwardedToolIds.clear()
+        streamSteered = false
 
         let retryStream = false
+        const streamAbort = new AbortController()
+        setStreamInterrupt(runId, streamAbort)
         try {
           for await (const chunk of provider.streamChat({
           model: settings.model,
           messages: assembled.messages,
           tools: toolDefs,
           system: assembled.system,
-          signal: controller.signal,
+          signal: streamSignalFor(runId, controller.signal),
           apiKey,
           baseUrl,
           maxOutputTokens: requestMaxOutputTokens(providerId, modelInfo),
@@ -942,6 +988,11 @@ export async function* runAgent(input: {
           serviceTier: resolveServiceTier(settings, providerId, settings.model)
         })) {
           if (controller.signal.aborted) break
+          // Soft-steer: break so we can flush partial output and inject follow-ups.
+          if (hasPendingFollowUps(runId) || streamAbort.signal.aborted) {
+            streamSteered = true
+            break
+          }
           if (chunk.type === 'text' && chunk.text) {
             assistantText += chunk.text
             yield { type: 'text_delta', runId, text: chunk.text }
@@ -1149,7 +1200,13 @@ export async function* runAgent(input: {
             )
             throw err
           }
+          // Soft follow-up interrupt (streamAbort) vs full run cancel.
+          if (!controller.signal.aborted && hasPendingFollowUps(runId)) {
+            streamSteered = true
+          }
           break
+        } finally {
+          setStreamInterrupt(runId, null)
         }
 
         if (retryStream) {
@@ -1160,6 +1217,7 @@ export async function* runAgent(input: {
       }
 
       if (controller.signal.aborted) {
+        clearFollowUps(runId)
         yield* flushPartialAssistant(
           runId,
           runDir,
@@ -1171,6 +1229,22 @@ export async function* runAgent(input: {
           'cancelled'
         )
         break
+      }
+
+      // Mid-stream steer: keep the turn alive, flush partial output, then inject.
+      if (streamSteered) {
+        yield* flushPartialAssistant(
+          runId,
+          runDir,
+          messages,
+          assistantText,
+          thinkingText,
+          stepReasoningState,
+          dedupeToolCalls(toolCalls),
+          'interrupted'
+        )
+        yield* applyDrainedFollowUps(runId, runDir, messages)
+        continue
       }
 
       const uniqueToolCalls = dedupeToolCalls(toolCalls)
@@ -1363,6 +1437,12 @@ export async function* runAgent(input: {
 
         if (controller.signal.aborted) break
 
+        // User steered during the final stream step — keep going instead of closing.
+        if (hasPendingFollowUps(runId)) {
+          yield* applyDrainedFollowUps(runId, runDir, messages)
+          continue
+        }
+
         if (incomplete) {
           const incompleteEv: AgentEvent = {
             type: 'incomplete',
@@ -1387,6 +1467,13 @@ export async function* runAgent(input: {
         }
 
         yield* flushWriteCheckpoint()
+        // Re-check after flush — follow-ups can arrive in the TOCTOU window after
+        // the earlier hasPendingFollowUps check (and markRunTurnComplete must not
+        // wipe them).
+        if (hasPendingFollowUps(runId)) {
+          yield* applyDrainedFollowUps(runId, runDir, messages)
+          continue
+        }
         yield { type: 'status', runId, status: 'done' }
         writeStatus({ status: 'done' })
         appendEvent(runDir, { type: 'status', runId, status: 'done' })

@@ -28,6 +28,8 @@ const api: VyotiqApi = {
   listModels: (payload) => ipcRenderer.invoke(IPC.listModels, payload),
   chatStart: (payload) => ipcRenderer.invoke(IPC.chatStart, payload),
   chatCancel: (runId) => ipcRenderer.invoke(IPC.chatCancel, { runId }),
+  chatFollowUp: (payload) => ipcRenderer.invoke(IPC.chatFollowUp, payload),
+  chatFollowUpRemove: (payload) => ipcRenderer.invoke(IPC.chatFollowUpRemove, payload),
   chatCompact: (workspacePath, runId) =>
     ipcRenderer.invoke(IPC.chatCompact, { workspacePath, runId }),
   undoWrites: (workspacePath, runId, checkpointId) =>
@@ -112,12 +114,19 @@ const api: VyotiqApi = {
   gitStatus: (workspacePath) => ipcRenderer.invoke(IPC.gitStatus, { workspacePath }),
   gitCommit: (workspacePath, message, push) =>
     ipcRenderer.invoke(IPC.gitCommit, { workspacePath, message, push }),
+  gitLog: (payload) => ipcRenderer.invoke(IPC.gitLog, payload),
+  gitCommitFiles: (payload) => ipcRenderer.invoke(IPC.gitCommitFiles, payload),
   gitDiff: (payload) => ipcRenderer.invoke(IPC.gitDiff, payload),
   prView: (workspacePath) => ipcRenderer.invoke(IPC.prView, { workspacePath }),
   prMerge: (workspacePath, method) =>
     ipcRenderer.invoke(IPC.prMerge, { workspacePath, method }),
+  prDiff: (payload) => ipcRenderer.invoke(IPC.prDiff, payload),
+  prClose: (workspacePath) => ipcRenderer.invoke(IPC.prClose, { workspacePath }),
+  prEditTitle: (workspacePath, title) =>
+    ipcRenderer.invoke(IPC.prEditTitle, { workspacePath, title }),
   ptyCreate: (payload) => ipcRenderer.invoke(IPC.ptyCreate, payload),
-  ptyList: () => ipcRenderer.invoke(IPC.ptyList),
+  ptyList: (workspacePath) =>
+    ipcRenderer.invoke(IPC.ptyList, workspacePath ? { workspacePath } : {}),
   ptyWrite: (id, data) => ipcRenderer.invoke(IPC.ptyWrite, { id, data }),
   ptyResize: (id, cols, rows) => ipcRenderer.invoke(IPC.ptyResize, { id, cols, rows }),
   ptyKill: (id) => ipcRenderer.invoke(IPC.ptyKill, { id }),

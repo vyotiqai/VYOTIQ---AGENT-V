@@ -248,6 +248,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   onKeepWriteFile,
   onDiscardWriteFile,
   onKeepAllWrites,
+  resolveBlockedReason = null,
   fileDiffs,
   onDiffExpandChange
 }: {
@@ -271,6 +272,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   onKeepWriteFile?: (path: string) => void | Promise<unknown>
   onDiscardWriteFile?: (path: string) => void | Promise<unknown>
   onKeepAllWrites?: () => void | Promise<unknown>
+  resolveBlockedReason?: string | null
   fileDiffs?: ReadonlyMap<string, import('../toolUi').DiffLine[]>
   onDiffExpandChange?: (hasExpanded: boolean) => void
 }) {
@@ -321,6 +323,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
         resolvablePaths={writeResolvablePaths}
         canResolve={canUndoWrites}
         resolveBusy={undoBusy}
+        resolveBlockedReason={resolveBlockedReason}
         onKeepFile={onKeepWriteFile}
         onDiscardFile={onDiscardWriteFile}
         onKeepAll={onKeepAllWrites}
@@ -402,7 +405,8 @@ export function MessageList({
   writeResolvablePaths,
   onKeepWriteFile,
   onDiscardWriteFile,
-  onKeepAllWrites
+  onKeepAllWrites,
+  resolveBlockedReason = null
 }: {
   items: UiItem[]
   reserveComposerSpace?: boolean
@@ -434,6 +438,7 @@ export function MessageList({
   onKeepWriteFile?: (path: string) => void | Promise<unknown>
   onDiscardWriteFile?: (path: string) => void | Promise<unknown>
   onKeepAllWrites?: () => void | Promise<unknown>
+  resolveBlockedReason?: string | null
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const appliedRestoreRef = useRef<number | null>(null)
@@ -452,11 +457,16 @@ export function MessageList({
   )
   const prevStructuralKeyRef = useRef<string | null>(null)
   const prevRowsRef = useRef<TranscriptRow[] | null>(null)
-  /** After a live run in this mount, keep flow layout until the list remounts. */
-  const stayInFlowAfterLiveRef = useRef(false)
-  if (pendingRun || running) {
-    stayInFlowAfterLiveRef.current = true
-  }
+  /** After a live run, keep flow layout briefly so height settles before virtualizing. */
+  const [stayInFlowAfterLive, setStayInFlowAfterLive] = useState(false)
+  useEffect(() => {
+    if (pendingRun || running) {
+      setStayInFlowAfterLive(true)
+      return
+    }
+    const timer = window.setTimeout(() => setStayInFlowAfterLive(false), 800)
+    return () => window.clearTimeout(timer)
+  }, [pendingRun, running])
 
   const itemsStructuralKey = useMemo(() => structuralKey(items), [items])
   const allRows = useMemo(() => {
@@ -716,7 +726,7 @@ export function MessageList({
   const shouldVirtualize =
     !pendingRun &&
     !running &&
-    !stayInFlowAfterLiveRef.current &&
+    !stayInFlowAfterLive &&
     displayRows.length >= VIRTUALIZE_MIN_ROWS
 
   const rowVirtualizer = useVirtualizer({
@@ -802,6 +812,7 @@ export function MessageList({
       onKeepWriteFile={onKeepWriteFile}
       onDiscardWriteFile={onDiscardWriteFile}
       onKeepAllWrites={onKeepAllWrites}
+      resolveBlockedReason={resolveBlockedReason}
       fileDiffs={row.kind === 'changes' ? turnFileDiffs.get(row.turnIndex) : undefined}
       onDiffExpandChange={
         row.kind === 'changes'

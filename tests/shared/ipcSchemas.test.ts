@@ -3,6 +3,8 @@ import {
   ChatMessageSchema,
   ChatStartRequestSchema,
   ChatStartResultSchema,
+  ChatFollowUpRequestSchema,
+  ChatFollowUpResultSchema,
   CancelRunRequestSchema,
   CompactRunRequestSchema,
   DeleteRunRequestSchema,
@@ -132,6 +134,26 @@ describe('ipc schemas', () => {
 
   it('parses cancel and agent events', () => {
     expect(CancelRunRequestSchema.parse({ runId: 'abc' })).toEqual({ runId: 'abc' })
+    expect(
+      ChatFollowUpRequestSchema.parse({
+        runId: 'abc',
+        message: { role: 'user', content: 'steer' }
+      })
+    ).toEqual({
+      runId: 'abc',
+      message: { role: 'user', content: 'steer' }
+    })
+    expect(ChatFollowUpResultSchema.parse({ id: 'fu-1', position: 1, queueLength: 1 })).toEqual({
+      id: 'fu-1',
+      position: 1,
+      queueLength: 1
+    })
+    expect(() =>
+      ChatFollowUpRequestSchema.parse({
+        runId: 'abc',
+        message: { role: 'assistant', content: 'nope' }
+      })
+    ).toThrow()
     expect(
       AgentEventSchema.parse({
         type: 'tool_result',
@@ -319,6 +341,33 @@ describe('ipc schemas', () => {
         model: 'gpt-test'
       }).model
     ).toBe('gpt-test')
+    expect(
+      AgentEventSchema.parse({
+        type: 'follow_up_queued',
+        runId: 'r1',
+        id: 'fu-1',
+        position: 1,
+        queueLength: 1,
+        preview: 'please also fix tests'
+      }).preview
+    ).toBe('please also fix tests')
+    expect(
+      AgentEventSchema.parse({
+        type: 'follow_up_queued',
+        runId: 'r1',
+        id: 'fu-1',
+        position: 1,
+        queueLength: 1
+      }).id
+    ).toBe('fu-1')
+    expect(
+      AgentEventSchema.parse({
+        type: 'follow_up_applied',
+        runId: 'r1',
+        ids: ['fu-1'],
+        messages: [{ role: 'user', content: 'steer' }]
+      }).ids
+    ).toEqual(['fu-1'])
     expect(WindowMaximizedChangedSchema.parse(true)).toBe(true)
     expect(LoadRunRequestSchema.parse({ workspacePath: '/ws', runId: 'r1' })).toEqual({
       workspacePath: '/ws',
@@ -461,7 +510,7 @@ describe('ipc schemas', () => {
     expect(() => ChatStartResultSchema.parse({ runId: 'r1' })).toThrow()
     expect(
       ActiveRunSchema.parse({ runId: 'r1', workspacePath: '/ws', invokeId: 2 })
-    ).toEqual({ runId: 'r1', workspacePath: '/ws', invokeId: 2 })
+    ).toEqual({ runId: 'r1', workspacePath: '/ws', invokeId: 2, pendingFollowUps: [] })
     expect(() => ActiveRunSchema.parse({ runId: 'r1', workspacePath: '/ws' })).toThrow()
   })
 
@@ -498,10 +547,25 @@ describe('ipc schemas', () => {
             status: 'modified',
             added: 2,
             removed: 0,
-            binary: false
+            binary: false,
+            staged: false,
+            unstaged: true
           }
         ]
       }).branch
     ).toBe('main')
+  })
+
+  it('parses pty list/create request schemas', async () => {
+    const { PtyCreateRequestSchema, PtyListRequestSchema, PtyResizeRequestSchema } =
+      await import('@shared/ipc')
+    expect(PtyListRequestSchema.parse({})).toEqual({})
+    expect(PtyListRequestSchema.parse({ workspacePath: '/ws' })).toEqual({
+      workspacePath: '/ws'
+    })
+    expect(
+      PtyCreateRequestSchema.parse({ workspacePath: '/ws', cols: 80, rows: 24 }).workspacePath
+    ).toBe('/ws')
+    expect(PtyResizeRequestSchema.safeParse({ id: 'x', cols: 0, rows: 24 }).success).toBe(false)
   })
 })

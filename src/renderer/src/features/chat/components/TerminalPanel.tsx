@@ -9,11 +9,21 @@ import { IconButton } from '@renderer/lib/ui'
 import { CHAT_RIGHT_PANEL_BODY } from '@renderer/lib/utils/layout'
 import type { PtySessionInfo } from '@shared/ipc'
 import type { UiItem } from '@shared/transcript'
+import { prunePtyOutputBuffers } from '@shared/utils/ptyOutputBuffer'
+import { getPtyOutputBuffers, ensurePtyOutputBufferListener } from './ptyOutputBuffers'
 import { getToolHeaderMeta, isProminentTool } from '../toolUi'
 import { TerminalBody } from '../toolUi/bodies/TerminalBody'
 import type { ToolItem } from '../utils/transcriptRows'
 import { useFullToolContent } from './useFullToolContent'
 import { EmptyPanel } from './PanelChrome'
+
+ensurePtyOutputBufferListener()
+
+function readCssColor(varName: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback
+  const value = getComputedStyle(document.documentElement).getPropertyValue(varName).trim()
+  return value || fallback
+}
 
 function isToolItem(item: UiItem): item is ToolItem {
   return item.kind === 'tool'
@@ -70,6 +80,78 @@ function AgentTerminalEntry({
   )
 }
 
+/** One xterm host bound to a PTY session id. */
+function PtySessionView({ sessionId }: { sessionId: string }) {
+  const hostRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const el = hostRef.current
+    if (!el) return undefined
+
+    const term = new Terminal({
+      convertEol: true,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      fontSize: 12,
+      theme: {
+        background: readCssColor('--vy-bg', '#000000'),
+        foreground: readCssColor('--vy-fg', '#f5f5f5'),
+        cursor: readCssColor('--vy-fg', '#f5f5f5'),
+        selectionBackground: readCssColor('--vy-surface-2', '#262626'),
+        black: readCssColor('--vy-bg', '#000000'),
+        brightBlack: readCssColor('--vy-gray-400', '#525252')
+      }
+    })
+    const fit = new FitAddon()
+    term.loadAddon(fit)
+    term.loadAddon(new WebLinksAddon())
+    term.open(el)
+    const buffers = getPtyOutputBuffers()
+    const buffered = buffers.get(sessionId)
+    if (buffered) term.write(buffered)
+    term.focus()
+
+    const applyFit = (): void => {
+      if (el.clientWidth < 2 || el.clientHeight < 2) return
+      try {
+        fit.fit()
+        if (term.cols >= 2 && term.rows >= 2) {
+          void window.vyotiq?.ptyResize?.(sessionId, term.cols, term.rows)
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const onData = term.onData((data) => {
+      void window.vyotiq?.ptyWrite?.(sessionId, data)
+    })
+
+    const unsubData = window.vyotiq?.onPtyData?.(({ id, data }) => {
+      if (id !== sessionId) return
+      term.write(data)
+    })
+    const unsubExit = window.vyotiq?.onPtyExit?.(({ id }) => {
+      if (id !== sessionId) return
+      term.writeln('\r\n[process exited]')
+    })
+
+    const ro =
+      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => applyFit()) : null
+    ro?.observe(el)
+    applyFit()
+
+    return () => {
+      onData.dispose()
+      unsubData?.()
+      unsubExit?.()
+      ro?.disconnect()
+      term.dispose()
+    }
+  }, [sessionId])
+
+  return <div ref={hostRef} className="h-full w-full bg-bg" data-pty-host />
+}
+
 /**
  * Interactive PTY terminal panel with Cursor-like session tabs + agent command rollup.
  */
@@ -88,14 +170,19 @@ export function TerminalPanel({
 }) {
   const [sessions, setSessions] = useState<PtySessionInfo[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
+  /** Second pane session id for side-by-side split; null = single pane. */
+  const [splitId, setSplitId] = useState<string | null>(null)
+  /** Right-hand session list — screenshot 1 panel toggle. */
+  const [listOpen, setListOpen] = useState(true)
   const [agentOpen, setAgentOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const hostRef = useRef<HTMLDivElement>(null)
-  const termRef = useRef<Terminal | null>(null)
-  const fitRef = useRef<FitAddon | null>(null)
-  const activeIdRef = useRef<string | null>(null)
+  /** Gate auto-create until ptyList has returned (avoids duplicate sessions on remount). */
+  const [listReady, setListReady] = useState(false)
   const autoCreateAttemptedRef = useRef(false)
-  activeIdRef.current = activeId
+  /** After the user closes the last session, do not immediately spawn another. */
+  const suppressAutoCreateRef = useRef(false)
+  const onSessionsChangeRef = useRef(onSessionsChange)
+  onSessionsChangeRef.current = onSessionsChange
 
   const agentTerminals = useMemo(() => {
     const out: ToolItem[] = []
@@ -111,136 +198,138 @@ export function TerminalPanel({
   }, [items])
 
   const usingPipeFallback = sessions.some((s) => s.backend === 'pipe')
+  const activeSession = sessions.find((s) => s.id === activeId) ?? null
 
   const refreshList = useCallback(async () => {
     if (!window.vyotiq?.ptyList) {
       setError('Terminal IPC unavailable.')
+      setListReady(true)
       return
     }
-    const res = await window.vyotiq.ptyList()
+    const res = await window.vyotiq.ptyList(workspacePath ?? undefined)
     if (!res.ok) {
       setError(res.error)
+      setListReady(true)
       return
     }
     setError(null)
+    prunePtyOutputBuffers(
+      getPtyOutputBuffers(),
+      res.data.map((s) => s.id)
+    )
     setSessions(res.data)
-    onSessionsChange?.(res.data)
+    onSessionsChangeRef.current?.(res.data)
     setActiveId((cur) => {
       if (cur && res.data.some((s) => s.id === cur)) return cur
       return res.data[0]?.id ?? null
     })
-  }, [onSessionsChange])
+    setSplitId((cur) => {
+      if (!cur) return null
+      if (!res.data.some((s) => s.id === cur)) return null
+      return cur
+    })
+    setListReady(true)
+  }, [workspacePath])
 
-  const createSession = useCallback(async () => {
+  const createSession = useCallback(async (): Promise<string | null> => {
     if (!workspacePath) {
       setError('Open a workspace to start a terminal.')
-      return
+      return null
     }
     if (!window.vyotiq?.ptyCreate) {
       setError('Terminal IPC unavailable.')
-      return
+      return null
     }
     setError(null)
+    suppressAutoCreateRef.current = false
     const res = await window.vyotiq.ptyCreate({ workspacePath, cols: 80, rows: 24 })
     if (!res.ok) {
       setError(res.error)
-      return
+      return null
     }
     await refreshList()
     setActiveId(res.data.id)
+    return res.data.id
   }, [workspacePath, refreshList])
 
   const killSession = useCallback(
     async (id: string) => {
+      if (sessions.length <= 1) {
+        suppressAutoCreateRef.current = true
+      }
       const res = await window.vyotiq?.ptyKill?.(id)
       if (res && !res.ok) setError(res.error)
+      getPtyOutputBuffers().delete(id)
+      if (splitId === id) setSplitId(null)
       await refreshList()
     },
-    [refreshList]
+    [refreshList, sessions.length, splitId]
   )
+
+  const toggleSplit = useCallback(async () => {
+    if (splitId) {
+      setSplitId(null)
+      return
+    }
+    if (!activeId) {
+      const created = await createSession()
+      if (!created) return
+      const other = await createSession()
+      if (other) {
+        setActiveId(created)
+        setSplitId(other)
+      }
+      return
+    }
+    const other = sessions.find((s) => s.id !== activeId)
+    if (other) {
+      setSplitId(other.id)
+      return
+    }
+    const created = await createSession()
+    if (created && created !== activeId) {
+      setSplitId(created)
+      setActiveId(activeId)
+    }
+  }, [splitId, activeId, sessions, createSession])
+
+  useEffect(() => {
+    autoCreateAttemptedRef.current = false
+    suppressAutoCreateRef.current = false
+    setListReady(false)
+    setSessions([])
+    setActiveId(null)
+    setSplitId(null)
+    setError(null)
+  }, [workspacePath])
 
   useEffect(() => {
     void refreshList()
   }, [refreshList])
 
   useEffect(() => {
-    if (sessions.length > 0) {
-      autoCreateAttemptedRef.current = false
+    if (!listReady) return
+    if (sessions.length > 0) return
+    if (!workspacePath || autoCreateAttemptedRef.current || suppressAutoCreateRef.current) {
       return
     }
-    if (!workspacePath || autoCreateAttemptedRef.current) return
     autoCreateAttemptedRef.current = true
     void createSession()
-  }, [sessions.length, workspacePath, createSession])
+  }, [listReady, sessions.length, workspacePath, createSession])
 
+  // Buffering is owned by ptyOutputBuffers.ts (survives unmount). Panel only
+  // refreshes the session list when a process exits.
   useEffect(() => {
-    const unsubData = window.vyotiq?.onPtyData?.(({ id, data }) => {
-      if (id !== activeIdRef.current) return
-      termRef.current?.write(data)
-    })
-    const unsubExit = window.vyotiq?.onPtyExit?.(({ id }) => {
+    const unsubExit = window.vyotiq?.onPtyExit?.(() => {
       void refreshList()
-      if (id === activeIdRef.current) {
-        termRef.current?.writeln('\r\n[process exited]')
-      }
     })
     return () => {
-      unsubData?.()
       unsubExit?.()
     }
   }, [refreshList])
 
-  useEffect(() => {
-    const el = hostRef.current
-    if (!el || !activeId) return undefined
-
-    const term = new Terminal({
-      convertEol: true,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-      fontSize: 12,
-      theme: {
-        background: '#0d0d0d',
-        foreground: '#e8e8e8',
-        cursor: '#e8e8e8'
-      }
-    })
-    const fit = new FitAddon()
-    term.loadAddon(fit)
-    term.loadAddon(new WebLinksAddon())
-    term.open(el)
-    fit.fit()
-    term.focus()
-    termRef.current = term
-    fitRef.current = fit
-
-    const onData = term.onData((data) => {
-      void window.vyotiq?.ptyWrite?.(activeId, data)
-    })
-
-    const ro =
-      typeof ResizeObserver !== 'undefined'
-        ? new ResizeObserver(() => {
-            try {
-              fit.fit()
-              void window.vyotiq?.ptyResize?.(activeId, term.cols, term.rows)
-            } catch {
-              /* ignore */
-            }
-          })
-        : null
-    ro?.observe(el)
-    void window.vyotiq?.ptyResize?.(activeId, term.cols, term.rows)
-
-    return () => {
-      onData.dispose()
-      ro?.disconnect()
-      term.dispose()
-      termRef.current = null
-      fitRef.current = null
-    }
-  }, [activeId])
-
-  const active = sessions.find((s) => s.id === activeId) ?? null
+  const sessionCountLabel =
+    sessions.length === 1 ? '1 Terminal' : `${sessions.length} Terminals`
 
   return (
     <div
@@ -249,23 +338,27 @@ export function TerminalPanel({
       role="region"
       aria-label="Terminal panel"
     >
-      <div className="flex min-h-0 min-w-0 flex-1">
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border/40 px-1 py-0.5">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border/40 bg-bg px-1 py-0.5">
+          <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
             {sessions.map((s) => (
               <div
                 key={s.id}
                 className={cn(
                   'group inline-flex max-w-[8rem] items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[11px]',
-                  s.id === activeId ? 'bg-bg text-fg' : 'text-muted hover:bg-bg/50'
+                  s.id === activeId
+                    ? 'bg-surface text-fg'
+                    : 'text-muted hover:bg-surface/60'
                 )}
               >
                 <button
                   type="button"
                   className="min-w-0 truncate"
+                  aria-pressed={s.id === activeId}
                   onClick={() => setActiveId(s.id)}
                 >
                   &gt;_ {s.title}
+                  {!s.running ? ' (exited)' : ''}
                 </button>
                 <button
                   type="button"
@@ -286,80 +379,124 @@ export function TerminalPanel({
               onClick={() => void createSession()}
             />
           </div>
-          {active ? (
-            <div className="flex shrink-0 items-center justify-between border-b border-border/30 px-2.5 py-1 text-[11px] text-muted">
-              <span>{active.title}</span>
-            </div>
-          ) : null}
-          {error ? (
-            <p className="m-0 shrink-0 border-b border-border/40 px-3 py-1 text-[11px] text-danger">
-              {error}
+          <div className="flex shrink-0 items-center">
+            <IconButton
+              icon="sidebar"
+              label={listOpen ? 'Hide terminal list' : 'Show terminal list'}
+              variant="bare"
+              size="sm"
+              className={cn('text-muted', listOpen && 'text-fg')}
+              onClick={() => setListOpen((v) => !v)}
+            />
+          </div>
+        </div>
+        {activeSession ? (
+          <div className="flex shrink-0 items-center gap-1 border-b border-border/30 px-2.5 py-0.5">
+            <p className="m-0 min-w-0 flex-1 truncate text-[11px] text-muted">
+              {activeSession.title}
             </p>
-          ) : null}
-          {usingPipeFallback ? (
-            <p className="m-0 shrink-0 border-b border-border/40 px-3 py-1 text-[11px] text-muted">
-              Pipe shell fallback — rebuild node-pty for Electron for a full interactive PTY.
-            </p>
-          ) : null}
-          <div className="relative min-h-0 flex-1 bg-[#0d0d0d] p-1">
+            <IconButton
+              icon="columns"
+              label={splitId ? 'Unsplit terminals' : 'Split terminal'}
+              variant="bare"
+              size="sm"
+              className="text-muted"
+              onClick={() => void toggleSplit()}
+            />
+          </div>
+        ) : null}
+        {error ? (
+          <p className="m-0 shrink-0 border-b border-border/40 px-3 py-1 text-[11px] text-danger">
+            {error}
+          </p>
+        ) : null}
+        {usingPipeFallback ? (
+          <p className="m-0 shrink-0 border-b border-border/40 px-3 py-1 text-[11px] text-muted">
+            Pipe shell fallback — rebuild node-pty for Electron for a full interactive PTY.
+          </p>
+        ) : null}
+        <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+          <div className="relative min-h-0 min-w-0 flex-1 bg-bg p-1">
             {activeId ? (
-              <div ref={hostRef} className="h-full w-full" data-pty-host />
+              splitId && splitId !== activeId ? (
+                <div className="flex h-full min-h-0 w-full gap-1">
+                  <div className="min-h-0 min-w-0 flex-1">
+                    <PtySessionView sessionId={activeId} />
+                  </div>
+                  <div className="w-px shrink-0 bg-border/50" />
+                  <div className="min-h-0 min-w-0 flex-1">
+                    <PtySessionView sessionId={splitId} />
+                  </div>
+                </div>
+              ) : (
+                <PtySessionView sessionId={activeId} />
+              )
             ) : (
               <EmptyPanel
                 icon="terminal"
                 title="No terminal"
                 body={
                   workspacePath
-                    ? 'Click + to start an interactive shell, or wait while a session is created.'
+                    ? 'Use New terminal above to start an interactive shell.'
                     : 'Open a workspace to start an interactive shell.'
                 }
               />
             )}
           </div>
+          {listOpen && sessions.length > 0 ? (
+            <aside
+              className="flex w-[7.5rem] shrink-0 flex-col overflow-hidden border-l border-border/40 bg-bg"
+              data-terminal-session-list
+            >
+              <p className="m-0 shrink-0 truncate px-2 py-1.5 text-[11px] text-muted">
+                {sessionCountLabel}
+              </p>
+              <ul className="m-0 min-h-0 flex-1 list-none overflow-y-auto p-0">
+                {sessions.map((s) => (
+                  <li key={s.id}>
+                    <button
+                      type="button"
+                      className={cn(
+                        'flex w-full items-center gap-1 truncate px-2 py-1 text-left text-[11px]',
+                        s.id === activeId
+                          ? 'bg-surface text-fg'
+                          : 'text-muted hover:bg-surface/60 hover:text-fg'
+                      )}
+                      aria-pressed={s.id === activeId}
+                      onClick={() => setActiveId(s.id)}
+                      title={s.title}
+                    >
+                      <span className="min-w-0 truncate">
+                        &gt;_ {s.title}
+                        {!s.running ? ' (exited)' : ''}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </aside>
+          ) : null}
         </div>
-
-        <aside className="flex w-[7.5rem] shrink-0 flex-col border-l border-border/40 bg-surface">
-          <p className="m-0 px-2 py-1.5 text-[10px] uppercase tracking-wide text-muted">
-            {sessions.length} Terminal{sessions.length === 1 ? '' : 's'}
-          </p>
-          <ul className="m-0 list-none space-y-0.5 p-1">
-            {sessions.map((s) => (
-              <li key={s.id}>
-                <button
-                  type="button"
-                  className={cn(
-                    'flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-left text-[11px]',
-                    s.id === activeId ? 'bg-bg text-fg' : 'text-muted hover:bg-bg/50'
-                  )}
-                  onClick={() => setActiveId(s.id)}
-                >
-                  <Icon name="terminal" size={11} className="shrink-0" />
-                  <span className="min-w-0 truncate">{s.title}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </aside>
       </div>
 
-      <div className="shrink-0 border-t border-border/40">
-        <button
-          type="button"
-          className="flex w-full items-center gap-1 px-2.5 py-1 text-left text-[11px] text-muted hover:text-fg"
-          onClick={() => setAgentOpen((v) => !v)}
-        >
-          <Icon
-            name="chevronRight"
-            size={12}
-            className={cn('vy-transition', agentOpen && 'rotate-90')}
-          />
-          Agent commands ({agentTerminals.length})
-        </button>
-        {agentOpen ? (
-          <div className="max-h-40 overflow-auto p-2">
-            {agentTerminals.length === 0 ? (
-              <p className="m-0 text-[11px] text-muted">No agent terminal output yet.</p>
-            ) : (
+      {agentTerminals.length > 0 ? (
+        <>
+          <div className="flex shrink-0 items-center gap-1 border-t border-border/40 bg-bg">
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-center gap-1 px-2.5 py-1 text-left text-[11px] text-muted hover:text-fg"
+              onClick={() => setAgentOpen((v) => !v)}
+            >
+              <Icon
+                name="chevronRight"
+                size={12}
+                className={cn('vy-transition', agentOpen && 'rotate-90')}
+              />
+              Agent commands ({agentTerminals.length})
+            </button>
+          </div>
+          {agentOpen ? (
+            <div className="max-h-40 shrink-0 overflow-auto border-t border-border/40 p-2">
               <ul className="m-0 list-none space-y-2 p-0">
                 {agentTerminals.map((item) => (
                   <AgentTerminalEntry
@@ -369,10 +506,10 @@ export function TerminalPanel({
                   />
                 ))}
               </ul>
-            )}
-          </div>
-        ) : null}
-      </div>
+            </div>
+          ) : null}
+        </>
+      ) : null}
     </div>
   )
 }

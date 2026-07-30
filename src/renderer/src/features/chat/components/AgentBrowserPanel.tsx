@@ -265,7 +265,7 @@ export function AgentBrowserPanel({
       aria-label="Browser panel"
     >
       {tabs.length > 1 ? (
-        <div className="flex gap-0.5 overflow-x-auto border-b border-border/30 bg-surface px-1.5 pt-1.5">
+        <div className="flex gap-0.5 overflow-x-auto border-b border-border/30 bg-bg px-1.5 pt-1.5">
           {tabs.map((tab) => (
             <button
               key={tab.id}
@@ -273,8 +273,8 @@ export function AgentBrowserPanel({
               className={cn(
                 'flex max-w-[10rem] shrink-0 items-center gap-1 truncate rounded-t-md px-2 py-1 text-[11px]',
                 tab.active
-                  ? 'bg-bg font-medium text-fg'
-                  : 'text-muted hover:bg-bg/50 hover:text-fg'
+                  ? 'bg-surface font-medium text-fg'
+                  : 'text-muted hover:bg-surface/60 hover:text-fg'
               )}
               title={`${tab.title || tab.id}\n${tab.url}`}
               onClick={() => {
@@ -523,7 +523,7 @@ export function AgentBrowserPanel({
                 <GlobeGlyph className="mb-4 text-muted/40" size={48} />
                 <p className="text-[12px] font-medium text-fg/80">No page loaded</p>
                 <p className="mt-1 max-w-[16rem] text-[11px] leading-relaxed text-muted">
-                  Enter a URL above or use browser_navigate to open a page.
+                  Enter a URL above, or ask the agent to open a page.
                 </p>
               </div>
             )}

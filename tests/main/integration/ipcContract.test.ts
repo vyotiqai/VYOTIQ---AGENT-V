@@ -36,6 +36,8 @@ const VYOTIQ_INVOKE_MAP: Record<
   listModels: IPC.listModels,
   chatStart: IPC.chatStart,
   chatCancel: IPC.chatCancel,
+  chatFollowUp: IPC.chatFollowUp,
+  chatFollowUpRemove: IPC.chatFollowUpRemove,
   chatCompact: IPC.chatCompact,
   undoWrites: IPC.runsUndoWrites,
   resolveWrites: IPC.runsResolveWrites,
@@ -69,8 +71,13 @@ const VYOTIQ_INVOKE_MAP: Record<
   gitStatus: IPC.gitStatus,
   gitDiff: IPC.gitDiff,
   gitCommit: IPC.gitCommit,
+  gitLog: IPC.gitLog,
+  gitCommitFiles: IPC.gitCommitFiles,
   prView: IPC.prView,
   prMerge: IPC.prMerge,
+  prDiff: IPC.prDiff,
+  prClose: IPC.prClose,
+  prEditTitle: IPC.prEditTitle,
   ptyCreate: IPC.ptyCreate,
   ptyList: IPC.ptyList,
   ptyWrite: IPC.ptyWrite,
@@ -155,7 +162,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(false)
     }
-    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(89)
+    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(96)
   })
 
   it('maps every VyotiqApi push listener to a push channel', () => {

@@ -21,6 +21,7 @@ import {
 } from '@shared/domain/modelSelection'
 import { logger } from '@shared/logger'
 import { workspacePathsEqual } from '@shared/workspacePathMatch'
+import { normalizeRelPath } from '../features/chat/utils/turnFileDiffs'
 
 /** Sent as a visible user turn when resuming a run that was cut short. */
 const CONTINUE_PROMPT = 'Continue from where you stopped.'
@@ -247,6 +248,10 @@ export function App() {
     void chatActionsRef.current?.stop()
   }, [])
 
+  const onRemoveFollowUp = useCallback((id: string) => {
+    void chatActionsRef.current?.removeFollowUp?.(id)
+  }, [])
+
   const onChatContinue = useCallback(() => {
     void chatActionsRef.current?.send(CONTINUE_PROMPT)
   }, [])
@@ -273,7 +278,7 @@ export function App() {
         return false
       }
       if (chat.running) {
-        setSettingsError('Stop the run before resolving agent writes.')
+        setSettingsError('Stop the run to Keep/Discard agent writes.')
         return false
       }
       const checkpointId = chat.writeCheckpoint?.undone
@@ -324,7 +329,7 @@ export function App() {
     if (!files?.length) return undefined
     const map = new Map<string, 'kept' | 'discarded' | undefined>()
     for (const f of files) {
-      map.set(f.path, f.resolved)
+      map.set(normalizeRelPath(f.path), f.resolved)
     }
     return map
   }, [chat.writeCheckpoint])
@@ -332,7 +337,9 @@ export function App() {
   const writeResolvablePaths = useMemo(() => {
     const files = chat.writeCheckpoint?.files
     if (!files?.length) return undefined
-    return new Set(files.filter((f) => f.undoable !== false).map((f) => f.path))
+    return new Set(
+      files.filter((f) => f.undoable !== false).map((f) => normalizeRelPath(f.path))
+    )
   }, [chat.writeCheckpoint])
 
   const slashHandlersValue = useMemo(
@@ -745,6 +752,8 @@ export function App() {
             }}
             onSend={onChatSend}
             onStop={onChatStop}
+            pendingFollowUps={chat.pendingFollowUps}
+            onRemoveFollowUp={onRemoveFollowUp}
             onDismissError={onDismissChatBanner}
             onComposerDraftChange={setComposerDraft}
             restoreScrollTop={activeScrollTop}
@@ -762,10 +771,11 @@ export function App() {
             onQuestionSubmit={onQuestionSubmit}
             mcpServerNames={mcpServerNames}
             slashHandlers={slashHandlersValue}
-            canUndoWrites={Boolean(
-              chat.writeCheckpoint && !chat.writeCheckpoint.undone && !chat.running
-            )}
+            canUndoWrites={Boolean(chat.writeCheckpoint && !chat.writeCheckpoint.undone)}
             undoBusy={undoBusy}
+            resolveBlockedReason={
+              chat.running ? 'Stop the run to Keep/Discard agent writes.' : null
+            }
             onUndoWrites={onUndoWrites}
             writeFileResolutions={writeFileResolutions}
             writeResolvablePaths={writeResolvablePaths}

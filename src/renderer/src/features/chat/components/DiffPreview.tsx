@@ -6,6 +6,8 @@ import { useDiffHighlight, type DiffTokens } from './useDiffHighlight'
 /** Enough of the change to recognise it without turning the transcript into a file. */
 const COLLAPSED_LINES = 14
 
+export type DiffLayout = 'unified' | 'split'
+
 const SIGN: Record<DiffLine['kind'], string> = {
   add: '+',
   del: '-',
@@ -27,29 +29,43 @@ function LineText({ line, tokens }: { line: DiffLine; tokens?: readonly { text: 
   )
 }
 
-export const DiffPreview = memo(function DiffPreview({
+function DiffLines({
   lines,
   path,
-  expanded
+  expanded,
+  findQuery,
+  wordWrap
 }: {
   lines: DiffLine[]
-  /** Used to pick a grammar for syntax colours. */
   path: string
   expanded?: boolean
+  findQuery?: string
+  wordWrap?: boolean
 }) {
-  // Only the rendered slice is highlighted, and always from the first line, so
-  // the grammar keeps the context it needs without tokenising a whole file.
+  const q = findQuery?.trim().toLowerCase() ?? ''
+  const filtered = useMemo(() => {
+    if (!q) return lines
+    return lines.filter(
+      (line) => line.kind === 'gap' || line.text.toLowerCase().includes(q)
+    )
+  }, [lines, q])
+
   const visible = useMemo(
-    () => (expanded ? lines : lines.slice(0, COLLAPSED_LINES)),
-    [lines, expanded]
+    () => (expanded ? filtered : filtered.slice(0, COLLAPSED_LINES)),
+    [filtered, expanded]
   )
   const tokens: DiffTokens = useDiffHighlight(visible, path)
 
-  if (!lines.length) return null
-  const hidden = lines.length - visible.length
+  if (!filtered.length) return null
+  const hidden = filtered.length - visible.length
 
   return (
-    <div className="overflow-hidden font-mono text-[11px] leading-[1.6]">
+    <div
+      className={cn(
+        'overflow-hidden font-mono text-[11px] leading-[1.6]',
+        wordWrap && '[&_pre]:whitespace-pre-wrap'
+      )}
+    >
       {visible.map((line, index) => {
         if (line.kind === 'gap') {
           return (
@@ -61,13 +77,16 @@ export const DiffPreview = memo(function DiffPreview({
           )
         }
 
+        const match = q.length > 0 && line.text.toLowerCase().includes(q)
+
         return (
           <div
             key={`${line.kind}-${index}`}
             className={cn(
               'flex min-w-0',
               line.kind === 'add' && 'diff-row-add',
-              line.kind === 'del' && 'diff-row-del'
+              line.kind === 'del' && 'diff-row-del',
+              match && 'ring-1 ring-inset ring-accent/40'
             )}
           >
             <span className="w-9 shrink-0 select-none pr-2 text-right tabular-nums text-tertiary/70">
@@ -94,5 +113,67 @@ export const DiffPreview = memo(function DiffPreview({
         </p>
       ) : null}
     </div>
+  )
+}
+
+export const DiffPreview = memo(function DiffPreview({
+  lines,
+  path,
+  expanded,
+  layout = 'unified',
+  findQuery,
+  wordWrap
+}: {
+  lines: DiffLine[]
+  /** Used to pick a grammar for syntax colours. */
+  path: string
+  expanded?: boolean
+  layout?: DiffLayout
+  findQuery?: string
+  wordWrap?: boolean
+}) {
+  const splitSides = useMemo(() => {
+    if (layout !== 'split') return null
+    return {
+      left: lines.filter((l) => l.kind === 'del' || l.kind === 'context' || l.kind === 'gap'),
+      right: lines.filter((l) => l.kind === 'add' || l.kind === 'context' || l.kind === 'gap')
+    }
+  }, [lines, layout])
+
+  if (!lines.length) return null
+
+  if (splitSides) {
+    return (
+      <div className="grid min-w-0 grid-cols-2 gap-px overflow-hidden bg-border/40">
+        <div className="min-w-0 overflow-auto bg-bg">
+          <DiffLines
+            lines={splitSides.left}
+            path={path}
+            expanded={expanded}
+            findQuery={findQuery}
+            wordWrap={wordWrap}
+          />
+        </div>
+        <div className="min-w-0 overflow-auto bg-bg">
+          <DiffLines
+            lines={splitSides.right}
+            path={path}
+            expanded={expanded}
+            findQuery={findQuery}
+            wordWrap={wordWrap}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <DiffLines
+      lines={lines}
+      path={path}
+      expanded={expanded}
+      findQuery={findQuery}
+      wordWrap={wordWrap}
+    />
   )
 })

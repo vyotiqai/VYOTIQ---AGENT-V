@@ -276,6 +276,22 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
         resolved: z.enum(['kept', 'discarded']).optional()
       })
     )
+  }),
+  z.object({
+    /** Mid-run follow-up accepted into the active run queue. */
+    type: z.literal('follow_up_queued'),
+    ...eventBase,
+    id: z.string().min(1),
+    position: z.number().int().min(1),
+    queueLength: z.number().int().min(0),
+    preview: z.string().optional()
+  }),
+  z.object({
+    /** Mid-run follow-ups drained into the live message history. */
+    type: z.literal('follow_up_applied'),
+    ...eventBase,
+    ids: z.array(z.string().min(1)).min(1),
+    messages: z.array(ChatMessageSchema).min(1)
   })
 ])
 export type AgentEvent = z.infer<typeof AgentEventSchema>
@@ -353,6 +369,33 @@ export type ChatStartRequest = z.infer<typeof ChatStartRequestSchema>
 export const CancelRunRequestSchema = z.object({
   runId: RunIdSchema
 })
+
+export const ChatFollowUpRequestSchema = z.object({
+  runId: RunIdSchema,
+  message: ChatMessageSchema.refine((m) => m.role === 'user', {
+    message: 'Follow-up must be a user message'
+  })
+})
+export type ChatFollowUpRequest = z.infer<typeof ChatFollowUpRequestSchema>
+
+export const ChatFollowUpResultSchema = z.object({
+  id: z.string().min(1),
+  position: z.number().int().min(1),
+  queueLength: z.number().int().min(0)
+})
+export type ChatFollowUpResult = z.infer<typeof ChatFollowUpResultSchema>
+
+export const ChatFollowUpRemoveRequestSchema = z.object({
+  runId: RunIdSchema,
+  id: z.string().min(1)
+})
+export type ChatFollowUpRemoveRequest = z.infer<typeof ChatFollowUpRemoveRequestSchema>
+
+export const ChatFollowUpRemoveResultSchema = z.object({
+  removed: z.boolean(),
+  queueLength: z.number().int().min(0)
+})
+export type ChatFollowUpRemoveResult = z.infer<typeof ChatFollowUpRemoveResultSchema>
 
 export const CompactRunRequestSchema = z.object({
   workspacePath: z.string().min(1),
@@ -649,7 +692,15 @@ export type RenameRunRequest = z.infer<typeof RenameRunRequestSchema>
 export const ActiveRunSchema = z.object({
   runId: z.string(),
   workspacePath: z.string(),
-  invokeId: z.number().int().min(1)
+  invokeId: z.number().int().min(1),
+  pendingFollowUps: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        preview: z.string()
+      })
+    )
+    .default([])
 })
 export type ActiveRun = z.infer<typeof ActiveRunSchema>
 

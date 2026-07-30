@@ -51,6 +51,8 @@ export function Composer({
   onAgentModeChange = () => {},
   onSend,
   onStop,
+  pendingFollowUps = [],
+  onRemoveFollowUp,
   composerPlaceholder,
   bannerError,
   runNotice,
@@ -96,6 +98,8 @@ export function Composer({
     files?: AttachedFile[]
   ) => boolean | void | Promise<boolean | void>
   onStop: () => void
+  pendingFollowUps?: import('@renderer/lib/hooks/createChatStreamController').PendingFollowUpState[]
+  onRemoveFollowUp?: (id: string) => void
   composerPlaceholder?: string
   bannerError?: string | null
   runNotice?: string | null
@@ -119,7 +123,8 @@ export function Composer({
   const taRef = useRef<ComposerMentionInputHandle>(null)
   const mentionAnchorRef = useRef<HTMLDivElement | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
-  const locked = Boolean(disabled || running)
+  const inputLocked = Boolean(disabled)
+  const settingsLocked = Boolean(disabled || running)
   const hotUi = useWorkspaceHotUi(workspacePath)
   const resolvedDraft = workspacePath ? hotUi.composerDraft : (draft ?? '')
   const [cursor, setCursor] = useState(0)
@@ -152,7 +157,7 @@ export function Composer({
     workspacePath,
     text: resolvedDraft,
     cursor,
-    enabled: !locked && Boolean(hasWorkspace),
+    enabled: !inputLocked && Boolean(hasWorkspace),
     onListError: slashHandlers?.onNotice
   })
 
@@ -160,7 +165,7 @@ export function Composer({
     workspacePath,
     text: resolvedDraft,
     cursor,
-    enabled: !locked && Boolean(hasWorkspace) && !slash.open
+    enabled: !inputLocked && Boolean(hasWorkspace) && !slash.open
   })
 
   const onMentionAccept = useCallback(
@@ -476,13 +481,42 @@ export function Composer({
             }}
           />
 
+          {pendingFollowUps.length > 0 ? (
+            <div
+              className="col-span-full flex flex-wrap items-center gap-1.5"
+              data-follow-up-queue
+              aria-label="Queued follow-ups"
+            >
+              {pendingFollowUps.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="inline-flex max-w-full items-center gap-1 rounded-lg bg-surface-2 px-2 py-1 text-[11px] text-muted"
+                >
+                  <span className="min-w-0 truncate" title={entry.preview}>
+                    Queued: {entry.preview}
+                  </span>
+                  {onRemoveFollowUp ? (
+                    <button
+                      type="button"
+                      className="shrink-0 rounded px-1 text-muted hover:bg-surface hover:text-fg"
+                      aria-label="Remove queued follow-up"
+                      onClick={() => onRemoveFollowUp(entry.id)}
+                    >
+                      ×
+                    </button>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+
           <ComposerAttachments
             images={images}
             imageError={imageError}
             files={files}
             fileError={fileError}
             extracting={extracting}
-            running={running}
+            attachLocked={inputLocked}
             onRemove={removeImage}
             onRemoveFile={removeFile}
           />
@@ -505,19 +539,21 @@ export function Composer({
                 composerPlaceholder ??
                 (!hasWorkspace
                   ? 'Open a workspace to start chatting'
-                  : agentMode === 'ask'
-                    ? hasTranscript
-                      ? 'Ask a follow-up (read-only) — @ for context'
-                      : 'Ask about the codebase — @ for context'
-                    : agentMode === 'plan'
+                  : running
+                    ? 'Add a follow-up to steer the agent… — @ for context'
+                    : agentMode === 'ask'
                       ? hasTranscript
-                        ? 'Refine the plan… — @ for context'
-                        : 'Describe what to plan… — @ for context'
-                      : hasTranscript
-                        ? 'Send follow-up — @ for context'
-                        : 'Send a message — @ for context')
+                        ? 'Ask a follow-up (read-only) — @ for context'
+                        : 'Ask about the codebase — @ for context'
+                      : agentMode === 'plan'
+                        ? hasTranscript
+                          ? 'Refine the plan… — @ for context'
+                          : 'Describe what to plan… — @ for context'
+                        : hasTranscript
+                          ? 'Send follow-up — @ for context'
+                          : 'Send a message — @ for context')
               }
-              disabled={locked}
+              disabled={inputLocked}
               aria-expanded={slash.open || mentions.open}
               aria-controls={
                 slash.open
@@ -566,7 +602,8 @@ export function Composer({
           <ComposerToolbar
             variant={variant}
             disabled={disabled}
-            locked={locked}
+            locked={settingsLocked}
+            attachDisabled={inputLocked}
             imageCount={images.length}
             fileCount={files.length}
             onAttachClick={() => {
@@ -612,6 +649,7 @@ export function Composer({
 
         <ComposerStatus
           className={isDock ? 'pointer-events-auto' : undefined}
+          modelsWarning={modelsWarning}
           runNotice={runNotice}
           incomplete={incomplete}
           onContinue={onContinue}

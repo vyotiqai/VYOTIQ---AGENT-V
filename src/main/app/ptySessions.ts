@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto'
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import type { BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc/channels'
+import { workspacePathsEqual } from '../../shared/workspacePath'
 import { getSettings } from '../settings/settings'
 import { resolveTerminalShell } from '../agent/tools/terminal'
 import type { PtySessionInfo } from '../../shared/ipc'
@@ -53,14 +54,16 @@ function tryLoadPty(): typeof import('node-pty') | null {
   }
 }
 
-export function listPtySessions(): PtySessionInfo[] {
-  return [...sessions.values()].map((s) => ({
+export function listPtySessions(workspacePath?: string): PtySessionInfo[] {
+  const all = [...sessions.values()].map((s) => ({
     id: s.id,
     title: s.title,
     cwd: s.cwd,
     running: s.running,
     backend: s.backend.kind
   }))
+  if (!workspacePath) return all
+  return all.filter((s) => workspacePathsEqual(s.cwd, workspacePath))
 }
 
 export function createPtySession(opts: {
@@ -74,29 +77,40 @@ export function createPtySession(opts: {
   const { file, args } = shellBinAndArgs()
   const nodePty = tryLoadPty()
 
-  let backend: SessionBackend
+  let backend: SessionBackend | null = null
+  let usedPipeFallback = false
+
   if (nodePty) {
-    const pty = nodePty.spawn(file, args, {
-      name: 'xterm-color',
-      cols: opts.cols ?? 80,
-      rows: opts.rows ?? 24,
-      cwd: opts.cwd,
-      env: process.env as Record<string, string>
-    })
-    backend = { kind: 'pty', pty }
-    pty.onData((data: string) => {
-      if (opts.sendTo.isDestroyed()) return
-      opts.sendTo.webContents.send(IPC.ptyData, { id, data })
-    })
-    pty.onExit(({ exitCode }: { exitCode: number }) => {
-      const handle = sessions.get(id)
-      if (handle) handle.running = false
-      if (!opts.sendTo.isDestroyed()) {
-        opts.sendTo.webContents.send(IPC.ptyExit, { id, exitCode })
-      }
-    })
+    try {
+      const pty = nodePty.spawn(file, args, {
+        name: 'xterm-color',
+        cols: opts.cols ?? 80,
+        rows: opts.rows ?? 24,
+        cwd: opts.cwd,
+        env: process.env as Record<string, string>
+      })
+      backend = { kind: 'pty', pty }
+      pty.onData((data: string) => {
+        if (opts.sendTo.isDestroyed()) return
+        opts.sendTo.webContents.send(IPC.ptyData, { id, data })
+      })
+      pty.onExit(({ exitCode }: { exitCode: number }) => {
+        const handle = sessions.get(id)
+        if (handle) handle.running = false
+        if (!opts.sendTo.isDestroyed()) {
+          opts.sendTo.webContents.send(IPC.ptyExit, { id, exitCode })
+        }
+      })
+    } catch {
+      backend = null
+      usedPipeFallback = true
+    }
   } else {
-    // Fallback when native node-pty cannot load (missing rebuild / Spectre libs).
+    usedPipeFallback = true
+  }
+
+  if (!backend) {
+    // Fallback when native node-pty cannot load or spawn (missing rebuild / Spectre libs).
     const child = spawn(file, args, {
       cwd: opts.cwd,
       env: process.env,
@@ -120,7 +134,7 @@ export function createPtySession(opts: {
         })
       }
     })
-    if (!opts.sendTo.isDestroyed()) {
+    if (usedPipeFallback && !opts.sendTo.isDestroyed()) {
       opts.sendTo.webContents.send(IPC.ptyData, {
         id,
         data: `[vyotiq] Interactive PTY unavailable (node-pty not built). Using pipe shell fallback.\r\n`
@@ -150,6 +164,7 @@ export function writePty(id: string, data: string): boolean {
 export function resizePty(id: string, cols: number, rows: number): boolean {
   const s = sessions.get(id)
   if (!s || s.backend.kind !== 'pty') return false
+  if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols < 2 || rows < 2) return false
   try {
     s.backend.pty.resize(cols, rows)
     return true
@@ -169,6 +184,15 @@ export function killPty(id: string): boolean {
   }
   sessions.delete(id)
   return true
+}
+
+export function disposePtySessionsForWorkspace(workspacePath: string): number {
+  let n = 0
+  for (const s of [...sessions.values()]) {
+    if (!workspacePathsEqual(s.cwd, workspacePath)) continue
+    if (killPty(s.id)) n += 1
+  }
+  return n
 }
 
 export function disposeAllPtySessions(): void {

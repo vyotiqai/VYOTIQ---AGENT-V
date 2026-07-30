@@ -157,14 +157,16 @@ describe('parseDiffPreview', () => {
 })
 
 describe('fileBadge', () => {
-  it('marks a file with its extension', () => {
-    expect(fileBadge('src/features/chat/ChatView.tsx')).toBe('tsx')
+  it('marks a file with screenshot-style glyphs', () => {
+    expect(fileBadge('src/features/chat/ChatView.tsx')).toBe('TS')
     expect(fileBadge('C:\\ws\\styles.css')).toBe('css')
+    expect(fileBadge('pkg.json')).toBe('{}')
+    expect(fileBadge('run.sh')).toBe('$')
   })
 
   it('shortens extensions that are spelled out', () => {
-    expect(fileBadge('a.javascript')).toBe('js')
-    expect(fileBadge('notes.markdown')).toBe('md')
+    expect(fileBadge('a.javascript')).toBe('JS')
+    expect(fileBadge('notes.markdown')).toBe('M↓')
   })
 
   it('declines when there is nothing useful to show', () => {

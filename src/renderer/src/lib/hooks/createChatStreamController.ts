@@ -568,6 +568,12 @@ function hydrateFromDisk(kept: ChatMessage[], events: PersistedEvent[]) {
   }
 }
 
+export type PendingFollowUpState = {
+  id: string
+  itemId: string
+  preview: string
+}
+
 export type ChatStreamState = {
   items: UiItem[]
   messages: ChatMessage[]
@@ -586,11 +592,15 @@ export type ChatStreamState = {
   collapsedTurnIndices: number[]
   /** Latest turn write checkpoint for Undo on the Files Changed card. */
   writeCheckpoint: WriteCheckpointState | null
+  /** Mid-run follow-ups waiting to be injected into the live agent loop. */
+  pendingFollowUps: PendingFollowUpState[]
 }
 
 export type ChatStreamController = ChatStreamState & {
   workspacePath: string
   send: (text: string, images?: string[], files?: AttachedFile[]) => Promise<boolean>
+  /** Drop a still-queued mid-run follow-up before the loop applies it. */
+  removeFollowUp: (id: string) => Promise<boolean>
   stop: () => Promise<void>
   reset: () => void
   loadTranscript: (loaded: ChatMessage[], events?: PersistedEvent[]) => void
@@ -924,7 +934,8 @@ export function createChatStreamController(
     pendingRun: false,
     transcriptLoading: false,
     collapsedTurnIndices: [],
-    writeCheckpoint: null
+    writeCheckpoint: null,
+    pendingFollowUps: []
   }
 
   const notify = (): void => {
@@ -1000,7 +1011,8 @@ export function createChatStreamController(
       runStartedAt: null,
       pendingRun: false,
       collapsedTurnIndices: [],
-      writeCheckpoint: null
+      writeCheckpoint: null,
+      pendingFollowUps: []
     })
   }
 
@@ -1428,6 +1440,43 @@ export function createChatStreamController(
           files
         }
       })
+    } else if (event.type === 'follow_up_queued') {
+      // Local send already tracked the entry; ignore duplicates from IPC echo.
+      if (state.pendingFollowUps.some((entry) => entry.id === event.id)) return
+      patch({
+        pendingFollowUps: [
+          ...state.pendingFollowUps,
+          {
+            id: event.id,
+            itemId: `followup-${event.id}`,
+            preview: event.preview?.trim() || `Follow-up #${event.position}`
+          }
+        ]
+      })
+    } else if (event.type === 'follow_up_applied') {
+      const applied = new Set(event.ids)
+      const nextPending = state.pendingFollowUps.filter((entry) => !applied.has(entry.id))
+      // Idempotent merge — optimistic send already appended; reattach/echo paths may not.
+      let nextMessages = state.messages
+      if (event.messages?.length) {
+        const existingTail = state.messages.slice(-event.messages.length)
+        const alreadyPresent =
+          existingTail.length === event.messages.length &&
+          existingTail.every((msg, i) => {
+            const incoming = event.messages[i]
+            return (
+              msg.role === incoming?.role &&
+              contentDisplayText(msg.content) === contentDisplayText(incoming.content)
+            )
+          })
+        if (!alreadyPresent) {
+          nextMessages = messagesForNextTurn([...state.messages, ...event.messages])
+        }
+      }
+      patch({
+        pendingFollowUps: nextPending,
+        ...(nextMessages !== state.messages ? { messages: nextMessages } : {})
+      })
     } else if (event.type === 'step_usage') {
       const usage = stepUsageFromEvent(event)
       if (usage) {
@@ -1481,11 +1530,16 @@ export function createChatStreamController(
         completedTurnSeq = turnSeq
         const sessionRunId = runId ?? event.runId
         runId = sessionRunId
+        const dropUnapplied = true
+        const unappliedItemIds = dropUnapplied
+          ? new Set(state.pendingFollowUps.map((entry) => entry.itemId))
+          : null
         patch({
           pendingRun: false,
           running: false,
           runId: sessionRunId,
           runStartedAt: null,
+          pendingFollowUps: [],
           // Keep compaction notice readable after the run ends; cleared on next send.
           runNotice:
             state.runNotice?.startsWith('Context summarized') === true ? state.runNotice : null,
@@ -1496,7 +1550,11 @@ export function createChatStreamController(
           items: clearQuestions(
             clearApprovals(
               failRunningTools(
-                closeOpenGroupTimings(state.items),
+                closeOpenGroupTimings(
+                  unappliedItemIds && unappliedItemIds.size > 0
+                    ? state.items.filter((item) => !unappliedItemIds.has(item.id))
+                    : state.items
+                ),
                 event.status === 'cancelled'
                   ? 'Cancelled'
                   : event.status === 'error'
@@ -1522,8 +1580,10 @@ export function createChatStreamController(
     files?: AttachedFile[]
   ): Promise<boolean> => {
     const trimmed = text.trim()
-    if ((!trimmed && !images?.length && !files?.length) || state.running || state.transcriptLoading)
-      return false
+    if ((!trimmed && !images?.length && !files?.length) || state.transcriptLoading) return false
+    if (state.running) {
+      return followUp(text, images, files)
+    }
     if (!workspacePath) {
       patch({ error: 'Pick a workspace before starting a chat.' })
       return false
@@ -1634,6 +1694,193 @@ export function createChatStreamController(
     return true
   }
 
+  const followUp = async (
+    text: string,
+    images?: string[],
+    files?: AttachedFile[]
+  ): Promise<boolean> => {
+    const trimmed = text.trim()
+    const id = runId
+    if ((!trimmed && !images?.length && !files?.length) || !id || !state.running) return false
+    if (!workspacePath) {
+      patch({ error: 'Pick a workspace before sending a follow-up.' })
+      return false
+    }
+    const content = buildUserContent(text, images, files)
+    const user: ChatMessage = { role: 'user', content }
+    const priorMessages = state.messages
+    const nextMessages = messagesForNextTurn([...priorMessages, user])
+    const userItemId = messageUiId('user', nextMessages.length - 1)
+    const imageUrls = contentImages(content)
+    const attachments = uiAttachments(content)
+    const displayText = contentDisplayText(content)
+    const sentAt = new Date().toISOString()
+    const preview = displayText.trim() || (attachments.length ? attachments[0]!.name : 'Follow-up')
+    patch({
+      error: null,
+      messages: nextMessages,
+      items: prependClosed(state.items, {
+        kind: 'message',
+        id: userItemId,
+        role: 'user',
+        content: displayText,
+        images: imageUrls.length ? imageUrls : undefined,
+        attachments: attachments.length ? attachments : undefined,
+        at: sentAt
+      })
+    })
+    const res = await window.vyotiq.chatFollowUp({ runId: id, message: user })
+    if (!res.ok) {
+      logger.warn('chatFollowUp failed', {
+        scope: 'chat',
+        correlationId: id,
+        err: toLogErr(res.error)
+      })
+      // Main already marked the turn complete while the renderer still shows
+      // running — convert the optimistic follow-up into an incremental chatStart.
+      if (/not active/i.test(res.error)) {
+        patch({
+          error: null,
+          pendingRun: true,
+          running: true,
+          runStartedAt: state.runStartedAt ?? Date.now(),
+          runId: id
+        })
+        const mode = getAgentMode?.() ?? 'agent'
+        const startRes = await window.vyotiq.chatStart({
+          incremental: true,
+          newMessages: [user],
+          workspacePath,
+          runId: id,
+          mode
+        })
+        if (!startRes.ok) {
+          awaitingRun = false
+          logger.error('chatStart after follow-up race failed', {
+            scope: 'chat',
+            correlationId: id,
+            err: toLogErr(startRes.error)
+          })
+          patch({
+            error: startRes.error,
+            running: false,
+            runStartedAt: null,
+            pendingRun: false,
+            messages: priorMessages,
+            items: state.items.filter((item) => item.id !== userItemId)
+          })
+          return false
+        }
+        if (!closedRuns.has(startRes.data.runId)) {
+          assignRunId(startRes.data.runId)
+        }
+        activeInvokeId = startRes.data.invokeId
+        supersededInvokeIds.delete(startRes.data.invokeId)
+        awaitingRun = false
+        return true
+      }
+      patch({
+        error: res.error,
+        messages: priorMessages,
+        items: state.items.filter((item) => item.id !== userItemId)
+      })
+      return false
+    }
+    patch({
+      pendingFollowUps: [
+        ...state.pendingFollowUps.filter((entry) => entry.id !== res.data.id),
+        { id: res.data.id, itemId: userItemId, preview }
+      ]
+    })
+    return true
+  }
+
+  const removeFollowUp = async (followUpId: string): Promise<boolean> => {
+    const id = runId
+    const pending = state.pendingFollowUps.find((entry) => entry.id === followUpId)
+    if (!id || !pending) return false
+    const res = await window.vyotiq.chatFollowUpRemove({ runId: id, id: followUpId })
+    if (!res.ok) {
+      logger.warn('chatFollowUpRemove failed', {
+        scope: 'chat',
+        correlationId: id,
+        err: toLogErr(res.error)
+      })
+      return false
+    }
+    const nextPending = state.pendingFollowUps.filter((entry) => entry.id !== followUpId)
+    if (!res.data.removed) {
+      // Already drained by the loop — drop local queue chrome only.
+      patch({ pendingFollowUps: nextPending })
+      return true
+    }
+    const nextMessages = [...state.messages]
+    const indexMatch = /^user-(\d+)$/.exec(pending.itemId)
+    if (indexMatch) {
+      const idx = Number(indexMatch[1])
+      if (nextMessages[idx]?.role === 'user') {
+        nextMessages.splice(idx, 1)
+      }
+    } else {
+      // Reattach uses followup-<uuid> itemIds — fall back to preview match.
+      for (let i = nextMessages.length - 1; i >= 0; i--) {
+        const msg = nextMessages[i]
+        if (msg?.role === 'user' && contentDisplayText(msg.content) === pending.preview) {
+          nextMessages.splice(i, 1)
+          break
+        }
+      }
+    }
+    patch({
+      pendingFollowUps: nextPending,
+      messages: nextMessages,
+      items: state.items.filter((item) => item.id !== pending.itemId)
+    })
+    return true
+  }
+
+  const clearPendingFollowUps = (removeItems: boolean): void => {
+    if (state.pendingFollowUps.length === 0) return
+    const pending = state.pendingFollowUps
+    const itemIds = new Set(pending.map((entry) => entry.itemId))
+    let nextMessages = state.messages
+    if (removeItems) {
+      nextMessages = [...state.messages]
+      const indices = pending
+        .map((entry) => {
+          const match = /^user-(\d+)$/.exec(entry.itemId)
+          return match ? Number(match[1]) : -1
+        })
+        .filter((idx) => idx >= 0)
+        .sort((a, b) => b - a)
+      for (const idx of indices) {
+        if (nextMessages[idx]?.role === 'user') {
+          nextMessages.splice(idx, 1)
+        }
+      }
+      // Drop any remaining by preview (reattach / echo itemIds).
+      for (const entry of pending) {
+        if (/^user-\d+$/.test(entry.itemId)) continue
+        for (let i = nextMessages.length - 1; i >= 0; i--) {
+          const msg = nextMessages[i]
+          if (msg?.role === 'user' && contentDisplayText(msg.content) === entry.preview) {
+            nextMessages.splice(i, 1)
+            break
+          }
+        }
+      }
+    }
+    patch({
+      pendingFollowUps: [],
+      ...(removeItems
+        ? {
+            items: state.items.filter((item) => !itemIds.has(item.id)),
+            messages: nextMessages
+          }
+        : {})
+    })
+  }
+
   const syncFromDisk = async (id: string): Promise<boolean> => {
     if (!window.vyotiq?.loadRun) return false
     const res = await window.vyotiq.loadRun(workspacePath, id)
@@ -1698,6 +1945,7 @@ export function createChatStreamController(
       pendingCancel = true
       return
     }
+    clearPendingFollowUps(true)
     const res = await window.vyotiq.chatCancel(id)
     if (!res.ok) {
       logger.warn('chatCancel failed', {
@@ -1785,24 +2033,40 @@ export function createChatStreamController(
     if (closedRuns.has(id) || disposed) return
     // Poll/mount can race a terminal status — verify the run is still live.
     let liveInvokeId: number | null = null
+    let pendingFromMain: { id: string; preview: string }[] = []
     if (window.vyotiq?.listActiveRuns) {
       const active = await window.vyotiq.listActiveRuns()
       if (!active.ok || !active.data.some((entry) => entry.runId === id)) {
         await syncFromDisk(id)
         return
       }
-      liveInvokeId = active.data.find((entry) => entry.runId === id)?.invokeId ?? null
+      const live = active.data.find((entry) => entry.runId === id)
+      liveInvokeId = live?.invokeId ?? null
+      pendingFromMain = live?.pendingFollowUps ?? []
     }
     if (closedRuns.has(id) || disposed) return
     runId = id
     contentRunId = id
     if (liveInvokeId != null) activeInvokeId = liveInvokeId
+    const hydratedPending: PendingFollowUpState[] =
+      pendingFromMain.length > 0
+        ? pendingFromMain.map((entry) => {
+            const local = state.pendingFollowUps.find((p) => p.id === entry.id)
+            return {
+              id: entry.id,
+              // Prefer live optimistic itemIds (`user-N`) so remove/stop can roll back messages.
+              itemId: local?.itemId ?? `followup-${entry.id}`,
+              preview: local?.preview ?? entry.preview
+            }
+          })
+        : state.pendingFollowUps
     patch({
       runId: id,
       running: true,
       pendingRun: false,
       runStartedAt: state.runStartedAt ?? Date.now(),
-      error: null
+      error: null,
+      pendingFollowUps: hydratedPending
     })
     if (state.items.length > 0) {
       let events: PersistedEvent[] = []
@@ -1840,6 +2104,7 @@ export function createChatStreamController(
     if (mode) onAgentModeChange?.(mode)
     patch({
       ...hydrateFromDisk(kept, events),
+      pendingFollowUps: hydratedPending,
       ...(eventsLoadError ? { error: eventsLoadError } : {})
     })
   }
@@ -2221,11 +2486,15 @@ export function createChatStreamController(
     get writeCheckpoint() {
       return state.writeCheckpoint
     },
+    get pendingFollowUps() {
+      return state.pendingFollowUps
+    },
     get disposed() {
       return disposed
     },
     workspacePath,
     send,
+    removeFollowUp,
     stop,
     reset,
     loadTranscript,

@@ -7,7 +7,7 @@ import {
   type ReactNode
 } from 'react'
 import type { UiItem } from '@shared/transcript'
-import { GitBranchStrip, GitChangePills, useGitChrome } from './GitChrome'
+import { GitBranchStrip, GitChangePills, useGitChrome, type GitChrome } from './GitChrome'
 import type { ChatItemsStore } from '../chatStores'
 
 /** Bumps on workspace change, run end, and (debounced) mid-run mutating tool results. */
@@ -20,7 +20,7 @@ const MUTATING_GIT_TOOLS = new Set([
   'memory_write'
 ])
 
-function useGitRevision(
+export function useGitRevision(
   workspacePath: string | null,
   running: boolean,
   items: UiItem[]
@@ -97,53 +97,23 @@ export function useChatLiveItems(
   return useLiveItems(itemsStore, items)
 }
 
-function useSharedGitChrome(
+/** One gitStatus fetch shared by change pills + branch strip. */
+export function useChatGitChrome(
   itemsStore: ChatItemsStore | undefined,
   items: UiItem[],
   workspacePath: string | null,
   running: boolean,
   enabled: boolean
-) {
+): GitChrome {
   const liveItems = useLiveItems(itemsStore, items)
   const revision = useGitRevision(workspacePath, running, liveItems)
   return useGitChrome(workspacePath, revision, enabled)
 }
 
-/** Owns items subscription + one git fetch; keeps MemoComposer off the stream path. */
-export function ChatGitLeading({
-  itemsStore,
-  items,
-  workspacePath,
-  running,
-  enabled
-}: {
-  itemsStore?: ChatItemsStore
-  items: UiItem[]
-  workspacePath: string | null
-  running: boolean
-  enabled: boolean
-}): ReactNode {
-  const chrome = useSharedGitChrome(itemsStore, items, workspacePath, running, enabled)
+export function ChatGitLeading({ chrome }: { chrome: GitChrome }): ReactNode {
   return <GitChangePills chrome={chrome} />
 }
 
-/**
- * Branch strip shares the same revision inputs as leading. A second gitStatus
- * call only runs when revision bumps (rare), not on every text_delta.
- */
-export function ChatGitTrailing({
-  itemsStore,
-  items,
-  workspacePath,
-  running,
-  enabled
-}: {
-  itemsStore?: ChatItemsStore
-  items: UiItem[]
-  workspacePath: string | null
-  running: boolean
-  enabled: boolean
-}): ReactNode {
-  const chrome = useSharedGitChrome(itemsStore, items, workspacePath, running, enabled)
+export function ChatGitTrailing({ chrome }: { chrome: GitChrome }): ReactNode {
   return <GitBranchStrip chrome={chrome} />
 }
