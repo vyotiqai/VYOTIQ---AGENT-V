@@ -203,3 +203,83 @@ export async function buildWorkspaceRulesSection(
 ): Promise<string> {
   return formatWorkspaceRules(await readWorkspaceRules(workspacePath))
 }
+
+export type WorkspaceRuleListItem = {
+  path: string
+  description?: string
+  /** False when frontmatter sets alwaysApply: false (requestable). */
+  alwaysApply: boolean
+}
+
+/**
+ * List all workspace rules for @-mentions — includes `alwaysApply: false` rules
+ * that are skipped from auto-injection.
+ */
+export async function listWorkspaceRulesForMention(
+  workspacePath: string | null
+): Promise<WorkspaceRuleListItem[]> {
+  if (!workspacePath) return []
+
+  const out: WorkspaceRuleListItem[] = []
+  const seen = new Set<string>()
+
+  const push = (rel: string, raw: string): void => {
+    const path = rel.split(sep).join('/')
+    if (seen.has(path) || out.length >= MAX_RULE_FILES) return
+    seen.add(path)
+    const { meta } = parseRuleFrontmatter(raw)
+    out.push({
+      path,
+      description: meta.description,
+      alwaysApply: meta.alwaysApply !== false
+    })
+  }
+
+  for (const name of ROOT_FILES) {
+    const raw = await readCapped(join(workspacePath, name))
+    if (!raw) continue
+    // Root instruction files have no alwaysApply:false contract — treat as always.
+    push(name, raw)
+  }
+
+  for (const { dir, extensions } of RULE_DIRS) {
+    const dirPath = join(workspacePath, dir)
+    const collected: RuleFile[] = []
+    await collectFromDirAll(workspacePath, dirPath, extensions, 0, collected)
+    for (const file of collected) {
+      push(file.path, file.content)
+    }
+  }
+
+  return out
+}
+
+/** Like collectFromDir but keeps alwaysApply:false bodies (raw, not normalized). */
+async function collectFromDirAll(
+  workspacePath: string,
+  dirPath: string,
+  extensions: string[],
+  depth: number,
+  out: RuleFile[]
+): Promise<void> {
+  if (depth > MAX_DIR_DEPTH || out.length >= MAX_RULE_FILES) return
+  let entries: Dirent[]
+  try {
+    entries = await readdir(dirPath, { withFileTypes: true, encoding: 'utf8' })
+  } catch {
+    return
+  }
+  const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name))
+  for (const entry of sorted) {
+    if (out.length >= MAX_RULE_FILES) return
+    const full = join(dirPath, entry.name)
+    if (entry.isDirectory()) {
+      await collectFromDirAll(workspacePath, full, extensions, depth + 1, out)
+      continue
+    }
+    if (!extensions.some((ext) => entry.name.toLowerCase().endsWith(ext))) continue
+    const raw = await readCapped(full)
+    if (!raw) continue
+    out.push({ path: relative(workspacePath, full).split(sep).join('/'), content: raw })
+  }
+}

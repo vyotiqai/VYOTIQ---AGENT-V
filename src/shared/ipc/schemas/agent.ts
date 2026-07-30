@@ -571,6 +571,75 @@ export const ExtractAttachmentResultSchema = z.object({
 })
 export type ExtractAttachmentResult = z.infer<typeof ExtractAttachmentResultSchema>
 
+export const WorkspaceSuggestPathsRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  query: z.string().optional(),
+  maxResults: z.number().int().min(1).max(100).optional()
+})
+export type WorkspaceSuggestPathsRequest = z.infer<typeof WorkspaceSuggestPathsRequestSchema>
+
+export const WorkspaceSuggestPathsResultSchema = z.object({
+  paths: z.array(z.string()),
+  /** Total matches before slicing to maxResults. */
+  total: z.number().int().min(0)
+})
+export type WorkspaceSuggestPathsResult = z.infer<typeof WorkspaceSuggestPathsResultSchema>
+
+export const WorkspaceReadTextRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  path: z.string().min(1)
+})
+export type WorkspaceReadTextRequest = z.infer<typeof WorkspaceReadTextRequestSchema>
+
+export const WorkspaceReadTextResultSchema = z.object({
+  name: z.string(),
+  mime: z.string(),
+  text: z.string().max(MAX_ATTACHMENT_CHARS),
+  truncated: z.boolean()
+})
+export type WorkspaceReadTextResult = z.infer<typeof WorkspaceReadTextResultSchema>
+
+export const WorkspaceListDocsRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  query: z.string().optional(),
+  maxResults: z.number().int().min(1).max(100).optional()
+})
+export type WorkspaceListDocsRequest = z.infer<typeof WorkspaceListDocsRequestSchema>
+
+export const WorkspaceListDocsResultSchema = z.object({
+  paths: z.array(z.string())
+})
+export type WorkspaceListDocsResult = z.infer<typeof WorkspaceListDocsResultSchema>
+
+export const WorkspaceListRulesRequestSchema = z.object({
+  workspacePath: z.string().min(1)
+})
+export type WorkspaceListRulesRequest = z.infer<typeof WorkspaceListRulesRequestSchema>
+
+export const WorkspaceListRulesResultSchema = z.object({
+  rules: z.array(
+    z.object({
+      path: z.string(),
+      description: z.string().optional(),
+      alwaysApply: z.boolean()
+    })
+  )
+})
+export type WorkspaceListRulesResult = z.infer<typeof WorkspaceListRulesResultSchema>
+
+export const WorkspaceDiagnosticsRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  kind: z.enum(['typecheck', 'lint']).optional()
+})
+export type WorkspaceDiagnosticsRequest = z.infer<typeof WorkspaceDiagnosticsRequestSchema>
+
+export const WorkspaceDiagnosticsResultSchema = z.object({
+  ok: z.boolean(),
+  content: z.string(),
+  kind: z.enum(['typecheck', 'lint'])
+})
+export type WorkspaceDiagnosticsResult = z.infer<typeof WorkspaceDiagnosticsResultSchema>
+
 export function contentFiles(content: MessageContent): AttachedFile[] {
   if (typeof content === 'string') return []
   return content.filter((p): p is AttachedFile => p.type === 'file')

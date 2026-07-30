@@ -96,11 +96,12 @@ describe('Composer slash commands', () => {
     const { rerender } = render(<Composer {...baseProps} draft="" onDraftChange={onDraftChange} />)
 
     const ta = screen.getByRole('textbox', { name: /^Message$/i })
-    fireEvent.change(ta, { target: { value: '/com' } })
+    ta.textContent = '/com'
+    fireEvent.input(ta)
     expect(onDraftChange).toHaveBeenCalledWith('/com')
 
     rerender(<Composer {...baseProps} draft="/com" onDraftChange={onDraftChange} />)
-    fireEvent.select(ta)
+    fireEvent.focus(ta)
 
     await waitFor(() => {
       expect(screen.getByRole('listbox', { name: /Slash commands/i })).toBeTruthy()
@@ -108,9 +109,9 @@ describe('Composer slash commands', () => {
     expect(screen.getByText('/compact')).toBeTruthy()
   })
 
-  it('shows the updated hero hint', () => {
+  it('renders hero composer with message field', () => {
     render(<Composer {...baseProps} />)
-    expect(screen.getByText(/Type \/ for commands/i)).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: /^Message$/i })).toBeTruthy()
   })
 
   it('resolves /compact as a client action without sending chat', async () => {

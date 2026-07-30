@@ -109,6 +109,7 @@ const api: VyotiqApi = {
   gitStatus: (workspacePath) => ipcRenderer.invoke(IPC.gitStatus, { workspacePath }),
   gitCommit: (workspacePath, message, push) =>
     ipcRenderer.invoke(IPC.gitCommit, { workspacePath, message, push }),
+  gitDiff: (payload) => ipcRenderer.invoke(IPC.gitDiff, payload),
   windowMinimize: () => ipcRenderer.invoke(IPC.windowMinimize),
   windowMaximize: () => ipcRenderer.invoke(IPC.windowMaximize),
   windowClose: () => ipcRenderer.invoke(IPC.windowClose),
@@ -178,6 +179,10 @@ const api: VyotiqApi = {
     ipcRenderer.invoke(IPC.slashCommandsCreateRule, payload),
   slashCommandsOpenFile: (payload) => ipcRenderer.invoke(IPC.slashCommandsOpenFile, payload),
   workspaceSuggestPaths: (payload) => ipcRenderer.invoke(IPC.workspaceSuggestPaths, payload),
+  workspaceReadText: (payload) => ipcRenderer.invoke(IPC.workspaceReadText, payload),
+  workspaceListDocs: (payload) => ipcRenderer.invoke(IPC.workspaceListDocs, payload),
+  workspaceListRules: (payload) => ipcRenderer.invoke(IPC.workspaceListRules, payload),
+  workspaceDiagnostics: (payload) => ipcRenderer.invoke(IPC.workspaceDiagnostics, payload),
   onSystemThemeChanged: (handler) => {
     const listener = (_: IpcRendererEvent, prefersDark: boolean): void => handler(prefersDark)
     ipcRenderer.on(IPC.themeChanged, listener)

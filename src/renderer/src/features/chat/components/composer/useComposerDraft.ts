@@ -8,6 +8,8 @@ import {
 } from 'react'
 import type { AttachedFile, SlashCommandDescriptor } from '@shared/ipc'
 import { parseSlashSubmit } from '@shared/slashCommands'
+import { hasComposerContent } from './mentionModel'
+import type { MentionMenuItem } from './mentionModel'
 
 export function useComposerDraft({
   draft,
@@ -29,10 +31,11 @@ export function useComposerDraft({
   onSlashSubmit,
   findCommandByTrigger,
   mentionMenuOpen,
-  mentionActivePath,
+  mentionActiveItem,
   onMentionMove,
   onMentionDismiss,
-  onMentionAccept
+  onMentionAccept,
+  onMentionBack
 }: {
   draft?: string
   onDraftChange?: (draft: string) => void
@@ -63,10 +66,11 @@ export function useComposerDraft({
   ) => boolean | void | Promise<boolean | void>
   findCommandByTrigger?: (trigger: string) => SlashCommandDescriptor | null
   mentionMenuOpen?: boolean
-  mentionActivePath?: string | null
+  mentionActiveItem?: MentionMenuItem | null
   onMentionMove?: (delta: number) => void
   onMentionDismiss?: () => void
-  onMentionAccept?: (path: string) => void
+  onMentionAccept?: (item: MentionMenuItem) => void
+  onMentionBack?: () => boolean
 }) {
   const [internalText, setInternalText] = useState('')
   const isDraftControlled = draft !== undefined && onDraftChange !== undefined
@@ -74,7 +78,8 @@ export function useComposerDraft({
   const setText = isDraftControlled ? onDraftChange : setInternalText
 
   const hasAttachments = images.length > 0 || files.length > 0
-  const canSend = (Boolean(text.trim()) || hasAttachments) && !disabled && !running
+  const canSend =
+    (hasComposerContent(text) || hasAttachments) && !disabled && !running
 
   const clearDraft = useCallback((): {
     draftText: string
@@ -100,7 +105,7 @@ export function useComposerDraft({
 
   const submit = (e?: FormEvent): void => {
     e?.preventDefault()
-    if ((!text.trim() && !hasAttachments) || running || disabled) return
+    if ((!hasComposerContent(text) && !hasAttachments) || running || disabled) return
 
     const parsed = parseSlashSubmit(text)
     if (parsed && onSlashSubmit && findCommandByTrigger) {
@@ -129,7 +134,7 @@ export function useComposerDraft({
     }, restore)
   }
 
-  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
+  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement | HTMLDivElement>): void => {
     if (slashMenuOpen) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
@@ -166,15 +171,24 @@ export function useComposerDraft({
         onMentionMove?.(-1)
         return
       }
+      if (e.key === 'ArrowLeft') {
+        if (onMentionBack?.()) {
+          e.preventDefault()
+          e.stopPropagation()
+          return
+        }
+      }
       if (e.key === 'Escape') {
         e.preventDefault()
+        e.stopPropagation()
+        if (onMentionBack?.()) return
         onMentionDismiss?.()
         return
       }
-      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
-        if (mentionActivePath) {
+      if ((e.key === 'Tab' && !e.shiftKey) || (e.key === 'Enter' && !e.shiftKey)) {
+        if (mentionActiveItem) {
           e.preventDefault()
-          onMentionAccept?.(mentionActivePath)
+          onMentionAccept?.(mentionActiveItem)
           return
         }
       }

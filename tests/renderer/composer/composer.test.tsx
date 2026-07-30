@@ -87,15 +87,16 @@ describe('Composer', () => {
       />
     )
 
-    const ta = screen.getByRole('textbox', { name: /^Message$/i }) as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: 'keep me' } })
+    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    ta.textContent = 'keep me'
+    fireEvent.input(ta)
     fireEvent.click(screen.getByRole('button', { name: /^Send$/i }))
 
     await waitFor(() => {
       expect(onSend).toHaveBeenCalledWith('keep me', undefined, undefined)
     })
     await waitFor(() => {
-      expect(ta.value).toBe('keep me')
+      expect(ta.textContent).toBe('keep me')
     })
   })
 
@@ -202,7 +203,7 @@ describe('Composer', () => {
     })
   })
 
-  it('disables textarea while a run is in progress', () => {
+  it('disables composer input while a run is in progress', () => {
     render(
       <Composer
         provider="ollama"
@@ -216,8 +217,8 @@ describe('Composer', () => {
       />
     )
 
-    const ta = screen.getByRole('textbox', { name: /^Message$/i }) as HTMLTextAreaElement
-    expect(ta.disabled).toBe(true)
+    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    expect(ta.getAttribute('contenteditable')).toBe('false')
     expect(screen.getByRole('button', { name: /^Stop$/i })).toBeTruthy()
   })
 })

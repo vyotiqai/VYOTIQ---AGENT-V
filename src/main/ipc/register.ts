@@ -25,11 +25,17 @@ import {
   WorkspacesSetSettingsOverrideRequestSchema,
   GitStatusRequestSchema,
   GitCommitRequestSchema,
+  GitDiffRequestSchema,
   ToolApprovalResponseSchema,
   AgentQuestionResponseSchema,
   ListPendingAgentQuestionsRequestSchema,
   ListPendingToolApprovalsRequestSchema,
   ExtractAttachmentRequestSchema,
+  WorkspaceSuggestPathsRequestSchema,
+  WorkspaceReadTextRequestSchema,
+  WorkspaceListDocsRequestSchema,
+  WorkspaceListRulesRequestSchema,
+  WorkspaceDiagnosticsRequestSchema,
   MarketplaceBrowseRequestSchema,
   MarketplaceInstallRequestSchema,
   MarketplaceSetEnabledRequestSchema,
@@ -44,6 +50,7 @@ import {
   SlashCommandsOpenFileRequestSchema,
   ok,
   fail,
+  MAX_ATTACHMENT_BYTES,
   type ExtractAttachmentResult,
   type IpcResult,
   type Settings,
@@ -70,10 +77,11 @@ import {
   type AgentBrowserState
 } from '../../shared/ipc'
 import { resolveOllamaListBaseUrl } from '../../shared/providers'
-import { existsSync, mkdirSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, statSync } from 'fs'
 import { formatError, AppError, isAbortError } from '../../shared/errors'
 import { logger, logErrorSummary } from '../../shared/logger'
 import { pickWorkspace } from '@main/workspace/workspace'
+import { resolveInsideWorkspace } from '@main/workspace/safePath'
 import { getSettings, setSettings } from '@main/settings/settings'
 import { syncMcpServers, getMcpServerStatus, refreshMcpServers, startMcpOAuth } from '@main/agent/mcp'
 import { headersWithoutAuthorization } from '../../shared/utils/mcpAuth'
@@ -131,6 +139,8 @@ import {
 import { listProviderModels } from '../agent/providers'
 import { clearModelCache } from '../agent/providers/modelCache'
 import { collectWorkspaceFiles } from '../agent/tools/walk'
+import { listWorkspaceRulesForMention } from '../agent/context/rules'
+import { toolDiagnosticsAsync } from '../agent/tools/diagnostics'
 import {
   chatCancelResult,
   listActiveRuns,
@@ -158,9 +168,9 @@ import {
   setWorkspaceSettingsOverride,
   findWorkspaceSettingsOverride
 } from '@main/workspace/workspaces'
-import { canonicalizeWorkspacePath, workspacePathsEqual } from '../../shared/workspacePath'
+import { canonicalizeWorkspacePath, isCuratedDocPath, isSafeWorkspaceRelPath, workspacePathsEqual } from '../../shared/workspacePath'
 import { relative, isAbsolute, join } from 'path'
-import { commitAll, readGitStatus } from '@main/git/git'
+import { commitAll, readGitDiff, readGitStatus } from '@main/git/git'
 import { applyTitleBarTheme } from '@main/app/window'
 import { logsDirectory } from '../logging/init'
 import { applySentryTelemetry, isSentryBuildConfigured } from '../logging/sentry'
@@ -852,6 +862,22 @@ export function registerIpc(): void {
     }
   })
 
+  ipcMain.handle(IPC.gitDiff, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = GitDiffRequestSchema.parse(raw ?? {})
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      const result = await readGitDiff(req.workspacePath, {
+        path: req.path,
+        staged: req.staged
+      })
+      if (!result.ok) return fail(result.error)
+      return ok({ content: result.content })
+    } catch (err) {
+      return failFrom(err, IPC.gitDiff)
+    }
+  })
+
   ipcMain.handle(IPC.logsGetPath, async (event): Promise<IpcResult<string>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
@@ -1219,22 +1245,19 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.workspaceSuggestPaths, async (event, raw) => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
-      const req = z
-        .object({
-          workspacePath: z.string().min(1),
-          query: z.string().optional(),
-          maxResults: z.number().int().min(1).max(50).optional()
-        })
-        .parse(raw ?? {})
+      const req = WorkspaceSuggestPathsRequestSchema.parse(raw ?? {})
       if (!isOpenWorkspace(req.workspacePath)) {
         return fail('Workspace is not open')
       }
       const maxResults = req.maxResults ?? 24
       const query = (req.query ?? '').trim().toLowerCase().replace(/\\/g, '/')
       const files = await collectWorkspaceFiles(req.workspacePath, 8_000)
-      const paths = files
+      const matched = files
         .map((f) => f.rel.replace(/\\/g, '/'))
-        .filter((rel) => (query ? rel.toLowerCase().includes(query) : true))
+        .filter((rel) => {
+          if (!isSafeWorkspaceRelPath(rel)) return false
+          return query ? rel.toLowerCase().includes(query) : true
+        })
         .sort((a, b) => {
           if (!query) return a.localeCompare(b)
           const aBase = a.toLowerCase().includes(`/${query}`) || a.toLowerCase().startsWith(query)
@@ -1242,10 +1265,86 @@ export function registerIpc(): void {
           if (aBase !== bBase) return aBase ? -1 : 1
           return a.localeCompare(b)
         })
-        .slice(0, maxResults)
-      return ok({ paths })
+      return ok({ paths: matched.slice(0, maxResults), total: matched.length })
     } catch (err) {
       return failFrom(err, IPC.workspaceSuggestPaths)
+    }
+  })
+
+  ipcMain.handle(IPC.workspaceReadText, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = WorkspaceReadTextRequestSchema.parse(raw ?? {})
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      const rel = String(req.path ?? '').trim().replace(/\\/g, '/')
+      if (!isSafeWorkspaceRelPath(rel)) {
+        return fail('Path is outside the workspace')
+      }
+      const abs = resolveInsideWorkspace(req.workspacePath, rel)
+      const st = statSync(abs)
+      if (!st.isFile()) return fail('Not a file')
+      if (st.size > MAX_ATTACHMENT_BYTES) {
+        return fail(
+          `File is larger than ${Math.round(MAX_ATTACHMENT_BYTES / (1024 * 1024))}MB`
+        )
+      }
+      const bytes = readFileSync(abs)
+      const data = bytes.toString('base64')
+      const result = await extractAttachment({
+        name: rel,
+        mime: '',
+        data
+      })
+      return ok(result)
+    } catch (err) {
+      return failFrom(err, IPC.workspaceReadText)
+    }
+  })
+
+  ipcMain.handle(IPC.workspaceListDocs, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = WorkspaceListDocsRequestSchema.parse(raw ?? {})
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      const maxResults = req.maxResults ?? 40
+      const query = (req.query ?? '').trim().toLowerCase().replace(/\\/g, '/')
+      const files = await collectWorkspaceFiles(req.workspacePath, 8_000)
+      const matched = files
+        .map((f) => f.rel.replace(/\\/g, '/'))
+        .filter((rel) => isSafeWorkspaceRelPath(rel) && isCuratedDocPath(rel))
+        .filter((rel) => (query ? rel.toLowerCase().includes(query) : true))
+        .sort((a, b) => a.localeCompare(b))
+      return ok({ paths: matched.slice(0, maxResults) })
+    } catch (err) {
+      return failFrom(err, IPC.workspaceListDocs)
+    }
+  })
+
+  ipcMain.handle(IPC.workspaceListRules, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = WorkspaceListRulesRequestSchema.parse(raw ?? {})
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      const rules = await listWorkspaceRulesForMention(req.workspacePath)
+      return ok({
+        rules: rules.filter((r) => isSafeWorkspaceRelPath(r.path))
+      })
+    } catch (err) {
+      return failFrom(err, IPC.workspaceListRules)
+    }
+  })
+
+  ipcMain.handle(IPC.workspaceDiagnostics, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = WorkspaceDiagnosticsRequestSchema.parse(raw ?? {})
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      const kind = req.kind ?? 'typecheck'
+      const ac = new AbortController()
+      const result = await toolDiagnosticsAsync(req.workspacePath, kind, ac.signal)
+      return ok({ ok: result.ok, content: result.content, kind })
+    } catch (err) {
+      return failFrom(err, IPC.workspaceDiagnostics)
     }
   })
 

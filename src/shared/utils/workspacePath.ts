@@ -73,3 +73,33 @@ export function assertInsideWorkspace(workspaceRoot: string, relPath: string): s
   if (!inside) throw new Error(`Path escapes workspace: ${relPath}`)
   return candidate
 }
+
+/**
+ * True when `path` is a workspace-relative file path with no absolute root,
+ * drive letter, UNC, empty segments, or `..` escapes.
+ */
+export function isSafeWorkspaceRelPath(path: string): boolean {
+  const t = path.trim().replace(/\\/g, '/')
+  if (!t || t === '.') return false
+  if (t.startsWith('/') || t.startsWith('//')) return false
+  if (WINDOWS_DRIVE.test(t)) return false
+  if (UNC_PREFIX.test(t)) return false
+  const parts = t.split('/')
+  if (parts.some((p) => !p || p === '.' || p === '..')) return false
+  return true
+}
+
+/** Curated docs for @-Docs: README*, docs/**, top-level *.md, AGENTS.md / CLAUDE.md. */
+export function isCuratedDocPath(rel: string): boolean {
+  const n = rel.replace(/\\/g, '/')
+  const lower = n.toLowerCase()
+  const slash = lower.lastIndexOf('/')
+  const base = slash >= 0 ? lower.slice(slash + 1) : lower
+  if (lower === 'agents.md' || lower === 'claude.md' || lower === '.cursorrules') return true
+  if (base.startsWith('readme')) return true
+  if (lower.startsWith('docs/') || lower.includes('/docs/')) {
+    return base.endsWith('.md') || base.endsWith('.mdx') || base.endsWith('.mdc')
+  }
+  if (!n.includes('/') && (base.endsWith('.md') || base.endsWith('.mdx'))) return true
+  return false
+}

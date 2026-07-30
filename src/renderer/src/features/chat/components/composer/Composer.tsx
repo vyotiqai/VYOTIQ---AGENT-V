@@ -5,7 +5,7 @@ import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effective
 import { triggerKey } from '@shared/slashCommands'
 import { Alert, cn } from '@renderer/lib/ui'
 import { CHAT_COLUMN, CHAT_GUTTER, FLOATING_CHROME, FLOATING_CHROME_SHADOW_BOTTOM } from '@renderer/lib/utils/layout'
-import { ComposerTextarea } from './ComposerTextarea'
+import { ComposerMentionInput, type ComposerMentionInputHandle } from './ComposerMentionInput'
 import { ComposerToolbar, type ComposerVariant } from './ComposerToolbar'
 import { ComposerAttachments } from './ComposerAttachments'
 import { ComposerStatus } from './ComposerStatus'
@@ -20,6 +20,8 @@ import { SlashCommandMenu } from './SlashCommandMenu'
 import { useSlashCommands } from './useSlashCommands'
 import { MentionMenu } from './MentionMenu'
 import { useComposerMentions } from './useComposerMentions'
+import { resolveComposerMentions } from './resolveMentions'
+import type { MentionMenuItem } from './mentionModel'
 import {
   executeSlashResolveResult,
   type SlashClientHandlers
@@ -114,7 +116,8 @@ export function Composer({
   className?: string
   slashHandlers?: SlashClientHandlers
 }) {
-  const taRef = useRef<HTMLTextAreaElement>(null)
+  const taRef = useRef<ComposerMentionInputHandle>(null)
+  const mentionAnchorRef = useRef<HTMLDivElement | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const locked = Boolean(disabled || running)
   const hotUi = useWorkspaceHotUi(workspacePath)
@@ -122,8 +125,8 @@ export function Composer({
   const [cursor, setCursor] = useState(0)
 
   const syncCursor = useCallback((): void => {
-    const el = taRef.current
-    if (el) setCursor(el.selectionStart ?? 0)
+    const handle = taRef.current
+    if (handle) setCursor(handle.getSelectionStart())
   }, [])
 
   const {
@@ -161,14 +164,50 @@ export function Composer({
   })
 
   const onMentionAccept = useCallback(
-    (path: string) => {
-      const next = mentions.accept(path)
-      if (!next) return
-      onDraftChange?.(next.nextText)
-      setCursor(next.nextCursor)
+    (item: MentionMenuItem) => {
+      const result = mentions.acceptItem(item)
+      if (!result) return
+      if (result.action === 'navigate') {
+        mentions.setView(result.view)
+        return
+      }
+      if (result.action === 'show-more') {
+        mentions.showMore()
+        return
+      }
+      onDraftChange?.(result.nextText)
+      setCursor(result.nextCursor)
+      requestAnimationFrame(() => {
+        taRef.current?.setSelectionStart(result.nextCursor)
+        taRef.current?.focus()
+      })
       mentions.dismiss()
     },
     [mentions, onDraftChange]
+  )
+
+  const sendWithMentions = useCallback(
+    async (
+      rawText: string,
+      sendImages?: string[],
+      sendFiles?: AttachedFile[]
+    ): Promise<boolean | void> => {
+      const resolved = await resolveComposerMentions({
+        workspacePath,
+        draft: rawText,
+        existingFiles: sendFiles ?? []
+      })
+      if (resolved.error) setFileError(resolved.error)
+      if (!resolved.text.trim() && !resolved.files.length && !(sendImages?.length)) {
+        return false
+      }
+      return onSend(
+        resolved.text,
+        sendImages?.length ? sendImages : undefined,
+        resolved.files.length ? resolved.files : undefined
+      )
+    },
+    [workspacePath, onSend, setFileError]
   )
 
   const findCommandByTrigger = useCallback(
@@ -233,7 +272,7 @@ export function Composer({
 
       if (outcome === 'sent' && res.data.action === 'send') {
         const ok = await Promise.resolve(
-          onSend(
+          sendWithMentions(
             res.data.message,
             sendImages.length ? sendImages : undefined,
             sendFiles.length ? sendFiles : undefined
@@ -248,7 +287,7 @@ export function Composer({
       if (outcome === 'failed') return false
       return true
     },
-    [workspacePath, slashHandlers, onCompactContext, onSend, slash]
+    [workspacePath, slashHandlers, onCompactContext, sendWithMentions, slash]
   )
 
   const onSlashAccept = useCallback(
@@ -312,7 +351,7 @@ export function Composer({
     setFileError,
     running,
     disabled,
-    onSend,
+    onSend: sendWithMentions,
     slashMenuOpen: slash.open,
     slashActiveCommand: slash.activeCommand,
     onSlashMove: slash.moveActive,
@@ -321,14 +360,15 @@ export function Composer({
     onSlashSubmit,
     findCommandByTrigger,
     mentionMenuOpen: mentions.open,
-    mentionActivePath: mentions.paths[mentions.activeIndex] ?? null,
+    mentionActiveItem: mentions.activeItem,
     onMentionMove: (delta: number) => {
-      const len = mentions.paths.length
+      const len = mentions.items.length
       if (!len) return
-      mentions.setActiveIndex((i) => (i + delta + len) % len)
+      mentions.setActiveIndex((i) => Math.max(0, Math.min(len - 1, i + delta)))
     },
     onMentionDismiss: mentions.dismiss,
-    onMentionAccept
+    onMentionAccept,
+    onMentionBack: mentions.goBack
   })
 
   const [refreshingCatalog, setRefreshingCatalog] = useState(false)
@@ -444,45 +484,53 @@ export function Composer({
             onRemoveFile={removeFile}
           />
 
-          <ComposerTextarea
-            ref={taRef}
-            className="col-span-full min-h-[32px] max-h-40 min-w-0 border-0 bg-transparent p-0 text-md leading-relaxed shadow-none focus-visible:ring-0"
-            value={text}
-            onChange={(next) => {
-              setText(next)
-              requestAnimationFrame(syncCursor)
-            }}
-            onKeyDown={(e) => {
-              onKeyDown(e)
-              requestAnimationFrame(syncCursor)
-            }}
-            onSelect={syncCursor}
-            onClick={syncCursor}
-            onKeyUp={syncCursor}
-            placeholder={
-              composerPlaceholder ??
-              (agentMode === 'ask'
-                ? hasTranscript
-                  ? 'Ask a follow-up (read-only)'
-                  : 'Ask about the codebase (read-only)'
-                : agentMode === 'plan'
+          <div ref={mentionAnchorRef} className="col-span-full min-w-0">
+            <ComposerMentionInput
+              ref={taRef}
+              className="min-h-[32px] max-h-40 min-w-0 border-0 bg-transparent p-0 text-md leading-relaxed shadow-none focus-visible:ring-0"
+              value={text}
+              onChange={(next) => {
+                setText(next)
+                requestAnimationFrame(syncCursor)
+              }}
+              onKeyDown={(e) => {
+                onKeyDown(e)
+                requestAnimationFrame(syncCursor)
+              }}
+              onCaretChange={(offset) => setCursor(offset)}
+              placeholder={
+                composerPlaceholder ??
+                (agentMode === 'ask'
                   ? hasTranscript
-                    ? 'Refine the plan…'
-                    : 'Describe what to plan…'
-                  : hasTranscript
-                    ? 'Send follow-up'
-                    : 'Send a message')
-            }
-            disabled={locked}
-            aria-expanded={slash.open}
-            aria-controls={slash.open ? 'slash-command-menu' : undefined}
-            aria-autocomplete={slash.open ? 'list' : undefined}
-            aria-activedescendant={
-              slash.open && slash.activeCommand
-                ? `slash-command-menu-opt-${slash.activeCommand.id}`
-                : undefined
-            }
-          />
+                    ? 'Ask a follow-up (read-only) — @ for context'
+                    : 'Ask about the codebase — @ for context'
+                  : agentMode === 'plan'
+                    ? hasTranscript
+                      ? 'Refine the plan… — @ for context'
+                      : 'Describe what to plan… — @ for context'
+                    : hasTranscript
+                      ? 'Send follow-up — @ for context'
+                      : 'Send a message — @ for context')
+              }
+              disabled={locked}
+              aria-expanded={slash.open || mentions.open}
+              aria-controls={
+                slash.open
+                  ? 'slash-command-menu'
+                  : mentions.open
+                    ? 'composer-mention-menu'
+                    : undefined
+              }
+              aria-autocomplete={slash.open || mentions.open ? 'list' : undefined}
+              aria-activedescendant={
+                slash.open && slash.activeCommand
+                  ? `slash-command-menu-opt-${slash.activeCommand.id}`
+                  : mentions.open && mentions.activeItem
+                    ? `composer-mention-menu-opt-${mentions.activeItem.id}`
+                    : undefined
+              }
+            />
+          </div>
 
           <SlashCommandMenu
             open={slash.open}
@@ -491,7 +539,7 @@ export function Composer({
             onActiveIndexChange={slash.setActiveIndex}
             onPick={onSlashAccept}
             onDismiss={slash.dismiss}
-            anchorRef={taRef}
+            anchorRef={mentionAnchorRef}
             listId="slash-command-menu"
             loading={slash.loading}
             listError={slash.listError}
@@ -499,12 +547,14 @@ export function Composer({
 
           <MentionMenu
             open={mentions.open}
-            paths={mentions.paths}
+            view={mentions.view}
+            items={mentions.items}
             activeIndex={mentions.activeIndex}
             onActiveIndexChange={mentions.setActiveIndex}
             onPick={onMentionAccept}
             onDismiss={mentions.dismiss}
-            anchorRef={taRef}
+            onBack={mentions.goBack}
+            anchorRef={mentionAnchorRef}
             loading={mentions.loading}
           />
 

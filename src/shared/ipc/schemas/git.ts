@@ -43,3 +43,15 @@ export const GitCommitResultSchema = z.object({
   detail: z.string()
 })
 export type GitCommitResult = z.infer<typeof GitCommitResultSchema>
+
+export const GitDiffRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  path: z.string().optional(),
+  staged: z.boolean().optional()
+})
+export type GitDiffRequest = z.infer<typeof GitDiffRequestSchema>
+
+export const GitDiffResultSchema = z.object({
+  content: z.string()
+})
+export type GitDiffResult = z.infer<typeof GitDiffResultSchema>

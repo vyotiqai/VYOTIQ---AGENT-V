@@ -142,6 +142,11 @@ export interface VyotiqApi {
     message: string,
     push: boolean
   ) => Promise<IpcResult<GitCommitResult>>
+  gitDiff: (payload: {
+    workspacePath: string
+    path?: string
+    staged?: boolean
+  }) => Promise<IpcResult<{ content: string }>>
   windowMinimize: () => Promise<IpcResult<true>>
   windowMaximize: () => Promise<IpcResult<boolean>>
   windowClose: () => Promise<IpcResult<true>>
@@ -224,7 +229,25 @@ export interface VyotiqApi {
     workspacePath: string
     query?: string
     maxResults?: number
+  }) => Promise<IpcResult<{ paths: string[]; total: number }>>
+  workspaceReadText: (payload: {
+    workspacePath: string
+    path: string
+  }) => Promise<IpcResult<{ name: string; mime: string; text: string; truncated: boolean }>>
+  workspaceListDocs: (payload: {
+    workspacePath: string
+    query?: string
+    maxResults?: number
   }) => Promise<IpcResult<{ paths: string[] }>>
+  workspaceListRules: (payload: {
+    workspacePath: string
+  }) => Promise<
+    IpcResult<{ rules: Array<{ path: string; description?: string; alwaysApply: boolean }> }>
+  >
+  workspaceDiagnostics: (payload: {
+    workspacePath: string
+    kind?: 'typecheck' | 'lint'
+  }) => Promise<IpcResult<{ ok: boolean; content: string; kind: 'typecheck' | 'lint' }>>
   getSystemTheme: () => Promise<IpcResult<boolean>>
   onSystemThemeChanged: (handler: (prefersDark: boolean) => void) => () => void
 }
