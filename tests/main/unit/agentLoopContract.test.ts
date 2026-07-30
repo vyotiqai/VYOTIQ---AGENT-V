@@ -36,7 +36,8 @@ vi.mock('@main/settings/settings', () => ({
     ollamaBaseUrl: 'http://127.0.0.1:11434',
     theme: 'system',
     telemetryEnabled: false,
-    verifyBeforeDone: 'off'
+    verifyBeforeDone: 'off',
+    contractDoneWhen: 'off'
   }),
   readLegacyWorkspacePath: () => null
 }))

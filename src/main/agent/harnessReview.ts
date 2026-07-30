@@ -4,14 +4,113 @@ import { randomBytes } from 'crypto'
 import type { HarnessReviewResult, RunReceipt } from '../../shared/ipc'
 import { RunReceiptSchema } from '../../shared/ipc'
 import { resolveInsideWorkspace } from '../workspace/safePath'
-import { workspaceSessionsRoot } from '../storage/paths'
+import { resolveRunDir, workspaceSessionsRoot } from '../storage/paths'
 import { RUN_RECEIPT_FILENAME } from './runReceipt'
+import {
+  HARNESS_APPLY_SURFACE_NOTE,
+  HARNESS_EVAL_TESTS,
+  upsertReceiptNotes,
+  workspaceHasEditableHarness,
+  workspaceHarnessPath
+} from './harnessApply'
 
 const DEFAULT_LIMIT = 20
+
+/** Evidence-bucket tags for harness review proposals (heuristic; no auto-merge). */
+export const HARNESS_EVIDENCE_BUCKETS = [
+  'system_prompt',
+  'tool_policy',
+  'loop_notices',
+  'verify',
+  'memory'
+] as const
+
+export type HarnessEvidenceBucket = (typeof HARNESS_EVIDENCE_BUCKETS)[number]
 
 export type CollectedReceipt = {
   runId: string
   receipt: RunReceipt
+}
+
+export type EvidenceBucketEvidence = {
+  component: HarnessEvidenceBucket
+  evidence: string[]
+}
+
+export type WeaknessSummary = {
+  receiptCount: number
+  bullets: string[]
+  suggestions: string[]
+  evidenceBuckets: EvidenceBucketEvidence[]
+  /** Rule-mined signals from subagent report.md files (capped). */
+  subagentEvidence: string[]
+}
+
+export type ParsedSubagentReport = {
+  id: string
+  ok: boolean
+  steps: number
+  task: string
+  report: string
+}
+
+const UNCERTAINTY_RE = /could not determine|not found|unable to|unclear|insufficient/i
+const HIGH_SUBAGENT_STEPS = 8
+const SUBAGENT_EVIDENCE_CAP = 8
+
+/** Parse fixed layout from writeSubagentReportFiles. */
+export function parseSubagentReportMarkdown(
+  id: string,
+  text: string
+): ParsedSubagentReport {
+  const okMatch = text.match(/^ok:\s*(true|false)\s*$/im)
+  const stepsMatch = text.match(/^steps:\s*(\d+)\s*$/im)
+  const taskMatch = text.match(/##\s*Task\s*\n([\s\S]*?)(?=\n##\s+|\s*$)/i)
+  const reportMatch = text.match(/##\s*Report\s*\n([\s\S]*?)(?=\n##\s+|\s*$)/i)
+  const reportBody = (reportMatch?.[1] ?? '').trim()
+  return {
+    id,
+    ok: okMatch?.[1] === 'true',
+    steps: stepsMatch?.[1] ? Number(stepsMatch[1]) : 0,
+    task: (taskMatch?.[1] ?? '').trim(),
+    report: reportBody === '(empty)' ? '' : reportBody
+  }
+}
+
+/** Load subagent report.md files referenced by receipt.subagents[]. */
+export function loadSubagentReports(
+  workspacePath: string,
+  collected: readonly CollectedReceipt[]
+): ParsedSubagentReport[] {
+  const out: ParsedSubagentReport[] = []
+  for (const { runId, receipt } of collected) {
+    const entries = receipt.subagents
+    if (!entries || entries.length === 0) continue
+    let runDir: string
+    try {
+      runDir = resolveRunDir(workspacePath, runId)
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      const rel = entry.reportPath?.replace(/\\/g, '/') || `subagents/${entry.id}/report.md`
+      if (rel.includes('..')) continue
+      const abs = join(runDir, ...rel.split('/'))
+      if (!existsSync(abs)) continue
+      try {
+        const parsed = parseSubagentReportMarkdown(entry.id, readFileSync(abs, 'utf8'))
+        if (entry.status === 'failed') parsed.ok = false
+        out.push(parsed)
+      } catch {
+        // skip unreadable reports
+      }
+    }
+  }
+  return out
+}
+
+function normalizeTaskKey(task: string): string {
+  return task.trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 120)
 }
 
 /** Load recent receipt.json files from the workspace session store (AppData). */
@@ -49,14 +148,21 @@ export function collectRecentReceipts(
   return collected.slice(0, limit).map(({ runId, receipt }) => ({ runId, receipt }))
 }
 
-export type WeaknessSummary = {
-  receiptCount: number
-  bullets: string[]
-  markdown: string
+function pushBucket(
+  map: Map<HarnessEvidenceBucket, string[]>,
+  component: HarnessEvidenceBucket,
+  line: string
+): void {
+  const list = map.get(component) ?? []
+  if (!list.includes(line)) list.push(line)
+  map.set(component, list)
 }
 
-/** Rule-based weakness extraction from receipts (no LLM). */
-export function summarizeWeaknesses(receipts: readonly CollectedReceipt[]): WeaknessSummary {
+/** Rule-based weakness extraction from receipts (+ optional subagent reports; no LLM). */
+export function summarizeWeaknesses(
+  receipts: readonly CollectedReceipt[],
+  subagentReports: readonly ParsedSubagentReport[] = []
+): WeaknessSummary {
   const failureCounts = new Map<string, number>()
   const unreadCounts = new Map<string, number>()
   let victoryClaims = 0
@@ -64,12 +170,17 @@ export function summarizeWeaknesses(receipts: readonly CollectedReceipt[]): Weak
   let highFailureStreaks = 0
   let toolFailTotal = 0
   let toolCallTotal = 0
+  let compactionHeavy = 0
+  let memoryToolFails = 0
 
   for (const { receipt } of receipts) {
     toolCallTotal += receipt.toolStats.totalCalls
     toolFailTotal += receipt.toolStats.failed
     for (const cluster of receipt.failureClusters) {
       failureCounts.set(cluster.key, (failureCounts.get(cluster.key) ?? 0) + cluster.count)
+      if (/^memory_/i.test(cluster.key) || /\bmemory_/i.test(cluster.key)) {
+        memoryToolFails += cluster.count
+      }
     }
     for (const path of receipt.unreadEditPaths) {
       unreadCounts.set(path, (unreadCounts.get(path) ?? 0) + 1)
@@ -77,6 +188,7 @@ export function summarizeWeaknesses(receipts: readonly CollectedReceipt[]): Weak
     if (receipt.verifyBeforeDone.victoryClaimWithoutTools) victoryClaims++
     if (receipt.verifyBeforeDone.nudged) verifyNudges++
     if ((receipt.consecutiveToolFailureSteps ?? 0) >= 3) highFailureStreaks++
+    if (receipt.compactionCount >= 2) compactionHeavy++
   }
 
   const bullets: string[] = []
@@ -107,9 +219,117 @@ export function summarizeWeaknesses(receipts: readonly CollectedReceipt[]): Weak
   if (highFailureStreaks > 0) {
     bullets.push(`${highFailureStreaks} run(s) had consecutive tool-failure streaks ≥ 3.`)
   }
+  if (compactionHeavy > 0) {
+    bullets.push(`${compactionHeavy} run(s) compacted ≥ 2 times (context pressure).`)
+  }
   if (bullets.length === 1) {
     bullets.push('No strong weakness signals in the sampled receipts.')
   }
+
+  const bucketMap = new Map<HarnessEvidenceBucket, string[]>()
+  if (topUnread.length > 0) {
+    pushBucket(
+      bucketMap,
+      'loop_notices',
+      `Unread-before-edit paths (${topUnread.length} distinct) — strengthen read-before-edit run notice / Work style.`
+    )
+  }
+  if (topFailures.length > 0 || highFailureStreaks > 0) {
+    const top = topFailures[0]
+    pushBucket(
+      bucketMap,
+      'tool_policy',
+      top
+        ? `Top failure cluster: ${top[0]} (${top[1]}×) — recovery / narrower-retry guidance.`
+        : `${highFailureStreaks} high consecutive-failure streak(s).`
+    )
+  }
+  if (victoryClaims > 0 || verifyNudges > 0) {
+    pushBucket(
+      bucketMap,
+      'verify',
+      `${verifyNudges} verify nudge(s), ${victoryClaims} victory-claim-without-tools — reinforce verify / contract Done-when: notice soft once; require blocks finish until met.`
+    )
+  }
+  if (compactionHeavy > 0 || memoryToolFails > 0) {
+    pushBucket(
+      bucketMap,
+      'memory',
+      compactionHeavy > 0
+        ? `${compactionHeavy} compaction-heavy run(s); prefer durable memory_write over relying on context alone.`
+        : `Memory tool failure clusters (${memoryToolFails}×).`
+    )
+  }
+
+  const subagentEvidence: string[] = []
+  let failedSubagents = 0
+  let emptyReports = 0
+  let uncertainReports = 0
+  let highStepReports = 0
+  const taskCounts = new Map<string, number>()
+
+  for (const r of subagentReports) {
+    if (!r.ok) failedSubagents++
+    if (!r.report.trim()) emptyReports++
+    if (r.report && UNCERTAINTY_RE.test(r.report)) uncertainReports++
+    if (r.steps >= HIGH_SUBAGENT_STEPS) highStepReports++
+    const key = normalizeTaskKey(r.task)
+    if (key) taskCounts.set(key, (taskCounts.get(key) ?? 0) + 1)
+  }
+
+  if (subagentReports.length > 0) {
+    subagentEvidence.push(`Loaded ${subagentReports.length} sub-agent report(s).`)
+  }
+  if (failedSubagents > 0) {
+    const line = `${failedSubagents} failed sub-agent report(s).`
+    subagentEvidence.push(line)
+    bullets.push(line)
+    pushBucket(bucketMap, 'tool_policy', line)
+  }
+  if (emptyReports > 0) {
+    const line = `${emptyReports} empty/stub sub-agent report(s).`
+    subagentEvidence.push(line)
+    bullets.push(line)
+    pushBucket(bucketMap, 'tool_policy', line)
+  }
+  if (uncertainReports > 0) {
+    const line = `${uncertainReports} sub-agent report(s) with uncertainty language.`
+    subagentEvidence.push(line)
+    bullets.push(line)
+    pushBucket(bucketMap, 'loop_notices', line)
+  }
+  if (highStepReports > 0) {
+    const line = `${highStepReports} sub-agent(s) with steps ≥ ${HIGH_SUBAGENT_STEPS}.`
+    subagentEvidence.push(line)
+    bullets.push(line)
+    pushBucket(bucketMap, 'memory', line)
+  }
+  const recurringTasks = [...taskCounts.entries()]
+    .filter(([, n]) => n >= 2)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 4)
+  for (const [task, count] of recurringTasks) {
+    const preview = task.length > 80 ? `${task.slice(0, 80)}…` : task
+    const line = `Recurring sub-agent task (${count}×): ${preview}`
+    subagentEvidence.push(line)
+    bullets.push(line)
+    pushBucket(bucketMap, 'system_prompt', line)
+  }
+
+  if (bucketMap.size > 0) {
+    pushBucket(
+      bucketMap,
+      'system_prompt',
+      'Map bucket evidence into a narrow `default.md` edit; keep the harness surface small.'
+    )
+  }
+
+  const evidenceBuckets: EvidenceBucketEvidence[] = HARNESS_EVIDENCE_BUCKETS.filter((c) =>
+    bucketMap.has(c)
+  ).map((component) => ({
+    component,
+    evidence: bucketMap.get(component) ?? []
+  }))
 
   const suggestions: string[] = []
   if (topUnread.length > 0) {
@@ -124,38 +344,123 @@ export function summarizeWeaknesses(receipts: readonly CollectedReceipt[]): Weak
   }
   if (victoryClaims > 0 || verifyNudges > 0) {
     suggestions.push(
-      '- Reinforce verify-before-done / contract Done-when reminders in Agent mode section (not a hard gate).'
+      '- Reinforce verify-before-done / contract Done-when: notice soft once; require blocks finish until met.'
+    )
+  }
+  if (compactionHeavy > 0 || memoryToolFails > 0 || highStepReports > 0) {
+    suggestions.push(
+      '- Prefer file-backed `.vyotiq/memory/` writes when context pressure or memory tool failures recur.'
+    )
+  }
+  if (failedSubagents > 0 || emptyReports > 0) {
+    suggestions.push(
+      '- Clarify when to use `subagent` vs parent tools; require concrete paths in sub-agent reports.'
     )
   }
   if (suggestions.length === 0) {
     suggestions.push('- No harness edit suggested from this sample; keep the surface small.')
   }
 
-  const markdown = [
+  return {
+    receiptCount: receipts.length,
+    bullets,
+    suggestions,
+    evidenceBuckets,
+    subagentEvidence: subagentEvidence.slice(0, SUBAGENT_EVIDENCE_CAP)
+  }
+}
+
+export function buildProposalMarkdown(
+  workspacePath: string,
+  summary: WeaknessSummary,
+  opts?: { llmAssisted?: boolean; proposedBody?: string }
+): string {
+  let proposedBody: string
+  if (opts?.proposedBody?.trim()) {
+    proposedBody = opts.proposedBody.trim()
+  } else if (workspaceHasEditableHarness(workspacePath)) {
+    const current = readFileSync(workspaceHarnessPath(workspacePath), 'utf8')
+    proposedBody = upsertReceiptNotes(current, summary.bullets, summary.suggestions)
+  } else {
+    proposedBody = [
+      '# Agent V',
+      '',
+      '_Workspace has no resources/harness/default.md — paste a full harness here before `/harness-apply`._',
+      '',
+      '## Receipt review notes',
+      '',
+      '_Auto-generated from run receipts. Edit or delete before commit._',
+      '',
+      ...summary.bullets.map((b) => `- ${b}`),
+      '',
+      'Suggested focus:',
+      ...summary.suggestions,
+      ''
+    ].join('\n')
+  }
+
+  const componentLines =
+    summary.evidenceBuckets.length === 0
+      ? ['- (none — no strong evidence-bucket signals)']
+      : summary.evidenceBuckets.flatMap((b) => [
+          `- **${b.component}**`,
+          ...b.evidence.map((e) => `  - ${e}`)
+        ])
+
+  const subagentSection =
+    summary.subagentEvidence.length === 0
+      ? []
+      : ['## Sub-agent evidence', '', ...summary.subagentEvidence.map((b) => `- ${b}`), '']
+
+  const evalList = HARNESS_EVAL_TESTS.map((f) => `- \`${f}\``).join('\n')
+  const disclaimer = opts?.llmAssisted
+    ? '_LLM-assisted proposal — human confirm still required; not unsupervised Self-Harness._'
+    : '_Heuristic receipt mining + human confirm — not unsupervised Self-Harness._'
+
+  return [
     '# Harness proposal (auto-generated)',
     '',
-    `Generated from ${receipts.length} receipt(s). Review only — does not apply automatically.`,
+    disclaimer,
+    '',
+    `Generated from ${summary.receiptCount} receipt(s). Review the proposed body, then run \`/harness-apply\` (confirm + vitest gate).`,
     '',
     '## Evidence',
     '',
-    ...bullets.map((b) => `- ${b}`),
+    ...summary.bullets.map((b) => `- ${b}`),
+    '',
+    ...subagentSection,
+    '## Evidence buckets',
+    '',
+    '_Maps receipt signals to editable surfaces. Still human-applied; no auto-merge._',
+    '',
+    ...componentLines,
     '',
     '## Suggested harness edits',
     '',
-    ...suggestions,
+    ...summary.suggestions,
+    '',
+    '## Proposed harness body',
+    '',
+    '```markdown',
+    proposedBody.replace(/\n$/, ''),
+    '```',
     '',
     '## Validation',
     '',
-    '- `pnpm test -- tests/main/unit/harness.test.ts tests/main/unit/toolsSchema.test.ts tests/main/unit/modePolicy.test.ts tests/main/unit/loopPolicy.test.ts`',
+    HARNESS_APPLY_SURFACE_NOTE,
+    '',
+    'Gate tests (`pnpm exec vitest run`):',
+    evalList,
+    '',
+    '- On failure, `resources/harness/default.md` is reverted from backup',
     ''
   ].join('\n')
-
-  return { receiptCount: receipts.length, bullets, markdown }
 }
 
 export function writeHarnessProposal(
   workspacePath: string,
-  summary: WeaknessSummary
+  summary: WeaknessSummary,
+  opts?: { llmAssisted?: boolean; proposedBody?: string }
 ): { proposalPath: string; relativePath: string } {
   const dirRel = join('.vyotiq', 'harness', 'proposals')
   const dirAbs = resolveInsideWorkspace(workspacePath, dirRel)
@@ -166,18 +471,41 @@ export function writeHarnessProposal(
   const fileName = `${stamp}-${shortId}.md`
   const relativePath = `.vyotiq/harness/proposals/${fileName}`
   const proposalPath = resolveInsideWorkspace(workspacePath, relativePath)
-  writeFileSync(proposalPath, summary.markdown, 'utf8')
+  writeFileSync(proposalPath, buildProposalMarkdown(workspacePath, summary, opts), 'utf8')
   return { proposalPath, relativePath }
 }
 
-/** Mine receipts and write a workspace-visible proposal markdown. */
-export function runHarnessReview(
+/** Mine receipts (and subagent reports) and write a workspace-visible proposal markdown. */
+export async function runHarnessReview(
   workspacePath: string,
-  opts?: { limit?: number }
-): HarnessReviewResult {
+  opts?: { limit?: number; rewriteBody?: (input: {
+    currentHarness: string
+    summary: WeaknessSummary
+  }) => Promise<{ body: string; usedLlm: boolean }> }
+): Promise<HarnessReviewResult> {
   const receipts = collectRecentReceipts(workspacePath, opts)
-  const summary = summarizeWeaknesses(receipts)
-  const written = writeHarnessProposal(workspacePath, summary)
+  const subagentReports = loadSubagentReports(workspacePath, receipts)
+  const summary = summarizeWeaknesses(receipts, subagentReports)
+
+  let proposedBody: string | undefined
+  let llmAssisted = false
+  if (opts?.rewriteBody && workspaceHasEditableHarness(workspacePath)) {
+    try {
+      const current = readFileSync(workspaceHarnessPath(workspacePath), 'utf8')
+      const rewritten = await opts.rewriteBody({ currentHarness: current, summary })
+      if (rewritten.usedLlm && rewritten.body.trim()) {
+        proposedBody = rewritten.body.trim()
+        llmAssisted = true
+      }
+    } catch {
+      // fall back to rule-based body
+    }
+  }
+
+  const written = writeHarnessProposal(workspacePath, summary, {
+    llmAssisted,
+    proposedBody
+  })
   return {
     proposalPath: written.proposalPath,
     relativePath: written.relativePath,

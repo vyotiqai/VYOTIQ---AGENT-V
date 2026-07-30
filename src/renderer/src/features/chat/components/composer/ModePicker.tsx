@@ -63,7 +63,7 @@ export function ModePicker({
           advance(e.shiftKey)
         }}
       >
-        <span className="truncate">{current.short}</span>
+        <span className="truncate leading-none">{current.short}</span>
       </button>
     </div>
   )

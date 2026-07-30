@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { cn } from '@renderer/lib/ui'
+import { CHAT_RIGHT_PANEL } from '@renderer/lib/utils/layout'
 import type { UiItem } from '@shared/transcript'
 import { ChangeSummary } from './ChangeSummary'
 import { EmptyPanel, PanelHeader } from './PanelChrome'
@@ -42,15 +43,12 @@ export function ChangesPanel({
 
   return (
     <aside
-      className={cn(
-        'flex h-full min-h-0 w-[min(42vw,480px)] shrink-0 flex-col overflow-hidden border-l border-border/50 bg-bg',
-        className
-      )}
+      className={cn(CHAT_RIGHT_PANEL, className)}
       data-changes-panel
-      aria-label="Changes panel"
+      aria-label="Files changed panel"
     >
-      <PanelHeader title="Changes" onClose={onClose} />
-      <div className="min-h-0 flex-1 overflow-auto p-2">
+      <PanelHeader title="Files changed" onClose={onClose} />
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto p-2">
         {files.length === 0 ? (
           <EmptyPanel
             icon="branch"

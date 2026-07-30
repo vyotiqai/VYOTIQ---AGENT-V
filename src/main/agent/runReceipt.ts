@@ -1,6 +1,14 @@
+import { existsSync, readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { atomicWriteJson } from '../storage/atomicWrite'
-import type { ChatMessage, MessageContent, PersistedEvent, RunReceipt, RunStatus } from '../../shared/ipc'
+import type {
+  ChatMessage,
+  MessageContent,
+  PersistedEvent,
+  RunReceipt,
+  RunReceiptSubagent,
+  RunStatus
+} from '../../shared/ipc'
 import { contentToText, RUN_RECEIPT_VERSION, RunReceiptSchema } from '../../shared/ipc'
 import {
   applyToolCallToKnownPaths,
@@ -9,7 +17,7 @@ import {
   unreadExistingEditPaths
 } from './loopPolicy'
 import { countDiagnosticsCalls } from './verifyBeforeDone'
-import type { VerifyBeforeDoneMode } from '../../shared/ipc'
+import type { VerifyBeforeDoneMode, ContractDoneWhenMode } from '../../shared/ipc'
 import { logger } from '../../shared/logger'
 
 export { RUN_RECEIPT_VERSION }
@@ -178,6 +186,49 @@ function contractExcerpt(contract: string, cap = 600): string {
   return slice.length <= cap ? slice : slice.slice(0, cap) + '\n…'
 }
 
+/** Scan `{runDir}/subagents/<id>/` for a minimal receipt index (no report mining). */
+export function scanSubagentsForReceipt(runDir: string): RunReceiptSubagent[] {
+  const root = join(runDir, 'subagents')
+  if (!existsSync(root)) return []
+  let entries
+  try {
+    entries = readdirSync(root, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const out: RunReceiptSubagent[] = []
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const id = entry.name
+    const statusPath = join(root, id, 'status.json')
+    const defaultReportPath = `subagents/${id}/report.md`
+    if (existsSync(statusPath)) {
+      try {
+        const raw = JSON.parse(readFileSync(statusPath, 'utf8')) as {
+          ok?: unknown
+          reportRel?: unknown
+        }
+        const reportPath =
+          typeof raw.reportRel === 'string' && raw.reportRel.trim()
+            ? raw.reportRel.replace(/\\/g, '/')
+            : defaultReportPath
+        out.push({
+          id,
+          status: raw.ok === true ? 'ok' : 'failed',
+          reportPath
+        })
+        continue
+      } catch {
+        // fall through to report.md presence
+      }
+    }
+    if (existsSync(join(root, id, 'report.md'))) {
+      out.push({ id, status: 'ok', reportPath: defaultReportPath })
+    }
+  }
+  return out.sort((a, b) => a.id.localeCompare(b.id))
+}
+
 export function buildRunReceipt(input: {
   runId: string
   status: RunStatus
@@ -186,6 +237,12 @@ export function buildRunReceipt(input: {
   contract: string
   verifyMode: VerifyBeforeDoneMode
   verifyNudged: boolean
+  contractDoneWhenMode?: ContractDoneWhenMode
+  contractDoneWhenNudged?: boolean
+  contractCheckableCriteria?: number
+  contractUnmetCriteria?: string[]
+  /** When set, scan for file-backed subagent reports. */
+  runDir?: string
 }): RunReceipt {
   const victoryClaimWithoutTools = input.messages.some(
     (m, i) =>
@@ -199,6 +256,8 @@ export function buildRunReceipt(input: {
 
   const incomplete = lastIncompleteFromEvents(input.events)
   const tokenUsage = tokenUsageFromEvents(input.events)
+  const unmet = input.contractUnmetCriteria?.slice(0, 12)
+  const subagents = input.runDir ? scanSubagentsForReceipt(input.runDir) : []
 
   const receipt: RunReceipt = {
     version: RUN_RECEIPT_VERSION,
@@ -225,7 +284,14 @@ export function buildRunReceipt(input: {
       nudged: input.verifyNudged,
       victoryClaimWithoutTools
     },
-    contractExcerpt: contractExcerpt(input.contract)
+    contractDoneWhen: {
+      mode: input.contractDoneWhenMode ?? 'require',
+      nudged: input.contractDoneWhenNudged ?? false,
+      checkableCriteria: input.contractCheckableCriteria ?? 0,
+      ...(unmet && unmet.length > 0 ? { unmetCriteria: unmet } : {})
+    },
+    contractExcerpt: contractExcerpt(input.contract),
+    ...(subagents.length > 0 ? { subagents } : {})
   }
   return RunReceiptSchema.parse(receipt)
 }
@@ -244,6 +310,10 @@ export function writeRunReceiptBestEffort(input: {
   readContract: (dir: string) => string
   verifyMode: VerifyBeforeDoneMode
   verifyNudged: boolean
+  contractDoneWhenMode?: ContractDoneWhenMode
+  contractDoneWhenNudged?: boolean
+  contractCheckableCriteria?: number
+  contractUnmetCriteria?: string[]
 }): void {
   try {
     const status = input.loadStatus(input.runDir)
@@ -255,7 +325,12 @@ export function writeRunReceiptBestEffort(input: {
       events: input.loadEvents(input.runDir),
       contract: input.readContract(input.runDir),
       verifyMode: input.verifyMode,
-      verifyNudged: input.verifyNudged
+      verifyNudged: input.verifyNudged,
+      contractDoneWhenMode: input.contractDoneWhenMode,
+      contractDoneWhenNudged: input.contractDoneWhenNudged,
+      contractCheckableCriteria: input.contractCheckableCriteria,
+      contractUnmetCriteria: input.contractUnmetCriteria,
+      runDir: input.runDir
     })
     writeRunReceipt(input.runDir, receipt)
   } catch (err) {

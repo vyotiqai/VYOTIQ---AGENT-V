@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { cn } from '@renderer/lib/ui/cn'
+import { CHAT_RIGHT_PANEL } from '@renderer/lib/utils/layout'
 import type { AgentBrowserState } from '@shared/ipc'
 import {
   clearBrowserRecents,
@@ -251,10 +252,7 @@ export function AgentBrowserPanel({
 
   return (
     <aside
-      className={cn(
-        'flex h-full min-h-0 w-[min(42vw,480px)] shrink-0 flex-col overflow-hidden border-l border-border/50 bg-bg',
-        className
-      )}
+      className={cn(CHAT_RIGHT_PANEL, className)}
       data-agent-browser-panel
       aria-label="Browser panel"
     >

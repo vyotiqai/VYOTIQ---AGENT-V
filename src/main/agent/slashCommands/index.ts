@@ -17,7 +17,7 @@ import { listSkillCommands, resolveSkillCommand } from './skills'
 import { listWorkspaceCommands, resolveWorkspaceCommand } from './workspaceCommands'
 import { listRuleCommands, resolveRuleCommand } from './ruleCommands'
 import { listMcpCommands, resolveMcpCommand } from './mcp'
-import { runHarnessReview } from '../harnessReview'
+import { runHarnessReviewWithSettings } from '../harnessReviewRun'
 
 function marketplaceOverridesFor(
   workspacePath: string | null | undefined
@@ -136,7 +136,7 @@ export async function resolveSlashCommand(
       }
     }
     try {
-      const result = runHarnessReview(workspacePath)
+      const result = await runHarnessReviewWithSettings(workspacePath)
       return { action: 'open_file', path: result.proposalPath }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)

@@ -4,6 +4,7 @@ import { cn } from '@renderer/lib/ui'
 import { TOOL_CARD_BODY, TOOL_CARD_HEADER, TOOL_CARD_SURFACE } from '@renderer/lib/utils/layout'
 import type { UiToolApproval } from '@shared/transcript'
 import type { ToolApprovalDecision } from '@shared/ipc'
+import { toolLabel } from '../toolUi/meta'
 
 const CHOICES: { decision: ToolApprovalDecision; label: string; primary?: boolean }[] = [
   { decision: 'once', label: 'Allow once', primary: true },
@@ -40,6 +41,7 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
   }
 
   const busy = phase !== 'idle'
+  const label = toolLabel(approval.toolName, 'running')
 
   return (
     <div
@@ -50,7 +52,8 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
       <div className={cn(TOOL_CARD_HEADER, 'flex items-center gap-2 text-fg')}>
         <Icon name="warning" size={14} className="shrink-0 text-danger" />
         <span className="font-medium">
-          Allow tool: <span className="font-mono">{approval.toolName}</span>?
+          Allow tool:{' '}
+          <span title={approval.toolName}>{label}</span>?
         </span>
         <span className="min-w-0 truncate text-tertiary" title={approval.summary}>
           {approval.summary}

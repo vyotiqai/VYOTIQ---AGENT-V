@@ -22,6 +22,7 @@ import {
   BROWSER_PANEL_OPEN_KEY,
   CHAT_COLUMN_MAX,
   CHAT_GUTTER,
+  COMPOSER_DOCK_CLEARANCE_PX,
   COMPOSER_DOCK_FADE_PX,
   COMPOSER_DOCK_FALLBACK_PX,
   RIGHT_PANEL_KEY,
@@ -56,6 +57,7 @@ function TranscriptPane({
   surfaceKey,
   workspacePath,
   activeRunId,
+  agentMode,
   canUndoWrites,
   undoBusy,
   onUndoWrites,
@@ -86,6 +88,7 @@ function TranscriptPane({
   surfaceKey: string
   workspacePath: string | null
   activeRunId: string | null
+  agentMode?: AgentInteractionMode
   canUndoWrites?: boolean
   undoBusy?: boolean
   onUndoWrites?: () => void | Promise<unknown>
@@ -96,8 +99,8 @@ function TranscriptPane({
   onKeepAllWrites?: () => void | Promise<unknown>
 }) {
   const runSession = useMemo(
-    () => ({ workspacePath, runId: activeRunId }),
-    [workspacePath, activeRunId]
+    () => ({ workspacePath, runId: activeRunId, agentMode }),
+    [workspacePath, activeRunId, agentMode]
   )
   return (
     <RunSessionProvider value={runSession}>
@@ -359,7 +362,8 @@ export function ChatView({
     if (!dock) return undefined
 
     const sync = (): void => {
-      const dockH = Math.max(dock.offsetHeight, 48) + COMPOSER_DOCK_FADE_PX
+      const dockH =
+        Math.max(dock.offsetHeight, 48) + COMPOSER_DOCK_FADE_PX + COMPOSER_DOCK_CLEARANCE_PX
       stage.style.setProperty('--vy-dock-h', `${dockH}px`)
       setDockReservePx(dockH)
     }
@@ -472,6 +476,7 @@ export function ChatView({
                 surfaceKey={surfaceKey}
                 workspacePath={workspacePath}
                 activeRunId={activeRunId}
+                agentMode={agentMode}
                 canUndoWrites={canUndoWrites}
                 undoBusy={undoBusy}
                 onUndoWrites={onUndoWrites}

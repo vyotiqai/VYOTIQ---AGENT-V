@@ -8,12 +8,12 @@ export function PanelHeader({
   onClose?: () => void
 }) {
   return (
-    <div className="flex items-center gap-2 border-b border-border/40 px-2.5 py-1.5">
+    <div className="flex min-w-0 items-center gap-2 border-b border-border/40 px-2.5 py-1.5">
       <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-fg">{title}</span>
       {onClose ? (
         <button
           type="button"
-          className="rounded-md px-1.5 py-0.5 text-[11px] text-muted hover:bg-surface-2 hover:text-fg"
+          className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-muted hover:bg-surface-2 hover:text-fg"
           onClick={onClose}
           aria-label={`Close ${title.toLowerCase()} panel`}
         >

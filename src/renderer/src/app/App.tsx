@@ -378,6 +378,51 @@ export function App() {
         })
         return true
       },
+      onHarnessApply: async (proposalPath?: string) => {
+        if (!activeWorkspace) {
+          setSettingsError('Open a workspace to apply a harness proposal.')
+          return false
+        }
+        const preview = await window.vyotiq.harnessPreviewApply({
+          workspacePath: activeWorkspace,
+          ...(proposalPath?.trim() ? { proposalPath: proposalPath.trim() } : {})
+        })
+        if (!preview.ok) {
+          setSettingsError(preview.error)
+          return false
+        }
+        if (!preview.data.changed) {
+          setSettingsError('Harness already matches the proposal — nothing to apply.')
+          return true
+        }
+        const ok = window.confirm(
+          `Apply harness proposal?\n\n${preview.data.relativePath}\n→ resources/harness/default.md only\n\nRuns fixed harness vitest subset; reverts that file on failure.\nEvaluator / gate-test changes need a normal PR.`
+        )
+        if (!ok) return false
+        const res = await window.vyotiq.harnessApply({
+          workspacePath: activeWorkspace,
+          ...(proposalPath?.trim() ? { proposalPath: proposalPath.trim() } : {}),
+          confirm: true
+        })
+        if (!res.ok) {
+          setSettingsError(res.error)
+          return false
+        }
+        if (!res.data.applied) {
+          setSettingsError(
+            res.data.reverted
+              ? `Harness apply reverted — tests failed.\n${res.data.validationOutput.slice(0, 800)}`
+              : res.data.validationOutput
+          )
+          return false
+        }
+        setSettingsError(null)
+        logger.info('Applied harness proposal', {
+          scope: 'slash',
+          path: res.data.relativePath
+        })
+        return true
+      },
       onMarketplaceAction: async (packageId: string, intent: 'install' | 'enable') => {
         if (intent === 'enable') {
           const res = await window.vyotiq.marketplaceSetEnabled(packageId, true)

@@ -6,6 +6,9 @@ import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
 import { formatError, isAbortError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
 import { summarizeToolArgs } from '../../shared/toolSummary'
+import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { join } from 'path'
+import { randomBytes } from 'crypto'
 import { getSecret, hasStoredSecretBlob, secretStatus } from '@main/settings/secrets'
 import { getSettings } from '@main/settings/settings'
 import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/workspace/workspaces'
@@ -68,7 +71,8 @@ Investigate the task you are given and finish with a single self-contained repor
 - Cite concrete file paths and line numbers for everything you claim.
 - Say plainly what you could not determine rather than guessing.
 
-The report is the only thing the parent agent sees, so it must stand on its own.`
+Your report is persisted under the run directory as subagents/<id>/report.md so the
+parent can re-read it after compaction. The parent also receives the report text.`
 
 function subagentSystemForTools(tools: readonly string[]): string {
   const list = tools.join(', ')
@@ -124,6 +128,8 @@ export type SubagentOptions = {
   depth: number
   /** Parent Ask/Plan/Agent mode — Ask strips diagnostics from the child allowlist. */
   parentMode?: AgentInteractionMode
+  /** Parent run directory; when set, the report is written under subagents/<id>/. */
+  runDir?: string
   emit?: (update: SubagentUpdate) => void
   onContextUsage?: (usage: SubagentContextUsage) => void
 }
@@ -132,6 +138,75 @@ export type SubagentOutcome = {
   ok: boolean
   report: string
   steps: number
+  /** Run-relative path such as `subagents/<id>/report.md` when persisted. */
+  reportRel?: string
+}
+
+/** Persist a sub-agent report under `{runDir}/subagents/<id>/` for post-compaction re-read. */
+export function writeSubagentReportFiles(
+  runDir: string,
+  input: { ok: boolean; report: string; steps: number; task: string }
+): { reportRel: string; id: string } {
+  const id = randomBytes(4).toString('hex')
+  const dir = join(runDir, 'subagents', id)
+  mkdirSync(dir, { recursive: true })
+  const reportRel = `subagents/${id}/report.md`
+  const reportBody = [
+    `# Sub-agent report`,
+    '',
+    `ok: ${input.ok}`,
+    `steps: ${input.steps}`,
+    '',
+    '## Task',
+    '',
+    input.task.trim() || '(empty)',
+    '',
+    '## Report',
+    '',
+    input.report.trim() || '(empty)',
+    ''
+  ].join('\n')
+  writeFileSync(join(runDir, reportRel), reportBody, 'utf8')
+  writeFileSync(
+    join(dir, 'status.json'),
+    JSON.stringify(
+      {
+        id,
+        ok: input.ok,
+        steps: input.steps,
+        reportRel,
+        taskPreview: input.task.slice(0, 200),
+        writtenAt: new Date().toISOString()
+      },
+      null,
+      2
+    ) + '\n',
+    'utf8'
+  )
+  return { reportRel, id }
+}
+
+function finalizeSubagentOutcome(
+  options: SubagentOptions,
+  outcome: { ok: boolean; report: string; steps: number }
+): SubagentOutcome {
+  if (!options.runDir || !existsSync(options.runDir)) {
+    return outcome
+  }
+  try {
+    const { reportRel } = writeSubagentReportFiles(options.runDir, {
+      ...outcome,
+      task: options.task
+    })
+    return { ...outcome, reportRel }
+  } catch (err) {
+    logger.warn('Failed to persist sub-agent report', {
+      scope: 'agent',
+      code: 'SUBAGENT_REPORT',
+      err
+    })
+    return outcome
+  }
 }
 
 export class SubagentDepthError extends Error {
@@ -185,11 +260,11 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
       : storedBlob
         ? `API key for ${providerId} is stored but cannot be decrypted. Re-enter it in Settings or restore OS keychain access.`
         : `API key for ${providerId} is not set. Add it in Settings.`
-    return {
+    return finalizeSubagentOutcome(options, {
       ok: false,
       steps: 0,
       report: message
-    }
+    })
   }
   const baseUrl =
     providerId === 'ollama' ? ollamaOpenAiBaseUrl(settings.ollamaBaseUrl) : undefined
@@ -314,7 +389,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
       throw err
     }
 
-    if (streamFailure) return streamFailure
+    if (streamFailure) return finalizeSubagentOutcome(options, streamFailure)
 
     if (options.signal.aborted) break
 
@@ -328,7 +403,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
       // before tool calls is not a finished answer.
       const report = text.trim()
       if (!report) {
-        return {
+        return finalizeSubagentOutcome(options, {
           ok: false,
           report: options.signal.aborted
             ? 'Sub-agent was cancelled before it reported anything.'
@@ -336,13 +411,13 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
               ? 'Sub-agent stopped without a final report after using tools.'
               : 'Sub-agent finished without producing a report.',
           steps
-        }
+        })
       }
       options.emit?.({
         kind: 'done',
         text: `Reported in ${steps} ${steps === 1 ? 'step' : 'steps'}`
       })
-      return { ok: true, report, steps }
+      return finalizeSubagentOutcome(options, { ok: true, report, steps })
     }
 
     messages.push({ role: 'assistant', content: text, toolCalls })
@@ -392,11 +467,11 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
     }
   }
 
-  return {
+  return finalizeSubagentOutcome(options, {
     ok: false,
     report: options.signal.aborted
       ? 'Sub-agent was cancelled before it reported anything.'
       : 'Sub-agent finished without producing a report.',
     steps
-  }
+  })
 }

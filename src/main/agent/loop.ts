@@ -51,6 +51,8 @@ import {
   loopHintForOmittedMcpTools,
   loopHintForUnreadEdits,
   maxParallelReadToolsForFailureStreak,
+  partitionReadBeforeEditCalls,
+  readBeforeEditBlockMessage,
   seedKnownPathsFromMessages,
   toolArgsFromCall,
   unreadExistingEditPaths
@@ -90,6 +92,14 @@ import {
   flushMessageAppends
 } from './state'
 import { writeRunReceiptBestEffort } from './runReceipt'
+import {
+  contractDoneWhenNudgeMessage,
+  evaluateContractCriteria,
+  parseCheckableCriteria,
+  parseDoneWhenBullets,
+  shouldNudgeContractDoneWhen,
+  unmetCriteriaSummaries
+} from './contractDoneWhen'
 import {
   externalDiagnosticsCheck,
   runHasDiagnosticsEvidence,
@@ -324,6 +334,9 @@ export async function* runAgent(input: {
   let runDir: string | null = null
   let checkpointFlushed = false
   let verifyNudged = false
+  let contractDoneWhenNudged = false
+  let lastContractUnmet: string[] = []
+  let lastContractCheckableCount = 0
   const writeStatus = (patch: Parameters<typeof updateStatus>[1]): void => {
     if (!runDir || !isCurrentInvoke(runId, invokeId)) return
     updateStatus(runDir, patch)
@@ -431,7 +444,7 @@ export async function* runAgent(input: {
       }
     }
 
-    const harness = loadHarness()
+    const harness = loadHarness(workspace)
     const providerId: ProviderId = settings.provider
     const provider = getProvider(providerId)
 
@@ -615,8 +628,11 @@ export async function* runAgent(input: {
     let truncationContinues = 0
     let toolLeakContinues = 0
     let verifyContinues = 0
+    let contractDoneWhenContinues = 0
     const MAX_TRUNCATION_CONTINUES = 2
     const verifyBeforeDoneMode = settings.verifyBeforeDone ?? 'notice'
+    const contractDoneWhenMode = settings.contractDoneWhen ?? 'require'
+    const readBeforeEditMode = settings.readBeforeEdit ?? 'notice'
 
     while (true) {
       if (controller.signal.aborted) break
@@ -1235,51 +1251,103 @@ export async function* runAgent(input: {
           continue
         }
 
-        // Soft verify-before-done: at most one continue (never a hard step ceiling).
-        if (
-          !incomplete &&
-          !controller.signal.aborted &&
-          shouldNudgeVerifyBeforeDone({
+        // Soft finish gates: verify-before-done, then contract done-when.
+        // Prefer one combined user nudge per step when both fire.
+        if (!incomplete && !controller.signal.aborted) {
+          let verifyExtras: string | undefined
+          let verifyNeedsNudge = shouldNudgeVerifyBeforeDone({
             verifyMode: verifyBeforeDoneMode,
             agentMode,
             hasEvidence: runHasDiagnosticsEvidence(messages),
             alreadyNudged: verifyContinues > 0,
             incomplete
           })
-        ) {
-          let extras: string | undefined
-          let skipNudge = false
-          if (verifyBeforeDoneMode === 'require') {
+          if (verifyNeedsNudge && verifyBeforeDoneMode === 'require') {
             try {
               const check = await externalDiagnosticsCheck(workspace, controller.signal)
               if (check.clean) {
-                skipNudge = true
+                verifyNeedsNudge = false
                 logger.info('Verify-before-done: external typecheck clean', {
                   scope: 'agent',
                   correlationId: runId,
                   step
                 })
               } else {
-                extras = check.excerpt
+                verifyExtras = check.excerpt
               }
             } catch (err) {
               if (controller.signal.aborted) break
-              extras = `External typecheck could not run: ${formatError(err)}`
+              verifyExtras = `External typecheck could not run: ${formatError(err)}`
             }
           }
-          if (!skipNudge) {
-            verifyContinues += 1
-            verifyNudged = true
-            const kind = verifyBeforeDoneMode === 'require' ? 'require' : 'notice'
-            logger.info('Verify-before-done nudge', {
-              scope: 'agent',
-              correlationId: runId,
-              step,
-              mode: verifyBeforeDoneMode
-            })
+
+          let contractNeedsNudge = false
+          let contractFailures: Awaited<ReturnType<typeof evaluateContractCriteria>> = []
+          if (contractDoneWhenMode !== 'off' && agentMode === 'agent') {
+            try {
+              const contractText = await readContractAsync(runDir)
+              const bullets = parseDoneWhenBullets(contractText)
+              const criteria = parseCheckableCriteria(bullets)
+              lastContractCheckableCount = criteria.length
+              if (criteria.length > 0) {
+                contractFailures = await evaluateContractCriteria(
+                  workspace,
+                  criteria,
+                  controller.signal
+                )
+                lastContractUnmet = unmetCriteriaSummaries(contractFailures)
+                contractNeedsNudge = shouldNudgeContractDoneWhen({
+                  mode: contractDoneWhenMode,
+                  agentMode,
+                  criteria,
+                  results: contractFailures,
+                  alreadyNudged: contractDoneWhenContinues > 0,
+                  incomplete
+                })
+              } else {
+                lastContractUnmet = []
+              }
+            } catch (err) {
+              if (controller.signal.aborted) break
+              logger.warn('Contract done-when evaluation failed', {
+                scope: 'agent',
+                correlationId: runId,
+                step,
+                err: formatError(err)
+              })
+            }
+          }
+
+          if (verifyNeedsNudge || contractNeedsNudge) {
+            const parts: string[] = []
+            if (verifyNeedsNudge) {
+              verifyContinues += 1
+              verifyNudged = true
+              const kind = verifyBeforeDoneMode === 'require' ? 'require' : 'notice'
+              logger.info('Verify-before-done nudge', {
+                scope: 'agent',
+                correlationId: runId,
+                step,
+                mode: verifyBeforeDoneMode
+              })
+              parts.push(verifyNudgeMessage(kind, verifyExtras))
+            }
+            if (contractNeedsNudge) {
+              contractDoneWhenContinues += 1
+              contractDoneWhenNudged = true
+              const kind = contractDoneWhenMode === 'require' ? 'require' : 'notice'
+              logger.info('Contract done-when nudge', {
+                scope: 'agent',
+                correlationId: runId,
+                step,
+                mode: contractDoneWhenMode,
+                unmet: lastContractUnmet.length
+              })
+              parts.push(contractDoneWhenNudgeMessage(kind, contractFailures))
+            }
             const nudge: ChatMessage = {
               role: 'user',
-              content: verifyNudgeMessage(kind, extras)
+              content: parts.join('\n\n')
             }
             messages.push(nudge)
             appendMessage(runDir, nudge)
@@ -1360,6 +1428,55 @@ export async function* runAgent(input: {
       const liveEvents: AgentEvent[] = []
       const liveToolResultsEmitted = new Set<string>()
       let wakeLiveEvents: (() => void) | null = null
+
+      const pathExistsNow = (rel: string): boolean => {
+        try {
+          return existsSync(resolveInsideWorkspace(workspace, rel))
+        } catch {
+          return false
+        }
+      }
+
+      let callsToExecute = uniqueToolCalls
+      if (readBeforeEditMode === 'require' && agentMode === 'agent') {
+        const { allowed, blocked } = partitionReadBeforeEditCalls({
+          known: knownPaths,
+          calls: uniqueToolCalls,
+          pathExists: pathExistsNow
+        })
+        for (const { call, paths } of blocked) {
+          const content = readBeforeEditBlockMessage(paths)
+          const toolMsg: ChatMessage = {
+            role: 'tool',
+            toolCallId: call.id,
+            toolName: call.name,
+            content,
+            ok: false
+          }
+          messages.push(toolMsg)
+          appendMessage(runDir!, toolMsg)
+          const resultEv = {
+            type: 'tool_result' as const,
+            runId,
+            toolCallId: call.id,
+            name: call.name,
+            summary: 'read-before-edit',
+            ok: false,
+            content
+          }
+          yield toolResultEventForIpc(resultEv)
+          appendEvent(runDir!, toolResultEventForPersistence(resultEv))
+          stepToolsOk = false
+        }
+        callsToExecute = allowed
+      }
+
+      if (callsToExecute.length === 0) {
+        consecutiveToolFailureSteps += 1
+        writeStatus({ consecutiveToolFailureSteps })
+        continue
+      }
+
       const toolCtx = {
         runId,
         runDir: runDir!,
@@ -1397,7 +1514,7 @@ export async function* runAgent(input: {
           wakeLiveEvents?.()
         }
       }
-      const toolWork = executeStepToolCalls(uniqueToolCalls, toolCtx)
+      const toolWork = executeStepToolCalls(callsToExecute, toolCtx)
       let toolsSettled = false
       const settledWork = toolWork.then(
         (result) => {
@@ -1413,15 +1530,8 @@ export async function* runAgent(input: {
       )
 
       // Snapshot existence before writes so new-file creates do not false-nag.
-      const pathExistsNow = (rel: string): boolean => {
-        try {
-          return existsSync(resolveInsideWorkspace(workspace, rel))
-        } catch {
-          return false
-        }
-      }
       const existedBeforeEdit = new Set<string>()
-      for (const call of uniqueToolCalls) {
+      for (const call of callsToExecute) {
         const args = toolArgsFromCall(call.arguments)
         for (const path of editPathsFromToolCall(call.name, args)) {
           if (pathExistsNow(path)) existedBeforeEdit.add(path)
@@ -1452,7 +1562,7 @@ export async function* runAgent(input: {
         messages.push(toolMsg)
         appendMessage(runDir!, toolMsg)
       }
-      stepToolsOk = toolOutcome.stepToolsOk
+      stepToolsOk = stepToolsOk && toolOutcome.stepToolsOk
 
       const okByCallId = new Map<string, boolean>()
       for (const msg of toolOutcome.messages) {
@@ -1461,7 +1571,7 @@ export async function* runAgent(input: {
         }
       }
       // Apply successful reads first so same-step read+edit does not nag.
-      for (const call of uniqueToolCalls) {
+      for (const call of callsToExecute) {
         const args = toolArgsFromCall(call.arguments)
         const ok = okByCallId.get(call.id) ?? false
         if (call.name === 'read') {
@@ -1469,7 +1579,7 @@ export async function* runAgent(input: {
         }
       }
       const unreadThisStep: string[] = []
-      for (const call of uniqueToolCalls) {
+      for (const call of callsToExecute) {
         const args = toolArgsFromCall(call.arguments)
         const ok = okByCallId.get(call.id) ?? false
         unreadThisStep.push(
@@ -1481,7 +1591,8 @@ export async function* runAgent(input: {
           applyToolCallToKnownPaths(knownPaths, call.name, args, ok)
         }
       }
-      unreadEditHint = loopHintForUnreadEdits(unreadThisStep)
+      unreadEditHint =
+        readBeforeEditMode === 'notice' ? loopHintForUnreadEdits(unreadThisStep) : undefined
 
       if (uniqueToolCalls.length > 0) {
         if (stepToolsOk) {
@@ -1554,7 +1665,11 @@ export async function* runAgent(input: {
         loadEvents,
         readContract,
         verifyMode: settings.verifyBeforeDone ?? 'notice',
-        verifyNudged
+        verifyNudged,
+        contractDoneWhenMode: settings.contractDoneWhen ?? 'require',
+        contractDoneWhenNudged,
+        contractCheckableCriteria: lastContractCheckableCount,
+        contractUnmetCriteria: lastContractUnmet
       })
     }
     clearRunAbort(runId, invokeId)

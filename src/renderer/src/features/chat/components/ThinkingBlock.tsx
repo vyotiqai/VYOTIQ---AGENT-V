@@ -65,7 +65,7 @@ export function ThinkingBlock({
           name="chevronRight"
           size={14}
           className={cn(
-            'self-center text-tertiary/80 vy-transition',
+            'shrink-0 text-tertiary/80 vy-transition',
             isExpanded && 'rotate-90'
           )}
         />

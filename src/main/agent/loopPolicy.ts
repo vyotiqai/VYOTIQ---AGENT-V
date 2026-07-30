@@ -167,6 +167,49 @@ export function loopHintForUnreadEdits(paths: readonly string[]): string | undef
   ].join(' ')
 }
 
+/** Error content when `readBeforeEdit: require` blocks a write tool. */
+export function readBeforeEditBlockMessage(paths: readonly string[]): string {
+  const unique = [...new Set(paths.map(normalizeWorkspaceRelPath).filter(Boolean))]
+  const shown = unique.slice(0, UNREAD_EDIT_HINT_PATH_CAP)
+  const more = unique.length > UNREAD_EDIT_HINT_PATH_CAP ? ` (+${unique.length - UNREAD_EDIT_HINT_PATH_CAP} more)` : ''
+  return [
+    `Read-before-edit is set to require. Blocked edit of unread existing path(s): ${shown.join(', ')}${more}.`,
+    'Call `read` (or concrete grep/glob) on the path first, then retry the edit.'
+  ].join(' ')
+}
+
+export type ToolCallLike = { id: string; name: string; arguments: string }
+
+/**
+ * Partition tool calls for `readBeforeEdit: require`.
+ * Same-step inspect paths (read/grep/glob) count as seen before writes in the batch.
+ */
+export function partitionReadBeforeEditCalls(input: {
+  known: ReadonlySet<string>
+  calls: readonly ToolCallLike[]
+  pathExists: (rel: string) => boolean
+}): { allowed: ToolCallLike[]; blocked: Array<{ call: ToolCallLike; paths: string[] }> } {
+  const knownForGate = new Set(input.known)
+  for (const call of input.calls) {
+    const args = parseToolArgs(call.arguments)
+    for (const path of inspectPathsFromToolCall(call.name, args)) {
+      knownForGate.add(path)
+    }
+  }
+  const allowed: ToolCallLike[] = []
+  const blocked: Array<{ call: ToolCallLike; paths: string[] }> = []
+  for (const call of input.calls) {
+    const args = parseToolArgs(call.arguments)
+    const unread = unreadExistingEditPaths(knownForGate, call.name, args, input.pathExists)
+    if (unread.length > 0) {
+      blocked.push({ call, paths: unread })
+    } else {
+      allowed.push(call)
+    }
+  }
+  return { allowed, blocked }
+}
+
 type SeedMessage = {
   role: string
   toolCalls?: Array<{ name: string; arguments: string }>

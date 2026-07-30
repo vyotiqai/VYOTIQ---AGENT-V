@@ -54,7 +54,7 @@ const iconCtl =
 
 /** Size to content; truncate only when the middle zone is constrained. */
 const modelPillTrigger = cn(
-  'inline-flex h-7 max-w-full min-w-0 items-center gap-1 rounded-xl border-0 bg-transparent px-1.5 text-[11px] leading-none tracking-[var(--vy-tracking)] text-muted',
+  'inline-flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-xl border-0 bg-transparent px-1.5 text-[11px] leading-none tracking-[var(--vy-tracking)] text-muted',
   'hover:bg-surface hover:text-fg active:bg-surface',
   'vy-transition disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
 )
@@ -64,6 +64,7 @@ const sendCtl = cn(
   'disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
 )
 
+/** Shared control row — every pill/icon aligns to the same 28px baseline. */
 const zone = 'flex h-7 min-w-0 items-center gap-0.5'
 
 export type ComposerVariant = 'hero' | 'dock'

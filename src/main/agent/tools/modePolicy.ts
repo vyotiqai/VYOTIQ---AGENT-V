@@ -58,6 +58,12 @@ export function isRunContractPath(pathArg: string): boolean {
   return base === 'contract.md'
 }
 
+/** Sub-agent durable reports under the run directory (`subagents/<id>/report.md`). */
+export function isSubagentReportPath(pathArg: string): boolean {
+  const n = pathArg.replace(/\\/g, '/').replace(/^\.\//, '')
+  return /^subagents\/[^/]+\/(report\.md|status\.json)$/i.test(n)
+}
+
 /** Run plan.md — remapped in Plan always; in Agent when a run plan artifact exists. */
 export function isRunPlanPath(pathArg: string): boolean {
   const base = basename(normalize(pathArg.replace(/\\/g, '/')))

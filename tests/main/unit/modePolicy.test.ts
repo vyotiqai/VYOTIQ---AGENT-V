@@ -6,6 +6,7 @@ import {
   isBuiltinAllowedInMode,
   isPlanArtifactPath,
   isRunContractPath,
+  isSubagentReportPath,
   modeSectionMarkdown
 } from '../../../src/main/agent/tools/modePolicy'
 import { setMcpReadOnlyHintsForTests } from '../../../src/main/agent/mcp'
@@ -76,6 +77,14 @@ describe('modePolicy', () => {
     expect(isRunContractPath('./contract.md')).toBe(true)
     expect(isRunContractPath('plan.md')).toBe(false)
     expect(isRunContractPath('src/app.ts')).toBe(false)
+  })
+
+  it('isSubagentReportPath matches run-relative subagent artifacts', () => {
+    expect(isSubagentReportPath('subagents/abc123/report.md')).toBe(true)
+    expect(isSubagentReportPath('subagents/abc123/status.json')).toBe(true)
+    expect(isSubagentReportPath('./subagents/abc123/report.md')).toBe(true)
+    expect(isSubagentReportPath('subagents/report.md')).toBe(false)
+    expect(isSubagentReportPath('contract.md')).toBe(false)
   })
 
   it('filterToolDefsForMode keeps readOnlyHint MCP in Ask and drops mutating tools', () => {

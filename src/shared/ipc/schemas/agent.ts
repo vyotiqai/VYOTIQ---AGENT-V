@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AgentInteractionModeSchema, VerifyBeforeDoneModeSchema } from './settings'
+import { AgentInteractionModeSchema, ContractDoneWhenModeSchema, VerifyBeforeDoneModeSchema } from './settings'
 
 export const MAX_IMAGE_BYTES = 4 * 1024 * 1024
 export const MAX_IMAGE_DATA_URL_CHARS = Math.ceil(MAX_IMAGE_BYTES * (4 / 3)) + 128
@@ -416,13 +416,20 @@ export const RunArtifactNameSchema = z.enum([
 export type RunArtifactName = z.infer<typeof RunArtifactNameSchema>
 
 /** Per-run receipt.json written at agent loop teardown. */
-export const RUN_RECEIPT_VERSION = 2 as const
+export const RUN_RECEIPT_VERSION = 4 as const
 
 export const RunReceiptToolStatSchema = z.object({
   ok: z.number().int().min(0),
   failed: z.number().int().min(0)
 })
 export type RunReceiptToolStat = z.infer<typeof RunReceiptToolStatSchema>
+
+export const RunReceiptSubagentSchema = z.object({
+  id: z.string().min(1),
+  status: z.enum(['ok', 'failed']),
+  reportPath: z.string().min(1)
+})
+export type RunReceiptSubagent = z.infer<typeof RunReceiptSubagentSchema>
 
 export const RunReceiptSchema = z.object({
   version: z.literal(RUN_RECEIPT_VERSION),
@@ -470,7 +477,15 @@ export const RunReceiptSchema = z.object({
     nudged: z.boolean(),
     victoryClaimWithoutTools: z.boolean()
   }),
-  contractExcerpt: z.string()
+  contractDoneWhen: z.object({
+    mode: ContractDoneWhenModeSchema,
+    nudged: z.boolean(),
+    checkableCriteria: z.number().int().min(0),
+    unmetCriteria: z.array(z.string()).optional()
+  }),
+  contractExcerpt: z.string(),
+  /** Minimal index of file-backed subagent reports under the run dir (no report mining). */
+  subagents: z.array(RunReceiptSubagentSchema).optional()
 })
 export type RunReceipt = z.infer<typeof RunReceiptSchema>
 
@@ -487,6 +502,40 @@ export const HarnessReviewResultSchema = z.object({
   summary: z.string()
 })
 export type HarnessReviewResult = z.infer<typeof HarnessReviewResultSchema>
+
+export const HarnessPreviewApplyRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  proposalPath: z.string().min(1).optional()
+})
+export type HarnessPreviewApplyRequest = z.infer<typeof HarnessPreviewApplyRequestSchema>
+
+export const HarnessPreviewApplyResultSchema = z.object({
+  proposalPath: z.string().min(1),
+  relativePath: z.string().min(1),
+  current: z.string(),
+  proposed: z.string(),
+  changed: z.boolean()
+})
+export type HarnessPreviewApplyResult = z.infer<typeof HarnessPreviewApplyResultSchema>
+
+export const HarnessApplyRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  proposalPath: z.string().min(1).optional(),
+  /** Must be true — accidental applies are rejected. */
+  confirm: z.literal(true)
+})
+export type HarnessApplyRequest = z.infer<typeof HarnessApplyRequestSchema>
+
+export const HarnessApplyResultSchema = z.object({
+  applied: z.boolean(),
+  proposalPath: z.string().min(1),
+  relativePath: z.string().min(1),
+  harnessPath: z.string().min(1),
+  validationOk: z.boolean(),
+  validationOutput: z.string(),
+  reverted: z.boolean()
+})
+export type HarnessApplyResult = z.infer<typeof HarnessApplyResultSchema>
 
 export const ReadRunArtifactRequestSchema = z.object({
   workspacePath: z.string().min(1),

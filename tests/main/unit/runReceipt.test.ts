@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync } from 'fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -111,6 +111,11 @@ describe('runReceipt', () => {
       nudged: true,
       victoryClaimWithoutTools: true
     })
+    expect(receipt.contractDoneWhen).toEqual({
+      mode: 'require',
+      nudged: false,
+      checkableCriteria: 0
+    })
     expect(receipt.contractExcerpt).toMatch(/Done when/)
     expect(receipt.statusError).toBe('boom')
     expect(receipt.incomplete).toEqual({ reason: 'truncated', message: 'cut off' })
@@ -181,8 +186,64 @@ describe('runReceipt', () => {
       const raw = JSON.parse(readFileSync(join(dir, RUN_RECEIPT_FILENAME), 'utf8'))
       expect(raw.runId).toBe('r')
       expect(raw.status).toBe('cancelled')
-      expect(raw.version).toBe(2)
+      expect(raw.version).toBe(RUN_RECEIPT_VERSION)
       expect(raw.compactionCount).toBe(0)
+      expect(raw.contractDoneWhen).toEqual({
+        mode: 'require',
+        nudged: false,
+        checkableCriteria: 0
+      })
+      expect(raw.subagents).toBeUndefined()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('indexes file-backed subagents under the run dir', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-receipt-sub-'))
+    try {
+      const subDir = join(dir, 'subagents', 'abcd1234')
+      mkdirSync(subDir, { recursive: true })
+      writeFileSync(join(subDir, 'report.md'), '# report\n', 'utf8')
+      writeFileSync(
+        join(subDir, 'status.json'),
+        JSON.stringify({
+          id: 'abcd1234',
+          ok: true,
+          steps: 2,
+          reportRel: 'subagents/abcd1234/report.md'
+        }),
+        'utf8'
+      )
+      const failDir = join(dir, 'subagents', 'deadbeef')
+      mkdirSync(failDir, { recursive: true })
+      writeFileSync(join(failDir, 'report.md'), '# fail\n', 'utf8')
+      writeFileSync(
+        join(failDir, 'status.json'),
+        JSON.stringify({
+          id: 'deadbeef',
+          ok: false,
+          steps: 1,
+          reportRel: 'subagents/deadbeef/report.md'
+        }),
+        'utf8'
+      )
+
+      const receipt = buildRunReceipt({
+        runId: 'r',
+        status: { status: 'done', step: 1, updatedAt: new Date().toISOString() },
+        messages: [],
+        events: [],
+        contract: '',
+        verifyMode: 'off',
+        verifyNudged: false,
+        runDir: dir
+      })
+      expect(receipt.subagents).toEqual([
+        { id: 'abcd1234', status: 'ok', reportPath: 'subagents/abcd1234/report.md' },
+        { id: 'deadbeef', status: 'failed', reportPath: 'subagents/deadbeef/report.md' }
+      ])
+      expect(RunReceiptSchema.parse(receipt).subagents).toHaveLength(2)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

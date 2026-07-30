@@ -508,7 +508,7 @@ export function ModelPicker({
         onClick={() => setOpen((v) => !v)}
       >
         <ProviderLogo id={provider} size="sm" className="shrink-0 text-muted" />
-        <span className="min-w-0 flex-1 truncate">{displayName}</span>
+        <span className="min-w-0 flex-1 truncate leading-none">{displayName}</span>
         <Icon
           name="chevron"
           size={12}

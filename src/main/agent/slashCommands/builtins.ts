@@ -90,6 +90,15 @@ export const BUILTIN_COMMANDS: SlashCommandDescriptor[] = [
     kind: 'builtin',
     group: 'App',
     availability: 'ready'
+  },
+  {
+    id: 'builtin:harness-apply',
+    trigger: 'harness-apply',
+    label: 'Apply harness proposal',
+    description: 'Confirm-apply latest (or named) proposal to resources/harness/default.md',
+    kind: 'builtin',
+    group: 'App',
+    availability: 'ready'
   }
 ]
 
@@ -124,6 +133,12 @@ export function resolveBuiltin(
     case 'builtin:harness-review':
       // Resolved in resolveSlashCommand (needs workspace + main-process mining).
       return null
+    case 'builtin:harness-apply':
+      return {
+        action: 'client',
+        clientAction: 'harness_apply',
+        ...(trailingText.trim() ? { trailingText: trailingText.trim() } : {})
+      }
     default:
       return null
   }

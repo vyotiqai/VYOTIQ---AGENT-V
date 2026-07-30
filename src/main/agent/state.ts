@@ -201,6 +201,7 @@ export function createRun(workspacePath: string, runId: string, goal: string): s
       '## Done when',
       '',
       '- The goal above is satisfied (check outcomes: read results, command output, or user-visible success).',
+      '- Typecheck is clean',
       '- Or blockers are explained clearly and no further narrow retry will help.',
       '- Update this file if scope or done-when changes.',
       ''

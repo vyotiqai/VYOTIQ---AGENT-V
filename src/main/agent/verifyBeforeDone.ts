@@ -1,20 +1,32 @@
-import type { AgentInteractionMode, ChatMessage, IncompleteReason } from '../../shared/ipc'
-import type { VerifyBeforeDoneMode } from '../../shared/ipc'
+import type { AgentInteractionMode, ChatMessage, IncompleteReason, VerifyBeforeDoneMode } from '../../shared/ipc'
+import { contentToText } from '../../shared/ipc'
 import { parseDiagnosticLines, toolDiagnosticsAsync } from './tools/diagnostics'
 
 export type VerifyNudgeKind = 'notice' | 'require'
 
-/** True when this run already has a successful `diagnostics` tool result. */
+/**
+ * True when this run already has clean diagnostics evidence:
+ * a diagnostics tool result with ok !== false and no error-severity lines.
+ * `ok: true` with parsed errors is not evidence.
+ */
 export function runHasDiagnosticsEvidence(messages: readonly ChatMessage[]): boolean {
   for (const msg of messages) {
     if (msg.role !== 'tool') continue
     if (msg.toolName !== 'diagnostics') continue
     if (msg.ok === false) continue
-    return true
+    const text = contentToText(msg.content ?? '')
+    const items = parseDiagnosticLines(text)
+    const errors = items.filter((d) => (d.severity ?? 'error') === 'error')
+    if (errors.length === 0) return true
   }
   return false
 }
 
+/**
+ * Soft verify gate before accepting a no-tool finish.
+ * - `notice`: at most one nudge (`alreadyNudged` blocks repeats)
+ * - `require`: keep nudging until clean diagnostics evidence exists (loop re-checks typecheck)
+ */
 export function shouldNudgeVerifyBeforeDone(opts: {
   verifyMode: VerifyBeforeDoneMode
   agentMode: AgentInteractionMode
@@ -26,7 +38,7 @@ export function shouldNudgeVerifyBeforeDone(opts: {
   if (opts.agentMode !== 'agent') return false
   if (opts.incomplete) return false
   if (opts.hasEvidence) return false
-  if (opts.alreadyNudged) return false
+  if (opts.verifyMode === 'notice' && opts.alreadyNudged) return false
   return true
 }
 
@@ -34,9 +46,10 @@ export function verifyNudgeMessage(kind: VerifyNudgeKind, extras?: string): stri
   const base =
     kind === 'require'
       ? [
-          'Verify-before-done is set to require. Before finishing, run `diagnostics`',
-          '(typecheck and/or lint) and confirm the run contract Done-when criteria,',
-          'or explain blockers clearly. Then continue or stop with tools when done.'
+          'Verify-before-done is set to require. You cannot finish while typecheck is dirty',
+          'and this run has no clean `diagnostics` result (ok with no error-severity lines).',
+          'Fix errors, run `diagnostics` (typecheck; lint optional), and re-check the run',
+          'contract Done-when criteria. Finishing is blocked until typecheck is clean.'
         ].join(' ')
       : [
           'Before finishing, prefer verifying against the run contract (re-read outcomes,',

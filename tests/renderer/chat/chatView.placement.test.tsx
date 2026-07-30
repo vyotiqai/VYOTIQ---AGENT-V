@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { ChatView } from '@renderer/features/chat/ChatView'
-import { COMPOSER_DOCK_FADE_PX } from '@renderer/lib/utils/layout'
+import { COMPOSER_DOCK_CLEARANCE_PX, COMPOSER_DOCK_FADE_PX } from '@renderer/lib/utils/layout'
 
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
@@ -179,6 +179,37 @@ describe('ChatView composer placement', () => {
     expect(composerRoot?.className).not.toMatch(/sticky/)
   })
 
+  it('renders a floating edge rail over the chat stage', () => {
+    render(
+      <ChatView
+        {...baseProps}
+        items={[
+          {
+            kind: 'message',
+            id: 'm1',
+            role: 'user',
+            content: 'hello',
+            at: '2024-01-01T00:00:00.000Z'
+          }
+        ]}
+      />
+    )
+
+    const rail = document.querySelector('[data-chat-side-rail]')
+    expect(rail?.className).toMatch(/absolute/)
+    expect(rail?.className).toMatch(/right-0/)
+    expect(document.querySelector('[data-composer-dock]')?.className).toMatch(/pr-10/)
+    expect(document.querySelector('[data-transcript-scroll]')?.className).toMatch(/pr-10/)
+  })
+
+  it('keeps open right panels clear of the floating rail', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Show plan panel/i }))
+    const panel = document.querySelector('[data-plan-panel]')
+    expect(panel?.className).toMatch(/pr-10/)
+    expect(panel?.className).toMatch(/min-w-0/)
+  })
+
   it('renders docked composer with gutter when transcript has messages', () => {
     render(
       <ChatView
@@ -196,7 +227,8 @@ describe('ChatView composer placement', () => {
     )
 
     const composerRoot = document.querySelector('[data-composer-dock]')
-    expect(composerRoot?.className).toMatch(/px-4/)
+    expect(composerRoot?.className).toMatch(/pl-4/)
+    expect(composerRoot?.className).toMatch(/pr-10/)
     expect(composerRoot?.className).toMatch(/absolute/)
   })
 
@@ -211,7 +243,8 @@ describe('ChatView composer placement', () => {
     )
 
     expect(document.querySelector('[data-composer-hero]')).toBeNull()
-    expect(screen.getByPlaceholderText(/loading chat/i)).toBeTruthy()
+    expect(document.querySelector('[data-composer-dock]')).toBeTruthy()
+    expect(screen.getAllByText(/loading chat/i).length).toBeGreaterThan(0)
   })
 
   it('uses dock layout for an active run tab with no messages', () => {
@@ -241,7 +274,7 @@ describe('ChatView composer placement', () => {
     const composerColumn = document.querySelector('[data-composer-column]')
     for (const el of [transcriptColumn, composerColumn]) {
       expect(el?.className).toMatch(/mx-auto/)
-      expect(el?.className).toMatch(/max-w-\[720px\]/)
+      expect(el?.className).toMatch(/max-w-\[840px\]/)
       expect(el?.className).toMatch(/w-full/)
     }
   })
@@ -274,7 +307,7 @@ describe('ChatView composer placement', () => {
     expect(stage).toBeTruthy()
     expect(transcript).toBeTruthy()
     expect(stage!.style.getPropertyValue('--vy-dock-h')).toBe(
-      `${120 + COMPOSER_DOCK_FADE_PX}px`
+      `${120 + COMPOSER_DOCK_FADE_PX + COMPOSER_DOCK_CLEARANCE_PX}px`
     )
     expect(transcript!.style.paddingBottom).toBe('var(--vy-dock-h, 8rem)')
   })

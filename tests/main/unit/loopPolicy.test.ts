@@ -9,6 +9,8 @@ import {
   loopHintForUnreadEdits,
   maxParallelReadToolsForFailureStreak,
   normalizeWorkspaceRelPath,
+  partitionReadBeforeEditCalls,
+  readBeforeEditBlockMessage,
   readPathFromToolCall,
   seedKnownPathsFromMessages,
   unreadExistingEditPaths
@@ -106,5 +108,28 @@ describe('loopPolicy', () => {
     ])
     expect(known.has('src/a.ts')).toBe(true)
     expect(known.has('src/b.ts')).toBe(true)
+  })
+
+  it('partitions require-mode unread edits; same-step read allows edit', () => {
+    const exists = (p: string) => p === 'src/a.ts'
+    const blockedOnly = partitionReadBeforeEditCalls({
+      known: new Set(),
+      calls: [{ id: '1', name: 'edit', arguments: '{"path":"src/a.ts","content":"x"}' }],
+      pathExists: exists
+    })
+    expect(blockedOnly.blocked).toHaveLength(1)
+    expect(blockedOnly.allowed).toHaveLength(0)
+    expect(readBeforeEditBlockMessage(blockedOnly.blocked[0]!.paths)).toMatch(/require/i)
+
+    const sameStep = partitionReadBeforeEditCalls({
+      known: new Set(),
+      calls: [
+        { id: '1', name: 'edit', arguments: '{"path":"src/a.ts","content":"x"}' },
+        { id: '2', name: 'read', arguments: '{"path":"src/a.ts"}' }
+      ],
+      pathExists: exists
+    })
+    expect(sameStep.blocked).toHaveLength(0)
+    expect(sameStep.allowed).toHaveLength(2)
   })
 })

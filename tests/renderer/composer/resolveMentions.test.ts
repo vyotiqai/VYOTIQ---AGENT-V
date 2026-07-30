@@ -89,7 +89,7 @@ describe('resolveComposerMentions', () => {
     })
     expect(result.text).toContain('Referenced branch diff')
     expect(result.text).toContain('diff --git')
-    expect(result.text).toContain('Browser tools are enabled')
+    expect(result.text).toContain('Prefer browser_* tools')
   })
 
   it('injects past chat excerpt', async () => {

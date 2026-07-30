@@ -36,7 +36,19 @@ describe('harness', () => {
     if (existsSync(appPath)) rmSync(appPath, { recursive: true, force: true })
   })
 
-  it('loads only from bundled resources/harness/default.md', () => {
+  it('loads from bundled resources/harness/default.md when no workspace override', () => {
+    expect(loadHarness()).toBe('# System harness\n')
+    expect(loadHarness(workspace)).toBe('# System harness\n')
+  })
+
+  it('prefers workspace resources/harness/default.md over bundled', () => {
+    mkdirSync(join(workspace, 'resources', 'harness'), { recursive: true })
+    writeFileSync(
+      join(workspace, 'resources', 'harness', 'default.md'),
+      '# Workspace harness\n',
+      'utf8'
+    )
+    expect(loadHarness(workspace)).toBe('# Workspace harness\n')
     expect(loadHarness()).toBe('# System harness\n')
   })
 

@@ -657,7 +657,7 @@ const TOOL_REGISTRY = {
   },
   subagent: {
     description:
-      'Delegate a read-only investigation to a nested agent that returns one written report.',
+      'Delegate a read-only investigation to a nested agent. Returns one report and persists it under subagents/<id>/report.md for re-read after compaction.',
     schema: subagentArgs
   },
   ask_question: {

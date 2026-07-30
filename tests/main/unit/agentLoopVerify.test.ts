@@ -12,6 +12,7 @@ const userData = join(tmpdir(), `vyotiq-verify-${process.pid}-${Date.now()}`)
 const getSettings = vi.fn(() => ({
   ...DEFAULT_SETTINGS,
   verifyBeforeDone: 'notice' as const,
+  contractDoneWhen: 'off' as const,
   provider: 'ollama' as const,
   model: 'qwen2.5',
   ollamaBaseUrl: 'http://127.0.0.1:11434',
@@ -123,6 +124,7 @@ describe('runAgent verify-before-done + receipt', () => {
     getSettings.mockImplementation(() => ({
       ...DEFAULT_SETTINGS,
       verifyBeforeDone: 'notice' as const,
+      contractDoneWhen: 'off' as const,
       provider: 'ollama' as const,
       model: 'qwen2.5',
       ollamaBaseUrl: 'http://127.0.0.1:11434',
@@ -211,10 +213,72 @@ describe('runAgent verify-before-done + receipt', () => {
     expect(receipt.diagnostics.calls).toBe(1)
   })
 
+  it('require mode still nudges when diagnostics ok:true but has error lines', async () => {
+    getSettings.mockImplementation(() => ({
+      ...DEFAULT_SETTINGS,
+      verifyBeforeDone: 'require' as const,
+      contractDoneWhen: 'off' as const,
+      provider: 'ollama' as const,
+      model: 'qwen2.5',
+      ollamaBaseUrl: 'http://127.0.0.1:11434',
+      theme: 'system' as const,
+      telemetryEnabled: false
+    }))
+    // External check dirty first, then clean so the loop can finish after the nudge.
+    toolDiagnosticsAsync
+      .mockResolvedValueOnce({
+        ok: true,
+        content: 'a.ts(1,1): error TS2322: Type bad'
+      })
+      .mockResolvedValueOnce({ ok: true, content: 'command: tsc\n\nok' })
+
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      if (call === 1) {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'd1', name: 'diagnostics', arguments: '{"kind":"typecheck"}' }
+        }
+        yield { type: 'done', stopReason: 'tool_calls' }
+        return
+      }
+      yield { type: 'text', text: `Attempt ${call}.` }
+      yield { type: 'done', stopReason: 'end_turn' }
+    })
+    // Tool result reports ok:true with errors — must not count as clean evidence.
+    executeTool.mockResolvedValue({
+      ok: true,
+      summary: 'diag',
+      content: 'a.ts(1,1): error TS2322: Type bad'
+    })
+
+    for await (const _ev of runAgent({
+      runId: 'verify-ok-true-errors',
+      messages: [{ role: 'user', content: 'do' }],
+      workspacePath: workspace,
+      mode: 'agent'
+    })) {
+      // drain
+    }
+
+    expect(call).toBeGreaterThanOrEqual(3)
+    const receipt = JSON.parse(
+      readFileSync(
+        join(resolveRunDir(workspace, 'verify-ok-true-errors'), RUN_RECEIPT_FILENAME),
+        'utf8'
+      )
+    ) as { verifyBeforeDone: { nudged: boolean; mode: string }; diagnostics: { calls: number } }
+    expect(receipt.verifyBeforeDone.mode).toBe('require')
+    expect(receipt.verifyBeforeDone.nudged).toBe(true)
+    expect(receipt.diagnostics.calls).toBe(1)
+  })
+
   it('require mode skips nudge when external typecheck is clean', async () => {
     getSettings.mockImplementation(() => ({
       ...DEFAULT_SETTINGS,
       verifyBeforeDone: 'require' as const,
+      contractDoneWhen: 'off' as const,
       provider: 'ollama' as const,
       model: 'qwen2.5',
       ollamaBaseUrl: 'http://127.0.0.1:11434',
@@ -251,30 +315,32 @@ describe('runAgent verify-before-done + receipt', () => {
     expect(receipt.verifyBeforeDone.nudged).toBe(false)
   })
 
-  it('require mode nudges once when external typecheck is dirty', async () => {
+  it('require mode keeps nudging while typecheck stays dirty, then finishes when clean', async () => {
     getSettings.mockImplementation(() => ({
       ...DEFAULT_SETTINGS,
       verifyBeforeDone: 'require' as const,
+      contractDoneWhen: 'off' as const,
       provider: 'ollama' as const,
       model: 'qwen2.5',
       ollamaBaseUrl: 'http://127.0.0.1:11434',
       theme: 'system' as const,
       telemetryEnabled: false
     }))
-    toolDiagnosticsAsync.mockResolvedValue({
-      ok: false,
-      content: 'a.ts(1,1): error TS2322: Type bad'
-    })
+    toolDiagnosticsAsync
+      .mockResolvedValueOnce({
+        ok: false,
+        content: 'a.ts(1,1): error TS2322: Type bad'
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        content: 'a.ts(1,1): error TS2322: Type bad'
+      })
+      .mockResolvedValueOnce({ ok: true, content: 'command: tsc\n\nok' })
 
     let call = 0
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
       call += 1
-      if (call === 1) {
-        yield { type: 'text', text: 'Finished.' }
-        yield { type: 'done', stopReason: 'end_turn' }
-        return
-      }
-      yield { type: 'text', text: 'Fixed after verify.' }
+      yield { type: 'text', text: `Attempt ${call}.` }
       yield { type: 'done', stopReason: 'end_turn' }
     })
 
@@ -287,8 +353,8 @@ describe('runAgent verify-before-done + receipt', () => {
       // drain
     }
 
-    expect(call).toBe(2)
-    expect(toolDiagnosticsAsync).toHaveBeenCalled()
+    expect(call).toBe(3)
+    expect(toolDiagnosticsAsync).toHaveBeenCalledTimes(3)
     const receipt = JSON.parse(
       readFileSync(
         join(resolveRunDir(workspace, 'verify-require-dirty'), RUN_RECEIPT_FILENAME),
@@ -302,6 +368,7 @@ describe('runAgent verify-before-done + receipt', () => {
     getSettings.mockImplementation(() => ({
       ...DEFAULT_SETTINGS,
       verifyBeforeDone: 'off' as const,
+      contractDoneWhen: 'off' as const,
       provider: 'ollama' as const,
       model: 'qwen2.5',
       ollamaBaseUrl: 'http://127.0.0.1:11434',

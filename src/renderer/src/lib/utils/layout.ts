@@ -1,17 +1,41 @@
 /** Shared horizontal gutter for chat column surfaces. */
 export const CHAT_GUTTER = 'px-4 sm:px-5'
 
+/**
+ * Horizontal inset for the docked chat stage (transcript + composer).
+ * Left matches {@link CHAT_GUTTER}; right clears the floating side rail (`w-10`)
+ * so content never sits under the icon strip while the scrollbar stays edge-flush.
+ */
+export const CHAT_STAGE_INSET = 'pl-4 pr-10 sm:pl-5'
+
+/** Width of the floating chat side rail (icon strip). */
+export const CHAT_SIDE_RAIL_WIDTH = 'w-10'
+
+/**
+ * Shared shell for docked right chat panels.
+ * `pr-10` clears the floating side rail so headers/body are not clipped.
+ * `min-w-0` lets the flex child shrink instead of overflowing the chat row.
+ */
+export const CHAT_RIGHT_PANEL =
+  'flex h-full min-h-0 w-[min(42vw,480px)] min-w-0 shrink-0 flex-col overflow-hidden border-l border-border/50 bg-bg pr-10'
+
 /** Shared max width for chat column content (messages + composer). */
-export const CHAT_COLUMN_MAX = 'max-w-[720px]'
+export const CHAT_COLUMN_MAX = 'max-w-[840px]'
 
 /** Centered chat column — transcript and composer share this wrapper. */
 export const CHAT_COLUMN = `mx-auto w-full ${CHAT_COLUMN_MAX}`
 
 /**
- * Fade painted above the floating composer dock (`before:h-8`). Not part of
+ * Fade painted above the floating composer dock (`before:h-6`). Not part of
  * `offsetHeight`, so transcript bottom reserve must add it explicitly.
  */
-export const COMPOSER_DOCK_FADE_PX = 32
+export const COMPOSER_DOCK_FADE_PX = 24
+
+/**
+ * Extra clearance so the last transcript row sits fully above the dock fade
+ * when scrolled to the bottom (not just flush with the fade edge).
+ */
+export const COMPOSER_DOCK_CLEARANCE_PX = 8
 
 /** Fallback dock reserve when measured height is not yet available (`8rem`). */
 export const COMPOSER_DOCK_FALLBACK_PX = 128
@@ -40,6 +64,12 @@ export const TRANSCRIPT_ROW_GAP = 'pb-2'
 /** Extra breathing room around tool activity and reasoning rows. */
 export const TRANSCRIPT_WORK_ROW_GAP = 'pb-3'
 
+/**
+ * Tight gap between interleaved thinking ↔ activity disclosures so Thought /
+ * tool pairs do not stack a full work gap on every step.
+ */
+export const TRANSCRIPT_WORK_PAIR_GAP = 'pb-1'
+
 /** Lead-in above a user prompt that opens a new turn. */
 export const TRANSCRIPT_TURN_GAP = 'pt-6'
 
@@ -52,7 +82,7 @@ export const ACTIVITY_ROW = 'text-xs tracking-[var(--vy-tracking)]'
 
 /** One line of a disclosure list: label, detail, trailing meta. */
 export const DISCLOSURE_ROW =
-  'flex min-w-0 items-baseline gap-1.5 rounded-sm py-1.5 text-xs vy-transition hover:opacity-80'
+  'flex min-w-0 items-center gap-1.5 rounded-sm py-1 text-xs vy-transition hover:opacity-80'
 
 /** Tool card chrome. */
 export const TOOL_CARD_SURFACE = 'overflow-hidden rounded-lg border border-border'

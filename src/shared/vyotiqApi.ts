@@ -9,6 +9,8 @@ import type {
   ResolveWritesResult,
   ReadRunArtifactResult,
   HarnessReviewResult,
+  HarnessPreviewApplyResult,
+  HarnessApplyResult,
   GitCommitResult,
   GitStatus,
   IpcResult,
@@ -103,6 +105,15 @@ export interface VyotiqApi {
     workspacePath: string
     limit?: number
   }) => Promise<IpcResult<HarnessReviewResult>>
+  harnessPreviewApply: (payload: {
+    workspacePath: string
+    proposalPath?: string
+  }) => Promise<IpcResult<HarnessPreviewApplyResult>>
+  harnessApply: (payload: {
+    workspacePath: string
+    proposalPath?: string
+    confirm: true
+  }) => Promise<IpcResult<HarnessApplyResult>>
   onChatEvent: (handler: (event: AgentEvent) => void) => () => void
   onToolApprovalRequest: (handler: (request: ToolApprovalRequest) => void) => () => void
   respondToolApproval: (

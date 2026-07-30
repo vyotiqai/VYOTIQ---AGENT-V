@@ -11,6 +11,7 @@ export type SlashClientHandlers = {
   onOpenMarketplace?: (mcpServerId?: string) => void
   onOpenSettings?: () => void
   onCreateRule?: (title?: string) => void | boolean | Promise<void | boolean>
+  onHarnessApply?: (proposalPath?: string) => void | boolean | Promise<void | boolean>
   onMarketplaceAction?: (
     packageId: string,
     intent: 'install' | 'enable'
@@ -80,6 +81,10 @@ async function runClientAction(
       return true
     case 'create_rule': {
       const r = await handlers.onCreateRule?.(opts.trailingText)
+      return r !== false
+    }
+    case 'harness_apply': {
+      const r = await handlers.onHarnessApply?.(opts.trailingText)
       return r !== false
     }
     default: {

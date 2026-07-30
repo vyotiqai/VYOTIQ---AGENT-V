@@ -9,6 +9,8 @@ import {
   ResolveWritesRequestSchema,
   ReadRunArtifactRequestSchema,
   HarnessReviewRequestSchema,
+  HarnessPreviewApplyRequestSchema,
+  HarnessApplyRequestSchema,
   SetSettingsRequestSchema,
   SetSecretRequestSchema,
   ClearSecretRequestSchema,
@@ -65,6 +67,8 @@ import {
   type ResolveWritesResult,
   type ReadRunArtifactResult,
   type HarnessReviewResult,
+  type HarnessPreviewApplyResult,
+  type HarnessApplyResult,
   type ListRunsResult,
   type RunSummary,
   type SecretsStatus,
@@ -110,7 +114,8 @@ import {
   createWorkspaceRule,
   openSlashFile
 } from '@main/agent/slashCommands'
-import { runHarnessReview } from '@main/agent/harnessReview'
+import { runHarnessReviewWithSettings } from '@main/agent/harnessReviewRun'
+import { applyHarnessProposal, previewHarnessApply } from '@main/agent/harnessApply'
 import {
   setSecret,
   clearSecret,
@@ -748,9 +753,44 @@ export function registerIpc(): void {
       try {
         const req = HarnessReviewRequestSchema.parse(raw)
         if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
-        return ok(runHarnessReview(req.workspacePath, { limit: req.limit }))
+        return ok(
+          await runHarnessReviewWithSettings(req.workspacePath, { limit: req.limit })
+        )
       } catch (err) {
         return failFrom(err, IPC.harnessReview)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    IPC.harnessPreviewApply,
+    async (event, raw): Promise<IpcResult<HarnessPreviewApplyResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = HarnessPreviewApplyRequestSchema.parse(raw)
+        if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+        return ok(previewHarnessApply(req.workspacePath, req.proposalPath))
+      } catch (err) {
+        return failFrom(err, IPC.harnessPreviewApply)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    IPC.harnessApply,
+    async (event, raw): Promise<IpcResult<HarnessApplyResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = HarnessApplyRequestSchema.parse(raw)
+        if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+        return ok(
+          await applyHarnessProposal(req.workspacePath, {
+            proposalPath: req.proposalPath,
+            confirm: req.confirm
+          })
+        )
+      } catch (err) {
+        return failFrom(err, IPC.harnessApply)
       }
     }
   )

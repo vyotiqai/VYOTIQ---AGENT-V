@@ -30,7 +30,8 @@ import {
   assertToolAllowedInMode,
   isPlanArtifactPath,
   isRunContractPath,
-  isRunPlanPath
+  isRunPlanPath,
+  isSubagentReportPath
 } from './modePolicy'
 import type { AgentEvent, AgentInteractionMode, AgentQuestionRequest } from '../../../shared/ipc'
 import { basename, join } from 'path'
@@ -648,6 +649,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
         signal,
         depth: context.depth ?? 0,
         parentMode: resolveAgentMode(context),
+        runDir: context.runDir,
         emit: context.onProgress,
         onContextUsage: context.onSubagentContextUsage
       })
@@ -655,8 +657,11 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       if (err instanceof SubagentDepthError) return toolFail('subagent', summary, err.message)
       throw err
     }
-    if (!outcome.ok) return toolFail('subagent', summary, outcome.report)
-    return toolOk('subagent', summary, outcome.report)
+    const persisted = outcome.reportRel
+      ? `Persisted report: ${outcome.reportRel} (re-read with \`read\` after compaction).\n\n`
+      : ''
+    if (!outcome.ok) return toolFail('subagent', summary, `${persisted}${outcome.report}`)
+    return toolOk('subagent', summary, `${persisted}${outcome.report}`)
   },
   ask_question: async (_workspace, args, signal, context) => {
     throwIfAborted(signal)
@@ -913,13 +918,15 @@ export async function executeTool(
   const handler = BUILTIN_HANDLERS[name as AgentToolName]
 
   // Remap run artifacts to the run directory (not the workspace root):
-  // Plan: plan.md + contract.md; Agent: contract.md + existing plan.md.
+  // Plan: plan.md + contract.md; Agent: contract.md + existing plan.md;
+  // Any mode: subagents/<id>/report.md|status.json (file-backed subagent reports).
   let effectiveWorkspace = workspace
   let effectiveArgs = args
   let effectiveContext = context
 
   const shouldRemapPath = (pathArg: string): boolean => {
     if (!pathArg) return false
+    if (isSubagentReportPath(pathArg)) return true
     if (agentMode === 'plan' && isPlanArtifactPath(pathArg)) return true
     if (agentMode === 'agent' && isRunContractPath(pathArg)) return true
     if (
@@ -933,6 +940,12 @@ export async function executeTool(
     return false
   }
 
+  const remapPathArg = (pathArg: string): string => {
+    const n = pathArg.replace(/\\/g, '/').replace(/^\.\//, '')
+    if (isSubagentReportPath(n)) return n
+    return basename(n)
+  }
+
   if (name === 'multi_edit' && Array.isArray(args.edits)) {
     const edits = args.edits as Array<Record<string, unknown>>
     let anyRemap = false
@@ -940,7 +953,7 @@ export async function executeTool(
       const p = typeof edit.path === 'string' ? edit.path : ''
       if (!shouldRemapPath(p)) return edit
       anyRemap = true
-      return { ...edit, path: basename(p.replace(/\\/g, '/')) }
+      return { ...edit, path: remapPathArg(p) }
     })
     if (anyRemap) {
       if (!context.runDir) {
@@ -958,8 +971,21 @@ export async function executeTool(
       if (!context.runDir) {
         return toolFail(name, summary, 'Run artifacts require an active run directory')
       }
+      // Subagent reports are read-only via remapping (edits stay on contract/plan only).
+      if (
+        (name === 'edit' || name === 'str_replace') &&
+        isSubagentReportPath(pathArg) &&
+        !isPlanArtifactPath(pathArg) &&
+        !isRunContractPath(pathArg)
+      ) {
+        return toolFail(
+          name,
+          summary,
+          'Sub-agent reports are read-only. Use `read` on subagents/<id>/report.md.'
+        )
+      }
       effectiveWorkspace = context.runDir
-      effectiveArgs = { ...args, path: basename(pathArg.replace(/\\/g, '/')) }
+      effectiveArgs = { ...args, path: remapPathArg(pathArg) }
       if (name === 'edit' || name === 'str_replace') {
         effectiveContext = { ...context, skipWriteCheckpoint: true }
       }

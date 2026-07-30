@@ -1,8 +1,9 @@
 import { useMemo } from 'react'
 import { cn } from '@renderer/lib/ui'
 import { Icon } from '@renderer/lib/icons'
+import { CHAT_RIGHT_PANEL } from '@renderer/lib/utils/layout'
 import type { UiItem } from '@shared/transcript'
-import { isProminentTool } from '../toolUi'
+import { getToolHeaderMeta, isProminentTool } from '../toolUi'
 import { TerminalBody } from '../toolUi/bodies/TerminalBody'
 import type { ToolItem } from '../utils/transcriptRows'
 import { useFullToolContent } from './useFullToolContent'
@@ -36,12 +37,17 @@ function TerminalPanelEntry({
 }) {
   const enabled = item.tool.contentTruncated === true
   const { loading, failed } = useFullToolContent(item.tool, enabled, onLoadToolContent)
+  const headerMeta = getToolHeaderMeta(item.tool)
+  const headerLabel = [headerMeta.verb, headerMeta.target].filter(Boolean).join(' ')
   return (
     <li className="overflow-hidden rounded-md border border-border/50 bg-surface">
       <div className="flex items-center gap-2 border-b border-border/40 px-3 py-1.5 text-[11px]">
         <Icon name="terminal" size={12} className="text-muted" />
-        <span className="min-w-0 flex-1 truncate font-mono text-fg" title={item.tool.summary}>
-          {item.tool.summary || item.tool.name}
+        <span
+          className="min-w-0 flex-1 truncate text-fg"
+          title={headerMeta.target || item.tool.summary || item.tool.name}
+        >
+          {headerLabel || item.tool.summary || item.tool.name}
         </span>
         <span
           className={cn(
@@ -91,15 +97,12 @@ export function TerminalPanel({
 
   return (
     <aside
-      className={cn(
-        'flex h-full min-h-0 w-[min(42vw,480px)] shrink-0 flex-col overflow-hidden border-l border-border/50 bg-bg',
-        className
-      )}
+      className={cn(CHAT_RIGHT_PANEL, className)}
       data-terminal-panel
       aria-label="Terminal panel"
     >
       <PanelHeader title="Terminal" onClose={onClose} />
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto">
         {terminals.length === 0 ? (
           <EmptyPanel
             icon="terminal"

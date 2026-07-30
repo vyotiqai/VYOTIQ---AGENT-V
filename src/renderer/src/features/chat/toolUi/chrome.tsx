@@ -46,7 +46,7 @@ export function ProminentChrome({
           <Icon
             name="chevronRight"
             size={14}
-            className={cn('ml-auto shrink-0 text-tertiary vy-transition', expanded && 'rotate-90')}
+            className={cn('shrink-0 text-tertiary vy-transition', expanded && 'rotate-90')}
           />
         ) : null}
       </button>
@@ -116,7 +116,7 @@ export const CompactRow = memo(function CompactRow({
           <Icon
             name="chevronRight"
             size={14}
-            className={cn('text-tertiary vy-transition', expanded && 'rotate-90')}
+            className={cn('shrink-0 text-tertiary vy-transition', expanded && 'rotate-90')}
           />
         ) : null}
       </span>

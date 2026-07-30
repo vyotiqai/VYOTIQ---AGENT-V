@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { cn } from '@renderer/lib/ui'
 import { MarkdownContent } from '@renderer/lib/ui/MarkdownContent'
+import { CHAT_RIGHT_PANEL } from '@renderer/lib/utils/layout'
 import type { RunReceipt } from '@shared/ipc'
+import { RunReceiptSchema } from '@shared/ipc'
 import { EmptyPanel, PanelHeader } from './PanelChrome'
 import { isPlanDraftReady } from './composer/PlanHandoff'
 
@@ -9,8 +11,15 @@ type ArtifactTab = 'plan' | 'contract' | 'receipt'
 
 const POLL_MS_WHILE_RUNNING = 2000
 
+const TAB_TITLE: Record<ArtifactTab, string> = {
+  plan: 'Plan',
+  contract: 'Contract',
+  receipt: 'Receipt'
+}
+
 function ReceiptSummary({ receipt }: { receipt: RunReceipt }) {
   const failTop = receipt.failureClusters.slice(0, 5)
+  const subagents = receipt.subagents
   return (
     <div className="space-y-3 text-sm" data-receipt-summary>
       <section>
@@ -50,6 +59,41 @@ function ReceiptSummary({ receipt }: { receipt: RunReceipt }) {
           {receipt.diagnostics.ok}/{receipt.diagnostics.calls}
         </p>
       </section>
+
+      <section>
+        <h3 className="m-0 text-xs font-medium uppercase tracking-wide text-muted">
+          Contract done-when
+        </h3>
+        <p className="m-0 mt-1 text-xs">
+          mode={receipt.contractDoneWhen.mode} · nudged=
+          {receipt.contractDoneWhen.nudged ? 'yes' : 'no'} · checkable=
+          {receipt.contractDoneWhen.checkableCriteria}
+        </p>
+        {receipt.contractDoneWhen.unmetCriteria &&
+        receipt.contractDoneWhen.unmetCriteria.length > 0 ? (
+          <ul className="mt-1 list-disc pl-4 text-xs text-muted">
+            {receipt.contractDoneWhen.unmetCriteria.slice(0, 8).map((u) => (
+              <li key={u}>{u}</li>
+            ))}
+          </ul>
+        ) : null}
+      </section>
+
+      {subagents && subagents.length > 0 ? (
+        <section>
+          <h3 className="m-0 text-xs font-medium uppercase tracking-wide text-muted">
+            Subagents
+          </h3>
+          <ul className="mt-1 list-disc pl-4 text-xs text-muted">
+            {subagents.map((s) => (
+              <li key={s.id}>
+                {s.id} · {s.status}
+                {s.reportPath ? ` · ${s.reportPath}` : ''}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       {receipt.unreadEditPaths.length > 0 ? (
         <section>
@@ -119,10 +163,14 @@ export function PlanPanel({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const wasRunningRef = useRef(running)
+  const loadSeqRef = useRef(0)
 
   const load = useCallback(
     async (opts?: { quiet?: boolean }) => {
+      const seq = ++loadSeqRef.current
+      const requestedTab = tab
       if (!workspacePath || !runId) {
+        if (seq !== loadSeqRef.current) return
         setContent(null)
         setReceipt(null)
         setError(null)
@@ -134,8 +182,13 @@ export function PlanPanel({
       }
       try {
         const name =
-          tab === 'plan' ? 'plan.md' : tab === 'contract' ? 'contract.md' : 'receipt.json'
+          requestedTab === 'plan'
+            ? 'plan.md'
+            : requestedTab === 'contract'
+              ? 'contract.md'
+              : 'receipt.json'
         const res = await window.vyotiq.readRunArtifact({ workspacePath, runId, name })
+        if (seq !== loadSeqRef.current) return
         if (!res.ok) {
           setContent(null)
           setReceipt(null)
@@ -148,28 +201,39 @@ export function PlanPanel({
           setError(null)
           return
         }
-        if (tab === 'receipt') {
-          const raw = res.data.content ?? ''
+        if (requestedTab === 'receipt') {
+          const rawText = res.data.content ?? ''
+          let raw: unknown
           try {
-            setReceipt(JSON.parse(raw) as RunReceipt)
-            setContent(null)
-            setError(null)
+            raw = JSON.parse(rawText) as unknown
           } catch {
             setReceipt(null)
             setContent(null)
             setError('Invalid receipt.json')
+            return
           }
+          const parsed = RunReceiptSchema.safeParse(raw)
+          if (!parsed.success) {
+            setReceipt(null)
+            setContent(null)
+            setError('Invalid receipt.json')
+            return
+          }
+          setReceipt(parsed.data)
+          setContent(null)
+          setError(null)
         } else {
           setReceipt(null)
           setContent(res.data.content)
           setError(null)
         }
       } catch (err) {
+        if (seq !== loadSeqRef.current) return
         setContent(null)
         setReceipt(null)
         setError(err instanceof Error ? err.message : 'Failed to load artifact')
       } finally {
-        if (!opts?.quiet) setLoading(false)
+        if (seq === loadSeqRef.current && !opts?.quiet) setLoading(false)
       }
     },
     [workspacePath, runId, tab]
@@ -197,6 +261,7 @@ export function PlanPanel({
     return () => window.clearInterval(id)
   }, [running, workspacePath, runId, load])
 
+  const panelTitle = TAB_TITLE[tab]
   const emptyTitle =
     tab === 'plan'
       ? !content || !isPlanDraftReady(content)
@@ -221,15 +286,12 @@ export function PlanPanel({
 
   return (
     <aside
-      className={cn(
-        'flex h-full min-h-0 w-[min(42vw,480px)] shrink-0 flex-col overflow-hidden border-l border-border/50 bg-bg',
-        className
-      )}
+      className={cn(CHAT_RIGHT_PANEL, className)}
       data-plan-panel
-      aria-label="Plan panel"
+      aria-label={`${panelTitle} panel`}
     >
-      <PanelHeader title="Plan" onClose={onClose} />
-      <div className="flex shrink-0 gap-1 border-b border-border/40 px-2 py-1.5">
+      <PanelHeader title={panelTitle} onClose={onClose} />
+      <div className="flex min-w-0 shrink-0 gap-1 overflow-x-auto border-b border-border/40 px-2 py-1.5">
         {(
           [
             { id: 'plan', label: 'plan.md' },
@@ -241,7 +303,7 @@ export function PlanPanel({
             key={item.id}
             type="button"
             className={cn(
-              'rounded px-2 py-1 text-xs',
+              'shrink-0 rounded px-2 py-1 text-xs',
               tab === item.id ? 'bg-surface text-fg' : 'text-muted hover:text-fg'
             )}
             aria-pressed={tab === item.id}
@@ -251,7 +313,7 @@ export function PlanPanel({
           </button>
         ))}
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-3">
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto p-3 [overflow-wrap:anywhere]">
         {loading ? (
           <p className="m-0 text-xs text-muted">Loading…</p>
         ) : error ? (

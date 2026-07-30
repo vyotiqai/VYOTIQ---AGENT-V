@@ -1,5 +1,5 @@
 import { IconButton, cn } from '@renderer/lib/ui'
-import type { ChatRightPanelId } from '@renderer/lib/utils/layout'
+import { CHAT_SIDE_RAIL_WIDTH, type ChatRightPanelId } from '@renderer/lib/utils/layout'
 import type { IconName } from '@renderer/lib/icons'
 
 const RAIL_ITEMS: Array<{
@@ -30,8 +30,9 @@ const RAIL_ITEMS: Array<{
 ]
 
 /**
- * In-layout right rail for toggling chat secondary panels.
- * Kept non-overlay to avoid layout/position inconsistencies.
+ * Floating right rail for toggling chat secondary panels.
+ * Overlays the pane edge so the transcript can scroll edge-to-edge (scrollbar
+ * sits under the rail rather than stopping short of it).
  */
 export function ChatSideRail({
   activePanel,
@@ -48,7 +49,8 @@ export function ChatSideRail({
   return (
     <aside
       className={cn(
-        'flex h-full w-10 shrink-0 flex-col items-center justify-start gap-1 pt-2',
+        'pointer-events-none absolute inset-y-0 right-0 z-sticky flex h-full flex-col items-center justify-start gap-1 bg-gradient-to-l from-bg via-bg/80 to-transparent pt-2',
+        CHAT_SIDE_RAIL_WIDTH,
         className
       )}
       data-chat-side-rail
@@ -58,7 +60,7 @@ export function ChatSideRail({
         const open = activePanel === item.id
         const accent = item.id === 'browser' && browserActive && !open
         return (
-          <div key={item.id} className="relative">
+          <div key={item.id} className="pointer-events-auto relative">
             <IconButton
               icon={item.icon}
               label={open ? item.hideLabel : item.showLabel}

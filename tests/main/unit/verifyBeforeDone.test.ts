@@ -21,7 +21,7 @@ import {
 } from '@main/agent/verifyBeforeDone'
 
 describe('verifyBeforeDone', () => {
-  it('detects successful diagnostics tool evidence', () => {
+  it('detects clean diagnostics tool evidence only', () => {
     const messages: ChatMessage[] = [
       { role: 'tool', toolCallId: '1', toolName: 'diagnostics', ok: true, content: 'ok' },
       { role: 'tool', toolCallId: '2', toolName: 'read', ok: true, content: 'x' }
@@ -33,6 +33,20 @@ describe('verifyBeforeDone', () => {
       ])
     ).toBe(false)
     expect(runHasDiagnosticsEvidence([])).toBe(false)
+  })
+
+  it('treats ok:true with error-severity lines as not evidence', () => {
+    expect(
+      runHasDiagnosticsEvidence([
+        {
+          role: 'tool',
+          toolCallId: '1',
+          toolName: 'diagnostics',
+          ok: true,
+          content: 'a.ts(1,1): error TS2322: Type bad'
+        }
+      ])
+    ).toBe(false)
   })
 
   it('nudges only in agent mode with notice/require when lacking evidence', () => {
@@ -77,6 +91,15 @@ describe('verifyBeforeDone', () => {
         verifyMode: 'require',
         agentMode: 'agent',
         hasEvidence: false,
+        alreadyNudged: true,
+        incomplete: undefined
+      })
+    ).toBe(true)
+    expect(
+      shouldNudgeVerifyBeforeDone({
+        verifyMode: 'require',
+        agentMode: 'agent',
+        hasEvidence: false,
         alreadyNudged: false,
         incomplete: 'truncated'
       })
@@ -94,7 +117,8 @@ describe('verifyBeforeDone', () => {
 
   it('builds distinct notice vs require nudge copy', () => {
     expect(verifyNudgeMessage('notice')).toMatch(/soft reminder/i)
-    expect(verifyNudgeMessage('require')).toMatch(/set to require/i)
+    expect(verifyNudgeMessage('require')).toMatch(/cannot finish while typecheck is dirty/i)
+    expect(verifyNudgeMessage('require')).toMatch(/clean `diagnostics`/i)
     expect(verifyNudgeMessage('require', 'errors here')).toMatch(/errors here/)
   })
 

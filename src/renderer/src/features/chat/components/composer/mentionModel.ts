@@ -440,7 +440,7 @@ export function buildRootMentionItems(opts: {
       id: 'browser',
       kind: 'browser',
       label: 'Browser',
-      subtitle: 'Enable browser tools'
+      subtitle: 'Prefer browser_* tools this turn'
     })
   }
   if (lintsOk) {

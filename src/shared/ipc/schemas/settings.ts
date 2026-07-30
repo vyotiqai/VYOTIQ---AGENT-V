@@ -100,6 +100,14 @@ export type ToolApprovalMode = z.infer<typeof ToolApprovalModeSchema>
 export const VerifyBeforeDoneModeSchema = z.enum(['off', 'notice', 'require'])
 export type VerifyBeforeDoneMode = z.infer<typeof VerifyBeforeDoneModeSchema>
 
+/** Mechanical contract Done-when gate (paths + typecheck bullets) in Agent mode. */
+export const ContractDoneWhenModeSchema = z.enum(['off', 'notice', 'require'])
+export type ContractDoneWhenMode = z.infer<typeof ContractDoneWhenModeSchema>
+
+/** Soft / hard read-before-edit gate for write tools in Agent mode. */
+export const ReadBeforeEditModeSchema = z.enum(['off', 'notice', 'require'])
+export type ReadBeforeEditMode = z.infer<typeof ReadBeforeEditModeSchema>
+
 export const TerminalShellSchema = z.enum(['auto', 'cmd', 'powershell', 'bash'])
 export type TerminalShell = z.infer<typeof TerminalShellSchema>
 
@@ -147,6 +155,23 @@ export const SettingsSchema = z.object({
    * Default `notice` — nudge once when finishing without diagnostics evidence.
    */
   verifyBeforeDone: VerifyBeforeDoneModeSchema.default('notice'),
+  /**
+   * Mechanical contract Done-when gate in Agent mode.
+   * Parses checkable bullets from `contract.md` (file paths, typecheck language).
+   * Default `require` — keep blocking finish while those criteria are unmet.
+   */
+  contractDoneWhen: ContractDoneWhenModeSchema.default('require'),
+  /**
+   * Read-before-edit for existing files in Agent mode.
+   * `off` — no notice/block. `notice` — soft run notice after unread edits.
+   * `require` — block edit/str_replace/multi_edit until the path was inspected this run.
+   */
+  readBeforeEdit: ReadBeforeEditModeSchema.default('notice'),
+  /**
+   * When true, `/harness-review` may one-shot rewrite the proposed harness body via the LLM.
+   * Default off — rule-based notes-append only. Apply stays human-gated.
+   */
+  harnessProposalRewriter: z.boolean().default(false),
   /** When set, sub-agents use this provider instead of `provider`. */
   subagentProvider: ProviderIdSchema.optional(),
   /** When set, sub-agents use this model instead of `model`. */
@@ -177,6 +202,9 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalShell: 'auto',
   diagnosticsCommand: '',
   verifyBeforeDone: 'notice',
+  contractDoneWhen: 'require',
+  readBeforeEdit: 'notice',
+  harnessProposalRewriter: false,
   marketplace: DEFAULT_MARKETPLACE_SETTINGS
 }
 

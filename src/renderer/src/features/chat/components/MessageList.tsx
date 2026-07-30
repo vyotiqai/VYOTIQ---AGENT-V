@@ -6,10 +6,11 @@ import type { UiItem } from '@shared/transcript'
 import type { ToolApprovalDecision } from '@shared/ipc'
 import {
   CHAT_COLUMN,
-  CHAT_GUTTER,
+  CHAT_STAGE_INSET,
   TOOL_BODY_CLAMP_PX,
   TRANSCRIPT_ROW_GAP,
   TRANSCRIPT_TURN_GAP,
+  TRANSCRIPT_WORK_PAIR_GAP,
   TRANSCRIPT_WORK_ROW_GAP
 } from '@renderer/lib/utils/layout'
 import {
@@ -47,8 +48,8 @@ function turnWorkPanelId(
   return `turn-work-${row.turnIndex}`
 }
 
-/** ~chars per visual line in the 720px chat column at text-sm. */
-const CHARS_PER_LINE = 56
+/** ~chars per visual line in the 840px chat column at text-sm. */
+const CHARS_PER_LINE = 65
 const LINE_PX = 22
 
 /**
@@ -209,12 +210,18 @@ function ImageLightbox({ url, label, onClose }: { url: string; label: string; on
 }
 
 /** Spacing as padding (not margin) so row rhythm stays consistent. */
-function rowSpacingClass(row: TranscriptRow): string {
+function rowSpacingClass(row: TranscriptRow, next?: TranscriptRow): string {
   if (row.kind === 'turn') {
     return cn('pt-1', TRANSCRIPT_ROW_GAP)
   }
-  const gap =
+  const isWork =
     row.kind === 'activity' || row.kind === 'thinking' || row.kind === 'card'
+  const tightPair =
+    (row.kind === 'thinking' && next?.kind === 'activity') ||
+    (row.kind === 'activity' && next?.kind === 'thinking')
+  const gap = tightPair
+    ? TRANSCRIPT_WORK_PAIR_GAP
+    : isWork
       ? TRANSCRIPT_WORK_ROW_GAP
       : TRANSCRIPT_ROW_GAP
   return cn(gap, rowLeadingGap(row) > 0 && TRANSCRIPT_TURN_GAP)
@@ -462,7 +469,7 @@ export function MessageList({
     const visible = collapsedTurnSet.size === 0
       ? allRows
       : allRows.filter((row) => !(collapsedTurnSet.has(row.turnIndex) && isTurnWorkRow(row)))
-    // Drop thinking rows that would render null — they still reserved virtual slots / padding.
+    // Hide thinking when showThinking is off; otherwise drop empty rows ThinkingBlock skips.
     if (!showThinking) {
       return visible.filter((row) => row.kind !== 'thinking')
     }
@@ -816,7 +823,10 @@ export function MessageList({
       <div
         ref={containerRef}
         data-transcript-scroll
-        className={cn('relative min-h-0 flex-1 overflow-auto pt-4', CHAT_GUTTER)}
+        className={cn(
+          'relative min-h-0 flex-1 overflow-auto pt-4 [scrollbar-gutter:stable]',
+          CHAT_STAGE_INSET
+        )}
         style={dockReserveStyle}
         onScroll={(e) => handleScroll(e.currentTarget.scrollTop)}
       >
@@ -871,7 +881,7 @@ export function MessageList({
                       <div
                         key={row.id}
                         id={turnWorkPanelId(row, displayRows, index)}
-                        className={rowSpacingClass(row)}
+                        className={rowSpacingClass(row, displayRows[index + 1])}
                       >
                         {renderRow(row)}
                       </div>
@@ -896,7 +906,10 @@ export function MessageList({
                         data-index={virtualItem.index}
                         ref={rowVirtualizer.measureElement}
                         id={turnWorkPanelId(row, displayRows, virtualItem.index)}
-                        className={cn('absolute left-0 top-0 w-full', rowSpacingClass(row))}
+                        className={cn(
+                          'absolute left-0 top-0 w-full',
+                          rowSpacingClass(row, displayRows[virtualItem.index + 1])
+                        )}
                         style={{ transform: `translateY(${virtualItem.start}px)` }}
                       >
                         {renderRow(row)}

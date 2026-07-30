@@ -3,6 +3,7 @@ import { cn } from '@renderer/lib/ui'
 import { TOOL_BODY_INNER } from '@renderer/lib/utils/layout'
 import { formatTokens } from '@renderer/lib/utils/formatTokens'
 import { MarkdownContent } from '@renderer/lib/ui'
+import { useRunSession } from '../../RunSessionContext'
 import type { ToolBodyProps } from '../types'
 import type { SubagentContextUsageState } from '@shared/utils/contextUsage'
 
@@ -46,11 +47,17 @@ export function SubagentBody({
   subagent,
   subagentContextUsage
 }: ToolBodyProps) {
+  const { agentMode } = useRunSession()
   const steps = subagent ?? []
   const report = (tool.content ?? '').trim()
 
   return (
     <div className="flex flex-col gap-1">
+      {agentMode === 'ask' ? (
+        <p className={cn(TOOL_BODY_INNER, 'm-0 text-[10px] text-tertiary')}>
+          Diagnostics is unavailable to sub-agents in Ask mode.
+        </p>
+      ) : null}
       {subagentContextUsage ? <SubagentContextBar usage={subagentContextUsage} /> : null}
       {steps.length > 0 ? (
         <ul className={cn(TOOL_BODY_INNER, 'm-0 list-none space-y-1 p-0')}>

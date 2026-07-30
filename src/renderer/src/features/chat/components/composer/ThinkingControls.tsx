@@ -96,7 +96,7 @@ export function ThinkingControls({
         aria-label={ariaLabel}
         title={running ? ariaLabel : `${ariaLabel} Shift-click for previous.`}
         className={cn(
-          'inline-flex h-7 items-center rounded-xl px-1.5 text-[11px] leading-none tracking-[var(--vy-tracking)]',
+          'inline-flex h-7 items-center gap-0 rounded-xl px-1.5 text-[11px] leading-none tracking-[var(--vy-tracking)]',
           'vy-transition hover:bg-surface hover:text-fg active:bg-surface',
           'disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]',
           on ? 'text-fg' : 'text-muted'
@@ -107,7 +107,7 @@ export function ThinkingControls({
           advance(e.shiftKey)
         }}
       >
-        <span className="truncate">
+        <span className="inline-flex min-w-0 items-center truncate leading-none">
           Think
           <span className={cn('text-tertiary', on && 'text-muted')}> · </span>
           <span className={on ? 'text-fg' : 'text-tertiary'}>{current.short}</span>

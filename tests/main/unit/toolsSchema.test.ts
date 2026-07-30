@@ -88,7 +88,11 @@ describe('harness tool catalog', () => {
     expect(harness).toMatch(/not Keep\/Discard checkpointed/i)
     expect(harness).toMatch(/receipt\.json/i)
     expect(harness).toMatch(/Verify before done|verify-before-done|soft-nudge/i)
+    expect(harness).toMatch(/Contract done-when|contractDoneWhen|mechanically checked/i)
     expect(harness).toMatch(/harness-review|harness\/proposals/i)
+    expect(harness).toMatch(/harness-apply/i)
+    expect(harness).toMatch(/not unsupervised Self-Harness|human review scaffold/i)
+    expect(harness).toMatch(/normal PR/i)
     expect(harness).toMatch(/mode section/i)
     expect(harness).not.toMatch(/or graph search/)
     // Mode-specific diagnostics / terminal / subagent rules live in modeSectionMarkdown.

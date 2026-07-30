@@ -92,7 +92,7 @@ describe('PlanPanel', () => {
         name: 'receipt.json',
         exists: true,
         content: JSON.stringify({
-          version: 2,
+          version: 4,
           writtenAt: '2026-07-30T00:00:00.000Z',
           runId: 'run-3',
           status: 'done',
@@ -108,7 +108,15 @@ describe('PlanPanel', () => {
             nudged: true,
             victoryClaimWithoutTools: false
           },
-          contractExcerpt: ''
+          contractDoneWhen: {
+            mode: 'require',
+            nudged: false,
+            checkableCriteria: 0
+          },
+          contractExcerpt: '',
+          subagents: [
+            { id: 'sa-1', status: 'ok', reportPath: 'subagents/sa-1/report.md' }
+          ]
         })
       }
     })
@@ -128,6 +136,63 @@ describe('PlanPanel', () => {
       expect(screen.getByText(/3 calls/)).toBeTruthy()
       expect(screen.getByText('x.ts')).toBeTruthy()
       expect(screen.getByText('y.ts')).toBeTruthy()
+      expect(screen.getByText(/sa-1 · ok/)).toBeTruthy()
+    })
+    expect(screen.getByLabelText('Receipt panel')).toBeTruthy()
+  })
+
+  it('ignores stale tab responses when switching tabs quickly', async () => {
+    let resolvePlan: ((v: unknown) => void) | undefined
+    const planPromise = new Promise((resolve) => {
+      resolvePlan = resolve
+    })
+    window.vyotiq.readRunArtifact = vi.fn().mockImplementation(({ name }) => {
+      if (name === 'plan.md') return planPromise
+      return Promise.resolve({
+        ok: true,
+        data: { name: 'contract.md', exists: true, content: '## Goal\n\nContract win\n' }
+      })
+    })
+
+    render(<PlanPanel workspacePath="/ws" runId="run-race" running={false} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'contract.md' }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Contract win')).toBeTruthy()
+    })
+
+    resolvePlan?.({
+      ok: true,
+      data: {
+        name: 'plan.md',
+        exists: true,
+        content: '# Comprehensive plan\n\n## Goal\n\nStale plan text\n'
+      }
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByText('Stale plan text')).toBeNull()
+      expect(screen.getByText('Contract win')).toBeTruthy()
+    })
+    expect(screen.getByLabelText('Contract panel')).toBeTruthy()
+  })
+
+  it('rejects invalid receipt.json via safeParse', async () => {
+    window.vyotiq.readRunArtifact = vi.fn().mockResolvedValue({
+      ok: true,
+      data: {
+        name: 'receipt.json',
+        exists: true,
+        content: JSON.stringify({ version: 1, runId: 'bad' })
+      }
+    })
+
+    render(<PlanPanel workspacePath="/ws" runId="run-bad" running={false} />)
+    fireEvent.click(screen.getByRole('button', { name: 'receipt.json' }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Invalid receipt.json')).toBeTruthy()
     })
   })
 })

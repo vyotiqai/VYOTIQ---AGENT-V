@@ -16,7 +16,7 @@ export type ResolveMentionsResult = {
 }
 
 const BROWSER_INSTRUCTION =
-  'Browser tools are enabled for this turn. Prefer browser_* tools when web page interaction or inspection is needed.'
+  'Prefer browser_* tools this turn when page interaction or inspection helps. Browser tools still follow mode and approval rules.'
 
 function visibleUserText(raw: string): string {
   return parseComposerDocument(raw)

@@ -10,8 +10,31 @@ function bundledHarnessPath(): string {
   return join(base, 'harness', 'default.md')
 }
 
-/** Read the bundled system harness. */
-export function loadHarness(): string {
+function workspaceHarnessPath(workspaceRoot: string): string {
+  return join(workspaceRoot, 'resources', 'harness', 'default.md')
+}
+
+/**
+ * Read the system harness. Prefers workspace `resources/harness/default.md` when
+ * present (e.g. after `/harness-apply`), else the bundled copy, else a one-liner.
+ * Loaded once per invoke — applied text is seen on the next invoke / new run, not mid-step.
+ */
+export function loadHarness(workspaceRoot?: string): string {
+  if (workspaceRoot) {
+    const wsPath = workspaceHarnessPath(workspaceRoot)
+    try {
+      if (existsSync(wsPath)) {
+        return readFileSync(wsPath, 'utf8')
+      }
+    } catch (err) {
+      logger.warn('Workspace harness unreadable; trying bundled', {
+        scope: 'harness',
+        path: wsPath,
+        err
+      })
+    }
+  }
+
   const harnessPath = bundledHarnessPath()
   try {
     if (!existsSync(harnessPath)) {

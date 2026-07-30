@@ -39,6 +39,8 @@ const VYOTIQ_INVOKE_MAP: Record<
   resolveWrites: IPC.runsResolveWrites,
   readRunArtifact: IPC.runsReadArtifact,
   harnessReview: IPC.harnessReview,
+  harnessPreviewApply: IPC.harnessPreviewApply,
+  harnessApply: IPC.harnessApply,
   respondToolApproval: IPC.toolApprovalResponse,
   listPendingToolApprovals: IPC.toolApprovalListPending,
   respondAgentQuestion: IPC.agentQuestionResponse,
@@ -138,7 +140,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(false)
     }
-    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(80)
+    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(82)
   })
 
   it('maps every VyotiqApi push listener to a push channel', () => {

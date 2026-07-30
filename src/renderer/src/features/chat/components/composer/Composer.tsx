@@ -4,7 +4,7 @@ import { buildUserContent } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { triggerKey } from '@shared/slashCommands'
 import { Alert, cn } from '@renderer/lib/ui'
-import { CHAT_COLUMN, CHAT_GUTTER, FLOATING_CHROME, FLOATING_CHROME_SHADOW_BOTTOM } from '@renderer/lib/utils/layout'
+import { CHAT_COLUMN, CHAT_STAGE_INSET, FLOATING_CHROME, FLOATING_CHROME_SHADOW_BOTTOM } from '@renderer/lib/utils/layout'
 import { ComposerMentionInput, type ComposerMentionInputHandle } from './ComposerMentionInput'
 import { ComposerToolbar, type ComposerVariant } from './ComposerToolbar'
 import { ComposerAttachments } from './ComposerAttachments'
@@ -429,9 +429,11 @@ export function Composer({
     <div
       className={cn(
         isDock
-          ? 'pointer-events-none absolute inset-x-0 bottom-0 z-sticky bg-bg pb-3 before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-8 before:bg-gradient-to-t before:from-bg before:to-transparent'
+          ? // Full-bleed dock: scrollbar-gutter matches the transcript scrollport so
+            // the centered column stays aligned. Side-rail pad clears the floating rail.
+            'pointer-events-none absolute inset-x-0 bottom-0 z-sticky overflow-y-hidden bg-bg pb-3 [scrollbar-gutter:stable] before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-6 before:bg-gradient-to-t before:from-bg before:via-bg/70 before:to-transparent'
           : 'shrink-0 w-full pb-0 pt-0',
-        isDock ? CHAT_GUTTER : '',
+        isDock ? CHAT_STAGE_INSET : '',
         className
       )}
       data-composer-dock={isDock ? true : undefined}
@@ -500,17 +502,19 @@ export function Composer({
               onCaretChange={(offset) => setCursor(offset)}
               placeholder={
                 composerPlaceholder ??
-                (agentMode === 'ask'
-                  ? hasTranscript
-                    ? 'Ask a follow-up (read-only) — @ for context'
-                    : 'Ask about the codebase — @ for context'
-                  : agentMode === 'plan'
+                (!hasWorkspace
+                  ? 'Open a workspace to start chatting'
+                  : agentMode === 'ask'
                     ? hasTranscript
-                      ? 'Refine the plan… — @ for context'
-                      : 'Describe what to plan… — @ for context'
-                    : hasTranscript
-                      ? 'Send follow-up — @ for context'
-                      : 'Send a message — @ for context')
+                      ? 'Ask a follow-up (read-only) — @ for context'
+                      : 'Ask about the codebase — @ for context'
+                    : agentMode === 'plan'
+                      ? hasTranscript
+                        ? 'Refine the plan… — @ for context'
+                        : 'Describe what to plan… — @ for context'
+                      : hasTranscript
+                        ? 'Send follow-up — @ for context'
+                        : 'Send a message — @ for context')
               }
               disabled={locked}
               aria-expanded={slash.open || mentions.open}

@@ -61,8 +61,12 @@ import {
   runSubagent,
   SubagentDepthError,
   SUBAGENT_TOOLS,
+  writeSubagentReportFiles,
   type SubagentUpdate
 } from '@main/agent/subagent'
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
 
 function stream(chunks: StreamChunk[]) {
   return async function* () {
@@ -605,5 +609,49 @@ describe('runSubagent', () => {
     expect(result.ok).toBe(false)
     expect(result.report).toContain('invalid_api_key')
     expect(streamChat).toHaveBeenCalledTimes(1)
+  })
+
+  it('persists report under runDir/subagents when runDir is set', async () => {
+    const runDir = join(tmpdir(), `vyotiq-sub-report-${process.pid}-${Date.now()}`)
+    mkdirSync(runDir, { recursive: true })
+    try {
+      streamChat.mockImplementation(
+        stream([{ type: 'text', text: 'Found in a.ts:1.' }, { type: 'done' }])
+      )
+      const outcome = await runSubagent({
+        task: 'Where is foo?',
+        workspace: '/ws',
+        signal: new AbortController().signal,
+        depth: 0,
+        runDir
+      })
+      expect(outcome.ok).toBe(true)
+      expect(outcome.reportRel).toMatch(/^subagents\/[a-f0-9]+\/report\.md$/)
+      const abs = join(runDir, outcome.reportRel!)
+      expect(existsSync(abs)).toBe(true)
+      expect(readFileSync(abs, 'utf8')).toMatch(/Found in a\.ts:1/)
+      expect(existsSync(join(runDir, 'subagents', outcome.reportRel!.split('/')[1]!, 'status.json'))).toBe(
+        true
+      )
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+    }
+  })
+
+  it('writeSubagentReportFiles writes report.md and status.json', () => {
+    const runDir = join(tmpdir(), `vyotiq-sub-write-${process.pid}-${Date.now()}`)
+    mkdirSync(runDir, { recursive: true })
+    try {
+      const { reportRel, id } = writeSubagentReportFiles(runDir, {
+        ok: true,
+        report: 'hello',
+        steps: 2,
+        task: 'find x'
+      })
+      expect(reportRel).toBe(`subagents/${id}/report.md`)
+      expect(readFileSync(join(runDir, reportRel), 'utf8')).toMatch(/hello/)
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+    }
   })
 })
