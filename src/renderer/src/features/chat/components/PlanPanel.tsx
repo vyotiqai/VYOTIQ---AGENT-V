@@ -83,7 +83,7 @@ function ReceiptSummary({
         <p className="m-0 mt-1 text-xs">
           mode={receipt.verifyBeforeDone.mode} · nudged=
           {receipt.verifyBeforeDone.nudged ? 'yes' : 'no'} · diagnostics=
-          {receipt.diagnostics.ok}/{receipt.diagnostics.calls}
+          {receipt.diagnostics.clean}/{receipt.diagnostics.calls} clean
         </p>
       </section>
 

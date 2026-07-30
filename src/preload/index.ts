@@ -12,7 +12,8 @@ const api: VyotiqApi = {
   pickWorkspace: () => ipcRenderer.invoke(IPC.pickWorkspace),
   getWorkspaces: () => ipcRenderer.invoke(IPC.workspacesGet),
   addWorkspace: (path) => ipcRenderer.invoke(IPC.workspacesAdd, path ? { path } : {}),
-  removeWorkspace: (path) => ipcRenderer.invoke(IPC.workspacesRemove, { path }),
+  removeWorkspace: (path, stopActiveRuns) =>
+    ipcRenderer.invoke(IPC.workspacesRemove, { path, stopActiveRuns }),
   setActiveWorkspace: (path) => ipcRenderer.invoke(IPC.workspacesSetActive, { path }),
   updateWorkspaceUiState: (path, ui) =>
     ipcRenderer.invoke(IPC.workspacesUpdateUiState, { path, ui }),
@@ -112,8 +113,9 @@ const api: VyotiqApi = {
     ipcRenderer.invoke(IPC.runsRename, { workspacePath, runId, goal }),
   listActiveRuns: () => ipcRenderer.invoke(IPC.runsActive),
   gitStatus: (workspacePath) => ipcRenderer.invoke(IPC.gitStatus, { workspacePath }),
-  gitCommit: (workspacePath, message, push) =>
-    ipcRenderer.invoke(IPC.gitCommit, { workspacePath, message, push }),
+  gitCommit: (workspacePath, message, push, mode) =>
+    ipcRenderer.invoke(IPC.gitCommit, { workspacePath, message, push, mode }),
+  gitStageAll: (workspacePath) => ipcRenderer.invoke(IPC.gitStageAll, { workspacePath }),
   gitLog: (payload) => ipcRenderer.invoke(IPC.gitLog, payload),
   gitCommitFiles: (payload) => ipcRenderer.invoke(IPC.gitCommitFiles, payload),
   gitDiff: (payload) => ipcRenderer.invoke(IPC.gitDiff, payload),

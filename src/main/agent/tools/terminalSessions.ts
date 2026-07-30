@@ -17,6 +17,8 @@ export type TerminalSessionStatus = 'running' | 'done' | 'timeout' | 'pattern_ma
 
 type TerminalSession = {
   id: string
+  runId: string
+  invokeId: number
   workspaceRoot: string
   command: string
   shell: ResolvedTerminalShell
@@ -71,6 +73,40 @@ export function resetTerminalSessionsForTests(): void {
   for (const id of [...sessions.keys()]) disposeTerminalSession(id)
 }
 
+export function disposeTerminalSessionsForRun(runId: string): number {
+  let disposed = 0
+  for (const session of [...sessions.values()]) {
+    if (session.runId !== runId) continue
+    disposeTerminalSession(session.id)
+    disposed++
+  }
+  return disposed
+}
+
+export function disposeTerminalSessionsForInvoke(runId: string, invokeId: number): number {
+  let disposed = 0
+  for (const session of [...sessions.values()]) {
+    if (session.runId !== runId || session.invokeId !== invokeId) continue
+    disposeTerminalSession(session.id)
+    disposed++
+  }
+  return disposed
+}
+
+export function disposeTerminalSessionsForWorkspace(workspacePath: string): number {
+  let disposed = 0
+  for (const session of [...sessions.values()]) {
+    if (session.workspaceRoot !== workspacePath) continue
+    disposeTerminalSession(session.id)
+    disposed++
+  }
+  return disposed
+}
+
+export function disposeAllTerminalSessions(): void {
+  for (const id of [...sessions.keys()]) disposeTerminalSession(id)
+}
+
 function formatSession(session: TerminalSession): string {
   return formatTerminalSessionOutput({
     workspaceRoot: session.workspaceRoot,
@@ -85,6 +121,8 @@ function formatSession(session: TerminalSession): string {
 }
 
 export type StartBackgroundTerminalOpts = {
+  runId: string
+  invokeId: number
   workspaceRoot: string
   /** Absolute cwd inside workspace; defaults to workspaceRoot. */
   cwd?: string
@@ -149,6 +187,8 @@ export async function startBackgroundTerminal(
 
   const session: TerminalSession = {
     id,
+    runId: opts.runId,
+    invokeId: opts.invokeId,
     workspaceRoot: opts.workspaceRoot,
     command,
     shell: resolved,
@@ -203,6 +243,8 @@ export async function startBackgroundTerminal(
   })
 
   return await pollTerminalSession({
+    runId: opts.runId,
+    invokeId: opts.invokeId,
     sessionId: id,
     blockUntilMs: opts.blockUntilMs,
     pattern: opts.pattern,
@@ -211,6 +253,8 @@ export async function startBackgroundTerminal(
 }
 
 export type PollTerminalSessionOpts = {
+  runId: string
+  invokeId: number
   sessionId: string
   blockUntilMs: number
   pattern?: string
@@ -222,6 +266,9 @@ export async function pollTerminalSession(opts: PollTerminalSessionOpts): Promis
   const session = sessions.get(opts.sessionId)
   if (!session) {
     throw new Error(`Unknown terminal session_id: ${opts.sessionId}`)
+  }
+  if (session.runId !== opts.runId || session.invokeId !== opts.invokeId) {
+    throw new Error(`Terminal session does not belong to run: ${opts.sessionId}`)
   }
   if (opts.onOutput) session.onOutput = opts.onOutput
   if (opts.pattern?.trim()) {

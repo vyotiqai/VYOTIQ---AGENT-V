@@ -170,7 +170,7 @@ User-configured MCP servers expose namespaced tools: `mcp__{serverId}__{toolName
 
 **Agent interaction tools:** `ask_question` pauses the run for a structured user answer in the transcript; `switch_mode` lets the agent flip Ask / Plan / Agent mid-run (composer syncs via `mode_changed`). MCP **resources** and **prompts** are available through `mcp_list_resources` / `mcp_read_resource` / `mcp_list_prompts` / `mcp_get_prompt` when a connected server advertises those capabilities.
 
-**Terminal:** Default calls block until exit/`timeoutMs`. Pass `block_until_ms: 0` (or any `block_until_ms`) to run a background session that returns `session_id` + `status`; poll with `{ session_id, block_until_ms, pattern? }`. Still Agent-only, serial, and approval-gated. Shell selection uses Settings `terminalShell` (`auto` / `cmd` / `powershell` / `bash` / `zsh`) via `getSettings().terminalShell`.
+**Terminal:** Default calls block until exit/`timeoutMs`. Pass `block_until_ms: 0` (or any `block_until_ms`) to run a background session that returns `session_id` + `status`; poll with `{ session_id, block_until_ms, pattern? }`. Still Agent-only, serial, and approval-gated. Shell selection uses Settings `terminalShell` (`auto` / `cmd` / `powershell` / `bash`) via `getSettings().terminalShell`. `zsh` is **not** a supported preference value in this product surface.
 
 **Diagnostics:** The `diagnostics` tool runs a project-aware check; Settings `diagnosticsCommand` overrides the auto-detected command when set.
 
@@ -208,13 +208,18 @@ Follow-up turns use incremental IPC (`newMessages` + `runId`); main loads prior 
 
 ### Future harness research (proposed)
 
-Net-new behaviors from harness research audits — **documented only; not implemented**:
+Net-new behaviors from harness research audits — **documented only; not implemented** in this codebase:
 
-| Proposal | Why (evidence) | Not doing now |
+| Proposal | Why (evidence / source intent) | Explicitly unimplemented |
 |---|---|---|
-| AHE observational pillars / section auto-merge | Evidence buckets are heuristic tags only | Not AHE; auto-merge is reward-hack risk |
+| Fixed-evaluator / held-out Self-Harness experiment | Need a frozen grader + held-out tasks before any auto-apply loop is trustworthy | No autonomous apply loop; `/harness-apply` stays human-gated with a fixed vitest subset |
+| AHE-style raw trajectory + prediction manifests | Observational AHE needs raw trajectories and prediction records, not only heuristic evidence buckets | Receipts keep heuristic buckets; no AHE manifests or section auto-merge |
+| Source-linked Harness Handbook | Operators need a durable map from failure modes → harness sections with source citations | Handbook remains a docs proposal; not a product UI |
+| Explicit background-subagent process management | Background agent terminals already have run/invoke ownership; full subagent process trees need the same clarity | No separate subagent process manager beyond current run-owned terminal dispose + MCP session sync |
 | DGM-style autonomous self-modification | Apply surface is one file + human confirm | Out of product scope |
 | Unsupervised Self-Harness (auto-apply rewriter loop) | Rewriter is opt-in + human confirm only | Fixed evaluator + auto-merge not product scope |
+
+Do **not** treat this table as a backlog commitment to ship those systems.
 
 ## Observability
 

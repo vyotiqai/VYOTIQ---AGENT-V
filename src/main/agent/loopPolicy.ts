@@ -5,6 +5,7 @@ export const CONSECUTIVE_TOOL_FAILURE_SERIAL_THRESHOLD = 2
 export const CONSECUTIVE_TOOL_FAILURE_HINT_THRESHOLD = 3
 
 const WRITE_TOOLS = new Set(['edit', 'str_replace', 'multi_edit'])
+const FILE_MUTATION_TOOLS = new Set([...WRITE_TOOLS, 'delete'])
 const UNREAD_EDIT_HINT_PATH_CAP = 5
 
 export function loopHintForConsecutiveFailures(streak: number): string | undefined {
@@ -97,6 +98,11 @@ export function isConcreteWorkspacePath(value: string): boolean {
 /** Tools whose successful concrete paths count as inspect for read-before-edit. */
 export function isInspectToolName(name: string): boolean {
   return name === 'read' || name === 'grep' || name === 'glob'
+}
+
+/** Tools whose successful results can make earlier diagnostics stale. */
+export function isFileMutationToolName(name: string): boolean {
+  return FILE_MUTATION_TOOLS.has(name)
 }
 
 /**
@@ -215,7 +221,8 @@ export function partitionReadBeforeEditCalls(input: {
 
 type SeedMessage = {
   role: string
-  toolCalls?: Array<{ name: string; arguments: string }>
+  toolCalls?: Array<{ id: string; name: string; arguments: string }>
+  toolCallId?: string
   toolName?: string
   ok?: boolean
   content?: unknown
@@ -223,13 +230,20 @@ type SeedMessage = {
 
 /**
  * Seed known paths from transcript so resume does not false-nag.
- * Historical read/edit tool calls count as seen (args only; no per-call ok required).
+ * Only calls with a matching successful tool result count as seen.
  */
 export function seedKnownPathsFromMessages(messages: readonly SeedMessage[]): Set<string> {
   const known = new Set<string>()
+  const successfulCallIds = new Set<string>()
+  for (const msg of messages) {
+    if (msg.role === 'tool' && msg.toolCallId && msg.ok !== false) {
+      successfulCallIds.add(msg.toolCallId)
+    }
+  }
   for (const msg of messages) {
     if (msg.role === 'assistant' && msg.toolCalls) {
       for (const call of msg.toolCalls) {
+        if (!successfulCallIds.has(call.id)) continue
         const args = parseToolArgs(call.arguments)
         applyToolCallToKnownPaths(known, call.name, args, true)
       }

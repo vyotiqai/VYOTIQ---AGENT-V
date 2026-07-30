@@ -110,8 +110,14 @@ export function useChatGitChrome(
   return useGitChrome(workspacePath, revision, enabled)
 }
 
-export function ChatGitLeading({ chrome }: { chrome: GitChrome }): ReactNode {
-  return <GitChangePills chrome={chrome} />
+export function ChatGitLeading({
+  chrome,
+  onOpenChanges
+}: {
+  chrome: GitChrome
+  onOpenChanges?: () => void
+}): ReactNode {
+  return <GitChangePills chrome={chrome} onOpenChanges={onOpenChanges} />
 }
 
 export function ChatGitTrailing({ chrome }: { chrome: GitChrome }): ReactNode {

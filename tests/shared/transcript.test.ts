@@ -875,6 +875,37 @@ describe('applyPersistedLiveTools', () => {
     })
   })
 
+  it('accumulates every persisted argument fragment for one tool call', () => {
+    const items = messagesToUiItems([{ role: 'user', content: 'go' }])
+    const events = [
+      {
+        at: '2026-07-28T12:00:00.000Z',
+        event: {
+          type: 'tool_call_delta' as const,
+          runId: 'r1',
+          toolCallId: 'c1',
+          name: 'read',
+          argumentsDelta: '{"pa'
+        }
+      },
+      {
+        at: '2026-07-28T12:00:00.010Z',
+        event: {
+          type: 'tool_call_delta' as const,
+          runId: 'r1',
+          toolCallId: 'c1',
+          name: 'read',
+          argumentsDelta: 'th":"a.ts"}'
+        }
+      }
+    ]
+    const tool = applyPersistedLiveTools(items, events).find((item) => item.kind === 'tool')
+    expect(tool).toMatchObject({
+      id: 'c1',
+      tool: { argsPreview: '{"path":"a.ts"}' }
+    })
+  })
+
   it('does not duplicate tools already present from messages', () => {
     const items = messagesToUiItems([
       {

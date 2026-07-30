@@ -547,6 +547,10 @@ describe('ipc schemas', () => {
             status: 'modified',
             added: 2,
             removed: 0,
+            addedStaged: 0,
+            removedStaged: 0,
+            addedUnstaged: 2,
+            removedUnstaged: 0,
             binary: false,
             staged: false,
             unstaged: true

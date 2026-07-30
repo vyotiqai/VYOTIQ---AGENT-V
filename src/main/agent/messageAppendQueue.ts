@@ -5,7 +5,7 @@ import { logger } from '../../shared/logger'
 /** Per-run-dir serialized message append chain — ordered, non-blocking. */
 const appendChains = new Map<string, Promise<void>>()
 
-export function enqueueMessageAppend(dir: string, line: string): void {
+export function enqueueMessageAppend(dir: string, line: string): Promise<void> {
   const path = join(dir, 'messages.jsonl')
   const prev = appendChains.get(dir) ?? Promise.resolve()
   const next = prev
@@ -21,6 +21,7 @@ export function enqueueMessageAppend(dir: string, line: string): void {
       if (appendChains.get(dir) === next) appendChains.delete(dir)
     })
   appendChains.set(dir, next)
+  return next
 }
 
 export async function flushMessageAppends(dir?: string): Promise<void> {

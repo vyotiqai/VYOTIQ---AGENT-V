@@ -13,6 +13,8 @@ export type ResolveMentionsResult = {
   text: string
   files: AttachedFile[]
   error: string | null
+  /** True when the caller abandoned this resolve (e.g. workspace switched). */
+  stale?: boolean
 }
 
 const BROWSER_INSTRUCTION =
@@ -171,7 +173,17 @@ export async function resolveComposerMentions(opts: {
   workspacePath: string | null | undefined
   draft: string
   existingFiles: AttachedFile[]
+  /** Return false after a workspace/run switch so late results are discarded. */
+  isCurrent?: () => boolean
 }): Promise<ResolveMentionsResult> {
+  const stillCurrent = (): boolean => opts.isCurrent?.() !== false
+  const staleResult = (): ResolveMentionsResult => ({
+    text: '',
+    files: [...opts.existingFiles],
+    error: null,
+    stale: true
+  })
+
   const mentions = extractMentions(opts.draft)
   let text = visibleUserText(opts.draft)
   const files = [...opts.existingFiles]
@@ -179,6 +191,7 @@ export async function resolveComposerMentions(opts: {
   const contextBlocks: string[] = []
 
   for (const mention of mentions) {
+    if (!stillCurrent()) return staleResult()
     switch (mention.kind) {
       case 'file': {
         if (!opts.workspacePath) {
@@ -196,6 +209,7 @@ export async function resolveComposerMentions(opts: {
         const already = files.some((f) => f.name === mention.path || f.name.endsWith(mention.path))
         if (already) break
         const result = await resolveFileMention(opts.workspacePath, mention.path)
+        if (!stillCurrent()) return staleResult()
         if ('error' in result) {
           problems.push(result.error)
         } else {
@@ -217,6 +231,7 @@ export async function resolveComposerMentions(opts: {
         }
         const already = files.some((f) => f.name === mention.path || f.name.endsWith(mention.path))
         const resolved = await resolveDocsBlock(opts.workspacePath, mention.path)
+        if (!stillCurrent()) return staleResult()
         if (resolved.error) {
           problems.push(resolved.error)
           break
@@ -231,6 +246,7 @@ export async function resolveComposerMentions(opts: {
           break
         }
         const block = await resolveRuleBlock(opts.workspacePath, mention.path)
+        if (!stillCurrent()) return staleResult()
         if (typeof block === 'object') problems.push(block.error)
         else contextBlocks.push(block)
         break
@@ -241,6 +257,7 @@ export async function resolveComposerMentions(opts: {
           break
         }
         const block = await resolveLintsBlock(opts.workspacePath, mention.diagnosticsKind)
+        if (!stillCurrent()) return staleResult()
         if (typeof block === 'object') problems.push(block.error)
         else contextBlocks.push(block)
         break
@@ -251,6 +268,7 @@ export async function resolveComposerMentions(opts: {
           break
         }
         contextBlocks.push(await resolveBranchBlock(opts.workspacePath))
+        if (!stillCurrent()) return staleResult()
         break
       }
       case 'browser': {
@@ -263,6 +281,7 @@ export async function resolveComposerMentions(opts: {
           break
         }
         contextBlocks.push(await resolveChatBlock(opts.workspacePath, mention))
+        if (!stillCurrent()) return staleResult()
         break
       }
       default: {
@@ -271,6 +290,8 @@ export async function resolveComposerMentions(opts: {
       }
     }
   }
+
+  if (!stillCurrent()) return staleResult()
 
   if (contextBlocks.length) {
     text = [text, ...contextBlocks].filter(Boolean).join('\n\n')

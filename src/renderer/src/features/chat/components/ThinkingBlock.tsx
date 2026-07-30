@@ -54,6 +54,7 @@ export function ThinkingBlock({
         type="button"
         className={cn(DISCLOSURE_ROW, 'text-tertiary')}
         aria-expanded={isExpanded}
+        aria-label={streaming ? 'Thinking' : 'Thought'}
         onClick={toggle}
       >
         {streaming ? (

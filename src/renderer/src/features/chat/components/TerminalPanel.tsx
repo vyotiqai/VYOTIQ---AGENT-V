@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -8,13 +8,8 @@ import { Icon } from '@renderer/lib/icons'
 import { IconButton } from '@renderer/lib/ui'
 import { CHAT_RIGHT_PANEL_BODY } from '@renderer/lib/utils/layout'
 import type { PtySessionInfo } from '@shared/ipc'
-import type { UiItem } from '@shared/transcript'
 import { prunePtyOutputBuffers } from '@shared/utils/ptyOutputBuffer'
 import { getPtyOutputBuffers, ensurePtyOutputBufferListener } from './ptyOutputBuffers'
-import { getToolHeaderMeta, isProminentTool } from '../toolUi'
-import { TerminalBody } from '../toolUi/bodies/TerminalBody'
-import type { ToolItem } from '../utils/transcriptRows'
-import { useFullToolContent } from './useFullToolContent'
 import { EmptyPanel } from './PanelChrome'
 
 ensurePtyOutputBufferListener()
@@ -23,61 +18,6 @@ function readCssColor(varName: string, fallback: string): string {
   if (typeof document === 'undefined') return fallback
   const value = getComputedStyle(document.documentElement).getPropertyValue(varName).trim()
   return value || fallback
-}
-
-function isToolItem(item: UiItem): item is ToolItem {
-  return item.kind === 'tool'
-}
-
-function terminalStatusLabel(status: ToolItem['tool']['status']): string {
-  switch (status) {
-    case 'running':
-      return 'Running'
-    case 'done':
-      return 'Done'
-    case 'fail':
-      return 'Failed'
-    default: {
-      const _exhaustive: never = status
-      return _exhaustive
-    }
-  }
-}
-
-function AgentTerminalEntry({
-  item,
-  onLoadToolContent
-}: {
-  item: ToolItem
-  onLoadToolContent?: (toolCallId: string) => Promise<string | null>
-}) {
-  const enabled = item.tool.contentTruncated === true
-  const { loading, failed } = useFullToolContent(item.tool, enabled, onLoadToolContent)
-  const headerMeta = getToolHeaderMeta(item.tool)
-  const headerLabel = [headerMeta.verb, headerMeta.target].filter(Boolean).join(' ')
-  return (
-    <li className="overflow-hidden rounded-md border border-border/50 bg-surface">
-      <div className="flex items-center gap-2 border-b border-border/40 px-3 py-1.5 text-[11px]">
-        <Icon name="terminal" size={12} className="text-muted" />
-        <span className="min-w-0 flex-1 truncate text-fg">
-          {headerLabel || item.tool.summary || item.tool.name}
-        </span>
-        <span
-          className={cn(
-            'shrink-0 tabular-nums',
-            item.tool.status === 'fail'
-              ? 'text-danger'
-              : item.tool.status === 'running'
-                ? 'text-muted'
-                : 'text-success'
-          )}
-        >
-          {terminalStatusLabel(item.tool.status)}
-        </span>
-      </div>
-      <TerminalBody tool={item.tool} expanded loading={loading} loadFailed={failed} />
-    </li>
-  )
 }
 
 /** One xterm host bound to a PTY session id. */
@@ -153,28 +93,26 @@ function PtySessionView({ sessionId }: { sessionId: string }) {
 }
 
 /**
- * Interactive PTY terminal panel with Cursor-like session tabs + agent command rollup.
+ * Interactive PTY terminal panel (agent command output lives in the transcript).
  */
 export function TerminalPanel({
-  items,
   className,
   workspacePath,
-  onLoadToolContent,
-  onSessionsChange
+  onSessionsChange,
+  onActiveSessionChange
 }: {
-  items: UiItem[]
   className?: string
   workspacePath?: string | null
-  onLoadToolContent?: (toolCallId: string) => Promise<string | null>
   onSessionsChange?: (sessions: PtySessionInfo[]) => void
+  onActiveSessionChange?: (session: PtySessionInfo | null) => void
 }) {
   const [sessions, setSessions] = useState<PtySessionInfo[]>([])
+  const listSeqRef = useRef(0)
   const [activeId, setActiveId] = useState<string | null>(null)
   /** Second pane session id for side-by-side split; null = single pane. */
   const [splitId, setSplitId] = useState<string | null>(null)
   /** Right-hand session list — screenshot 1 panel toggle. */
   const [listOpen, setListOpen] = useState(true)
-  const [agentOpen, setAgentOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   /** Gate auto-create until ptyList has returned (avoids duplicate sessions on remount). */
   const [listReady, setListReady] = useState(false)
@@ -183,30 +121,27 @@ export function TerminalPanel({
   const suppressAutoCreateRef = useRef(false)
   const onSessionsChangeRef = useRef(onSessionsChange)
   onSessionsChangeRef.current = onSessionsChange
-
-  const agentTerminals = useMemo(() => {
-    const out: ToolItem[] = []
-    for (let i = items.length - 1; i >= 0; i -= 1) {
-      const item = items[i]
-      if (!item || !isToolItem(item)) continue
-      if (item.tool.name !== 'terminal') continue
-      if (!isProminentTool(item.tool.name, item.tool.argsPreview)) continue
-      out.push(item)
-      if (out.length >= 8) break
-    }
-    return out
-  }, [items])
+  const onActiveSessionChangeRef = useRef(onActiveSessionChange)
+  onActiveSessionChangeRef.current = onActiveSessionChange
 
   const usingPipeFallback = sessions.some((s) => s.backend === 'pipe')
   const activeSession = sessions.find((s) => s.id === activeId) ?? null
 
+  useEffect(() => {
+    onActiveSessionChangeRef.current?.(activeSession)
+  }, [activeSession])
+
   const refreshList = useCallback(async () => {
+    const seq = ++listSeqRef.current
     if (!window.vyotiq?.ptyList) {
+      if (seq !== listSeqRef.current) return
       setError('Terminal IPC unavailable.')
       setListReady(true)
       return
     }
-    const res = await window.vyotiq.ptyList(workspacePath ?? undefined)
+    const boundWorkspace = workspacePath
+    const res = await window.vyotiq.ptyList(boundWorkspace ?? undefined)
+    if (seq !== listSeqRef.current) return
     if (!res.ok) {
       setError(res.error)
       setListReady(true)
@@ -478,38 +413,6 @@ export function TerminalPanel({
           ) : null}
         </div>
       </div>
-
-      {agentTerminals.length > 0 ? (
-        <>
-          <div className="flex shrink-0 items-center gap-1 border-t border-border/40 bg-bg">
-            <button
-              type="button"
-              className="flex min-w-0 flex-1 items-center gap-1 px-2.5 py-1 text-left text-[11px] text-muted hover:text-fg"
-              onClick={() => setAgentOpen((v) => !v)}
-            >
-              <Icon
-                name="chevronRight"
-                size={12}
-                className={cn('vy-transition', agentOpen && 'rotate-90')}
-              />
-              Agent commands ({agentTerminals.length})
-            </button>
-          </div>
-          {agentOpen ? (
-            <div className="max-h-40 shrink-0 overflow-auto border-t border-border/40 p-2">
-              <ul className="m-0 list-none space-y-2 p-0">
-                {agentTerminals.map((item) => (
-                  <AgentTerminalEntry
-                    key={item.id}
-                    item={item}
-                    onLoadToolContent={onLoadToolContent}
-                  />
-                ))}
-              </ul>
-            </div>
-          ) : null}
-        </>
-      ) : null}
     </div>
   )
 }

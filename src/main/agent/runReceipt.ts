@@ -26,7 +26,8 @@ export type { RunReceipt }
 
 type SeedToolMessage = {
   role: string
-  toolCalls?: Array<{ name: string; arguments: string }>
+  toolCalls?: Array<{ id: string; name: string; arguments: string }>
+  toolCallId?: string
   toolName?: string
   ok?: boolean
   content?: MessageContent
@@ -73,6 +74,11 @@ function failureClustersFromMessages(
 function unreadEditPathsFromMessages(messages: readonly SeedToolMessage[]): string[] {
   const known = new Set<string>()
   const unread = new Set<string>()
+  const successfulCallIds = new Set(
+    messages
+      .filter((msg) => msg.role === 'tool' && msg.toolCallId && msg.ok !== false)
+      .map((msg) => msg.toolCallId!)
+  )
   // Transcript replay has no filesystem snapshot; treat edited paths as pre-existing.
   const pathExists = (): boolean => true
   for (const msg of messages) {
@@ -80,13 +86,13 @@ function unreadEditPathsFromMessages(messages: readonly SeedToolMessage[]): stri
     for (const call of msg.toolCalls) {
       const args = toolArgsFromCall(call.arguments)
       if (call.name === 'read' || call.name === 'grep' || call.name === 'glob') {
-        applyToolCallToKnownPaths(known, call.name, args, true)
+        applyToolCallToKnownPaths(known, call.name, args, successfulCallIds.has(call.id))
         continue
       }
       for (const path of unreadExistingEditPaths(known, call.name, args, pathExists)) {
         unread.add(path)
       }
-      applyToolCallToKnownPaths(known, call.name, args, true)
+      applyToolCallToKnownPaths(known, call.name, args, successfulCallIds.has(call.id))
     }
   }
   return [...unread].sort()
@@ -115,14 +121,17 @@ export function wroteFilesFromEvents(events: readonly PersistedEvent[]): string[
 }
 
 function lastIncompleteFromEvents(
-  events: readonly PersistedEvent[]
+  events: readonly PersistedEvent[],
+  invokeId?: number
 ): RunReceipt['incomplete'] | undefined {
   for (let i = events.length - 1; i >= 0; i--) {
     const ev = events[i]?.event as {
       type?: string
+      invokeId?: number
       reason?: string
       message?: string
     } | undefined
+    if (invokeId != null && ev?.invokeId !== invokeId) continue
     if (ev?.type !== 'incomplete' || typeof ev.reason !== 'string') continue
     const parsed = RunReceiptSchema.shape.incomplete.unwrap().safeParse({
       reason: ev.reason,
@@ -244,17 +253,16 @@ export function buildRunReceipt(input: {
   /** When set, scan for file-backed subagent reports. */
   runDir?: string
 }): RunReceipt {
-  const victoryClaimWithoutTools = input.messages.some(
-    (m, i) =>
-      m.role === 'assistant' &&
-      (!m.toolCalls || m.toolCalls.length === 0) &&
-      !input.messages.slice(i + 1).some((n) => n.role === 'tool') &&
+  const latestAssistant = [...input.messages].reverse().find((message) => message.role === 'assistant')
+  const victoryClaimWithoutTools = Boolean(
+    latestAssistant &&
+      (!latestAssistant.toolCalls || latestAssistant.toolCalls.length === 0) &&
       /\b(done|completed|finished|all set|ready to merge|task (is )?complete)\b/i.test(
-        contentToText(m.content)
+        contentToText(latestAssistant.content)
       )
   )
 
-  const incomplete = lastIncompleteFromEvents(input.events)
+  const incomplete = lastIncompleteFromEvents(input.events, input.status.invokeId)
   const tokenUsage = tokenUsageFromEvents(input.events)
   const unmet = input.contractUnmetCriteria?.slice(0, 12)
   const subagents = input.runDir ? scanSubagentsForReceipt(input.runDir) : []

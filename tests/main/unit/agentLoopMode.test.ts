@@ -173,6 +173,7 @@ describe('runAgent mode and API key', () => {
     expect(seenTools).not.toContain('terminal')
     expect(seenTools).not.toContain('delete')
     expect(seenTools).not.toContain('multi_edit')
+    expect(existsSync(join(workspace, '.vyotiq'))).toBe(false)
   })
 
   it('Plan mode seeds plan.md under the run directory', async () => {
@@ -197,6 +198,7 @@ describe('runAgent mode and API key', () => {
     expect(planBody).toContain('# Plan')
     expect(planBody).toContain('## Goal')
     expect(planBody).toContain('## Approach')
+    expect(existsSync(join(workspace, '.vyotiq'))).toBe(false)
   })
 
   it('defaults to Agent mode when mode is omitted', async () => {

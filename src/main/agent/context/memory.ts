@@ -44,7 +44,6 @@ function readMemoryFileExcerpt(
   relPath: string,
   cap: number
 ): string {
-  ensureMemoryLayout(workspacePath)
   const p = join(memoryRoot(workspacePath), relPath)
   if (!existsSync(p)) return ''
   try {
@@ -60,7 +59,6 @@ async function readMemoryFileExcerptAsync(
   relPath: string,
   cap: number
 ): Promise<string> {
-  ensureMemoryLayout(workspacePath)
   const p = join(memoryRoot(workspacePath), relPath)
   if (!existsSync(p)) return ''
   try {
@@ -100,7 +98,6 @@ export function listMemoryNotes(workspacePath: string): {
   notes: string[]
   hasState: boolean
 } {
-  ensureMemoryLayout(workspacePath)
   const root = memoryRoot(workspacePath)
   const notesDir = join(root, 'notes')
   let notes: string[] = []
@@ -119,7 +116,6 @@ export function listMemoryNotes(workspacePath: string): {
 }
 
 export function readMemoryFile(workspacePath: string, relPath: string): string {
-  ensureMemoryLayout(workspacePath)
   const cleaned = relPath.replace(/^[/\\]+/, '')
   if (cleaned.includes('..')) throw new Error('Invalid memory path')
   const resolved = assertUnderMemory(workspacePath, cleaned)

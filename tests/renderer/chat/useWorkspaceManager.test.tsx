@@ -78,7 +78,7 @@ describe('useWorkspaceManager', () => {
       ok: true,
       data: defaultRegistry({ activePath: path })
     }))
-    removeWorkspace.mockImplementation(async (path: string) => ({
+    removeWorkspace.mockImplementation(async (path: string, _stopActiveRuns?: boolean) => ({
       ok: true,
       data: defaultRegistry({
         openPaths: ['/ws-a', '/ws-b'].filter((p) => p !== path),
@@ -219,7 +219,8 @@ describe('useWorkspaceManager', () => {
     })
   })
 
-  it('keeps background run demux alive when workspace tab is removed', async () => {
+  it('confirms stop-and-close and forgets active run routing when workspace is removed', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     listActiveRuns.mockResolvedValue({
       ok: true,
       data: [{ runId: 'run-bg', workspacePath: '/ws-a', invokeId: 3 }]
@@ -255,8 +256,9 @@ describe('useWorkspaceManager', () => {
       handler?.({ type: 'text_delta', runId: 'run-bg', text: 'still going' })
     })
 
-    expect(chatCancel).not.toHaveBeenCalled()
-    expect(result.current.isRunActiveInBackground('run-bg')).toBe(true)
+    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/Stop it and close/i))
+    expect(removeWorkspace).toHaveBeenCalledWith('/ws-a', true)
+    expect(result.current.isRunActiveInBackground('run-bg')).toBe(false)
   })
 
   it('moves running run to background when run tab is closed', async () => {

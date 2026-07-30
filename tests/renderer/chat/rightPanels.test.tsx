@@ -22,6 +22,10 @@ beforeEach(() => {
               status: 'modified',
               added: 3,
               removed: 1,
+              addedStaged: 2,
+              removedStaged: 0,
+              addedUnstaged: 1,
+              removedUnstaged: 1,
               binary: false,
               staged: true,
               unstaged: true
@@ -31,6 +35,10 @@ beforeEach(() => {
               status: 'deleted',
               added: 0,
               removed: 4,
+              addedStaged: 0,
+              removedStaged: 4,
+              addedUnstaged: 0,
+              removedUnstaged: 0,
               binary: false,
               staged: true,
               unstaged: false
@@ -40,6 +48,10 @@ beforeEach(() => {
               status: 'untracked',
               added: 2,
               removed: 0,
+              addedStaged: 0,
+              removedStaged: 0,
+              addedUnstaged: 2,
+              removedUnstaged: 0,
               binary: false,
               staged: false,
               unstaged: true
@@ -56,6 +68,10 @@ beforeEach(() => {
       gitCommit: vi.fn().mockResolvedValue({
         ok: true,
         data: { committed: true, pushed: true, detail: 'pushed' }
+      }),
+      gitStageAll: vi.fn().mockResolvedValue({
+        ok: true,
+        data: { staged: true, detail: 'Staged all changes' }
       }),
       gitLog: vi.fn().mockResolvedValue({
         ok: true,
@@ -78,6 +94,10 @@ beforeEach(() => {
               status: 'modified',
               added: 1,
               removed: 0,
+              addedStaged: 0,
+              removedStaged: 0,
+              addedUnstaged: 1,
+              removedUnstaged: 0,
               binary: false,
               staged: false,
               unstaged: false
@@ -132,7 +152,7 @@ describe('ChangesPanel', () => {
   it('renders git dirty files from gitStatus', async () => {
     render(<ChangesPanel items={[]} workspacePath="/ws" />)
     expect(await screen.findByText('a.ts')).toBeTruthy()
-    expect(screen.getByText('Commit & Push')).toBeTruthy()
+    expect(screen.getByText(/Commit & Push/)).toBeTruthy()
   })
 
   it('includes deleted files in Staged scope and excludes untracked', async () => {
@@ -186,12 +206,37 @@ describe('ChangesPanel', () => {
   it('primary Commit & Push sends push:true after composing', async () => {
     render(<ChangesPanel items={[]} workspacePath="/ws" />)
     await screen.findByText('a.ts')
-    fireEvent.click(screen.getByRole('button', { name: /^Commit & Push$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Commit & Push/i }))
     const input = await screen.findByRole('textbox', { name: /Commit message/i })
     fireEvent.change(input, { target: { value: 'ship it' } })
     fireEvent.click(screen.getByRole('button', { name: /^Commit & Push$/i }))
     await waitFor(() => {
-      expect(window.vyotiq.gitCommit).toHaveBeenCalledWith('/ws', 'ship it', true)
+      expect(window.vyotiq.gitCommit).toHaveBeenCalledWith('/ws', 'ship it', true, 'all')
+    })
+  })
+
+  it('Staged scope commits without staging all', async () => {
+    render(<ChangesPanel items={[]} workspacePath="/ws" />)
+    await screen.findByText('a.ts')
+    fireEvent.click(screen.getByRole('button', { name: /Uncommitted/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Staged/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Commit & Push/i }))
+    const input = await screen.findByRole('textbox', { name: /Commit message/i })
+    fireEvent.change(input, { target: { value: 'staged only' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Commit$/i }))
+    await waitFor(() => {
+      expect(window.vyotiq.gitCommit).toHaveBeenCalledWith('/ws', 'staged only', false, 'staged')
+    })
+  })
+
+  it('Unstaged scope exposes Stage All', async () => {
+    render(<ChangesPanel items={[]} workspacePath="/ws" />)
+    await screen.findByText('a.ts')
+    fireEvent.click(screen.getByRole('button', { name: /Uncommitted/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Unstaged/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Stage All$/i }))
+    await waitFor(() => {
+      expect(window.vyotiq.gitStageAll).toHaveBeenCalledWith('/ws')
     })
   })
 })
@@ -246,12 +291,22 @@ describe('PrPanel', () => {
     })
   })
 
-  it('calls prMerge for Squash & Merge', async () => {
+  it('calls prMerge for Squash & Merge after confirmation', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<PrPanel workspacePath="/ws" />)
     await screen.findByText(/feat: panels/)
     expect(screen.getByText('Open')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /Squash & Merge/i }))
+    expect(confirm).toHaveBeenCalled()
     expect(window.vyotiq.prMerge).toHaveBeenCalledWith('/ws', 'squash')
+  })
+
+  it('skips prMerge when confirmation is cancelled', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    render(<PrPanel workspacePath="/ws" />)
+    await screen.findByText(/feat: panels/)
+    fireEvent.click(screen.getByRole('button', { name: /Squash & Merge/i }))
+    expect(window.vyotiq.prMerge).not.toHaveBeenCalled()
   })
 
   it('exposes Reviews tab and expandable file diffs with viewed checkbox', async () => {

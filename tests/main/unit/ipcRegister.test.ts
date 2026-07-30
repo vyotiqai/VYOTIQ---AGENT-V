@@ -140,7 +140,8 @@ vi.mock('fs', async (importOriginal) => {
 })
 
 vi.mock('@main/app/window', () => ({
-  applyTitleBarTheme: vi.fn()
+  applyTitleBarTheme: vi.fn(),
+  getMainWindow: () => null
 }))
 
 vi.mock('@main/logging/init', () => ({
@@ -261,6 +262,11 @@ describe('registerIpc', () => {
       if (errors[0]?.type === 'error') {
         expect(errors[0].message).toBe('boom')
       }
+      expect(chatEvents().map((event) => event.type)).toEqual([
+        'text_delta',
+        'error',
+        'status'
+      ])
     })
 
     it('stamps the invoke on streamed and catch-path events', async () => {

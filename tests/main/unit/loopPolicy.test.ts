@@ -98,18 +98,27 @@ describe('loopPolicy', () => {
     expect(combined).toMatch(/tool failures/i)
   })
 
-  it('seeds known paths from assistant toolCalls on resume', () => {
+  it('seeds known paths only from successful matched tool results on resume', () => {
     const known = seedKnownPathsFromMessages([
       {
         role: 'assistant',
         toolCalls: [
-          { name: 'read', arguments: '{"path":"src/a.ts"}' },
-          { name: 'str_replace', arguments: '{"path":"src\\\\b.ts","old_string":"x","new_string":"y"}' }
+          { id: 'r1', name: 'read', arguments: '{"path":"src/a.ts"}' },
+          {
+            id: 'e1',
+            name: 'str_replace',
+            arguments: '{"path":"src\\\\b.ts","old_string":"x","new_string":"y"}'
+          },
+          { id: 'r2', name: 'read', arguments: '{"path":"src/failed.ts"}' }
         ]
-      }
+      },
+      { role: 'tool', toolCallId: 'r1', toolName: 'read', ok: true },
+      { role: 'tool', toolCallId: 'e1', toolName: 'str_replace', ok: true },
+      { role: 'tool', toolCallId: 'r2', toolName: 'read', ok: false }
     ])
     expect(known.has('src/a.ts')).toBe(true)
     expect(known.has('src/b.ts')).toBe(true)
+    expect(known.has('src/failed.ts')).toBe(false)
   })
 
   it('partitions require-mode unread edits; same-step read/grep/glob allows edit', () => {

@@ -88,7 +88,7 @@ export function DockTabBar({
               </button>
               <button
                 type="button"
-                className="shrink-0 rounded p-0.5 opacity-0 hover:bg-surface-2 group-hover:opacity-100"
+                className="shrink-0 rounded p-0.5 opacity-0 hover:bg-surface-2 focus-visible:opacity-100 focus-visible:vy-focus-ring group-hover:opacity-100 group-focus-within:opacity-100"
                 aria-label={`Close ${tab.label}`}
                 onClick={() => onCloseTab(tab.id)}
               >

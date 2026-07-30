@@ -730,11 +730,18 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       : workspace
 
     if (useSessionApi) {
+      const runId = context.runId
+      const invokeId = context.invokeId
+      if (!runId || !invokeId) {
+        return toolFail('terminal', 'session', 'Background terminal requires run ownership')
+      }
       const { startBackgroundTerminal, pollTerminalSession } = await import('./terminalSessions')
       const blockUntilMs =
         typeof args.block_until_ms === 'number' ? args.block_until_ms : sessionId ? 30_000 : 0
       const content = sessionId
         ? await pollTerminalSession({
+            runId,
+            invokeId,
             sessionId,
             blockUntilMs,
             pattern,
@@ -742,6 +749,8 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
             onOutput
           })
         : await startBackgroundTerminal({
+            runId,
+            invokeId,
             workspaceRoot: workspace,
             cwd,
             command,

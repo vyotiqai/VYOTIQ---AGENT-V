@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import type {
   ContractDoneWhenMode,
   ProviderId,
@@ -32,6 +33,17 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
   const modelPlaceholder = subagentProviderOverride
     ? `Default for provider (${defaultModelFor(subagentProviderOverride)})`
     : `Same as agent (${form.displayModel})`
+
+  const persistedDiagnostics = form.settings.diagnosticsCommand ?? ''
+  const [diagnosticsDraft, setDiagnosticsDraft] = useState(persistedDiagnostics)
+  useEffect(() => {
+    setDiagnosticsDraft(persistedDiagnostics)
+  }, [persistedDiagnostics])
+
+  const persistDiagnostics = (): void => {
+    if (diagnosticsDraft === persistedDiagnostics) return
+    void form.runUpdate({ diagnosticsCommand: diagnosticsDraft })
+  }
 
   return (
     <>
@@ -251,9 +263,18 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
           className="w-full max-w-md"
           placeholder="e.g. pnpm typecheck"
           disabled={form.formLocked}
-          value={form.settings.diagnosticsCommand ?? ''}
+          value={diagnosticsDraft}
           onChange={(e) => {
-            void form.runUpdate({ diagnosticsCommand: e.target.value })
+            setDiagnosticsDraft(e.target.value)
+          }}
+          onBlur={() => {
+            persistDiagnostics()
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              ;(e.target as HTMLInputElement).blur()
+            }
           }}
         />
       </SettingsRow>

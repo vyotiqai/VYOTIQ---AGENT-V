@@ -123,6 +123,8 @@ export function Composer({
   const taRef = useRef<ComposerMentionInputHandle>(null)
   const mentionAnchorRef = useRef<HTMLDivElement | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const workspacePathRef = useRef(workspacePath)
+  workspacePathRef.current = workspacePath
   const inputLocked = Boolean(disabled)
   const settingsLocked = Boolean(disabled || running)
   const hotUi = useWorkspaceHotUi(workspacePath)
@@ -197,11 +199,16 @@ export function Composer({
       sendImages?: string[],
       sendFiles?: AttachedFile[]
     ): Promise<boolean | void> => {
+      const boundWorkspace = workspacePath
       const resolved = await resolveComposerMentions({
-        workspacePath,
+        workspacePath: boundWorkspace,
         draft: rawText,
-        existingFiles: sendFiles ?? []
+        existingFiles: sendFiles ?? [],
+        isCurrent: () => workspacePathRef.current === boundWorkspace
       })
+      if (resolved.stale || workspacePathRef.current !== boundWorkspace) {
+        return false
+      }
       if (resolved.error) setFileError(resolved.error)
       if (!resolved.text.trim() && !resolved.files.length && !(sendImages?.length)) {
         return false

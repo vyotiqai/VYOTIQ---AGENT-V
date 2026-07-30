@@ -102,7 +102,7 @@ describe('PlanPanel', () => {
           failureClusters: [{ key: 'edit: boom', count: 1 }],
           unreadEditPaths: ['x.ts'],
           wroteFiles: ['y.ts'],
-          diagnostics: { calls: 0, ok: 0 },
+          diagnostics: { calls: 0, ok: 0, clean: 0 },
           verifyBeforeDone: {
             mode: 'notice',
             nudged: true,

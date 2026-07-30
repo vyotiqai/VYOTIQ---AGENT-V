@@ -383,7 +383,24 @@ function createTransport(
   return new SSEClientTransport(url, { requestInit })
 }
 
-async function connectWithOptionalOAuth(server: McpServer): Promise<{
+type PendingMcpConnection = { client: Client; transport: Transport }
+
+async function closePendingConnection(connection: PendingMcpConnection): Promise<void> {
+  try {
+    await connection.client.close()
+  } catch {
+    try {
+      await connection.transport.close()
+    } catch {
+      // ignore cleanup failures
+    }
+  }
+}
+
+async function connectWithOptionalOAuth(
+  server: McpServer,
+  track: (connection: PendingMcpConnection) => void
+): Promise<{
   client: Client
   transport: Transport
 }> {
@@ -391,31 +408,38 @@ async function connectWithOptionalOAuth(server: McpServer): Promise<{
   if (transportKind === 'stdio' || hasMcpAuthToken(server.id)) {
     const transport = createTransport(server)
     const client = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
+    track({ client, transport })
     await client.connect(transport)
     return { client, transport }
   }
 
   // Prefer stored OAuth tokens via authProvider; otherwise try unauthenticated first.
   if (hasMcpOAuthState(server.id)) {
-    return connectRemoteWithOAuth(server)
+    return connectRemoteWithOAuth(server, track)
   }
 
+  const transport = createTransport(server)
+  const client = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
+  const connection = { client, transport }
+  track(connection)
   try {
-    const transport = createTransport(server)
-    const client = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
     await client.connect(transport)
-    return { client, transport }
+    return connection
   } catch (err) {
     if (!(err instanceof UnauthorizedError)) throw err
+    await closePendingConnection(connection)
     logger.info('MCP server requires OAuth — starting browser flow', {
       scope: 'mcp',
       serverId: server.id
     })
-    return connectRemoteWithOAuth(server)
+    return connectRemoteWithOAuth(server, track)
   }
 }
 
-async function connectRemoteWithOAuth(server: McpServer): Promise<{
+async function connectRemoteWithOAuth(
+  server: McpServer,
+  track: (connection: PendingMcpConnection) => void
+): Promise<{
   client: Client
   transport: Transport
 }> {
@@ -423,6 +447,7 @@ async function connectRemoteWithOAuth(server: McpServer): Promise<{
   const authProvider = createMcpOAuthProvider(server.id, redirectUrl)
   const transport = createTransport(server, { authProvider })
   const client = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
+  track({ client, transport })
 
   try {
     await client.connect(transport)
@@ -457,6 +482,7 @@ async function connectRemoteWithOAuth(server: McpServer): Promise<{
       }
       const transport2 = createTransport(server, { authProvider })
       const client2 = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
+      track({ client: client2, transport: transport2 })
       await client2.connect(transport2)
       return { client: client2, transport: transport2 }
     } catch (oauthErr) {
@@ -483,10 +509,11 @@ export async function connectMcpServer(server: McpServer): Promise<void> {
     // OAuth browser flow may take minutes; non-OAuth still fails fast via server errors.
     const CONNECT_TIMEOUT_MS = 120_000
     const connectAbort = AbortSignal.timeout(CONNECT_TIMEOUT_MS)
+    const pending = new Set<PendingMcpConnection>()
     let connected: { client: Client; transport: Transport }
     try {
       connected = await Promise.race([
-        connectWithOptionalOAuth(server),
+        connectWithOptionalOAuth(server, (connection) => pending.add(connection)),
         new Promise<never>((_, reject) => {
           connectAbort.addEventListener(
             'abort',
@@ -501,7 +528,9 @@ export async function connectMcpServer(server: McpServer): Promise<void> {
         })
       ])
     } catch (err) {
-      cancelMcpOAuthCallback(server.id)
+      const failure = err instanceof Error ? err : new Error('MCP connection failed')
+      cancelMcpOAuthCallback(server.id, failure)
+      await Promise.all([...pending].map(closePendingConnection))
       throw err
     }
 

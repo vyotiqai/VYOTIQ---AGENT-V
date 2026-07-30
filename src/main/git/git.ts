@@ -72,34 +72,26 @@ function countFileLines(cwd: string, relPath: string): number {
 }
 
 /**
- * Per-file added/removed against HEAD.
- *
- * Renames are disabled so every entry is a plain path; a rename shows up as a
- * delete plus an add, which is what the change list wants to display anyway.
+ * Parse `git diff --numstat -z` into path → line deltas.
  */
-async function trackedChanges(cwd: string, hasCommits: boolean): Promise<Map<string, GitChangedFile>> {
-  const out = new Map<string, GitChangedFile>()
-  const args = hasCommits
-    ? ['diff', '--numstat', '--no-renames', '-z', 'HEAD']
-    : ['diff', '--numstat', '--no-renames', '-z', '--cached']
+async function numstatMap(cwd: string, args: string[]): Promise<Map<string, {
+  added: number
+  removed: number
+  binary: boolean
+}>> {
+  const out = new Map<string, { added: number; removed: number; binary: boolean }>()
   const stdout = await gitQuiet(args, cwd, READ_TIMEOUT_MS)
   if (!stdout) return out
-
   for (const record of splitNul(stdout)) {
     const parts = record.split('\t')
     if (parts.length < 3) continue
     const [addedRaw, removedRaw, path] = parts as [string, string, string]
-    // Binary files report "-" for both counts; there is no line delta to show.
     const added = addedRaw === '-' ? 0 : Number(addedRaw)
     const removed = removedRaw === '-' ? 0 : Number(removedRaw)
     out.set(path, {
-      path,
-      status: 'modified',
       added: Number.isFinite(added) ? added : 0,
       removed: Number.isFinite(removed) ? removed : 0,
-      binary: addedRaw === '-',
-      staged: false,
-      unstaged: true
+      binary: addedRaw === '-'
     })
   }
   return out
@@ -133,6 +125,22 @@ function flagsFromPorcelain(code: string): { staged: boolean; unstaged: boolean 
   return { staged: x !== ' ', unstaged: y !== ' ' }
 }
 
+function emptyFile(path: string, status: GitChangedFile['status']): GitChangedFile {
+  return {
+    path,
+    status,
+    added: 0,
+    removed: 0,
+    addedStaged: 0,
+    removedStaged: 0,
+    addedUnstaged: 0,
+    removedUnstaged: 0,
+    binary: false,
+    staged: false,
+    unstaged: false
+  }
+}
+
 export async function readGitStatus(cwd: string): Promise<GitStatus | null> {
   if (!isGitRepo(cwd)) return null
 
@@ -140,7 +148,37 @@ export async function readGitStatus(cwd: string): Promise<GitStatus | null> {
   const branch = branchRaw?.trim() || null
   const hasCommits = (await gitQuiet(['rev-parse', '--verify', 'HEAD'], cwd, READ_TIMEOUT_MS)) != null
 
-  const tracked = await trackedChanges(cwd, hasCommits)
+  const stagedArgs = hasCommits
+    ? ['diff', '--numstat', '--no-renames', '-z', '--cached', 'HEAD']
+    : ['diff', '--numstat', '--no-renames', '-z', '--cached']
+  const unstagedArgs = ['diff', '--numstat', '--no-renames', '-z']
+  const [stagedMap, unstagedMap] = await Promise.all([
+    numstatMap(cwd, stagedArgs),
+    numstatMap(cwd, unstagedArgs)
+  ])
+
+  const tracked = new Map<string, GitChangedFile>()
+  const ensure = (path: string, status: GitChangedFile['status'] = 'modified'): GitChangedFile => {
+    let file = tracked.get(path)
+    if (!file) {
+      file = emptyFile(path, status)
+      tracked.set(path, file)
+    }
+    return file
+  }
+
+  for (const [path, delta] of stagedMap) {
+    const file = ensure(path)
+    file.addedStaged = delta.added
+    file.removedStaged = delta.removed
+    file.binary = file.binary || delta.binary
+  }
+  for (const [path, delta] of unstagedMap) {
+    const file = ensure(path)
+    file.addedUnstaged = delta.added
+    file.removedUnstaged = delta.removed
+    file.binary = file.binary || delta.binary
+  }
 
   const porcelain = await gitQuiet(
     ['status', '--porcelain=v1', '-z', '-uall'],
@@ -149,7 +187,6 @@ export async function readGitStatus(cwd: string): Promise<GitStatus | null> {
   )
   if (porcelain != null) {
     for (const record of splitNul(porcelain)) {
-      // "XY <path>": two status columns, a space, then the path.
       const code = record.slice(0, 2)
       const path = record.slice(3)
       if (!path) continue
@@ -158,31 +195,27 @@ export async function readGitStatus(cwd: string): Promise<GitStatus | null> {
       if (code === '??') {
         const added = countFileLines(cwd, path)
         tracked.set(path, {
-          path,
-          status: 'untracked',
+          ...emptyFile(path, 'untracked'),
           added,
-          removed: 0,
+          addedUnstaged: added,
           binary: false,
           ...flags
         })
         continue
       }
-      const existing = tracked.get(path)
-      if (existing) {
-        existing.status = statusFor(code)
-        existing.staged = flags.staged
-        existing.unstaged = flags.unstaged
-      } else {
-        tracked.set(path, {
-          path,
-          status: statusFor(code),
-          added: 0,
-          removed: 0,
-          binary: false,
-          ...flags
-        })
-      }
+      const existing = ensure(path, statusFor(code))
+      existing.status = statusFor(code)
+      existing.staged = flags.staged
+      existing.unstaged = flags.unstaged
     }
+  }
+
+  for (const file of tracked.values()) {
+    // Porcelain may mark staged/unstaged even when numstat is empty (mode-only).
+    if (!file.staged && (file.addedStaged > 0 || file.removedStaged > 0)) file.staged = true
+    if (!file.unstaged && (file.addedUnstaged > 0 || file.removedUnstaged > 0)) file.unstaged = true
+    file.added = file.addedStaged + file.addedUnstaged
+    file.removed = file.removedStaged + file.removedUnstaged
   }
 
   const all = [...tracked.values()].sort((a, b) => a.path.localeCompare(b.path))
@@ -334,6 +367,10 @@ export async function readGitCommitFiles(cwd: string, sha: string): Promise<GitC
       status,
       added: Number.isFinite(added) ? added : 0,
       removed: Number.isFinite(removed) ? removed : 0,
+      addedStaged: 0,
+      removedStaged: 0,
+      addedUnstaged: Number.isFinite(added) ? added : 0,
+      removedUnstaged: Number.isFinite(removed) ? removed : 0,
       binary,
       staged: false,
       unstaged: false
@@ -343,15 +380,19 @@ export async function readGitCommitFiles(cwd: string, sha: string): Promise<GitC
 }
 
 export type CommitOutcome = { committed: boolean; pushed: boolean; detail: string }
+export type CommitMode = 'all' | 'staged'
 
 export async function commitAll(
   cwd: string,
   message: string,
-  push: boolean
+  push: boolean,
+  mode: CommitMode = 'all'
 ): Promise<CommitOutcome> {
   if (!isGitRepo(cwd)) throw new Error('Not a git repository')
 
-  await git(['add', '-A'], cwd, WRITE_TIMEOUT_MS)
+  if (mode === 'all') {
+    await git(['add', '-A'], cwd, WRITE_TIMEOUT_MS)
+  }
 
   const staged = await gitQuiet(['diff', '--cached', '--name-only'], cwd, READ_TIMEOUT_MS)
   if (!staged?.trim()) {
@@ -372,4 +413,15 @@ export async function commitAll(
     branch && branch !== 'HEAD' ? ['push', '--set-upstream', 'origin', branch] : ['push']
   await git(pushArgs, cwd, PUSH_TIMEOUT_MS)
   return { committed: true, pushed: true, detail: 'Committed and pushed' }
+}
+
+/** Stage every unstaged / untracked path (`git add -A`). */
+export async function stageAll(cwd: string): Promise<{ staged: boolean; detail: string }> {
+  if (!isGitRepo(cwd)) throw new Error('Not a git repository')
+  const before = await gitQuiet(['status', '--porcelain=v1', '-z', '-uall'], cwd, READ_TIMEOUT_MS)
+  if (!before?.trim()) {
+    return { staged: false, detail: 'Nothing to stage' }
+  }
+  await git(['add', '-A'], cwd, WRITE_TIMEOUT_MS)
+  return { staged: true, detail: 'Staged all changes' }
 }

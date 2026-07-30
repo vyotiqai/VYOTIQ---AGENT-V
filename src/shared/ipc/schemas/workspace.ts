@@ -56,7 +56,8 @@ export const WorkspacesAddRequestSchema = z.object({
 export type WorkspacesAddRequest = z.infer<typeof WorkspacesAddRequestSchema>
 
 export const WorkspacesRemoveRequestSchema = z.object({
-  path: z.string().min(1)
+  path: z.string().min(1),
+  stopActiveRuns: z.boolean().optional().default(false)
 })
 export type WorkspacesRemoveRequest = z.infer<typeof WorkspacesRemoveRequestSchema>
 

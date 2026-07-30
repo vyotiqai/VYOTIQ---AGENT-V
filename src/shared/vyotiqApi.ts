@@ -66,7 +66,7 @@ export interface VyotiqApi {
   pickWorkspace: () => Promise<IpcResult<string | null>>
   getWorkspaces: () => Promise<IpcResult<WorkspacesState>>
   addWorkspace: (path?: string) => Promise<IpcResult<WorkspacesState>>
-  removeWorkspace: (path: string) => Promise<IpcResult<WorkspacesState>>
+  removeWorkspace: (path: string, stopActiveRuns?: boolean) => Promise<IpcResult<WorkspacesState>>
   setActiveWorkspace: (path: string) => Promise<IpcResult<WorkspacesState>>
   updateWorkspaceUiState: (path: string, ui: WorkspaceUiState) => Promise<IpcResult<true>>
   /** Fire-and-forget UI state flush (e.g. beforeunload). */
@@ -164,8 +164,10 @@ export interface VyotiqApi {
   gitCommit: (
     workspacePath: string,
     message: string,
-    push: boolean
+    push: boolean,
+    mode?: 'all' | 'staged'
   ) => Promise<IpcResult<GitCommitResult>>
+  gitStageAll: (workspacePath: string) => Promise<IpcResult<{ staged: boolean; detail: string }>>
   gitLog: (payload: {
     workspacePath: string
     limit?: number

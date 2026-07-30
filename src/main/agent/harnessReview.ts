@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from 'path'
 import { randomBytes } from 'crypto'
 import type { HarnessReviewResult, RunReceipt } from '../../shared/ipc'
-import { RunReceiptSchema } from '../../shared/ipc'
+import { RUN_RECEIPT_VERSION, RunReceiptSchema } from '../../shared/ipc'
 import { resolveInsideWorkspace } from '../workspace/safePath'
 import { resolveRunDir, workspaceSessionsRoot } from '../storage/paths'
 import { RUN_RECEIPT_FILENAME } from './runReceipt'
@@ -52,6 +52,8 @@ export type ParsedSubagentReport = {
   steps: number
   task: string
   report: string
+  runId?: string
+  reportPath?: string
 }
 
 const UNCERTAINTY_RE = /could not determine|not found|unable to|unclear|insufficient/i
@@ -61,7 +63,8 @@ const SUBAGENT_EVIDENCE_CAP = 8
 /** Parse fixed layout from writeSubagentReportFiles. */
 export function parseSubagentReportMarkdown(
   id: string,
-  text: string
+  text: string,
+  source?: { runId: string; reportPath: string }
 ): ParsedSubagentReport {
   const okMatch = text.match(/^ok:\s*(true|false)\s*$/im)
   const stepsMatch = text.match(/^steps:\s*(\d+)\s*$/im)
@@ -73,7 +76,8 @@ export function parseSubagentReportMarkdown(
     ok: okMatch?.[1] === 'true',
     steps: stepsMatch?.[1] ? Number(stepsMatch[1]) : 0,
     task: (taskMatch?.[1] ?? '').trim(),
-    report: reportBody === '(empty)' ? '' : reportBody
+    report: reportBody === '(empty)' ? '' : reportBody,
+    ...(source ? source : {})
   }
 }
 
@@ -98,7 +102,10 @@ export function loadSubagentReports(
       const abs = join(runDir, ...rel.split('/'))
       if (!existsSync(abs)) continue
       try {
-        const parsed = parseSubagentReportMarkdown(entry.id, readFileSync(abs, 'utf8'))
+        const parsed = parseSubagentReportMarkdown(entry.id, readFileSync(abs, 'utf8'), {
+          runId,
+          reportPath: rel
+        })
         if (entry.status === 'failed') parsed.ok = false
         out.push(parsed)
       } catch {
@@ -111,6 +118,55 @@ export function loadSubagentReports(
 
 function normalizeTaskKey(task: string): string {
   return task.trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 120)
+}
+
+function addRunSource(map: Map<string, Set<string>>, key: string, runId: string): void {
+  const runs = map.get(key) ?? new Set<string>()
+  runs.add(runId)
+  map.set(key, runs)
+}
+
+function formatRunSources(runs: Iterable<string>, cap = 5): string {
+  const ids = [...new Set(runs)].sort()
+  const shown = ids.slice(0, cap).map((id) => `\`${id}\``)
+  const more = ids.length > cap ? `, +${ids.length - cap} more` : ''
+  return shown.length > 0 ? `; runs: ${shown.join(', ')}${more}` : ''
+}
+
+function migrateLegacyReceipt(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
+  const receipt = raw as Record<string, unknown>
+  const version = receipt.version
+  if (version !== 2 && version !== 3 && version !== 4) return raw
+
+  const diagnostics =
+    receipt.diagnostics && typeof receipt.diagnostics === 'object' && !Array.isArray(receipt.diagnostics)
+      ? (receipt.diagnostics as Record<string, unknown>)
+      : {}
+  const clean =
+    typeof diagnostics.clean === 'number' && Number.isInteger(diagnostics.clean) && diagnostics.clean >= 0
+      ? diagnostics.clean
+      : 0
+
+  return {
+    ...receipt,
+    version: RUN_RECEIPT_VERSION,
+    diagnostics: {
+      calls: diagnostics.calls,
+      ok: diagnostics.ok,
+      clean
+    },
+    contractDoneWhen:
+      receipt.contractDoneWhen &&
+      typeof receipt.contractDoneWhen === 'object' &&
+      !Array.isArray(receipt.contractDoneWhen)
+        ? receipt.contractDoneWhen
+        : {
+            mode: 'require',
+            nudged: false,
+            checkableCriteria: 0
+          }
+  }
 }
 
 /** Load recent receipt.json files from the workspace session store (AppData). */
@@ -132,7 +188,7 @@ export function collectRecentReceipts(
     if (!existsSync(receiptPath)) continue
     try {
       const raw: unknown = JSON.parse(readFileSync(receiptPath, 'utf8'))
-      const parsed = RunReceiptSchema.safeParse(raw)
+      const parsed = RunReceiptSchema.safeParse(migrateLegacyReceipt(raw))
       if (!parsed.success) continue
       collected.push({
         runId,
@@ -164,7 +220,13 @@ export function summarizeWeaknesses(
   subagentReports: readonly ParsedSubagentReport[] = []
 ): WeaknessSummary {
   const failureCounts = new Map<string, number>()
+  const failureRuns = new Map<string, Set<string>>()
   const unreadCounts = new Map<string, number>()
+  const unreadRuns = new Map<string, Set<string>>()
+  const victoryRuns = new Set<string>()
+  const verifyNudgeRuns = new Set<string>()
+  const highFailureRuns = new Set<string>()
+  const compactionHeavyRuns = new Set<string>()
   let victoryClaims = 0
   let verifyNudges = 0
   let highFailureStreaks = 0
@@ -173,26 +235,48 @@ export function summarizeWeaknesses(
   let compactionHeavy = 0
   let memoryToolFails = 0
 
-  for (const { receipt } of receipts) {
+  for (const { runId, receipt } of receipts) {
     toolCallTotal += receipt.toolStats.totalCalls
     toolFailTotal += receipt.toolStats.failed
     for (const cluster of receipt.failureClusters) {
       failureCounts.set(cluster.key, (failureCounts.get(cluster.key) ?? 0) + cluster.count)
+      addRunSource(failureRuns, cluster.key, runId)
       if (/^memory_/i.test(cluster.key) || /\bmemory_/i.test(cluster.key)) {
         memoryToolFails += cluster.count
       }
     }
     for (const path of receipt.unreadEditPaths) {
       unreadCounts.set(path, (unreadCounts.get(path) ?? 0) + 1)
+      addRunSource(unreadRuns, path, runId)
     }
-    if (receipt.verifyBeforeDone.victoryClaimWithoutTools) victoryClaims++
-    if (receipt.verifyBeforeDone.nudged) verifyNudges++
-    if ((receipt.consecutiveToolFailureSteps ?? 0) >= 3) highFailureStreaks++
-    if (receipt.compactionCount >= 2) compactionHeavy++
+    if (receipt.verifyBeforeDone.victoryClaimWithoutTools) {
+      victoryClaims++
+      victoryRuns.add(runId)
+    }
+    if (receipt.verifyBeforeDone.nudged) {
+      verifyNudges++
+      verifyNudgeRuns.add(runId)
+    }
+    if ((receipt.consecutiveToolFailureSteps ?? 0) >= 3) {
+      highFailureStreaks++
+      highFailureRuns.add(runId)
+    }
+    if (receipt.compactionCount >= 2) {
+      compactionHeavy++
+      compactionHeavyRuns.add(runId)
+    }
   }
 
   const bullets: string[] = []
   bullets.push(`Mined ${receipts.length} run receipt(s).`)
+  if (receipts.length > 0) {
+    bullets.push(
+      `Receipt sources${formatRunSources(
+        receipts.map(({ runId }) => runId),
+        10
+      )}; artifact: \`receipt.json\`.`
+    )
+  }
   if (toolCallTotal > 0) {
     bullets.push(
       `Tool outcomes: ${toolFailTotal}/${toolCallTotal} failed (${Math.round((toolFailTotal / toolCallTotal) * 100)}%).`
@@ -202,25 +286,37 @@ export function summarizeWeaknesses(
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .slice(0, 8)
   for (const [key, count] of topFailures) {
-    bullets.push(`Recurring failure (${count}×): ${key}`)
+    bullets.push(
+      `Recurring failure (${count}×${formatRunSources(failureRuns.get(key) ?? [])}): ${key}`
+    )
   }
   const topUnread = [...unreadCounts.entries()]
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .slice(0, 8)
   for (const [path, count] of topUnread) {
-    bullets.push(`Unread-before-edit (${count}×): ${path}`)
+    bullets.push(
+      `Unread-before-edit (${count}×${formatRunSources(unreadRuns.get(path) ?? [])}): ${path}`
+    )
   }
   if (victoryClaims > 0) {
-    bullets.push(`${victoryClaims} run(s) claimed done without tools after last assistant turn.`)
+    bullets.push(
+      `${victoryClaims} run(s) claimed done without tools after last assistant turn${formatRunSources(victoryRuns)}.`
+    )
   }
   if (verifyNudges > 0) {
-    bullets.push(`${verifyNudges} run(s) received a verify-before-done nudge.`)
+    bullets.push(
+      `${verifyNudges} run(s) received a verify-before-done nudge${formatRunSources(verifyNudgeRuns)}.`
+    )
   }
   if (highFailureStreaks > 0) {
-    bullets.push(`${highFailureStreaks} run(s) had consecutive tool-failure streaks ≥ 3.`)
+    bullets.push(
+      `${highFailureStreaks} run(s) had consecutive tool-failure streaks ≥ 3${formatRunSources(highFailureRuns)}.`
+    )
   }
   if (compactionHeavy > 0) {
-    bullets.push(`${compactionHeavy} run(s) compacted ≥ 2 times (context pressure).`)
+    bullets.push(
+      `${compactionHeavy} run(s) compacted ≥ 2 times (context pressure)${formatRunSources(compactionHeavyRuns)}.`
+    )
   }
   if (bullets.length === 1) {
     bullets.push('No strong weakness signals in the sampled receipts.')
@@ -279,6 +375,12 @@ export function summarizeWeaknesses(
 
   if (subagentReports.length > 0) {
     subagentEvidence.push(`Loaded ${subagentReports.length} sub-agent report(s).`)
+    const sources = subagentReports
+      .filter((report) => report.runId && report.reportPath)
+      .map((report) => `\`${report.runId}/${report.reportPath}\``)
+    if (sources.length > 0) {
+      subagentEvidence.push(`Sub-agent sources: ${sources.slice(0, 6).join(', ')}.`)
+    }
   }
   if (failedSubagents > 0) {
     const line = `${failedSubagents} failed sub-agent report(s).`

@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
+  disposeTerminalSessionsForInvoke,
+  getTerminalSession,
   pollTerminalSession,
   resetTerminalSessionsForTests,
   startBackgroundTerminal
@@ -13,7 +15,12 @@ describe('terminalSessions', () => {
 
   afterEach(() => {
     resetTerminalSessionsForTests()
-    if (cwd) rmSync(cwd, { recursive: true, force: true })
+    if (!cwd) return
+    try {
+      rmSync(cwd, { recursive: true, force: true })
+    } catch {
+      /* Windows may briefly lock the temp cwd while child handles drain */
+    }
   })
 
   it('starts a background command and polls until done', async () => {
@@ -23,6 +30,8 @@ describe('terminalSessions', () => {
       process.platform === 'win32' ? 'cmd /c echo hello-bg' : 'echo hello-bg'
 
     const first = await startBackgroundTerminal({
+      runId: 'run-1',
+      invokeId: 1,
       workspaceRoot: cwd,
       command,
       signal,
@@ -36,6 +45,8 @@ describe('terminalSessions', () => {
     expect(sessionId).toBeTruthy()
 
     const polled = await pollTerminalSession({
+      runId: 'run-1',
+      invokeId: 1,
       sessionId: sessionId!,
       blockUntilMs: 2_000,
       signal
@@ -52,6 +63,8 @@ describe('terminalSessions', () => {
       process.platform === 'win32' ? 'cmd /c echo stream-chunk' : 'echo stream-chunk'
 
     await startBackgroundTerminal({
+      runId: 'run-1',
+      invokeId: 1,
       workspaceRoot: cwd,
       command,
       signal,
@@ -60,5 +73,37 @@ describe('terminalSessions', () => {
       onOutput: (c) => chunks.push(c.text)
     })
     expect(chunks.join('')).toMatch(/stream-chunk/)
+  }, 15_000)
+
+  it('enforces invoke ownership and disposes all child processes with the invoke', async () => {
+    cwd = mkdtempSync(join(tmpdir(), 'vyotiq-term-owner-'))
+    const signal = new AbortController().signal
+    const command =
+      process.platform === 'win32'
+        ? 'ping -n 30 127.0.0.1 > nul'
+        : 'sleep 30'
+    const first = await startBackgroundTerminal({
+      runId: 'run-owner',
+      invokeId: 7,
+      workspaceRoot: cwd,
+      command,
+      signal,
+      shell: process.platform === 'win32' ? 'cmd' : 'auto',
+      blockUntilMs: 0
+    })
+    const sessionId = first.match(/^session_id:\s*(\S+)/m)?.[1]
+    expect(sessionId).toBeTruthy()
+    await expect(
+      pollTerminalSession({
+        runId: 'other-run',
+        invokeId: 1,
+        sessionId: sessionId!,
+        blockUntilMs: 0,
+        signal
+      })
+    ).rejects.toThrow(/does not belong/i)
+
+    expect(disposeTerminalSessionsForInvoke('run-owner', 7)).toBe(1)
+    expect(getTerminalSession(sessionId!)).toBeUndefined()
   }, 15_000)
 })

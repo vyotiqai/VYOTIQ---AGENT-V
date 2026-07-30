@@ -24,8 +24,32 @@ const clean: GitStatus = {
 const dirty: GitStatus = {
   ...clean,
   files: [
-    { path: 'src/a.ts', status: 'modified', added: 10, removed: 4, binary: false },
-    { path: 'src/b.ts', status: 'untracked', added: 7, removed: 0, binary: false }
+    {
+      path: 'src/a.ts',
+      status: 'modified',
+      added: 10,
+      removed: 4,
+      addedStaged: 0,
+      removedStaged: 0,
+      addedUnstaged: 10,
+      removedUnstaged: 4,
+      binary: false,
+      staged: false,
+      unstaged: true
+    },
+    {
+      path: 'src/b.ts',
+      status: 'untracked',
+      added: 7,
+      removed: 0,
+      addedStaged: 0,
+      removedStaged: 0,
+      addedUnstaged: 7,
+      removedUnstaged: 0,
+      binary: false,
+      staged: false,
+      unstaged: true
+    }
   ],
   fileCount: 2,
   added: 17,
@@ -33,11 +57,17 @@ const dirty: GitStatus = {
 }
 
 /** Both pieces of chrome share one hook, exactly as the chat view wires them. */
-function Harness({ workspacePath = '/ws' }: { workspacePath?: string | null }) {
+function Harness({
+  workspacePath = '/ws',
+  onOpenChanges
+}: {
+  workspacePath?: string | null
+  onOpenChanges?: () => void
+}) {
   const chrome = useGitChrome(workspacePath, 0)
   return (
     <>
-      <GitChangePills chrome={chrome} />
+      <GitChangePills chrome={chrome} onOpenChanges={onOpenChanges} />
       <GitBranchStrip chrome={chrome} />
     </>
   )
@@ -49,6 +79,10 @@ function mockApi(overrides: Record<string, unknown> = {}): Record<string, Return
     gitCommit: vi.fn().mockResolvedValue({
       ok: true,
       data: { committed: true, pushed: false, detail: 'Committed' }
+    }),
+    gitStageAll: vi.fn().mockResolvedValue({
+      ok: true,
+      data: { staged: true, detail: 'Staged all changes' }
     }),
     ...overrides
   } as Record<string, ReturnType<typeof vi.fn>>
@@ -75,6 +109,13 @@ describe('git chrome', () => {
     expect(screen.getByText('-4')).toBeTruthy()
   })
 
+  it('opens Changes when the compact pill is clicked', async () => {
+    const onOpenChanges = vi.fn()
+    render(<Harness onOpenChanges={onOpenChanges} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Changes panel' }))
+    expect(onOpenChanges).toHaveBeenCalled()
+  })
+
   it('renders nothing when the workspace is not a repository', async () => {
     mockApi({ gitStatus: vi.fn().mockResolvedValue({ ok: true, data: null }) })
     const { container } = render(<Harness />)
@@ -88,58 +129,7 @@ describe('git chrome', () => {
 
     expect(await screen.findByText('main')).toBeTruthy()
     expect(screen.queryByText('Changes')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Write a commit message' })).toBeNull()
-  })
-
-  it('commits with the message the user typed', async () => {
-    const api = mockApi()
-    render(<Harness />)
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Write a commit message' }))
-    fireEvent.change(screen.getByLabelText('Commit message'), {
-      target: { value: 'Tidy the router' }
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-
-    await waitFor(() => expect(api.gitCommit).toHaveBeenCalledWith('/ws', 'Tidy the router', false))
-  })
-
-  it('pushes only when asked', async () => {
-    const api = mockApi()
-    render(<Harness />)
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Write a commit message' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Commit & Push' }))
-
-    await waitFor(() => expect(api.gitCommit).toHaveBeenCalledWith('/ws', 'Update 2 files', true))
-  })
-
-  it('hides the push action when there is no remote', async () => {
-    mockApi({
-      gitStatus: vi.fn().mockResolvedValue({ ok: true, data: { ...dirty, hasRemote: false } })
-    })
-    render(<Harness />)
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Write a commit message' }))
-    expect(screen.queryByRole('button', { name: 'Commit & Push' })).toBeNull()
-  })
-
-  it('surfaces a refusal from git instead of pretending it worked', async () => {
-    mockApi({
-      gitCommit: vi.fn().mockResolvedValue({ ok: false, error: 'Author identity unknown' })
-    })
-    render(<Harness />)
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Write a commit message' }))
-    const input = screen.getByRole('textbox', { name: 'Commit message' }) as HTMLInputElement
-    fireEvent.change(input, { target: { value: 'Keep this draft' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Commit' }))
-
-    expect(await screen.findByRole('alert')).toBeTruthy()
-    expect(screen.getByText('Author identity unknown')).toBeTruthy()
-    expect((screen.getByRole('textbox', { name: 'Commit message' }) as HTMLInputElement).value).toBe(
-      'Keep this draft'
-    )
+    expect(screen.queryByRole('button', { name: 'Open Changes panel' })).toBeNull()
   })
 
   it('re-reads git when asked', async () => {

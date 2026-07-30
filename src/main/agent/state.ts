@@ -142,18 +142,21 @@ export function runExists(workspacePath: string, runId: string): boolean {
   return existsSync(dir) && existsSync(join(dir, 'status.json'))
 }
 
-export function resumeRun(workspacePath: string, runId: string): string {
+export async function resumeRun(workspacePath: string, runId: string): Promise<string> {
   const dir = resolveRunDir(workspacePath, runId)
   if (!existsSync(dir)) {
     throw new Error('Run not found')
   }
+  // chatStart may already have queued the follow-up user turn.
+  await flushMessageAppends(dir)
   // Close any unfinished tool pairing from a previous crash before continuing.
   appendOrphanToolStubs(dir, runId)
   const prior = loadStatus(dir)
   updateStatus(dir, {
     status: 'running',
     // Keep prior step count across invokes (do not reset progress metadata).
-    step: prior?.step ?? 0
+    step: prior?.step ?? 0,
+    error: undefined
   })
   return dir
 }
@@ -181,9 +184,9 @@ export async function syncMessagesAsync(dir: string, messages: ChatMessage[]): P
   syncMessages(dir, messages)
 }
 
-export function appendMessage(dir: string, message: ChatMessage): void {
+export function appendMessage(dir: string, message: ChatMessage): Promise<void> {
   const line = `${JSON.stringify(message)}\n`
-  enqueueMessageAppend(dir, line)
+  return enqueueMessageAppend(dir, line)
 }
 
 export function createRun(workspacePath: string, runId: string, goal: string): string {
@@ -313,6 +316,7 @@ export async function loadToolResultContent(
   toolCallId: string
 ): Promise<string | null> {
   const dir = resolveRunDir(workspacePath, runId)
+  await flushMessageAppends(dir)
   const p = join(dir, 'messages.jsonl')
   if (!existsSync(p)) return null
   let raw: string
@@ -619,12 +623,16 @@ function appendOrphanToolStubs(dir: string, runId: string): void {
     if (message.role === 'tool' && message.toolCallId) completedIds.add(message.toolCallId)
   }
   const stub = 'Cancelled'
+  const repaired: ChatMessage[] = []
+  let changed = false
   for (const message of messages) {
+    repaired.push(message)
     if (message.role !== 'assistant' || !message.toolCalls?.length) continue
     for (const call of message.toolCalls) {
       if (completedIds.has(call.id)) continue
       completedIds.add(call.id)
-      appendMessage(dir, {
+      changed = true
+      repaired.push({
         role: 'tool',
         toolCallId: call.id,
         toolName: call.name,
@@ -645,6 +653,7 @@ function appendOrphanToolStubs(dir: string, runId: string): void {
       )
     }
   }
+  if (changed) syncMessages(dir, repaired)
 }
 
 /** Patch the latest todo_write tool message when interrupt leaves tasks in progress. */

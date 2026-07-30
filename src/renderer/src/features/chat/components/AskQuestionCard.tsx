@@ -84,6 +84,7 @@ export const AskQuestionCard = memo(function AskQuestionCard({
                     ? 'border-accent bg-accent/10 text-fg'
                     : 'border-border text-secondary hover:bg-surface'
                 )}
+                aria-pressed={active}
                 onClick={() => toggleOption(option)}
               >
                 {option}
@@ -97,6 +98,7 @@ export const AskQuestionCard = memo(function AskQuestionCard({
           <textarea
             className="min-h-[72px] w-full resize-y rounded-md border border-border bg-surface px-2 py-1.5 text-sm text-fg"
             placeholder={hasOptions ? 'Or type a custom answer…' : 'Your answer…'}
+            aria-label={hasOptions ? 'Custom answer' : 'Your answer'}
             disabled={busy}
             value={customText}
             onChange={(e) => setCustomText(e.target.value)}

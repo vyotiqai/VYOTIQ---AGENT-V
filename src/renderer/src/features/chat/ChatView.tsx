@@ -73,7 +73,8 @@ function TranscriptPane({
   onKeepWriteFile,
   onDiscardWriteFile,
   onKeepAllWrites,
-  resolveBlockedReason
+  resolveBlockedReason,
+  onOpenChanges
 }: {
   items: UiItem[]
   pendingRun?: boolean
@@ -106,6 +107,7 @@ function TranscriptPane({
   onDiscardWriteFile?: (path: string) => void | Promise<unknown>
   onKeepAllWrites?: () => void | Promise<unknown>
   resolveBlockedReason?: string | null
+  onOpenChanges?: () => void
 }) {
   const runSession = useMemo(
     () => ({
@@ -147,6 +149,7 @@ function TranscriptPane({
         onDiscardWriteFile={onDiscardWriteFile}
         onKeepAllWrites={onKeepAllWrites}
         resolveBlockedReason={resolveBlockedReason}
+        onOpenChanges={onOpenChanges}
       />
     </RunSessionProvider>
   )
@@ -699,6 +702,7 @@ export function ChatView({
                 onDiscardWriteFile={onDiscardWriteFile}
                 onKeepAllWrites={onKeepAllWrites}
                 resolveBlockedReason={resolveBlockedReason}
+                onOpenChanges={() => setRightPanel('changes')}
               />
 
               <MemoComposer
@@ -708,7 +712,7 @@ export function ChatView({
                 bannerError={bannerError}
                 onDismissError={onDismissError}
                 leading={
-                  <ChatGitLeading chrome={gitChrome} />
+                  <ChatGitLeading chrome={gitChrome} onOpenChanges={() => setRightPanel('changes')} />
                 }
                 trailing={
                   <ChatGitTrailing chrome={gitChrome} />
@@ -755,13 +759,9 @@ export function ChatView({
                 aria-hidden={activeRightPanel !== 'terminal'}
               >
                 <TerminalPanel
-                  items={liveItems}
                   workspacePath={workspacePath}
-                  onLoadToolContent={onLoadToolContent}
-                  onSessionsChange={(sessions) => {
-                    const active =
-                      sessions.find((s) => s.running) ?? sessions[0] ?? null
-                    setTerminalTabTitle(active?.title ?? null)
+                  onActiveSessionChange={(session) => {
+                    setTerminalTabTitle(session?.title ?? null)
                   }}
                 />
               </div>
@@ -789,6 +789,7 @@ export function ChatView({
                   onDiscardWriteFile={onDiscardWriteFile}
                   onKeepAllWrites={onKeepAllWrites}
                   onDiscardAllWrites={onUndoWrites}
+                  active={activeRightPanel === 'changes'}
                 />
               </div>
             ) : null}
@@ -804,6 +805,7 @@ export function ChatView({
                   workspacePath={workspacePath}
                   onPrMeta={handlePrMeta}
                   onUnlink={() => closeDockTab('pr')}
+                  active={activeRightPanel === 'pr'}
                 />
               </div>
             ) : null}

@@ -1,4 +1,4 @@
-import type { AgentEvent } from '../ipc'
+import { contentToText, type AgentEvent, type ChatMessage } from '../ipc'
 
 /** Matches ToolRow display cap — IPC should not ship more than the UI can show live. */
 export const TOOL_RESULT_IPC_PREVIEW_CHARS = 4000
@@ -16,6 +16,18 @@ export function toolResultEventForIpc(event: AgentEvent): AgentEvent {
   return {
     ...event,
     content: truncateToolResultContent(event.content),
+    contentTruncated: true
+  }
+}
+
+/** Bound persisted history sent to the renderer without changing on-disk history. */
+export function toolMessageForIpc(message: ChatMessage): ChatMessage {
+  if (message.role !== 'tool') return message
+  const content = contentToText(message.content)
+  if (content.length <= TOOL_RESULT_IPC_PREVIEW_CHARS) return message
+  return {
+    ...message,
+    content: truncateToolResultContent(content) ?? '',
     contentTruncated: true
   }
 }

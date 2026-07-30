@@ -92,7 +92,16 @@ vi.mock('@main/agent/providers', () => ({
 
 import { runAgent } from '@main/agent/loop'
 import { isActive, registerRunAbort, resetActiveRunsForTests } from '@main/agent/runRegistry'
-import { appendMessage, createRun, flushMessageAppends, loadCompaction, loadMessages, saveCompaction } from '@main/agent/state'
+import {
+  appendMessage,
+  createRun,
+  flushMessageAppends,
+  loadCompaction,
+  loadMessages,
+  loadStatus,
+  saveCompaction,
+  updateStatus
+} from '@main/agent/state'
 import { resolveRunDir } from '@main/storage/paths'
 
 describe('runAgent session continuation', () => {
@@ -144,6 +153,9 @@ describe('runAgent session continuation', () => {
     }
 
     expect(isActive(runId)).toBe(false)
+    const runDir = resolveRunDir(workspace, runId)
+    const priorStep = loadStatus(runDir)?.step ?? 0
+    updateStatus(runDir, { status: 'error', error: 'stale failure' })
 
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
       yield { type: 'text', text: 'file list' }
@@ -171,6 +183,11 @@ describe('runAgent session continuation', () => {
     expect(messages).toHaveLength(4)
     expect(messages[2]).toMatchObject({ role: 'user', content: 'list all the files' })
     expect(messages[3]).toMatchObject({ role: 'assistant', content: 'file list' })
+    expect(loadStatus(runDir)).toMatchObject({
+      status: 'done',
+      step: priorStep + 1
+    })
+    expect(loadStatus(runDir)?.error).toBeUndefined()
   })
 
   it('loads persisted compaction when resuming a run', async () => {

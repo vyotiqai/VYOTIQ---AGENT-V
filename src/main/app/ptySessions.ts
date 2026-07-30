@@ -6,6 +6,7 @@ import { workspacePathsEqual } from '../../shared/workspacePath'
 import { getSettings } from '../settings/settings'
 import { resolveTerminalShell } from '../agent/tools/terminal'
 import type { PtySessionInfo } from '../../shared/ipc'
+import { getMainWindow } from './window'
 
 type SessionBackend =
   | { kind: 'pty'; /* eslint-disable-next-line @typescript-eslint/no-explicit-any */ pty: any }
@@ -17,9 +18,19 @@ type PtyHandle = {
   cwd: string
   running: boolean
   backend: SessionBackend
+  /** Ring buffer for macOS window recreate / late subscriber recovery. */
+  scrollback: string
 }
 
 const sessions = new Map<string, PtyHandle>()
+const PTY_SCROLLBACK_MAX = 200_000
+
+function appendScrollback(handle: PtyHandle, data: string): void {
+  handle.scrollback += data
+  if (handle.scrollback.length > PTY_SCROLLBACK_MAX) {
+    handle.scrollback = handle.scrollback.slice(-PTY_SCROLLBACK_MAX)
+  }
+}
 
 function shellTitle(): string {
   const resolved = resolveTerminalShell(getSettings().terminalShell ?? 'auto')
@@ -76,6 +87,37 @@ export function createPtySession(opts: {
   const title = shellTitle()
   const { file, args } = shellBinAndArgs()
   const nodePty = tryLoadPty()
+  // Placeholder until backend is ready so early data is retained for recreate replay.
+  const handle: PtyHandle = {
+    id,
+    title,
+    cwd: opts.cwd,
+    running: true,
+    backend: { kind: 'pipe', child: null as unknown as ChildProcessWithoutNullStreams },
+    scrollback: ''
+  }
+  sessions.set(id, handle)
+
+  const send = (channel: string, payload: unknown): void => {
+    if (
+      channel === IPC.ptyData &&
+      payload &&
+      typeof payload === 'object' &&
+      'data' in payload &&
+      typeof (payload as { data: unknown }).data === 'string'
+    ) {
+      appendScrollback(handle, (payload as { data: string }).data)
+    }
+    const current = getMainWindow()
+    const target =
+      current && !current.isDestroyed()
+        ? current
+        : !opts.sendTo.isDestroyed()
+          ? opts.sendTo
+          : null
+    if (!target || target.webContents.isDestroyed()) return
+    target.webContents.send(channel, payload)
+  }
 
   let backend: SessionBackend | null = null
   let usedPipeFallback = false
@@ -91,15 +133,11 @@ export function createPtySession(opts: {
       })
       backend = { kind: 'pty', pty }
       pty.onData((data: string) => {
-        if (opts.sendTo.isDestroyed()) return
-        opts.sendTo.webContents.send(IPC.ptyData, { id, data })
+        send(IPC.ptyData, { id, data })
       })
       pty.onExit(({ exitCode }: { exitCode: number }) => {
-        const handle = sessions.get(id)
-        if (handle) handle.running = false
-        if (!opts.sendTo.isDestroyed()) {
-          opts.sendTo.webContents.send(IPC.ptyExit, { id, exitCode })
-        }
+        handle.running = false
+        send(IPC.ptyExit, { id, exitCode })
       })
     } catch {
       backend = null
@@ -119,31 +157,49 @@ export function createPtySession(opts: {
     })
     backend = { kind: 'pipe', child }
     const push = (buf: Buffer): void => {
-      if (opts.sendTo.isDestroyed()) return
-      opts.sendTo.webContents.send(IPC.ptyData, { id, data: buf.toString('utf8') })
+      send(IPC.ptyData, { id, data: buf.toString('utf8') })
+    }
+    let terminalSent = false
+    const finish = (exitCode: number | null): void => {
+      if (terminalSent) return
+      terminalSent = true
+      handle.running = false
+      send(IPC.ptyExit, { id, exitCode })
     }
     child.stdout.on('data', push)
     child.stderr.on('data', push)
-    child.on('exit', (code) => {
-      const handle = sessions.get(id)
-      if (handle) handle.running = false
-      if (!opts.sendTo.isDestroyed()) {
-        opts.sendTo.webContents.send(IPC.ptyExit, {
-          id,
-          exitCode: typeof code === 'number' ? code : null
-        })
-      }
+    child.on('error', (err) => {
+      push(Buffer.from(`[vyotiq] Failed to start shell: ${err.message}\r\n`, 'utf8'))
+      finish(1)
     })
-    if (usedPipeFallback && !opts.sendTo.isDestroyed()) {
-      opts.sendTo.webContents.send(IPC.ptyData, {
+    child.on('exit', (code) => {
+      finish(typeof code === 'number' ? code : null)
+    })
+    if (usedPipeFallback) {
+      send(IPC.ptyData, {
         id,
         data: `[vyotiq] Interactive PTY unavailable (node-pty not built). Using pipe shell fallback.\r\n`
       })
     }
   }
 
-  sessions.set(id, { id, title, cwd: opts.cwd, running: true, backend })
+  handle.backend = backend
   return { id, title, cwd: opts.cwd, running: true, backend: backend.kind }
+}
+
+/** Rebind PTY output to a freshly created main window (macOS activate recreate). */
+export function replayPtySessionsToWindow(win: BrowserWindow): void {
+  if (win.isDestroyed() || win.webContents.isDestroyed()) return
+  for (const s of sessions.values()) {
+    if (!s.scrollback) continue
+    win.webContents.send(IPC.ptyData, { id: s.id, data: s.scrollback })
+  }
+}
+
+/** Test helper: seed scrollback without depending on shell echo. */
+export function seedPtyScrollbackForTests(id: string, data: string): void {
+  const handle = sessions.get(id)
+  if (handle) appendScrollback(handle, data)
 }
 
 export function writePty(id: string, data: string): boolean {

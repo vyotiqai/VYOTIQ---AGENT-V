@@ -970,31 +970,29 @@ export function useWorkspaceManager() {
 
   const removeWorkspace = useCallback(
     async (path: string): Promise<void> => {
-      const ctx = contextsRef.current[path]
-      if (ctx) {
-        for (const run of ctx.runs) {
-          if (run.status === 'running') {
-            backgroundRunIdsRef.current.add(run.runId)
-          }
-        }
-        for (const runId of ctx.openRunIds) {
-          const ctrl = controllersRef.current.get(runId)
-          if (ctrl?.running || ctrl?.pendingRun) {
-            backgroundRunIdsRef.current.add(runId)
-          }
-        }
-        const draft = controllersRef.current.get(draftControllerKey(path))
-        if (draft?.running || draft?.pendingRun) {
-          const id = draft.runId
-          if (id) backgroundRunIdsRef.current.add(id)
-        }
+      const activeForWorkspace = activeRunsRef.current.filter((run) =>
+        workspacePathsEqual(run.workspacePath, path)
+      )
+      if (
+        activeForWorkspace.length > 0 &&
+        !window.confirm(
+          `This workspace has ${activeForWorkspace.length} active run(s). Stop ${
+            activeForWorkspace.length === 1 ? 'it' : 'them'
+          } and close the workspace?`
+        )
+      ) {
+        return
       }
 
       flushPersistUiState(path)
 
       if (!window.vyotiq?.removeWorkspace) return
-      const res = await window.vyotiq.removeWorkspace(path)
+      const res = await window.vyotiq.removeWorkspace(path, activeForWorkspace.length > 0)
       if (res.ok) {
+        for (const run of activeForWorkspace) {
+          backgroundRunIdsRef.current.delete(run.runId)
+          forgetRunRouting(run.runId)
+        }
         setWorkspaceError(null)
         applyRegistry(res.data)
         setContexts((prev) => {
@@ -1006,7 +1004,7 @@ export function useWorkspaceManager() {
         setWorkspaceError(res.error)
       }
     },
-    [applyRegistry, contexts, flushPersistUiState]
+    [applyRegistry, flushPersistUiState, forgetRunRouting]
   )
 
   const getRunController = useCallback(

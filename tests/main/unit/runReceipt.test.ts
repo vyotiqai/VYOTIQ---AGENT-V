@@ -105,7 +105,7 @@ describe('runReceipt', () => {
     expect(receipt.unreadEditPaths).toContain('b.ts')
     expect(receipt.unreadEditPaths).not.toContain('a.ts')
     expect(receipt.wroteFiles).toEqual(['b.ts'])
-    expect(receipt.diagnostics).toEqual({ calls: 1, ok: 1 })
+    expect(receipt.diagnostics).toEqual({ calls: 1, ok: 1, clean: 1 })
     expect(receipt.verifyBeforeDone).toEqual({
       mode: 'notice',
       nudged: true,
@@ -141,6 +141,53 @@ describe('runReceipt', () => {
     ).toEqual(['src/a.ts', 'b.ts'])
   })
 
+  it('keeps cumulative metrics but scopes outcome fields to the latest invocation', () => {
+    const receipt = buildRunReceipt({
+      runId: 'resumed',
+      status: {
+        status: 'done',
+        step: 4,
+        updatedAt: new Date().toISOString(),
+        invokeId: 2
+      },
+      messages: [
+        { role: 'assistant', content: 'Task complete.' },
+        { role: 'user', content: 'continue' },
+        { role: 'assistant', content: 'I found a remaining blocker.' }
+      ],
+      events: [
+        {
+          at: 'old',
+          event: {
+            type: 'incomplete',
+            runId: 'resumed',
+            invokeId: 1,
+            reason: 'truncated',
+            message: 'old turn'
+          }
+        },
+        {
+          at: 'new',
+          event: {
+            type: 'step_usage',
+            runId: 'resumed',
+            invokeId: 2,
+            step: 4,
+            inputTokens: 10,
+            outputTokens: 2
+          }
+        }
+      ],
+      contract: '',
+      verifyMode: 'off',
+      verifyNudged: false
+    })
+
+    expect(receipt.incomplete).toBeUndefined()
+    expect(receipt.verifyBeforeDone.victoryClaimWithoutTools).toBe(false)
+    expect(receipt.tokenUsage).toEqual({ inputTokens: 10, outputTokens: 2 })
+  })
+
   it('treats concrete grep/glob as seen for unread edits', () => {
     const messages: ChatMessage[] = [
       {
@@ -151,7 +198,10 @@ describe('runReceipt', () => {
           { id: 'e1', name: 'str_replace', arguments: '{"path":"seen.ts"}' },
           { id: 'e2', name: 'edit', arguments: '{"path":"other.ts"}' }
         ]
-      }
+      },
+      { role: 'tool', toolCallId: 'g1', toolName: 'grep', ok: true, content: 'match' },
+      { role: 'tool', toolCallId: 'e1', toolName: 'str_replace', ok: true, content: 'updated' },
+      { role: 'tool', toolCallId: 'e2', toolName: 'edit', ok: true, content: 'updated' }
     ]
     const receipt = buildRunReceipt({
       runId: 'r',

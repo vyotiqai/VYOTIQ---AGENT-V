@@ -1,10 +1,9 @@
 import { useCallback, useState } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
-import { FLOATING_CHROME } from '@renderer/lib/utils/layout'
 import type { GitStatus } from '@shared/ipc'
 import { useGitStatus } from './useGitStatus'
-import { CommitComposer } from './CommitComposer'
+import { defaultCommitMessageFromStatus } from './CommitComposer'
 
 const PILL =
   'inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-2.5 py-1 text-[11px] vy-transition'
@@ -16,22 +15,12 @@ export type GitChrome = {
   notice: string | null
   noticeFailed: boolean
   refresh: () => void
-  commit: (message: string, push: boolean) => Promise<boolean>
-}
-
-/** Commit messages are the user's to write; this is only a starting point. */
-function defaultMessage(status: GitStatus): string {
-  const first = status.files[0]
-  if (status.fileCount === 1 && first) return `Update ${first.path}`
-  return `Update ${status.fileCount} files`
+  commit: (message: string, push: boolean, mode?: 'all' | 'staged') => Promise<boolean>
+  stageAll: () => Promise<boolean>
 }
 
 /**
- * The workspace's git state plus the one action we offer on it.
- *
- * Held by the chat view rather than by each piece of chrome, because the branch
- * strip and the change pills are far apart on screen but describe the same
- * repository, and asking git twice for that would be wasteful.
+ * The workspace's git state plus commit/stage actions for the Changes panel.
  */
 export function useGitChrome(
   workspacePath: string | null,
@@ -44,13 +33,18 @@ export function useGitChrome(
   const [noticeFailed, setNoticeFailed] = useState(false)
 
   const commit = useCallback(
-    async (message: string, push: boolean): Promise<boolean> => {
+    async (message: string, push: boolean, mode: 'all' | 'staged' = 'all'): Promise<boolean> => {
       if (!workspacePath || !message.trim() || busy) return false
       setBusy(true)
       setNotice(null)
       setNoticeFailed(false)
       try {
-        const result = await window.vyotiq.gitCommit(workspacePath, message.trim(), push)
+        const result = await window.vyotiq.gitCommit(
+          workspacePath,
+          message.trim(),
+          push,
+          mode
+        )
         setNotice(result.ok ? result.data.detail : result.error)
         setNoticeFailed(!result.ok)
         return result.ok
@@ -62,6 +56,22 @@ export function useGitChrome(
     [workspacePath, busy, refresh]
   )
 
+  const stageAll = useCallback(async (): Promise<boolean> => {
+    if (!workspacePath || busy) return false
+    setBusy(true)
+    setNotice(null)
+    setNoticeFailed(false)
+    try {
+      const result = await window.vyotiq.gitStageAll(workspacePath)
+      setNotice(result.ok ? result.data.detail : result.error)
+      setNoticeFailed(!result.ok)
+      return result.ok
+    } finally {
+      setBusy(false)
+      refresh()
+    }
+  }, [workspacePath, busy, refresh])
+
   return {
     status,
     ready: !loading && Boolean(status),
@@ -69,84 +79,43 @@ export function useGitChrome(
     notice,
     noticeFailed,
     refresh,
-    commit
+    commit,
+    stageAll
   }
 }
 
 /**
- * How much the working tree has moved, and the way to commit it.
- *
- * Sits above the docked composer so the size of a change is visible without
- * scrolling the transcript.
+ * Compact working-tree summary that opens the Changes panel.
+ * Commit / Keep / Discard actions live only in Changes.
  */
-export function GitChangePills({ chrome }: { chrome: GitChrome }) {
-  const { status, ready, busy, notice, noticeFailed, commit } = chrome
-  const [composing, setComposing] = useState(false)
-  const [message, setMessage] = useState('')
-
-  const open = useCallback(() => {
-    if (!status) return
-    setMessage((current) => current || defaultMessage(status))
-    setComposing(true)
-  }, [status])
-
-  const send = useCallback(
-    (push: boolean) => {
-      void commit(message, push).then((ok) => {
-        if (!ok) return
-        setMessage('')
-        setComposing(false)
-      })
-    },
-    [commit, message]
-  )
+export function GitChangePills({
+  chrome,
+  onOpenChanges
+}: {
+  chrome: GitChrome
+  onOpenChanges?: () => void
+}) {
+  const { status, ready } = chrome
 
   if (!ready || !status || status.fileCount === 0) return null
 
   return (
     <div className="pointer-events-auto flex flex-col items-start gap-1.5">
-      {composing ? (
-        <div className={cn(FLOATING_CHROME, 'w-full p-1.5')}>
-          <CommitComposer
-            message={message}
-            onMessageChange={setMessage}
-            busy={busy}
-            hasRemote={status.hasRemote}
-            primaryPushes={false}
-            onCommit={send}
-            onCancel={() => setComposing(false)}
-          />
-        </div>
-      ) : null}
-
       <div className="flex items-center gap-1.5 text-tertiary">
-        <span className={cn(PILL, 'tabular-nums')}>
+        <button
+          type="button"
+          className={cn(PILL, 'tabular-nums text-fg hover:bg-surface-2')}
+          onClick={() => onOpenChanges?.()}
+          aria-label="Open Changes panel"
+        >
           <span>Changes</span>
           {status.added > 0 ? <span className="text-success">+{status.added}</span> : null}
           {status.removed > 0 ? <span className="text-danger">-{status.removed}</span> : null}
-        </span>
-
-        <button
-          type="button"
-          className={cn(PILL, 'text-fg hover:bg-surface-2')}
-          onClick={() => (composing ? setComposing(false) : open())}
-          aria-expanded={composing}
-          aria-label="Write a commit message"
-        >
-          {status.hasRemote ? 'Commit…' : 'Commit'}
-          <Icon
-            name="chevronRight"
-            size={14}
-            className={cn('vy-transition', composing ? 'rotate-90' : '-rotate-90')}
-          />
+          <Icon name="chevronRight" size={14} className="-rotate-90" />
         </button>
-
-        {notice ? (
-          <span
-            className={cn('px-1 text-[11px]', noticeFailed ? 'text-danger' : 'text-secondary')}
-            role={noticeFailed ? 'alert' : 'status'}
-          >
-            {notice}
+        {status.truncated ? (
+          <span className="px-1 text-[11px] text-muted" title="File list is truncated">
+            Showing first {status.files.length} of {status.fileCount}
           </span>
         ) : null}
       </div>
@@ -177,3 +146,5 @@ export function GitBranchStrip({ chrome }: { chrome: GitChrome }) {
     </div>
   )
 }
+
+export { defaultCommitMessageFromStatus }

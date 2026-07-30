@@ -14,7 +14,7 @@ export type ToolStepContext = {
   runDir: string
   workspace: string
   signal: AbortSignal
-  appendMessage: (msg: ChatMessage) => void
+  appendMessage: (msg: ChatMessage) => Promise<void>
   appendEvent: (ev: AgentEvent) => void
   /** Per-run failed tool keys (`tool:summary`) for repeat-failure hints. */
   failedToolKeys?: Map<string, number>
@@ -162,7 +162,6 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
       }
     )
     emitToolStart(ctx, events[0]!)
-    emitToolResult(ctx, events[1]!)
     return { ok: false, events, message: toolMsg }
   }
 
@@ -198,7 +197,6 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
           ok: false,
           content: verdict.reason
         })
-        emitToolResult(ctx, events[events.length - 1]!)
         return { ok: false, events, message: toolMsg }
       }
     }
@@ -267,7 +265,6 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
       ok: result.ok,
       content
     })
-    emitToolResult(ctx, events[events.length - 1]!)
     if (!result.ok && !result.failureLogged) {
       logger.warn('Tool returned failure', {
         scope: 'agent',
@@ -301,7 +298,6 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
         ok: false,
         content: 'Cancelled'
       })
-      emitToolResult(ctx, events[events.length - 1]!)
       return { ok: false, events, message: toolMsg }
     }
     throw err
@@ -340,7 +336,6 @@ function cancelledToolResult(call: ToolCall, ctx: ToolStepContext): ToolOutcome 
     content: 'Cancelled'
   }
   emitToolStart(ctx, startEv)
-  emitToolResult(ctx, ev)
   return { ok: false, events: [startEv, ev], message: toolMsg }
 }
 
@@ -409,9 +404,12 @@ export async function executeStepToolCalls(
   }
   flushBatch()
 
-  const collect = (outcome: ToolOutcome): void => {
+  const collect = async (outcome: ToolOutcome): Promise<void> => {
     const final = applyRepeatFailureHint(ctx, outcome)
+    // Full output must be durable before the truncated live event can be expanded.
+    await ctx.appendMessage(final.message)
     persistToolResult(ctx, final)
+    for (const ev of final.events) emitToolResult(ctx, ev)
     messages.push(final.message)
     events.push(...final.events)
     if (!final.ok) stepToolsOk = false
@@ -419,7 +417,7 @@ export async function executeStepToolCalls(
 
   for (const group of groups) {
     if (ctx.signal.aborted) {
-      for (const call of group) collect(cancelledToolResult(call, ctx))
+      for (const call of group) await collect(cancelledToolResult(call, ctx))
       continue
     }
 
@@ -429,15 +427,15 @@ export async function executeStepToolCalls(
       const batchLimit = batchLimitFor(group[0]!.name)
       const batch = await runParallelBatch(group, ctx, batchLimit)
       for (const call of group) {
-        collect(batch.get(call.id) ?? cancelledToolResult(call, ctx))
+        await collect(batch.get(call.id) ?? cancelledToolResult(call, ctx))
       }
     } else {
       for (const call of group) {
         if (ctx.signal.aborted) {
-          collect(cancelledToolResult(call, ctx))
+          await collect(cancelledToolResult(call, ctx))
           continue
         }
-        collect(await runSingleTool(call, ctx))
+        await collect(await runSingleTool(call, ctx))
       }
     }
   }

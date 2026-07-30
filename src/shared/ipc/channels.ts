@@ -54,6 +54,7 @@ export const IPC = {
   browserClearBrowsingData: 'browser:clearBrowsingData',
   gitStatus: 'git:status',
   gitCommit: 'git:commit',
+  gitStageAll: 'git:stage-all',
   gitLog: 'git:log',
   gitCommitFiles: 'git:commit-files',
   windowMinimize: 'window:minimize',

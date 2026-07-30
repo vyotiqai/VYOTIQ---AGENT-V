@@ -156,6 +156,26 @@ describe('executeStepToolCalls', () => {
     expect(outcome.messages[0]?.ok).toBe(false)
   })
 
+  it('persists full tool output before emitting the live result', async () => {
+    const order: string[] = []
+    executeTool.mockResolvedValue({ ok: true, summary: 'big', content: 'full output' })
+    const { ctx } = makeCtx(new AbortController().signal)
+    ctx.appendMessage = async () => {
+      await Promise.resolve()
+      order.push('persisted')
+    }
+    ctx.emitLiveEvent = (event) => {
+      if (event.type === 'tool_result') order.push('emitted')
+    }
+
+    await executeStepToolCalls(
+      [{ id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }],
+      ctx
+    )
+
+    expect(order).toEqual(['persisted', 'emitted'])
+  })
+
   it('routes parallel subagent live updates to distinct parentToolCallIds', async () => {
     const live: AgentEvent[] = []
     executeTool.mockImplementation(

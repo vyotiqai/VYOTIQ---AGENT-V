@@ -48,6 +48,8 @@ export const ChatMessageSchema = z.object({
   toolName: z.string().optional(),
   /** Whether the tool call succeeded; persisted for accurate reload without events.jsonl. */
   ok: z.boolean().optional(),
+  /** Renderer history contains a preview; full tool output remains on disk. */
+  contentTruncated: z.boolean().optional(),
   toolCalls: z
     .array(
       z.object({
@@ -71,6 +73,8 @@ export const RunStatusSchema = z.object({
   error: z.string().optional(),
   goal: z.string().optional(),
   workspacePath: z.string().optional(),
+  /** Latest chatStart invocation represented by outcome fields. */
+  invokeId: z.number().int().min(1).optional(),
   /** Last Ask / Plan / Agent mode for this run (survives resume). */
   mode: AgentInteractionModeSchema.optional(),
   /** Consecutive all-failure tool steps — restored across invokes. */
@@ -513,7 +517,8 @@ export const RunReceiptSchema = z.object({
   wroteFiles: z.array(z.string()),
   diagnostics: z.object({
     calls: z.number().int().min(0),
-    ok: z.number().int().min(0)
+    ok: z.number().int().min(0),
+    clean: z.number().int().min(0).default(0)
   }),
   verifyBeforeDone: z.object({
     mode: VerifyBeforeDoneModeSchema,

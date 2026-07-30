@@ -250,7 +250,8 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   onKeepAllWrites,
   resolveBlockedReason = null,
   fileDiffs,
-  onDiffExpandChange
+  onDiffExpandChange,
+  onOpenChanges
 }: {
   row: TranscriptRow
   onImageClick: (url: string, label: string) => void
@@ -275,6 +276,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   resolveBlockedReason?: string | null
   fileDiffs?: ReadonlyMap<string, import('../toolUi').DiffLine[]>
   onDiffExpandChange?: (hasExpanded: boolean) => void
+  onOpenChanges?: () => void
 }) {
   if (row.kind === 'user') {
     return <UserPrompt item={row.item} onImageClick={onImageClick} />
@@ -318,17 +320,8 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
     return (
       <ChangeSummary
         files={row.files}
-        fileDiffs={fileDiffs}
-        fileResolutions={writeFileResolutions}
-        resolvablePaths={writeResolvablePaths}
-        canResolve={canUndoWrites}
-        resolveBusy={undoBusy}
-        resolveBlockedReason={resolveBlockedReason}
-        onKeepFile={onKeepWriteFile}
-        onDiscardFile={onDiscardWriteFile}
-        onKeepAll={onKeepAllWrites}
-        onDiscardAll={onUndoWrites}
-        onDiffExpandChange={onDiffExpandChange}
+        compact
+        onOpenChanges={onOpenChanges}
       />
     )
   }
@@ -406,7 +399,8 @@ export function MessageList({
   onKeepWriteFile,
   onDiscardWriteFile,
   onKeepAllWrites,
-  resolveBlockedReason = null
+  resolveBlockedReason = null,
+  onOpenChanges
 }: {
   items: UiItem[]
   reserveComposerSpace?: boolean
@@ -439,6 +433,7 @@ export function MessageList({
   onDiscardWriteFile?: (path: string) => void | Promise<unknown>
   onKeepAllWrites?: () => void | Promise<unknown>
   resolveBlockedReason?: string | null
+  onOpenChanges?: () => void
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const appliedRestoreRef = useRef<number | null>(null)
@@ -814,6 +809,7 @@ export function MessageList({
       onKeepAllWrites={onKeepAllWrites}
       resolveBlockedReason={resolveBlockedReason}
       fileDiffs={row.kind === 'changes' ? turnFileDiffs.get(row.turnIndex) : undefined}
+      onOpenChanges={onOpenChanges}
       onDiffExpandChange={
         row.kind === 'changes'
           ? (hasExpanded) => {
@@ -851,7 +847,6 @@ export function MessageList({
               'flex min-h-[12rem] flex-col items-center justify-center gap-2 text-sm text-muted'
             )}
             role="status"
-            aria-live="polite"
             aria-busy="true"
           >
             <Icon name="loader" size={16} className="motion-safe:animate-spin" />
@@ -873,7 +868,6 @@ export function MessageList({
                 <div
                   className="pointer-events-none absolute inset-x-0 top-2 z-10 flex justify-center"
                   role="status"
-                  aria-live="polite"
                   aria-busy="true"
                 >
                   <span className="inline-flex items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-1 text-[11px] text-muted shadow-sm">

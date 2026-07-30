@@ -1,25 +1,31 @@
 import type { AgentInteractionMode, ChatMessage, IncompleteReason, VerifyBeforeDoneMode } from '../../shared/ipc'
 import { contentToText } from '../../shared/ipc'
+import { isFileMutationToolName } from './loopPolicy'
 import { parseDiagnosticLines, toolDiagnosticsAsync } from './tools/diagnostics'
 
 export type VerifyNudgeKind = 'notice' | 'require'
 
 /**
- * True when this run already has clean diagnostics evidence:
- * a diagnostics tool result with ok !== false and no error-severity lines.
+ * True when this run has clean diagnostics evidence newer than its latest
+ * successful file mutation.
  * `ok: true` with parsed errors is not evidence.
  */
 export function runHasDiagnosticsEvidence(messages: readonly ChatMessage[]): boolean {
+  let cleanEvidence = false
   for (const msg of messages) {
     if (msg.role !== 'tool') continue
-    if (msg.toolName !== 'diagnostics') continue
-    if (msg.ok === false) continue
-    const text = contentToText(msg.content ?? '')
-    const items = parseDiagnosticLines(text)
-    const errors = items.filter((d) => (d.severity ?? 'error') === 'error')
-    if (errors.length === 0) return true
+    if (msg.ok !== false && msg.toolName && isFileMutationToolName(msg.toolName)) {
+      cleanEvidence = false
+      continue
+    }
+    if (msg.toolName === 'diagnostics' && msg.ok !== false) {
+      const text = contentToText(msg.content ?? '')
+      const items = parseDiagnosticLines(text)
+      const errors = items.filter((d) => (d.severity ?? 'error') === 'error')
+      cleanEvidence = errors.length === 0
+    }
   }
-  return false
+  return cleanEvidence
 }
 
 /**
@@ -90,13 +96,19 @@ export async function externalDiagnosticsCheck(
 export function countDiagnosticsCalls(messages: readonly ChatMessage[]): {
   calls: number
   ok: number
+  clean: number
 } {
   let calls = 0
   let ok = 0
+  let clean = 0
   for (const msg of messages) {
     if (msg.role !== 'tool' || msg.toolName !== 'diagnostics') continue
     calls++
-    if (msg.ok !== false) ok++
+    if (msg.ok !== false) {
+      ok++
+      const items = parseDiagnosticLines(contentToText(msg.content ?? ''))
+      if (!items.some((d) => (d.severity ?? 'error') === 'error')) clean++
+    }
   }
-  return { calls, ok }
+  return { calls, ok, clean }
 }

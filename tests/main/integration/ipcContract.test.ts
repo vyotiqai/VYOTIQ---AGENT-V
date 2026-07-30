@@ -71,6 +71,7 @@ const VYOTIQ_INVOKE_MAP: Record<
   gitStatus: IPC.gitStatus,
   gitDiff: IPC.gitDiff,
   gitCommit: IPC.gitCommit,
+  gitStageAll: IPC.gitStageAll,
   gitLog: IPC.gitLog,
   gitCommitFiles: IPC.gitCommitFiles,
   prView: IPC.prView,
@@ -162,7 +163,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(false)
     }
-    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(96)
+    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(97)
   })
 
   it('maps every VyotiqApi push listener to a push channel', () => {

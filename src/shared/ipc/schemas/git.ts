@@ -3,8 +3,15 @@ import { z } from 'zod'
 export const GitChangedFileSchema = z.object({
   path: z.string(),
   status: z.enum(['modified', 'added', 'deleted', 'untracked']),
+  /** Combined line deltas (staged + unstaged). */
   added: z.number().int().min(0),
   removed: z.number().int().min(0),
+  /** Index-side line deltas vs HEAD. */
+  addedStaged: z.number().int().min(0),
+  removedStaged: z.number().int().min(0),
+  /** Worktree-side line deltas vs index (untracked counts as unstaged). */
+  addedUnstaged: z.number().int().min(0),
+  removedUnstaged: z.number().int().min(0),
   /** No line counts exist for binary files; only the fact that they changed. */
   binary: z.boolean(),
   /** Index (staged) side has a change — from porcelain XY. */
@@ -38,7 +45,12 @@ export const GitStatusResultSchema = GitStatusSchema.nullable()
 export const GitCommitRequestSchema = z.object({
   workspacePath: z.string().min(1),
   message: z.string().min(1).max(2000),
-  push: z.boolean().optional()
+  push: z.boolean().optional(),
+  /**
+   * `all` stages the whole working tree then commits (Uncommitted).
+   * `staged` commits the index only — no `git add -A` (Staged scope).
+   */
+  mode: z.enum(['all', 'staged']).optional().default('all')
 })
 
 export const GitCommitResultSchema = z.object({
@@ -47,6 +59,16 @@ export const GitCommitResultSchema = z.object({
   detail: z.string()
 })
 export type GitCommitResult = z.infer<typeof GitCommitResultSchema>
+
+export const GitStageAllRequestSchema = z.object({
+  workspacePath: z.string().min(1)
+})
+
+export const GitStageAllResultSchema = z.object({
+  staged: z.boolean(),
+  detail: z.string()
+})
+export type GitStageAllResult = z.infer<typeof GitStageAllResultSchema>
 
 export const GitDiffRequestSchema = z.object({
   workspacePath: z.string().min(1),

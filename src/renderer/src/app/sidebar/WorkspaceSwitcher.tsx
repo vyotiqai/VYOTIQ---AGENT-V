@@ -16,16 +16,6 @@ function workspaceIsActive(
   )
 }
 
-function confirmClose(name: string, showDot: boolean, onClose: () => void): void {
-  if (showDot) {
-    const ok = window.confirm(
-      `${name} has chats running in the background. Close this workspace anyway?`
-    )
-    if (!ok) return
-  }
-  onClose()
-}
-
 function AddWorkspaceButton({
   onAdd,
   compact = true
@@ -99,14 +89,14 @@ export function WorkspaceSwitcher({
                   onClick={(e) => {
                     if (e.shiftKey) {
                       e.preventDefault()
-                      confirmClose(name, showDot, () => onClose(path))
+                      onClose(path)
                       return
                     }
                     onSwitch(path)
                   }}
                   onContextMenu={(e) => {
                     e.preventDefault()
-                    confirmClose(name, showDot, () => onClose(path))
+                    onClose(path)
                   }}
                 >
                   <Icon name="folder" size={14} />
@@ -170,7 +160,7 @@ export function WorkspaceSwitcher({
               onClick={() => onSwitch(path)}
               onContextMenu={(e) => {
                 e.preventDefault()
-                confirmClose(name, showDot, () => onClose(path))
+                onClose(path)
               }}
             >
               <span className="inline-flex items-center gap-1">

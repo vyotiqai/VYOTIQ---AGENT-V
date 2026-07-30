@@ -3,21 +3,6 @@ import { FileChip, ImageChip, MarkdownContent, balanceIncompleteMarkdown, cn } f
 import { TOOL_BODY_CLAMP_PX, USER_PROMPT_SURFACE } from '@renderer/lib/utils/layout'
 import type { UserItem } from '../utils/transcriptRows'
 
-/** Drop consecutive duplicate paragraphs (common when prompts are pasted twice). */
-function dedupePromptParagraphs(content: string): string {
-  const seen = new Set<string>()
-  const unique: string[] = []
-
-  for (const paragraph of content.split(/\n\n+/)) {
-    const key = paragraph.trim().replace(/\s+/g, ' ').toLowerCase()
-    if (key && seen.has(key)) continue
-    if (key) seen.add(key)
-    unique.push(paragraph)
-  }
-
-  return unique.join('\n\n')
-}
-
 export function UserPrompt({
   item,
   onImageClick
@@ -30,7 +15,8 @@ export function UserPrompt({
   const [expanded, setExpanded] = useState(false)
   const content = useMemo(() => {
     if (!item.content) return ''
-    return balanceIncompleteMarkdown(dedupePromptParagraphs(item.content))
+    // Preserve exactly what the model received — no paragraph dedupe.
+    return balanceIncompleteMarkdown(item.content)
   }, [item.content])
 
   useLayoutEffect(() => {

@@ -4,7 +4,8 @@ import { electronApp, optimizer } from '@electron-toolkit/utils'
 import { createWindow, applyTitleBarTheme, getMainWindow } from '@main/app/window'
 import { applyCsp } from '@main/app/security'
 import { closeAgentBrowser } from '@main/app/agentBrowser'
-import { disposeAllPtySessions } from '@main/app/ptySessions'
+import { disposeAllPtySessions, replayPtySessionsToWindow } from '@main/app/ptySessions'
+import { disposeAllTerminalSessions } from '@main/agent/tools/terminalSessions'
 import { registerIpc } from './ipc/register'
 import { shutdownMcpServers, syncMcpServers } from '@main/agent/mcp'
 import { resolveEffectiveMcpServers, syncMarketplaceMcpIntoSettings } from '@main/marketplace'
@@ -120,8 +121,11 @@ if (!gotLock) {
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
-        createWindow()
+        const win = createWindow()
         applyTitleBarTheme(getSettings().theme)
+        win.webContents.once('did-finish-load', () => {
+          replayPtySessionsToWindow(win)
+        })
       }
     })
   })
@@ -132,6 +136,7 @@ if (!gotLock) {
 
   app.on('before-quit', () => {
     closeAgentBrowser()
+    disposeAllTerminalSessions()
     disposeAllPtySessions()
     void shutdownMcpServers()
   })

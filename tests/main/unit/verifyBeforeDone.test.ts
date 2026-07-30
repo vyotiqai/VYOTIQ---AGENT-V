@@ -14,6 +14,7 @@ vi.mock('@main/agent/tools/diagnostics', () => ({
 }))
 
 import {
+  countDiagnosticsCalls,
   runHasDiagnosticsEvidence,
   shouldNudgeVerifyBeforeDone,
   verifyNudgeMessage,
@@ -47,6 +48,47 @@ describe('verifyBeforeDone', () => {
         }
       ])
     ).toBe(false)
+  })
+
+  it('invalidates clean diagnostics after a successful file mutation', () => {
+    const clean: ChatMessage = {
+      role: 'tool',
+      toolCallId: 'd1',
+      toolName: 'diagnostics',
+      ok: true,
+      content: 'clean'
+    }
+    const edit: ChatMessage = {
+      role: 'tool',
+      toolCallId: 'e1',
+      toolName: 'str_replace',
+      ok: true,
+      content: 'updated'
+    }
+    expect(runHasDiagnosticsEvidence([clean, edit])).toBe(false)
+    expect(runHasDiagnosticsEvidence([edit, clean])).toBe(true)
+    expect(runHasDiagnosticsEvidence([clean, { ...edit, ok: false }])).toBe(true)
+  })
+
+  it('counts tool success separately from clean diagnostics', () => {
+    expect(
+      countDiagnosticsCalls([
+        {
+          role: 'tool',
+          toolCallId: 'd1',
+          toolName: 'diagnostics',
+          ok: true,
+          content: 'a.ts(1,1): error TS2322: Type bad'
+        },
+        {
+          role: 'tool',
+          toolCallId: 'd2',
+          toolName: 'diagnostics',
+          ok: true,
+          content: 'clean'
+        }
+      ])
+    ).toEqual({ calls: 2, ok: 2, clean: 1 })
   })
 
   it('nudges only in agent mode with notice/require when lacking evidence', () => {

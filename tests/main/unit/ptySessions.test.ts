@@ -9,7 +9,9 @@ import {
   disposePtySessionsForWorkspace,
   killPty,
   listPtySessions,
+  replayPtySessionsToWindow,
   resizePty,
+  seedPtyScrollbackForTests,
   writePty
 } from '@main/app/ptySessions'
 
@@ -21,10 +23,14 @@ vi.mock('@main/agent/tools/terminal', () => ({
   resolveTerminalShell: () => 'cmd'
 }))
 
+vi.mock('@main/app/window', () => ({
+  getMainWindow: () => null
+}))
+
 function fakeWindow(): BrowserWindow {
   return {
     isDestroyed: () => false,
-    webContents: { send: vi.fn() }
+    webContents: { isDestroyed: () => false, send: vi.fn() }
   } as unknown as BrowserWindow
 }
 
@@ -74,5 +80,20 @@ describe('ptySessions', () => {
     expect(listPtySessions().map((s) => s.id)).toEqual([b.id])
     expect(writePty(a.id, 'x')).toBe(false)
     expect(writePty(b.id, 'x')).toBe(true)
+  })
+
+  it('replays buffered scrollback to a recreated window', () => {
+    const win = fakeWindow()
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-pty-replay-'))
+    tempDirs.push(dir)
+    const session = createPtySession({ cwd: dir, cols: 80, rows: 24, sendTo: win })
+    seedPtyScrollbackForTests(session.id, 'hello-scrollback\r\n')
+    const other = fakeWindow()
+    replayPtySessionsToWindow(other)
+    const replayed = (other.webContents.send as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c) => c[0] === 'pty:data' && (c[1] as { id?: string })?.id === session.id
+    )
+    expect(replayed.length).toBeGreaterThan(0)
+    expect(String((replayed[0]?.[1] as { data?: string })?.data ?? '')).toContain('hello-scrollback')
   })
 })

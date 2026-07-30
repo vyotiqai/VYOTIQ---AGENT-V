@@ -253,15 +253,19 @@ export function PrPanel({
   workspacePath,
   className,
   onPrMeta,
-  onUnlink
+  onUnlink,
+  active = true
 }: {
   workspacePath?: string | null
   className?: string
   onPrMeta?: (meta: { number: number; title: string } | null) => void
   onUnlink?: () => void
+  /** When false (hidden mounted dock), do not intercept Ctrl/Cmd+F/R. */
+  active?: boolean
 }) {
   const [pr, setPr] = useState<PrView | null>(null)
   const [loading, setLoading] = useState(false)
+  const loadSeqRef = useRef(0)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<PrTab>('changes')
   const [menuOpen, setMenuOpen] = useState(false)
@@ -305,7 +309,9 @@ export function PrPanel({
   }, [menuOpen, mergeOpen, layoutOpen, closeMenus])
 
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current
     if (!workspacePath || !window.vyotiq?.prView) {
+      if (seq !== loadSeqRef.current) return
       setPr(null)
       onPrMetaRef.current?.(null)
       setError(
@@ -319,6 +325,7 @@ export function PrPanel({
     setError(null)
     try {
       const res = await window.vyotiq.prView(workspacePath)
+      if (seq !== loadSeqRef.current) return
       if (!res.ok) {
         setPr(null)
         onPrMetaRef.current?.(null)
@@ -336,7 +343,7 @@ export function PrPanel({
         setError('No pull request for this branch.')
       }
     } finally {
-      setLoading(false)
+      if (seq === loadSeqRef.current) setLoading(false)
     }
   }, [workspacePath])
 
@@ -364,7 +371,11 @@ export function PrPanel({
 
   const merge = useCallback(
     async (method: PrMergeMethod) => {
-      if (!workspacePath || !window.vyotiq?.prMerge) return
+      if (!workspacePath || !window.vyotiq?.prMerge || !pr) return
+      const confirmed = window.confirm(
+        `Merge PR #${pr.number} using ${method}? This cannot be undone from the app.`
+      )
+      if (!confirmed) return
       setPreferredMerge(method)
       setMergeBusy(true)
       setNotice(null)
@@ -384,7 +395,7 @@ export function PrPanel({
         setMergeBusy(false)
       }
     },
-    [workspacePath, load, closeMenus]
+    [workspacePath, load, closeMenus, pr]
   )
 
   const togglePath = useCallback((path: string) => {
@@ -417,7 +428,11 @@ export function PrPanel({
   }, [pr, closeMenus])
 
   const closePr = useCallback(async () => {
-    if (!workspacePath || !window.vyotiq?.prClose) return
+    if (!workspacePath || !window.vyotiq?.prClose || !pr) return
+    const confirmed = window.confirm(
+      `Close PR #${pr.number}? The pull request will be closed on GitHub.`
+    )
+    if (!confirmed) return
     closeMenus()
     setNotice(null)
     setNoticeFailed(false)
@@ -430,7 +445,7 @@ export function PrPanel({
       setNotice(res.error)
       setNoticeFailed(true)
     }
-  }, [workspacePath, load, closeMenus])
+  }, [workspacePath, load, closeMenus, pr])
 
   const saveTitle = useCallback(async () => {
     if (!workspacePath || !window.vyotiq?.prEditTitle || !pr) return
@@ -461,7 +476,7 @@ export function PrPanel({
   }, [pr, closeMenus])
 
   useEffect(() => {
-    if (!pr) return undefined
+    if (!pr || !active) return undefined
     const onKey = (e: KeyboardEvent): void => {
       const mod = e.ctrlKey || e.metaKey
       if (mod && e.key.toLowerCase() === 'r') {
@@ -481,7 +496,7 @@ export function PrPanel({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [pr, load, tab, startEditTitle])
+  }, [pr, load, tab, startEditTitle, active])
 
   const mergeLabel = useMemo(() => {
     switch (preferredMerge) {

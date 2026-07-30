@@ -22,9 +22,10 @@ export const CHAT_SIDE_RAIL_WIDTH = 'w-10'
 export const CHAT_RIGHT_PANEL =
   'flex h-full min-h-0 w-[min(42vw,480px)] min-w-0 shrink-0 flex-col overflow-hidden border-l border-border/50 bg-bg pr-10'
 
-/** Expanded dock width (Expand panel / terminal maximize). */
+/** Expanded dock width — capped so a usable chat column remains at 1024px. */
+export const CHAT_COLUMN_MIN_USABLE_PX = 360
 export const CHAT_RIGHT_PANEL_EXPANDED =
-  'flex h-full min-h-0 w-[min(70vw,720px)] min-w-0 shrink-0 flex-col overflow-hidden border-l border-border/50 bg-bg pr-10'
+  `flex h-full min-h-0 w-[min(70vw,720px,calc(100vw-${CHAT_SIDE_RAIL_WIDTH_PX}px-${CHAT_COLUMN_MIN_USABLE_PX}px))] min-w-0 shrink-0 flex-col overflow-hidden border-l border-border/50 bg-bg pr-10`
 
 /** localStorage key for right-dock expanded width preference. */
 export const DOCK_EXPANDED_KEY = 'vyotiq.dockExpanded'

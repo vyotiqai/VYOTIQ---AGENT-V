@@ -231,13 +231,21 @@ export function buildTranscriptRows(
   )
 }
 
+function activityFingerprint(activity: RunActivityPhase | null | undefined): string {
+  if (!activity) return ''
+  if (activity.kind === 'tool') {
+    return `tool:${activity.label}:${activity.detail ?? ''}`
+  }
+  return activity.kind
+}
+
 /** Fingerprint of a row's visible content for React.memo identity reuse. */
 export function transcriptRowFingerprint(row: TranscriptRow): string {
   switch (row.kind) {
     case 'user':
       return `user:${row.id}:${row.item.content.length}:${row.item.at ?? ''}`
     case 'turn':
-      return `turn:${row.id}:${row.span.startedAt}:${row.span.endedAt}:${row.span.active}:${row.span.activity ?? ''}`
+      return `turn:${row.id}:${row.span.startedAt}:${row.span.endedAt}:${row.span.active}:${activityFingerprint(row.span.activity)}`
     case 'thinking':
       return `thinking:${row.id}:${row.item.thinking?.length ?? 0}:${row.item.thinkingStreaming ? 1 : 0}:${row.item.thinkingExpanded ?? ''}`
     case 'text':

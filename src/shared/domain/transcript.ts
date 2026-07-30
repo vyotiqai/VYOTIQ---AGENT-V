@@ -500,6 +500,7 @@ export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
           summary,
           status: inferToolStatus(m.content, m.ok),
           content,
+          contentTruncated: m.contentTruncated,
           argsPreview: pending?.arguments || undefined
         }
       }
@@ -525,48 +526,52 @@ export function applyPersistedLiveTools(items: UiItem[], events: PersistedEvent[
   const existing = new Set(
     items.filter((item): item is Extract<UiItem, { kind: 'tool' }> => item.kind === 'tool').map((item) => item.id)
   )
-  const extras: UiItem[] = []
+  const live = new Map<
+    string,
+    { at: string; name: string; arguments: string; startSummary?: string }
+  >()
 
   for (const row of events) {
     if (!isAgentEvent(row.event)) continue
     const event = row.event
     if (event.type === 'tool_call_delta') {
       if (existing.has(event.toolCallId)) continue
-      const name = event.name && event.name !== 'tool' ? event.name : ''
-      if (!name) continue
-      existing.add(event.toolCallId)
-      const args = event.argumentsDelta || undefined
-      extras.push({
-        kind: 'tool',
-        id: event.toolCallId,
-        at: row.at,
-        tool: {
-          id: event.toolCallId,
-          name,
-          summary: summarizeToolArgs(name, args ?? ''),
-          status: 'running',
-          argsPreview: args
-        }
+      const current = live.get(event.toolCallId)
+      const name =
+        event.name && event.name !== 'tool' ? event.name : current?.name ?? ''
+      live.set(event.toolCallId, {
+        at: current?.at ?? row.at,
+        name,
+        arguments: `${current?.arguments ?? ''}${event.argumentsDelta}`
       })
       continue
     }
     if (event.type === 'tool_start') {
       if (existing.has(event.toolCallId)) continue
-      existing.add(event.toolCallId)
-      extras.push({
-        kind: 'tool',
-        id: event.toolCallId,
-        at: row.at,
-        tool: {
-          id: event.toolCallId,
-          name: event.name,
-          summary: event.summary,
-          status: 'running'
-        }
+      const current = live.get(event.toolCallId)
+      live.set(event.toolCallId, {
+        at: current?.at ?? row.at,
+        name: event.name,
+        arguments: current?.arguments ?? '',
+        startSummary: event.summary
       })
     }
   }
 
+  const extras: UiItem[] = [...live.entries()]
+    .filter(([, value]) => Boolean(value.name))
+    .map(([id, value]) => ({
+      kind: 'tool',
+      id,
+      at: value.at,
+      tool: {
+        id,
+        name: value.name,
+        summary: value.startSummary ?? summarizeToolArgs(value.name, value.arguments),
+        status: 'running',
+        argsPreview: value.arguments || undefined
+      }
+    }))
   return extras.length ? [...items, ...extras] : items
 }
 

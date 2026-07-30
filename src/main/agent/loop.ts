@@ -34,7 +34,6 @@ import {
   contentWindow,
   contextWindowFor,
   estimateTextTokens,
-  ensureMemoryLayout,
   promoteCompactionToMemory,
   preserveRecentMessages,
   trimToolsToBudget,
@@ -60,6 +59,7 @@ import {
 } from './loopPolicy'
 import { resolveInsideWorkspace } from '../workspace/safePath'
 import { MAX_PARALLEL_READ_TOOLS } from './tools/classify'
+import { disposeTerminalSessionsForInvoke } from './tools/terminalSessions'
 import { getProvider } from './providers'
 import { resolveModelInfo } from './modelResolve'
 import { requestMaxOutputTokens } from './providers/requestLimits'
@@ -397,10 +397,12 @@ export async function* runAgent(input: {
       ? (contentDisplayText(lastUser.content) || contentToText(lastUser.content)).slice(0, 200)
       : 'chat'
     let messages: ChatMessage[]
+    let initialStep = 0
 
     if (input.resume) {
-      runDir = resumeRun(workspace, runId)
+      runDir = await resumeRun(workspace, runId)
       const persisted = loadStatus(runDir)
+      initialStep = persisted?.step ?? 0
       // Prefer chatStart mode when the UI sent one; otherwise restore last run mode.
       agentMode = input.mode ?? persisted?.mode ?? 'agent'
       const diskMessages = loadMessages(workspace, runId)
@@ -419,7 +421,7 @@ export async function* runAgent(input: {
       for (const m of messages) appendMessage(runDir, m)
     }
 
-    writeStatus({ mode: agentMode })
+    writeStatus({ mode: agentMode, invokeId, error: undefined })
     beginWriteCheckpoint(runDir, workspace)
 
     if (agentMode === 'plan') {
@@ -460,21 +462,8 @@ export async function* runAgent(input: {
       resume: Boolean(input.resume)
     })
 
-    yield { type: 'status', runId, status: 'running' }
-    appendEvent(runDir, { type: 'status', runId, status: 'running' })
-
-    if (workspace) {
-      try {
-        ensureMemoryLayout(workspace)
-      } catch (err) {
-        logger.warn('Failed to ensure memory layout', {
-          scope: 'agent',
-          code: 'AGENT_LOOP',
-          correlationId: runId,
-          err
-        })
-      }
-    }
+    yield { type: 'status', runId, invokeId, status: 'running' }
+    appendEvent(runDir, { type: 'status', runId, invokeId, status: 'running' })
 
     const harness = loadHarness(workspace)
     const providerId: ProviderId = settings.provider
@@ -502,17 +491,17 @@ export async function* runAgent(input: {
           correlationId: runId,
           provider: providerId
         })
-        yield { type: 'error', runId, message, code }
+        yield { type: 'error', runId, invokeId, message, code }
         yield* flushWriteCheckpoint()
-        yield { type: 'status', runId, status: 'error' }
+        yield { type: 'status', runId, invokeId, status: 'error' }
         writeStatus({ status: 'error', error: message })
-        appendEvent(runDir, { type: 'error', runId, message, code })
-        appendEvent(runDir, { type: 'status', runId, status: 'error' })
+        appendEvent(runDir, { type: 'error', runId, invokeId, message, code })
+        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
         return
       }
     }
 
-    let step = 0
+    let step = initialStep
     let lastUsage: TokenUsage | undefined
 
     const approvalSettings = settings.toolApproval ?? DEFAULT_SETTINGS.toolApproval
@@ -543,7 +532,7 @@ export async function* runAgent(input: {
         compaction?.summary !== record.summary || compaction?.createdAt !== record.createdAt
       compaction = record
       saveCompaction(runDir, record)
-      if (workspace && settings.memoryAutoPromote && summaryChanged) {
+      if (workspace && agentMode === 'agent' && settings.memoryAutoPromote && summaryChanged) {
         try {
           promoteCompactionToMemory(workspace, record)
         } catch (err) {
@@ -581,9 +570,9 @@ export async function* runAgent(input: {
 
     if (controller.signal.aborted) {
       yield* flushWriteCheckpoint()
-      yield { type: 'status', runId, status: 'cancelled' }
+      yield { type: 'status', runId, invokeId, status: 'cancelled' }
       writeStatus({ status: 'cancelled' })
-      appendEvent(runDir, { type: 'status', runId, status: 'cancelled' })
+      appendEvent(runDir, { type: 'status', runId, invokeId, status: 'cancelled' })
       return
     }
 
@@ -902,9 +891,9 @@ export async function* runAgent(input: {
               yield* applyDrainedFollowUps(runId, runDir, messages)
               continue
             }
-            yield { type: 'status', runId, status: 'done' }
-            writeStatus({ status: 'done' })
-            appendEvent(runDir, { type: 'status', runId, status: 'done' })
+            yield { type: 'status', runId, invokeId, status: 'done' }
+            writeStatus({ status: 'done', error: undefined })
+            appendEvent(runDir, { type: 'status', runId, invokeId, status: 'done' })
             return
           }
         } else {
@@ -930,9 +919,9 @@ export async function* runAgent(input: {
             yield* applyDrainedFollowUps(runId, runDir, messages)
             continue
           }
-          yield { type: 'status', runId, status: 'done' }
-          writeStatus({ status: 'done' })
-          appendEvent(runDir, { type: 'status', runId, status: 'done' })
+          yield { type: 'status', runId, invokeId, status: 'done' }
+          writeStatus({ status: 'done', error: undefined })
+          appendEvent(runDir, { type: 'status', runId, invokeId, status: 'done' })
           return
         }
       }
@@ -1161,12 +1150,18 @@ export async function* runAgent(input: {
               dedupeToolCalls(toolCalls),
               'interrupted'
             )
-            yield { type: 'error', runId, message, code: 'PROVIDER_STREAM' }
+            yield { type: 'error', runId, invokeId, message, code: 'PROVIDER_STREAM' }
             yield* flushWriteCheckpoint()
-            yield { type: 'status', runId, status: 'error' }
+            yield { type: 'status', runId, invokeId, status: 'error' }
             writeStatus({ status: 'error', error: message })
-            appendEvent(runDir, { type: 'error', runId, message, code: 'PROVIDER_STREAM' })
-            appendEvent(runDir, { type: 'status', runId, status: 'error' })
+            appendEvent(runDir, {
+              type: 'error',
+              runId,
+              invokeId,
+              message,
+              code: 'PROVIDER_STREAM'
+            })
+            appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
             return
           }
         }
@@ -1447,6 +1442,7 @@ export async function* runAgent(input: {
           const incompleteEv: AgentEvent = {
             type: 'incomplete',
             runId,
+            invokeId,
             reason: incomplete,
             step,
             message:
@@ -1474,9 +1470,9 @@ export async function* runAgent(input: {
           yield* applyDrainedFollowUps(runId, runDir, messages)
           continue
         }
-        yield { type: 'status', runId, status: 'done' }
-        writeStatus({ status: 'done' })
-        appendEvent(runDir, { type: 'status', runId, status: 'done' })
+        yield { type: 'status', runId, invokeId, status: 'done' }
+        writeStatus({ status: 'done', error: undefined })
+        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'done' })
         return
       }
 
@@ -1655,7 +1651,6 @@ export async function* runAgent(input: {
       }
       for (const toolMsg of toolOutcome.messages) {
         messages.push(toolMsg)
-        appendMessage(runDir!, toolMsg)
       }
       stepToolsOk = stepToolsOk && toolOutcome.stepToolsOk
 
@@ -1705,18 +1700,18 @@ export async function* runAgent(input: {
 
     if (controller.signal.aborted) {
       yield* flushWriteCheckpoint()
-      yield { type: 'status', runId, status: 'cancelled' }
+      yield { type: 'status', runId, invokeId, status: 'cancelled' }
       writeStatus({ status: 'cancelled' })
-      appendEvent(runDir, { type: 'status', runId, status: 'cancelled' })
+      appendEvent(runDir, { type: 'status', runId, invokeId, status: 'cancelled' })
     }
   } catch (err) {
     if (isAbortError(err)) {
       logger.warn('Agent run cancelled', { scope: 'agent', correlationId: runId })
       yield* flushWriteCheckpoint()
-      yield { type: 'status', runId, status: 'cancelled' }
+      yield { type: 'status', runId, invokeId, status: 'cancelled' }
       if (runDir) {
         writeStatus({ status: 'cancelled' })
-        appendEvent(runDir, { type: 'status', runId, status: 'cancelled' })
+        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'cancelled' })
       }
     } else {
       const message = formatError(err)
@@ -1726,13 +1721,13 @@ export async function* runAgent(input: {
         correlationId: runId,
         err
       })
-      yield { type: 'error', runId, message, code: 'AGENT_LOOP' }
+      yield { type: 'error', runId, invokeId, message, code: 'AGENT_LOOP' }
       yield* flushWriteCheckpoint()
-      yield { type: 'status', runId, status: 'error' }
+      yield { type: 'status', runId, invokeId, status: 'error' }
       if (runDir) {
         writeStatus({ status: 'error', error: message })
-        appendEvent(runDir, { type: 'error', runId, message, code: 'AGENT_LOOP' })
-        appendEvent(runDir, { type: 'status', runId, status: 'error' })
+        appendEvent(runDir, { type: 'error', runId, invokeId, message, code: 'AGENT_LOOP' })
+        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
       }
     }
   } finally {
@@ -1768,6 +1763,7 @@ export async function* runAgent(input: {
         contractUnmetCriteria: lastContractUnmet
       })
     }
+    disposeTerminalSessionsForInvoke(runId, invokeId)
     clearRunAbort(runId, invokeId)
   }
 }

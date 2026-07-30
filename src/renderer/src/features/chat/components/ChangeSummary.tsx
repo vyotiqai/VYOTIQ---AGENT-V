@@ -23,7 +23,9 @@ export const ChangeSummary = memo(function ChangeSummary({
   onDiscardFile,
   onKeepAll,
   onDiscardAll,
-  onDiffExpandChange
+  onDiffExpandChange,
+  compact = false,
+  onOpenChanges
 }: {
   files: ChangedFile[]
   /** Path → tool-arg diff lines for this turn (optional). */
@@ -45,6 +47,9 @@ export const ChangeSummary = memo(function ChangeSummary({
   onDiscardAll?: () => void | Promise<unknown>
   /** Fired when any file diff panel is open (for virtualizer estimates). */
   onDiffExpandChange?: (hasExpanded: boolean) => void
+  /** Transcript/composer compact link — no Keep/Discard; opens Changes. */
+  compact?: boolean
+  onOpenChanges?: () => void
 }) {
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set())
 
@@ -65,6 +70,31 @@ export const ChangeSummary = memo(function ChangeSummary({
     const norm = normalizeRelPath(f.path)
     return !(fileResolutions?.get(norm) ?? fileResolutions?.get(f.path))
   })
+
+  if (compact) {
+    return (
+      <div className={cn(TOOL_CARD_SURFACE, 'w-full')}>
+        <button
+          type="button"
+          className={cn(
+            TOOL_CARD_HEADER,
+            'flex w-full items-center border-b border-border text-left text-fg hover:bg-surface/40'
+          )}
+          onClick={() => onOpenChanges?.()}
+          aria-label="Open Changes panel"
+        >
+          <span className="font-medium">
+            {files.length} {files.length === 1 ? 'File Changed' : 'Files Changed'}
+          </span>
+          <span className="ml-auto flex items-center gap-2 tabular-nums text-tertiary">
+            {totalAdded > 0 ? <span className="text-success">+{totalAdded}</span> : null}
+            {totalRemoved > 0 ? <span className="ml-2 text-danger">-{totalRemoved}</span> : null}
+            <span className="text-[11px] text-muted">Open Changes</span>
+          </span>
+        </button>
+      </div>
+    )
+  }
 
   const togglePath = (path: string): void => {
     setExpandedPaths((prev) => {
@@ -88,7 +118,10 @@ export const ChangeSummary = memo(function ChangeSummary({
           {canResolve && unresolved.length > 0 ? (
             <>
               {resolveBlockedReason ? (
-                <span className="ml-2 max-w-[12rem] truncate text-[10px] text-muted" title={resolveBlockedReason}>
+                <span
+                  className="ml-2 max-w-[12rem] truncate text-[10px] text-muted"
+                  title={resolveBlockedReason}
+                >
                   {resolveBlockedReason}
                 </span>
               ) : null}
@@ -125,18 +158,14 @@ export const ChangeSummary = memo(function ChangeSummary({
       <ul className="m-0 list-none p-0">
         {files.map((file) => {
           const norm = normalizeRelPath(file.path)
-          const resolution =
-            fileResolutions?.get(norm) ?? fileResolutions?.get(file.path)
+          const resolution = fileResolutions?.get(norm) ?? fileResolutions?.get(file.path)
           const lines = fileDiffs?.get(norm) ?? fileDiffs?.get(file.path)
           const expanded = expandedPaths.has(file.path)
           const canExpand = Boolean(lines && lines.length > 0) || file.removed > 0
           const showResolve = canResolve && isResolvablePath(file.path)
 
           return (
-            <li
-              key={file.path}
-              className="min-w-0 [&+&]:border-t [&+&]:border-border/60"
-            >
+            <li key={file.path} className="min-w-0 [&+&]:border-t [&+&]:border-border/60">
               <div className="flex min-w-0 items-center gap-2 px-3 py-1.5 text-xs">
                 {canExpand ? (
                   <button

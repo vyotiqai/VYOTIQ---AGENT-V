@@ -39,7 +39,7 @@ function sampleReceipt(overrides?: Partial<RunReceipt>): RunReceipt {
     failureClusters: [{ key: 'edit: ENOENT', count: 2 }],
     unreadEditPaths: ['src/foo.ts'],
     wroteFiles: ['src/foo.ts'],
-    diagnostics: { calls: 0, ok: 0 },
+    diagnostics: { calls: 0, ok: 0, clean: 0 },
     verifyBeforeDone: {
       mode: 'notice',
       nudged: true,
@@ -104,6 +104,8 @@ describe('harnessReview', () => {
     expect(body).toMatch(/Proposed harness body/)
     expect(body).toMatch(/Receipt review notes/)
     expect(body).toMatch(/## Evidence buckets/)
+    expect(body).toMatch(/run-a/)
+    expect(body).toMatch(/receipt\.json/)
     expect(body).toMatch(/not unsupervised Self-Harness/)
     expect(body).toMatch(/writes only `resources\/harness\/default\.md`/)
     expect(body).toMatch(/runReceipt\.test\.ts/)
@@ -111,6 +113,37 @@ describe('harnessReview', () => {
     const result = await runHarnessReview(workspace)
     expect(result.receiptCount).toBe(1)
     expect(existsSync(result.proposalPath)).toBe(true)
+  })
+
+  it('migrates known legacy receipt versions without overstating diagnostics cleanliness', () => {
+    const sessions = workspaceSessionsRoot(workspace)
+    for (const version of [2, 3, 4]) {
+      const runId = `legacy-${version}`
+      const runDir = join(sessions, runId)
+      mkdirSync(runDir, { recursive: true })
+      const legacy = {
+        ...sampleReceipt({
+          runId,
+          writtenAt: `2026-07-30T12:00:0${version}.000Z`
+        }),
+        version,
+        diagnostics: { calls: 2, ok: 2 }
+      } as Record<string, unknown>
+      if (version < 4) delete legacy.contractDoneWhen
+      writeFileSync(join(runDir, RUN_RECEIPT_FILENAME), JSON.stringify(legacy), 'utf8')
+    }
+
+    const collected = collectRecentReceipts(workspace, { limit: 10 })
+    expect(collected).toHaveLength(3)
+    for (const { receipt } of collected) {
+      expect(receipt.version).toBe(RUN_RECEIPT_VERSION)
+      expect(receipt.diagnostics).toEqual({ calls: 2, ok: 2, clean: 0 })
+      expect(receipt.contractDoneWhen).toEqual({
+        mode: 'require',
+        nudged: false,
+        checkableCriteria: 0
+      })
+    }
   })
 
   it('mines subagent report.md into evidence buckets', async () => {

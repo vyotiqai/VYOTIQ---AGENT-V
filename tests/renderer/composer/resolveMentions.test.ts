@@ -180,4 +180,37 @@ describe('resolveComposerMentions', () => {
     expect(result.text).toContain('lint-boom')
     expect(result.error).toBeNull()
   })
+
+  it('discards results when isCurrent becomes false mid-resolve', async () => {
+    let current = true
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    window.vyotiq.workspaceReadText = vi.fn(async ({ path }: { path: string }) => {
+      await gate
+      return {
+        ok: true as const,
+        data: {
+          name: path,
+          mime: 'text/plain',
+          text: `content of ${path}`,
+          truncated: false
+        }
+      }
+    })
+
+    const pending = resolveComposerMentions({
+      workspacePath: '/ws-a',
+      draft: `Review ${mentionMarker({ kind: 'file', path: 'src/a.ts' })}`,
+      existingFiles: [],
+      isCurrent: () => current
+    })
+    current = false
+    release()
+    const result = await pending
+    expect(result.stale).toBe(true)
+    expect(result.files).toEqual([])
+    expect(result.text).toBe('')
+  })
 })

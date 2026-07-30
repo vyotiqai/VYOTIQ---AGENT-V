@@ -42,7 +42,7 @@ export async function beginMcpOAuthCallback(serverId: string): Promise<{
   redirectUrl: string
   waitForCode: () => Promise<string>
 }> {
-  cancelMcpOAuthCallback(serverId)
+  cancelMcpOAuthCallback(serverId, new Error('OAuth callback superseded'))
 
   const server = createServer()
   const listenPort = await new Promise<number>((resolve, reject) => {

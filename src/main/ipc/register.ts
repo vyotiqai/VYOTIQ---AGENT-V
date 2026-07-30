@@ -1,6 +1,7 @@
 import { ipcMain, BrowserWindow, shell, nativeTheme, dialog } from 'electron'
 import { ZodError, z } from 'zod'
 import { IPC } from '../../shared/channels'
+import { toolMessageForIpc } from '../../shared/utils/toolResultIpc'
 import {
   ChatStartRequestSchema,
   CancelRunRequestSchema,
@@ -30,6 +31,7 @@ import {
   WorkspacesSetSettingsOverrideRequestSchema,
   GitStatusRequestSchema,
   GitCommitRequestSchema,
+  GitStageAllRequestSchema,
   GitDiffRequestSchema,
   GitLogRequestSchema,
   GitCommitFilesRequestSchema,
@@ -165,6 +167,7 @@ import { clearModelCache } from '../agent/providers/modelCache'
 import { collectWorkspaceFiles } from '../agent/tools/walk'
 import { listWorkspaceRulesForMention } from '../agent/context/rules'
 import { toolDiagnosticsAsync } from '../agent/tools/diagnostics'
+import { disposeTerminalSessionsForWorkspace as disposeAgentTerminalSessionsForWorkspace } from '../agent/tools/terminalSessions'
 import {
   chatCancelResult,
   listActiveRuns,
@@ -198,7 +201,7 @@ import {
 } from '@main/workspace/workspaces'
 import { canonicalizeWorkspacePath, isCuratedDocPath, isSafeWorkspaceRelPath, workspacePathsEqual } from '../../shared/workspacePath'
 import { relative, isAbsolute, join } from 'path'
-import { commitAll, readGitCommitFiles, readGitDiff, readGitLog, readGitStatus } from '@main/git/git'
+import { commitAll, readGitCommitFiles, readGitDiff, readGitLog, readGitStatus, stageAll } from '@main/git/git'
 import { prClose, prDiff, prEditTitle, prMerge, prView } from '@main/git/gh'
 import {
   createPtySession,
@@ -208,7 +211,7 @@ import {
   resizePty,
   writePty
 } from '@main/app/ptySessions'
-import { applyTitleBarTheme } from '@main/app/window'
+import { applyTitleBarTheme, getMainWindow } from '@main/app/window'
 import { logsDirectory } from '../logging/init'
 import { applySentryTelemetry, isSentryBuildConfigured } from '../logging/sentry'
 
@@ -217,6 +220,21 @@ export { chatCancelResult }
 function senderOk(event: Electron.IpcMainInvokeEvent): boolean {
   const win = BrowserWindow.fromWebContents(event.sender)
   return Boolean(win && !win.isDestroyed())
+}
+
+function sendToCurrentRenderer(
+  channel: string,
+  payload: unknown,
+  fallback?: Electron.WebContents
+): void {
+  const current = getMainWindow()
+  const target =
+    current && !current.isDestroyed() && !current.webContents.isDestroyed()
+      ? current.webContents
+      : fallback && !fallback.isDestroyed()
+        ? fallback
+        : null
+  target?.send(channel, payload)
 }
 
 /** Git runs commands in a directory, so only ever in one the user has opened. */
@@ -315,7 +333,10 @@ export function registerIpc(): void {
       try {
         const req = WorkspacesAddRequestSchema.parse(raw ?? {})
         const win = BrowserWindow.fromWebContents(event.sender)
-        return ok(await addWorkspace(win, req.path))
+        const next = await addWorkspace(win, req.path)
+        invalidateMcpResolveCache()
+        await syncMcpServers(resolveMcpServersForSessionMap())
+        return ok(next)
       } catch (err) {
         return failFrom(err, IPC.workspacesAdd)
       }
@@ -327,9 +348,22 @@ export function registerIpc(): void {
     async (event, raw): Promise<IpcResult<WorkspacesState>> => {
       if (!senderOk(event)) return fail('Invalid sender')
       try {
-        const { path } = WorkspacesRemoveRequestSchema.parse(raw)
+        const { path, stopActiveRuns } = WorkspacesRemoveRequestSchema.parse(raw)
+        const activeRuns = listActiveRuns().filter((run) =>
+          workspacePathsEqual(run.workspacePath, path)
+        )
+        if (activeRuns.length > 0 && !stopActiveRuns) {
+          return fail(
+            `Workspace has ${activeRuns.length} active run(s). Confirm “Stop run and close” to continue.`
+          )
+        }
+        for (const run of activeRuns) chatCancelResult(run.runId)
+        disposeAgentTerminalSessionsForWorkspace(path)
         disposePtySessionsForWorkspace(path)
-        return ok(removeWorkspace(path))
+        const next = removeWorkspace(path)
+        invalidateMcpResolveCache()
+        await syncMcpServers(resolveMcpServersForSessionMap())
+        return ok(next)
       } catch (err) {
         return failFrom(err, IPC.workspacesRemove)
       }
@@ -537,17 +571,17 @@ export function registerIpc(): void {
         // Stamp the invoke on every event so the renderer can tell a live event apart
         // from one arriving late from the previous turn of the same run.
         const sendEvent = (ev: AgentEvent): void => {
-          if (!wc.isDestroyed()) wc.send(IPC.chatEvent, { ...ev, invokeId })
+          sendToCurrentRenderer(IPC.chatEvent, { ...ev, invokeId }, wc)
         }
         const batcher = new ChatEventBatcher(sendEvent)
         const releaseApprovalSender = registerApprovalSender(runId, (request) => {
           // The gate is parked on this prompt, so it has to jump the event batcher.
           batcher.flush()
-          if (!wc.isDestroyed()) wc.send(IPC.toolApprovalRequest, request)
+          sendToCurrentRenderer(IPC.toolApprovalRequest, request, wc)
         })
         const releaseQuestionSender = registerQuestionSender(runId, (request) => {
           batcher.flush()
-          if (!wc.isDestroyed()) wc.send(IPC.agentQuestionRequest, request)
+          sendToCurrentRenderer(IPC.agentQuestionRequest, request, wc)
         })
         try {
           for await (const ev of runAgent(agentInput)) {
@@ -565,7 +599,7 @@ export function registerIpc(): void {
               correlationId: runId
             })
             if (!terminalSent) {
-              sendEvent({ type: 'status', runId, status: 'cancelled' })
+              batcher.push({ type: 'status', runId, status: 'cancelled' })
             }
             return
           }
@@ -577,8 +611,8 @@ export function registerIpc(): void {
             err
           })
           if (!terminalSent) {
-            sendEvent({ type: 'error', runId, message, code: 'AGENT_LOOP' })
-            sendEvent({ type: 'status', runId, status: 'error' })
+            batcher.push({ type: 'error', runId, message, code: 'AGENT_LOOP' })
+            batcher.push({ type: 'status', runId, status: 'error' })
           }
         } finally {
           batcher.flush()
@@ -905,7 +939,7 @@ export function registerIpc(): void {
         const req = LoadRunRequestSchema.parse(raw)
         if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
         const messages = await loadMessagesAsync(req.workspacePath, req.runId)
-        return ok({ runId: req.runId, messages })
+        return ok({ runId: req.runId, messages: messages.map(toolMessageForIpc) })
       } catch (err) {
         return failFrom(err, IPC.loadRun)
       }
@@ -999,9 +1033,22 @@ export function registerIpc(): void {
     try {
       const req = GitCommitRequestSchema.parse(raw)
       if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
-      return ok(await commitAll(req.workspacePath, req.message, req.push === true))
+      return ok(
+        await commitAll(req.workspacePath, req.message, req.push === true, req.mode ?? 'all')
+      )
     } catch (err) {
       return failFrom(err, IPC.gitCommit)
+    }
+  })
+
+  ipcMain.handle(IPC.gitStageAll, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = GitStageAllRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      return ok(await stageAll(req.workspacePath))
+    } catch (err) {
+      return failFrom(err, IPC.gitStageAll)
     }
   })
 

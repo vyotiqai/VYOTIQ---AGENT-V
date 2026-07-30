@@ -9,6 +9,7 @@ import { EmptyPanel } from './PanelChrome'
 import { DiffPreview, type DiffLayout } from './DiffPreview'
 import { FileBadge } from './FileBadge'
 import { useGitChrome } from './GitChrome'
+import { CommitComposer, defaultCommitMessage } from './CommitComposer'
 import { basename, parseUnifiedDiff, type DiffLine } from '../toolUi'
 import {
   collectSessionChangedFiles,
@@ -23,6 +24,19 @@ const SCOPE_LABEL: Record<ChangeScope, string> = {
   staged: 'Staged',
   unstaged: 'Unstaged',
   commits: 'Commits'
+}
+
+function sideDelta(
+  file: GitChangedFile,
+  scope: ChangeScope
+): { added: number; removed: number } {
+  if (scope === 'staged') {
+    return { added: file.addedStaged, removed: file.removedStaged }
+  }
+  if (scope === 'unstaged') {
+    return { added: file.addedUnstaged, removed: file.removedUnstaged }
+  }
+  return { added: file.added, removed: file.removed }
 }
 
 function statusBadge(status: GitChangedFile['status']): string {
@@ -64,6 +78,8 @@ const SCOPE_ICON: Record<ChangeScope, IconName> = {
 function GitFileRow({
   workspacePath,
   file,
+  displayAdded,
+  displayRemoved,
   staged,
   ignoreWhitespace,
   sha,
@@ -75,6 +91,8 @@ function GitFileRow({
 }: {
   workspacePath: string
   file: GitChangedFile
+  displayAdded: number
+  displayRemoved: number
   staged: boolean
   ignoreWhitespace: boolean
   sha?: string | null
@@ -133,9 +151,9 @@ function GitFileRow({
           {basename(file.path)}
         </span>
         <span className="shrink-0 tabular-nums">
-          {file.added > 0 ? <span className="text-success">+{file.added}</span> : null}
-          {file.removed > 0 ? (
-            <span className="ml-1 text-danger">-{file.removed}</span>
+          {displayAdded > 0 ? <span className="text-success">+{displayAdded}</span> : null}
+          {displayRemoved > 0 ? (
+            <span className="ml-1 text-danger">-{displayRemoved}</span>
           ) : null}
         </span>
         <span
@@ -195,7 +213,8 @@ export function ChangesPanel({
   onKeepWriteFile,
   onDiscardWriteFile,
   onKeepAllWrites,
-  onDiscardAllWrites
+  onDiscardAllWrites,
+  active = true
 }: {
   items: UiItem[]
   className?: string
@@ -213,6 +232,8 @@ export function ChangesPanel({
   onDiscardWriteFile?: (path: string) => void | Promise<unknown>
   onKeepAllWrites?: () => void | Promise<unknown>
   onDiscardAllWrites?: () => void | Promise<unknown>
+  /** When false (hidden mounted dock), do not intercept Ctrl/Cmd+F/R. */
+  active?: boolean
 }) {
   const chrome = useGitChrome(workspacePath ?? null, gitRevision, Boolean(workspacePath))
   const agentFiles = useMemo(() => collectSessionChangedFiles(items), [items])
@@ -237,6 +258,7 @@ export function ChangesPanel({
   const [commitsBusy, setCommitsBusy] = useState(false)
   const toolbarMenusRef = useRef<HTMLDivElement>(null)
   const findInputRef = useRef<HTMLInputElement>(null)
+  const commitsSeqRef = useRef(0)
 
   const closeMenus = useCallback(() => {
     setScopeOpen(false)
@@ -244,6 +266,19 @@ export function ChangesPanel({
     setLayoutOpen(false)
     setPushOpen(false)
   }, [])
+
+  useEffect(() => {
+    setScope('uncommitted')
+    setSelectedCommit(null)
+    setCommitFiles([])
+    setCommits([])
+    setExpanded(new Set())
+    setComposing(false)
+    setMessage('')
+    setFindOpen(false)
+    setFindQuery('')
+    closeMenus()
+  }, [workspacePath, closeMenus])
 
   useEffect(() => {
     if (!scopeOpen && !menuOpen && !pushOpen) return undefined
@@ -257,20 +292,22 @@ export function ChangesPanel({
   }, [scopeOpen, menuOpen, pushOpen, closeMenus])
 
   const refreshCommits = useCallback(async () => {
+    const seq = ++commitsSeqRef.current
     if (!workspacePath || !window.vyotiq?.gitLog) {
-      setCommits([])
+      if (seq === commitsSeqRef.current) setCommits([])
       return
     }
     setCommitsBusy(true)
     try {
       const res = await window.vyotiq.gitLog({ workspacePath, limit: 40 })
+      if (seq !== commitsSeqRef.current) return
       if (!res.ok) {
         setCommits([])
         return
       }
       setCommits(res.data)
     } finally {
-      setCommitsBusy(false)
+      if (seq === commitsSeqRef.current) setCommitsBusy(false)
     }
   }, [workspacePath])
 
@@ -304,6 +341,7 @@ export function ChangesPanel({
   }, [findOpen])
 
   useEffect(() => {
+    if (!active) return undefined
     const onKey = (e: KeyboardEvent): void => {
       const mod = e.ctrlKey || e.metaKey
       if (!mod) return
@@ -320,24 +358,37 @@ export function ChangesPanel({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [chrome, refreshCommits])
+  }, [active, chrome, refreshCommits])
 
   const status: GitStatus | null = chrome.status
-  const gitFiles = status?.files ?? []
+  const gitFiles = useMemo(() => status?.files ?? [], [status?.files])
 
   const scopeTotals = useMemo(() => {
-    const sum = (files: GitChangedFile[]) => ({
-      added: files.reduce((s, f) => s + f.added, 0),
-      removed: files.reduce((s, f) => s + f.removed, 0)
-    })
+    const sumSide = (files: GitChangedFile[], side: 'all' | 'staged' | 'unstaged') => {
+      let added = 0
+      let removed = 0
+      for (const f of files) {
+        if (side === 'staged') {
+          added += f.addedStaged
+          removed += f.removedStaged
+        } else if (side === 'unstaged') {
+          added += f.addedUnstaged
+          removed += f.removedUnstaged
+        } else {
+          added += f.added
+          removed += f.removed
+        }
+      }
+      return { added, removed }
+    }
     return {
       agent: {
         added: agentFiles.reduce((s, f) => s + f.added, 0),
         removed: agentFiles.reduce((s, f) => s + f.removed, 0)
       },
-      uncommitted: sum(gitFiles),
-      staged: sum(gitFiles.filter((f) => f.staged)),
-      unstaged: sum(gitFiles.filter((f) => f.unstaged)),
+      uncommitted: sumSide(gitFiles, 'all'),
+      staged: sumSide(gitFiles.filter((f) => f.staged), 'staged'),
+      unstaged: sumSide(gitFiles.filter((f) => f.unstaged), 'unstaged'),
       commits: { added: 0, removed: 0 }
     }
   }, [agentFiles, gitFiles])
@@ -375,6 +426,16 @@ export function ChangesPanel({
         removed: agentFiles.reduce((s, f) => s + f.removed, 0)
       }
     }
+    if (scope === 'staged' || scope === 'unstaged' || scope === 'uncommitted') {
+      let added = 0
+      let removed = 0
+      for (const f of filteredFiles) {
+        const d = sideDelta(f, scope)
+        added += d.added
+        removed += d.removed
+      }
+      return { files: filteredFiles.length, added, removed }
+    }
     return {
       files: filteredFiles.length,
       added: filteredFiles.reduce((s, f) => s + f.added, 0),
@@ -391,9 +452,11 @@ export function ChangesPanel({
     })
   }, [])
 
+  const commitMode: 'all' | 'staged' = scope === 'staged' ? 'staged' : 'all'
+
   const sendCommit = useCallback(
     (push: boolean) => {
-      void chrome.commit(message, push).then((ok) => {
+      void chrome.commit(message, push, commitMode).then((ok) => {
         if (!ok) return
         setMessage('')
         setComposing(false)
@@ -402,8 +465,15 @@ export function ChangesPanel({
         void refreshCommits()
       })
     },
-    [chrome, message, onGitMutated, refreshCommits]
+    [chrome, message, commitMode, onGitMutated, refreshCommits]
   )
+
+  const sendStageAll = useCallback(() => {
+    void chrome.stageAll().then((ok) => {
+      if (!ok) return
+      onGitMutated?.()
+    })
+  }, [chrome, onGitMutated])
 
   const empty =
     scope === 'agent'
@@ -417,6 +487,7 @@ export function ChangesPanel({
 
   const fileDiffStaged = (file: GitChangedFile): boolean => {
     if (scope === 'staged') return true
+    if (scope === 'unstaged') return false
     if (scope === 'uncommitted') return file.unstaged ? false : Boolean(file.staged)
     return false
   }
@@ -621,78 +692,47 @@ export function ChangesPanel({
             </Button>
           ) : null}
 
-          {scope !== 'agent' && scope !== 'commits' && status && status.fileCount > 0 ? (
+          {scope === 'unstaged' && status && filteredFiles.length > 0 ? (
+            <Button
+              variant="subtle"
+              className="h-6 px-2 text-[11px]"
+              disabled={chrome.busy}
+              onClick={sendStageAll}
+            >
+              Stage All
+            </Button>
+          ) : null}
+
+          {(scope === 'uncommitted' || scope === 'staged') &&
+          status &&
+          filteredFiles.length > 0 ? (
             <div className="relative flex items-center">
               {composing ? (
-                <input
-                  type="text"
-                  value={message}
-                  autoFocus
-                  className="mr-1 w-28 rounded-md border border-border bg-bg px-1.5 py-0.5 text-[11px] text-fg outline-none"
-                  placeholder="Commit message"
-                  aria-label="Commit message"
-                  onChange={(e) => setMessage(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') sendCommit(commitPrimaryPushes)
-                    if (e.key === 'Escape') setComposing(false)
-                  }}
+                <CommitComposer
+                  compact
+                  className="mr-1"
+                  inputClassName="mr-1 w-36 rounded-md border border-border bg-bg px-1.5 py-0.5 text-[11px] text-fg outline-none"
+                  message={message}
+                  onMessageChange={setMessage}
+                  busy={chrome.busy}
+                  hasRemote={Boolean(status.hasRemote)}
+                  primaryPushes={commitPrimaryPushes}
+                  onCommit={sendCommit}
+                  onCancel={() => setComposing(false)}
                 />
-              ) : null}
-              <Button
-                variant="subtle"
-                className="h-6 rounded-r-none px-2 text-[11px]"
-                disabled={chrome.busy || (composing && !message.trim())}
-                onClick={() => {
-                  if (!composing) {
-                    setMessage(
-                      status.fileCount === 1 && status.files[0]
-                        ? `Update ${basename(status.files[0].path)}`
-                        : `Update ${status.fileCount} files`
-                    )
+              ) : (
+                <Button
+                  variant="subtle"
+                  className="h-6 px-2 text-[11px]"
+                  disabled={chrome.busy}
+                  onClick={() => {
+                    setMessage(defaultCommitMessage(filteredFiles, filteredFiles.length))
                     setComposing(true)
-                    return
-                  }
-                  sendCommit(commitPrimaryPushes)
-                }}
-              >
-                {commitPrimaryPushes ? 'Commit & Push' : 'Commit'}
-              </Button>
-              {status.hasRemote ? (
-                <>
-                  <button
-                    type="button"
-                    className="inline-flex h-6 items-center rounded-r-md border border-l-0 border-border bg-surface px-1 text-muted hover:bg-surface-2"
-                    aria-label="Commit options"
-                    onClick={() => {
-                      const next = !pushOpen
-                      closeMenus()
-                      setPushOpen(next)
-                    }}
-                  >
-                    <Icon name="chevron" size={10} />
-                  </button>
-                  {pushOpen ? (
-                    <div className="absolute right-0 top-full z-dropdown mt-0.5 min-w-[9rem] rounded-md border border-border bg-bg py-1 shadow-lg">
-                      <button
-                        type="button"
-                        className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
-                        disabled={chrome.busy || !message.trim()}
-                        onClick={() => sendCommit(false)}
-                      >
-                        Commit
-                      </button>
-                      <button
-                        type="button"
-                        className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
-                        disabled={chrome.busy || !message.trim()}
-                        onClick={() => sendCommit(true)}
-                      >
-                        Commit &amp; Push
-                      </button>
-                    </div>
-                  ) : null}
-                </>
-              ) : null}
+                  }}
+                >
+                  {commitPrimaryPushes ? 'Commit & Push…' : 'Commit…'}
+                </Button>
+              )}
             </div>
           ) : null}
         </div>
@@ -739,6 +779,12 @@ export function ChangesPanel({
           role={chrome.noticeFailed ? 'alert' : 'status'}
         >
           {chrome.notice}
+        </p>
+      ) : null}
+
+      {status?.truncated && scope !== 'agent' && scope !== 'commits' ? (
+        <p className="m-0 shrink-0 border-b border-border/40 px-3 py-1 text-[11px] text-muted">
+          Showing first {status.files.length} of {status.fileCount} changed files
         </p>
       ) : null}
 
@@ -830,11 +876,15 @@ export function ChangesPanel({
                 <span className="ml-1 text-danger">-{totals.removed}</span>
               ) : null}
             </li>
-            {filteredFiles.map((file) => (
+            {filteredFiles.map((file) => {
+              const delta = sideDelta(file, scope === 'commits' ? 'uncommitted' : scope)
+              return (
               <GitFileRow
                 key={file.path}
                 workspacePath={workspacePath}
                 file={file}
+                displayAdded={delta.added}
+                displayRemoved={delta.removed}
                 staged={fileDiffStaged(file)}
                 ignoreWhitespace={ignoreWhitespace}
                 sha={commitSha}
@@ -844,7 +894,8 @@ export function ChangesPanel({
                 expanded={expanded.has(file.path)}
                 onToggle={() => togglePath(file.path)}
               />
-            ))}
+              )
+            })}
           </ul>
         )}
 
