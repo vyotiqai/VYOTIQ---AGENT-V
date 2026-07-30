@@ -94,4 +94,25 @@ describe('sub-agent transcript row', () => {
     fireEvent.click(header)
     expect(screen.getByRole('button', { expanded: false })).toBeTruthy()
   })
+
+  it('surfaces persisted report path and truncation banner', () => {
+    const item = subagentItem({
+      tool: {
+        id: 'call-1',
+        name: 'subagent',
+        summary: 'Find where auth lives',
+        status: 'done',
+        contentTruncated: true,
+        content:
+          'Persisted report: .vyotiq/runs/r1/subagents/s1.md (re-read with `read` after compaction).\n\nAuth lives in src/auth.ts:12.'
+      },
+      toolExpanded: true
+    })
+    render(<MessageList items={[item]} />)
+
+    expect(screen.getByText('.vyotiq/runs/r1/subagents/s1.md')).toBeTruthy()
+    expect(screen.getByText(/Showing preview/)).toBeTruthy()
+    expect(screen.getByText('Auth lives in src/auth.ts:12.')).toBeTruthy()
+    expect(screen.queryByText(/Diagnostics is unavailable/)).toBeNull()
+  })
 })

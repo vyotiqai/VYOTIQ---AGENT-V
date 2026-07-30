@@ -32,7 +32,7 @@ export { parseDeleteData } from './parsers/delete'
 export { parseMemoryListData, parseMemoryReadData, parseMemoryWriteData } from './parsers/memory'
 export { parseWebFetchData } from './parsers/webFetch'
 export { parseWebSearchData } from './parsers/webSearch'
-export { parseGitStatusData, parseGitDiffData } from './parsers/git'
+export { parseGitStatusData, parseGitDiffData, parseGitCommitData } from './parsers/git'
 export { parseMcpData } from './parsers/mcp'
 export {
   parseBrowserSnapshotData,

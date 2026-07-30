@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
 import { TOOL_BODY_INNER } from '@renderer/lib/utils/layout'
@@ -6,12 +7,26 @@ import { MarkdownContent } from '@renderer/lib/ui'
 import { useRunSession } from '../../RunSessionContext'
 import type { ToolBodyProps } from '../types'
 import type { SubagentContextUsageState } from '@shared/utils/contextUsage'
+import { CopyButton, TruncatedBanner } from '../primitives'
 
 const STEP_ICON: Record<string, 'edit' | 'sparkles' | 'check' | 'doc'> = {
   tool: 'edit',
   thinking: 'sparkles',
   done: 'check',
   text: 'doc'
+}
+
+const PERSISTED_REPORT_RE = /^Persisted report:\s+(.+?)\s+\(re-read with/
+
+function parsePersistedReport(content: string): { reportPath: string | null; body: string } {
+  const trimmed = content.trim()
+  if (!trimmed) return { reportPath: null, body: '' }
+  const firstLine = trimmed.split('\n')[0] ?? ''
+  const match = firstLine.match(PERSISTED_REPORT_RE)
+  if (!match?.[1]) return { reportPath: null, body: trimmed }
+  const reportPath = match[1].trim()
+  const body = trimmed.replace(/^Persisted report:[^\n]*\n\n?/, '').trim()
+  return { reportPath, body }
 }
 
 function SubagentContextBar({ usage }: { usage: SubagentContextUsageState }) {
@@ -42,23 +57,54 @@ function SubagentContextBar({ usage }: { usage: SubagentContextUsageState }) {
   )
 }
 
+function ReportPathRow({ path }: { path: string }) {
+  const { workspacePath } = useRunSession()
+
+  const openReport = (): void => {
+    if (!workspacePath) return
+    void window.vyotiq.slashCommandsOpenFile({ workspacePath, path })
+  }
+
+  return (
+    <div className={cn(TOOL_BODY_INNER, 'flex min-w-0 items-center gap-2 border-b border-border/50 pb-2')}>
+      <span className="shrink-0 text-[10px] text-tertiary">Report</span>
+      {workspacePath ? (
+        <button
+          type="button"
+          className="min-w-0 flex-1 truncate text-left font-mono text-[11px] text-fg/80 underline-offset-2 hover:underline"
+          title={path}
+          onClick={openReport}
+        >
+          {path}
+        </button>
+      ) : (
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-fg/80" title={path}>
+          {path}
+        </span>
+      )}
+      <CopyButton text={path} className="shrink-0" />
+    </div>
+  )
+}
+
 export function SubagentBody({
   tool,
   subagent,
-  subagentContextUsage
+  subagentContextUsage,
+  loading,
+  loadFailed
 }: ToolBodyProps) {
-  const { agentMode } = useRunSession()
   const steps = subagent ?? []
-  const report = (tool.content ?? '').trim()
+  const { reportPath, body } = useMemo(
+    () => parsePersistedReport(tool.content ?? ''),
+    [tool.content]
+  )
 
   return (
     <div className="flex flex-col gap-1">
-      {agentMode === 'ask' ? (
-        <p className={cn(TOOL_BODY_INNER, 'm-0 text-[10px] text-tertiary')}>
-          Diagnostics is unavailable to sub-agents in Ask mode.
-        </p>
-      ) : null}
+      {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
       {subagentContextUsage ? <SubagentContextBar usage={subagentContextUsage} /> : null}
+      {reportPath ? <ReportPathRow path={reportPath} /> : null}
       {steps.length > 0 ? (
         <ul className={cn(TOOL_BODY_INNER, 'm-0 list-none space-y-1 p-0')}>
           {steps.map((entry, index) => (
@@ -75,9 +121,9 @@ export function SubagentBody({
           ))}
         </ul>
       ) : null}
-      {report ? (
+      {body ? (
         <div className={cn(TOOL_BODY_INNER, 'text-[11px] text-fg/80')}>
-          <MarkdownContent content={report} />
+          <MarkdownContent content={body} />
         </div>
       ) : null}
     </div>

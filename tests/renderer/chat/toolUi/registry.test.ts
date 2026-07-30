@@ -24,7 +24,8 @@ const FORMER_FALLBACK_TOOLS = [
   'mcp_list_prompts',
   'mcp_get_prompt',
   'ask_question',
-  'switch_mode'
+  'switch_mode',
+  'git_commit'
 ] as const
 
 describe('tool UI registry coverage', () => {

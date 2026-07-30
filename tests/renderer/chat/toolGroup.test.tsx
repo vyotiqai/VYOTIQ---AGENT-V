@@ -205,4 +205,24 @@ describe('ToolGroup', () => {
     expect(screen.queryByText('core done')).toBeNull()
     expect(screen.getByText('api running')).toBeTruthy()
   })
+
+  it('still renders a single tool when item id and tool id diverge', () => {
+    const tools = [
+      {
+        kind: 'tool' as const,
+        id: 'ui-item-id',
+        tool: {
+          id: 'tool-row-id',
+          name: 'read',
+          summary: 'a.ts',
+          status: 'done' as const,
+          content: 'file body'
+        },
+        toolExpanded: true
+      }
+    ]
+    render(<ToolGroup tools={tools} />)
+    expect(screen.getByText('Read')).toBeTruthy()
+    expect(screen.getByText('file body')).toBeTruthy()
+  })
 })

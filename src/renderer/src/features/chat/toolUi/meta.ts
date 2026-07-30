@@ -61,7 +61,7 @@ const BROWSER_TOOLS = new Set([
   'browser_select_option'
 ])
 const BROWSE_TOOLS = new Set(['list_dir', 'memory_list'])
-const COMMAND_TOOLS = new Set(['terminal', 'subagent', 'diagnostics'])
+const COMMAND_TOOLS = new Set(['terminal', 'subagent', 'diagnostics', 'git_commit'])
 
 const CATEGORY_LABELS: Record<ToolCategory, { running: string; done: string }> = {
   file: { running: 'Reading', done: 'Read' },

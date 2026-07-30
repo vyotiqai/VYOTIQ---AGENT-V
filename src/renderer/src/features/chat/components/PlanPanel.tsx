@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { cn } from '@renderer/lib/ui'
 import { MarkdownContent } from '@renderer/lib/ui/MarkdownContent'
-import { CHAT_RIGHT_PANEL } from '@renderer/lib/utils/layout'
+import { CHAT_RIGHT_PANEL_BODY } from '@renderer/lib/utils/layout'
 import type { RunReceipt } from '@shared/ipc'
 import { RunReceiptSchema } from '@shared/ipc'
-import { EmptyPanel, PanelHeader } from './PanelChrome'
+import { EmptyPanel } from './PanelChrome'
 import { isPlanDraftReady } from './composer/PlanHandoff'
 
 type ArtifactTab = 'plan' | 'contract' | 'receipt'
@@ -17,7 +17,17 @@ const TAB_TITLE: Record<ArtifactTab, string> = {
   receipt: 'Receipt'
 }
 
-function ReceiptSummary({ receipt }: { receipt: RunReceipt }) {
+function openWorkspacePath(workspacePath: string, path: string): void {
+  void window.vyotiq.slashCommandsOpenFile({ workspacePath, path })
+}
+
+function ReceiptSummary({
+  receipt,
+  workspacePath
+}: {
+  receipt: RunReceipt
+  workspacePath: string | null
+}) {
   const failTop = receipt.failureClusters.slice(0, 5)
   const subagents = receipt.subagents
   return (
@@ -88,7 +98,23 @@ function ReceiptSummary({ receipt }: { receipt: RunReceipt }) {
             {subagents.map((s) => (
               <li key={s.id}>
                 {s.id} · {s.status}
-                {s.reportPath ? ` · ${s.reportPath}` : ''}
+                {s.reportPath ? (
+                  <>
+                    {' · '}
+                    {workspacePath ? (
+                      <button
+                        type="button"
+                        className="font-mono text-fg/80 underline-offset-2 hover:underline"
+                        title={s.reportPath}
+                        onClick={() => openWorkspacePath(workspacePath, s.reportPath!)}
+                      >
+                        {s.reportPath}
+                      </button>
+                    ) : (
+                      <span className="font-mono">{s.reportPath}</span>
+                    )}
+                  </>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -285,12 +311,11 @@ export function PlanPanel({
       : !content || (tab === 'plan' && !isPlanDraftReady(content)))
 
   return (
-    <aside
-      className={cn(CHAT_RIGHT_PANEL, className)}
+    <div
+      className={cn(CHAT_RIGHT_PANEL_BODY, className)}
       data-plan-panel
       aria-label={`${panelTitle} panel`}
     >
-      <PanelHeader title={panelTitle} onClose={onClose} />
       <div className="flex min-w-0 shrink-0 gap-1 overflow-x-auto border-b border-border/40 px-2 py-1.5">
         {(
           [
@@ -321,11 +346,11 @@ export function PlanPanel({
         ) : showEmpty ? (
           <EmptyPanel icon="file" title={emptyTitle} body={emptyBody} />
         ) : tab === 'receipt' && receipt ? (
-          <ReceiptSummary receipt={receipt} />
+          <ReceiptSummary receipt={receipt} workspacePath={workspacePath} />
         ) : (
           <MarkdownContent content={content ?? ''} className="text-sm" />
         )}
       </div>
-    </aside>
+    </div>
   )
 }

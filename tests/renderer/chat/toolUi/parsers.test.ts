@@ -5,7 +5,7 @@ import { parseGlobData } from '@renderer/features/chat/toolUi/parsers/glob'
 import { parseDeleteData } from '@renderer/features/chat/toolUi/parsers/delete'
 import { parseTodoData } from '@renderer/features/chat/toolUi/parsers/todo'
 import { parseWebSearchData } from '@renderer/features/chat/toolUi/parsers/webSearch'
-import { parseGitDiffData, parseGitStatusData } from '@renderer/features/chat/toolUi/parsers/git'
+import { parseGitCommitData, parseGitDiffData, parseGitStatusData } from '@renderer/features/chat/toolUi/parsers/git'
 import {
   parseBrowserActionData,
   parseBrowserSnapshotData,
@@ -178,6 +178,33 @@ describe('git parsers', () => {
     expect(data.added).toBe(1)
     expect(data.removed).toBe(1)
     expect(data.lines.some((l) => l.kind === 'add')).toBe(true)
+  })
+
+  it('parses git_commit message and flags from args/content', () => {
+    const data = parseGitCommitData(
+      tool({
+        name: 'git_commit',
+        summary: 'git commit',
+        argsPreview: JSON.stringify({ message: 'fix: wire up' }),
+        content: ['Committed', 'committed: true', 'pushed: false', 'message: fix: wire up'].join('\n')
+      })
+    )
+    expect(data.message).toBe('fix: wire up')
+    expect(data.committed).toBe(true)
+    expect(data.pushed).toBe(false)
+    expect(data.detail).toBe('Committed')
+    expect(data.summary).toBe('git commit')
+  })
+
+  it('parses optional git_commit hash lines', () => {
+    const data = parseGitCommitData(
+      tool({
+        name: 'git_commit',
+        content: ['abc1234', 'committed: true', 'message: ship it'].join('\n')
+      })
+    )
+    expect(data.hash).toBe('abc1234')
+    expect(data.message).toBe('ship it')
   })
 })
 

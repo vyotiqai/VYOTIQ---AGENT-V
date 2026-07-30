@@ -11,7 +11,7 @@ import {
 import { DeleteBody } from './bodies/DeleteBody'
 import { DiagnosticsBody } from './bodies/DiagnosticsBody'
 import { EditBody, MultiEditBody } from './bodies/EditBody'
-import { GitDiffBody, GitStatusBody } from './bodies/GitBody'
+import { GitCommitBody, GitDiffBody, GitStatusBody } from './bodies/GitBody'
 import { GlobBody } from './bodies/GlobBody'
 import { GrepBody } from './bodies/GrepBody'
 import { ListDirBody } from './bodies/ListDirBody'
@@ -35,7 +35,7 @@ import {
 import { parseDeleteData } from './parsers/delete'
 import { parseDiagnosticsData } from './parsers/diagnostics'
 import { parseDiffPreview, parseEditCardData } from './parsers/edit'
-import { parseGitDiffData, parseGitStatusData } from './parsers/git'
+import { parseGitCommitData, parseGitDiffData, parseGitStatusData } from './parsers/git'
 import { parseMcpIntrospectData } from './parsers/mcpIntrospect'
 import { parseReadData } from './parsers/read'
 import { parseStatusMessageData } from './parsers/status'
@@ -96,6 +96,11 @@ function gitStatusHasBody(tool: UiToolRow): boolean {
 function gitDiffHasBody(tool: UiToolRow): boolean {
   const data = parseGitDiffData(tool)
   return data.lines.length > 0 || Boolean(data.message || tool.content)
+}
+
+function gitCommitHasBody(tool: UiToolRow): boolean {
+  const data = parseGitCommitData(tool)
+  return Boolean(data.message || data.hash || data.detail || data.summary || tool.content)
 }
 
 function deleteHasBody(tool: UiToolRow): boolean {
@@ -339,13 +344,16 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
     }
   },
   git_commit: {
-    Body: FallbackBody,
-    hasBody: (tool) => Boolean(tool.content?.trim() || tool.argsPreview?.trim()),
-    headerMeta: (tool) => ({
-      verb: toolLabel(tool.name, tool.status),
-      target: tool.summary,
-      icon: 'branch'
-    })
+    Body: GitCommitBody,
+    hasBody: gitCommitHasBody,
+    headerMeta: (tool) => {
+      const data = parseGitCommitData(tool)
+      return {
+        verb: toolLabel(tool.name, tool.status),
+        target: data.message || data.hash || tool.summary,
+        icon: 'branch'
+      }
+    }
   },
   subagent: {
     Body: SubagentBody,

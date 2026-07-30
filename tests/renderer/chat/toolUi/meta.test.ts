@@ -21,6 +21,8 @@ describe('toolUi meta', () => {
     expect(toolCategory('grep')).toBe('search')
     expect(toolCategory('list_dir')).toBe('browse')
     expect(toolCategory('memory_list')).toBe('browse')
+    expect(toolCategory('git_commit')).toBe('command')
+    expect(toolCategory('terminal')).toBe('command')
     expect(toolCategory('mcp__srv__read_text_file')).toBe('file')
     expect(toolCategory('mcp__srv__list_allowed_directories')).toBe('browse')
     expect(toolCategory('mcp__srv__grep_search')).toBe('search')

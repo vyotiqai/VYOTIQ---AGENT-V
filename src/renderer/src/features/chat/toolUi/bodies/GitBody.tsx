@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { TOOL_BODY_INNER, TOOL_BODY_PAD } from '@renderer/lib/utils/layout'
 import { DiffPreview } from '../../components/DiffPreview'
 import type { ToolBodyProps } from '../types'
-import { parseGitDiffData, parseGitStatusData } from '../parsers/git'
+import { parseGitCommitData, parseGitDiffData, parseGitStatusData } from '../parsers/git'
 import { Chip, TruncatedBanner } from '../primitives'
 import { basename } from '../pathUtils'
 
@@ -71,6 +71,32 @@ export function GitDiffBody({ tool, expanded, loading, loadFailed }: ToolBodyPro
           {data.message || 'No diff'}
         </pre>
       )}
+    </div>
+  )
+}
+
+export function GitCommitBody({ tool, loading, loadFailed }: ToolBodyProps) {
+  const data = useMemo(() => parseGitCommitData(tool), [tool])
+  const chip = data.hash ? data.hash.slice(0, 7) : data.summary
+
+  return (
+    <div>
+      <div className={`${TOOL_BODY_PAD} flex flex-wrap items-center gap-2 pb-1`}>
+        <Chip>{chip}</Chip>
+        {data.message ? (
+          <span className="min-w-0 text-[11px] text-tertiary [overflow-wrap:anywhere]">
+            {data.message}
+          </span>
+        ) : data.detail ? (
+          <span className="text-[11px] text-tertiary">{data.detail}</span>
+        ) : null}
+        {data.pushed === true ? (
+          <span className="text-[10px] text-success">pushed</span>
+        ) : data.committed === false ? (
+          <span className="text-[10px] text-tertiary">nothing to commit</span>
+        ) : null}
+      </div>
+      {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
     </div>
   )
 }

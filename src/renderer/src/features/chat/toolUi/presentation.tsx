@@ -10,8 +10,7 @@ export function ToolBodyView({
 }) {
   const { tool, expanded, onLoadFullContent, subagent, subagentContextUsage, mcpServerNames, inGroup } =
     context
-  const skipLazyLoad = tool.name === 'subagent'
-  const enabled = !skipLazyLoad && expanded && tool.contentTruncated === true
+  const enabled = expanded && tool.contentTruncated === true
   const { loading, failed } = useFullToolContent(tool, enabled, onLoadFullContent)
   return createElement(getToolBody(tool.name), {
     tool,

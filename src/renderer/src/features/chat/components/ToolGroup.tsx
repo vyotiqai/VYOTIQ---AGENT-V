@@ -7,7 +7,7 @@ import type { ToolItem } from '../utils/transcriptRows'
 import { mapToolGroupProps, type ToolGroupNestedTool } from '../utils/toolGroupAdapter'
 import { TextShimmer } from './TextShimmer'
 import { ToolRowOutput } from './ToolRow'
-import { CompactRow, toolHasBody } from '../toolUi'
+import { CompactRow, toolCategory, toolHasBody, toolLabel } from '../toolUi'
 
 /** Earliest start to latest end across every batch in the group. */
 function spanGroupTiming(tools: ToolItem[]): ToolItem['groupTiming'] {
@@ -139,8 +139,17 @@ export const ToolGroup = memo(function ToolGroup({
 
   if (singleTool && tools[0]) {
     const item = tools[0]
-    const nested = nestedById.get(item.id)
-    if (!nested) return null
+    const nested =
+      nestedById.get(item.id) ??
+      nestedById.get(item.tool.id) ??
+      nestedTools[0] ?? {
+        id: item.id,
+        name: item.tool.name,
+        category: toolCategory(item.tool.name),
+        title: toolLabel(item.tool.name, item.tool.status),
+        subtitle: item.tool.summary?.trim() || '',
+        status: item.tool.status
+      }
     const hasBody = toolHasBody(item.tool, {
       subagent: item.subagent,
       subagentContextUsage: item.subagentContextUsage
