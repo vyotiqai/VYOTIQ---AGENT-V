@@ -20,6 +20,7 @@ import {
   FolderPlusIcon,
   GearSixIcon,
   GitBranchIcon,
+  GitPullRequestIcon,
   GlobeIcon,
   HouseIcon,
   ImageIcon,
@@ -53,6 +54,7 @@ export type IconProps = PhosphorIconProps & { size?: number }
 const ICONS = {
   send: PaperPlaneRightIcon,
   branch: GitBranchIcon,
+  pullRequest: GitPullRequestIcon,
   refresh: ArrowsClockwiseIcon,
   arrowUp: ArrowUpIcon,
   stop: StopIcon,

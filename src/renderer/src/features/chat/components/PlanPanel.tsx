@@ -17,6 +17,23 @@ const TAB_TITLE: Record<ArtifactTab, string> = {
   receipt: 'Receipt'
 }
 
+function parsePlanOutline(markdown: string): {
+  headings: string[]
+  checked: number
+  unchecked: number
+} {
+  const headings: string[] = []
+  let checked = 0
+  let unchecked = 0
+  for (const line of markdown.split(/\r?\n/)) {
+    const h = line.match(/^#{2,3}\s+(.+)$/)
+    if (h?.[1]) headings.push(h[1].trim())
+    if (/^\s*[-*]\s+\[[xX]\]\s+/.test(line)) checked += 1
+    else if (/^\s*[-*]\s+\[\s\]\s+/.test(line)) unchecked += 1
+  }
+  return { headings, checked, unchecked }
+}
+
 function openWorkspacePath(workspacePath: string, path: string): void {
   void window.vyotiq.slashCommandsOpenFile({ workspacePath, path })
 }
@@ -174,14 +191,12 @@ export function PlanPanel({
   workspacePath,
   runId,
   running = false,
-  className,
-  onClose
+  className
 }: {
   workspacePath: string | null
   runId: string | null
   running?: boolean
   className?: string
-  onClose?: () => void
 }) {
   const [tab, setTab] = useState<ArtifactTab>('plan')
   const [content, setContent] = useState<string | null>(null)
@@ -314,6 +329,7 @@ export function PlanPanel({
     <div
       className={cn(CHAT_RIGHT_PANEL_BODY, className)}
       data-plan-panel
+      role="region"
       aria-label={`${panelTitle} panel`}
     >
       <div className="flex min-w-0 shrink-0 gap-1 overflow-x-auto border-b border-border/40 px-2 py-1.5">
@@ -347,6 +363,33 @@ export function PlanPanel({
           <EmptyPanel icon="file" title={emptyTitle} body={emptyBody} />
         ) : tab === 'receipt' && receipt ? (
           <ReceiptSummary receipt={receipt} workspacePath={workspacePath} />
+        ) : tab === 'plan' && content && isPlanDraftReady(content) ? (
+          <>
+            {(() => {
+              const outline = parsePlanOutline(content)
+              const total = outline.checked + outline.unchecked
+              if (outline.headings.length === 0 && total === 0) return null
+              return (
+                <div className="mb-3 rounded-md border border-border/40 bg-surface px-2.5 py-2">
+                  {total > 0 ? (
+                    <p className="m-0 text-[11px] text-muted">
+                      Checklist {outline.checked}/{total}
+                    </p>
+                  ) : null}
+                  {outline.headings.length > 0 ? (
+                    <ul className="m-0 mt-1 list-none space-y-0.5 p-0">
+                      {outline.headings.slice(0, 8).map((h, i) => (
+                        <li key={`${i}:${h}`} className="truncate text-[11px] text-fg">
+                          {h}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
+              )
+            })()}
+            <MarkdownContent content={content} className="text-sm" />
+          </>
         ) : (
           <MarkdownContent content={content ?? ''} className="text-sm" />
         )}

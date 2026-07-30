@@ -21,6 +21,18 @@ beforeEach(() => {
     writable: true,
     value: {
       gitStatus: vi.fn().mockResolvedValue({ ok: true, data: null }),
+      gitDiff: vi.fn().mockResolvedValue({ ok: true, data: { path: '', hunks: [] } }),
+      gitCommit: vi.fn().mockResolvedValue({ ok: true, data: { pushed: false, detail: 'ok' } }),
+      prView: vi.fn().mockResolvedValue({ ok: true, data: null }),
+      prMerge: vi.fn().mockResolvedValue({ ok: true, data: { detail: 'merged' } }),
+      ptyList: vi.fn().mockResolvedValue({ ok: true, data: [] }),
+      ptyCreate: vi.fn().mockResolvedValue({ ok: false, error: 'pty unavailable in tests' }),
+      ptyKill: vi.fn().mockResolvedValue({ ok: true, data: true }),
+      ptyWrite: vi.fn().mockResolvedValue({ ok: true, data: true }),
+      ptyResize: vi.fn().mockResolvedValue({ ok: true, data: true }),
+      onPtyData: vi.fn().mockReturnValue(() => undefined),
+      onPtyExit: vi.fn().mockReturnValue(() => undefined),
+      readRunArtifact: vi.fn().mockResolvedValue({ ok: false, error: 'none' }),
       browserGetState: vi.fn().mockResolvedValue({
         ok: true,
         data: { open: false, url: '', title: '' }
@@ -104,16 +116,22 @@ describe('ChatView composer placement', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
     expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
-    expect(screen.getByText('No terminal output yet')).toBeTruthy()
+    expect(screen.getByText('No terminal')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: /Show changes panel/i }))
     expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
-    expect(document.querySelector('[data-terminal-panel]')).toBeNull()
+    // Dock keeps prior tabs mounted but hidden (Cursor-style tab strip).
+    expect(
+      document.querySelector('[data-terminal-panel]')?.parentElement?.className
+    ).toMatch(/\bhidden\b/)
+    expect(
+      document.querySelector('[data-changes-panel]')?.parentElement?.className
+    ).toMatch(/\bflex\b/)
     expect(screen.getByText('No changes yet')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /files panel/i })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: /^Hide changes panel$/i }))
-    expect(document.querySelector('[data-changes-panel]')).toBeNull()
+    expect(document.querySelector('[data-right-dock]')).toBeNull()
   })
 
   it('does not steal Terminal when browser state keeps reporting open', () => {
@@ -245,9 +263,41 @@ describe('ChatView composer placement', () => {
   it('keeps open right panels clear of the floating rail', () => {
     render(<ChatView {...baseProps} items={[]} />)
     fireEvent.click(screen.getByRole('button', { name: /Show plan panel/i }))
-    const panel = document.querySelector('[data-plan-panel]')
-    expect(panel?.className).toMatch(/pr-10/)
-    expect(panel?.className).toMatch(/min-w-0/)
+    const dock = document.querySelector('[data-right-dock]')
+    expect(dock?.className).toMatch(/pr-10/)
+    expect(dock?.className).toMatch(/min-w-0/)
+    expect(document.querySelector('[data-dock-tab-bar]')).toBeTruthy()
+    expect(document.querySelector('[data-plan-panel]')).toBeTruthy()
+  })
+
+  it('switches dock tabs without closing the rail panels', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Show changes panel/i }))
+    expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-dock-tab-bar]')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^Terminal$/i }))
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    expect(
+      document.querySelector('[data-terminal-panel]')?.parentElement?.className
+    ).toMatch(/\bflex\b/)
+    expect(
+      document.querySelector('[data-changes-panel]')?.parentElement?.className
+    ).toMatch(/\bhidden\b/)
+  })
+
+  it('opens the pull request panel from the side rail', () => {
+    Object.defineProperty(window, 'vyotiq', {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(window.vyotiq as object),
+        prView: vi.fn().mockResolvedValue({ ok: true, data: null })
+      }
+    })
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Show pull request panel/i }))
+    expect(document.querySelector('[data-pr-panel]')).toBeTruthy()
   })
 
   it('renders docked composer with gutter when transcript has messages', () => {
@@ -317,6 +367,12 @@ describe('ChatView composer placement', () => {
       expect(el?.className).toMatch(/max-w-\[840px\]/)
       expect(el?.className).toMatch(/w-full/)
     }
+
+    const composerRoot = document.querySelector('[data-composer-dock]')
+    expect(composerRoot?.className).toMatch(/pl-4/)
+    expect(composerRoot?.className).toMatch(/pr-10/)
+    expect(composerRoot?.className).toMatch(/absolute/)
+    expect(composerRoot?.className).not.toMatch(/\bbg-bg\b/)
   })
 
   it('reserves dock height plus fade so the transcript clears the composer', () => {

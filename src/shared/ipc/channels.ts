@@ -87,6 +87,15 @@ export const IPC = {
   workspaceListRules: 'workspace:listRules',
   workspaceDiagnostics: 'workspace:diagnostics',
   gitDiff: 'git:diff',
+  prView: 'pr:view',
+  prMerge: 'pr:merge',
+  ptyCreate: 'pty:create',
+  ptyList: 'pty:list',
+  ptyWrite: 'pty:write',
+  ptyResize: 'pty:resize',
+  ptyKill: 'pty:kill',
+  ptyData: 'pty:data',
+  ptyExit: 'pty:exit',
   themeChanged: 'theme:changed',
   getSystemTheme: 'theme:get-system'
 } as const

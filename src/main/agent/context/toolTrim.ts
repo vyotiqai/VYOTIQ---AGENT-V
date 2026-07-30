@@ -6,9 +6,24 @@ const MAX_TOOL_CHARS = 12_000
 const MAX_SUBAGENT_CHARS = 8_000
 const STUB = '[cleared: re-read with tools]'
 
+/** Match the durable path line written by the subagent tool handler. */
+const PERSISTED_REPORT_LINE_RE =
+  /^Persisted report:\s+\S.+\s+\(re-read with `read` after compaction\)\.\s*$/m
+
 export type TrimToolResultsOptions = {
   /** When true, also clear/stub subagent results (normally preserved). */
   trimSubagent?: boolean
+}
+
+/** Stub text for cleared tool bodies; keeps subagent report path when present. */
+export function clearedToolStub(text: string, opts?: { preserveSubagentReportPath?: boolean }): string {
+  if (opts?.preserveSubagentReportPath) {
+    const match = text.match(PERSISTED_REPORT_LINE_RE)
+    if (match?.[0]) {
+      return `${match[0].trimEnd()}\n${STUB}`
+    }
+  }
+  return STUB
 }
 
 /** Collapse old re-fetchable tool bodies; always head+tail trim oversized results. */
@@ -29,8 +44,9 @@ export function trimToolResults(
     const isSubagent = m.toolName === 'subagent'
     if (isSubagent && !trimSubagent) return m
     const text = contentToText(m.content)
-    if (!keep.has(i) && text && text !== STUB) {
-      return { ...m, content: STUB }
+    const stub = clearedToolStub(text, { preserveSubagentReportPath: isSubagent })
+    if (!keep.has(i) && text && text !== stub) {
+      return { ...m, content: stub }
     }
     const maxChars = isSubagent ? MAX_SUBAGENT_CHARS : MAX_TOOL_CHARS
     if (text.length > maxChars) {

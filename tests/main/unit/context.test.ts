@@ -94,6 +94,25 @@ describe('context budget + trim', () => {
     expect(String(subagent?.content)).toContain('cleared')
   })
 
+  it('preserves Persisted report path when stubbing subagent under overflow', () => {
+    const report =
+      'Persisted report: subagents/abcd1234/report.md (re-read with `read` after compaction).\n\n' +
+      'x'.repeat(20_000)
+    const msgs: ChatMessage[] = [
+      { role: 'user', content: 'a' },
+      { role: 'assistant', content: '', toolCalls: [{ id: '1', name: 'subagent', arguments: '{}' }] },
+      { role: 'tool', toolCallId: '1', toolName: 'subagent', content: report },
+      { role: 'assistant', content: '', toolCalls: [{ id: '2', name: 'read', arguments: '{}' }] },
+      { role: 'tool', toolCallId: '2', toolName: 'read', content: 'kept' }
+    ]
+    const trimmed = trimToolResults(msgs, 1, { trimSubagent: true })
+    const subagent = trimmed.find((m) => m.role === 'tool' && m.toolName === 'subagent')
+    const content = String(subagent?.content)
+    expect(content).toContain('Persisted report: subagents/abcd1234/report.md')
+    expect(content).toContain('cleared')
+    expect(content).not.toContain('x'.repeat(100))
+  })
+
   it('preserves recent user turns', () => {
     const msgs: ChatMessage[] = []
     for (let i = 0; i < 20; i++) {

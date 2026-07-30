@@ -178,18 +178,6 @@
   }
 }
 
-@keyframes chrome-rise-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
 @keyframes slide-in-left {
   from {
     opacity: 0;
@@ -248,7 +236,6 @@
 
   --animate-fade-in: fade-in var(--vy-duration) var(--vy-ease);
   --animate-chrome-drop-in: chrome-drop-in var(--vy-duration) var(--vy-ease);
-  --animate-chrome-rise-in: chrome-rise-in var(--vy-duration) var(--vy-ease);
   --animate-slide-in-left: slide-in-left var(--vy-duration) var(--vy-ease);
 
   --z-index-sticky: var(--z-sticky);

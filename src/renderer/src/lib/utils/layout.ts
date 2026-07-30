@@ -141,4 +141,8 @@ export const BROWSER_PANEL_OPEN_KEY = 'vyotiq.browserPanelOpen'
 /** localStorage key for which chat right panel is open. */
 export const RIGHT_PANEL_KEY = 'vyotiq.rightPanel'
 
-export type ChatRightPanelId = 'browser' | 'terminal' | 'changes' | 'plan'
+export type ChatRightPanelId = 'browser' | 'terminal' | 'changes' | 'plan' | 'pr'
+
+/** Shared content shell inside the right dock (parent owns CHAT_RIGHT_PANEL + tab bar). */
+export const CHAT_RIGHT_PANEL_BODY =
+  'flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden'

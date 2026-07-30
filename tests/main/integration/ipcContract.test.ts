@@ -15,6 +15,8 @@ const VYOTIQ_INVOKE_MAP: Record<
     | 'onWindowMaximizedChanged'
     | 'onSystemThemeChanged'
     | 'onBrowserState'
+    | 'onPtyData'
+    | 'onPtyExit'
     | 'updateWorkspaceUiStateSync'
   >,
   string
@@ -67,6 +69,13 @@ const VYOTIQ_INVOKE_MAP: Record<
   gitStatus: IPC.gitStatus,
   gitDiff: IPC.gitDiff,
   gitCommit: IPC.gitCommit,
+  prView: IPC.prView,
+  prMerge: IPC.prMerge,
+  ptyCreate: IPC.ptyCreate,
+  ptyList: IPC.ptyList,
+  ptyWrite: IPC.ptyWrite,
+  ptyResize: IPC.ptyResize,
+  ptyKill: IPC.ptyKill,
   workspaceSuggestPaths: IPC.workspaceSuggestPaths,
   workspaceReadText: IPC.workspaceReadText,
   workspaceListDocs: IPC.workspaceListDocs,
@@ -109,7 +118,9 @@ const PUSH_CHANNELS = new Set<string>([
   IPC.agentQuestionRequest,
   IPC.windowMaximizedChanged,
   IPC.themeChanged,
-  IPC.browserState
+  IPC.browserState,
+  IPC.ptyData,
+  IPC.ptyExit
 ])
 
 const VYOTIQ_SYNC_SEND_MAP: Record<'updateWorkspaceUiStateSync', string> = {
@@ -122,7 +133,9 @@ const VYOTIQ_PUSH_MAP: Record<
   | 'onAgentQuestionRequest'
   | 'onWindowMaximizedChanged'
   | 'onSystemThemeChanged'
-  | 'onBrowserState',
+  | 'onBrowserState'
+  | 'onPtyData'
+  | 'onPtyExit',
   string
 > = {
   onChatEvent: IPC.chatEvent,
@@ -130,7 +143,9 @@ const VYOTIQ_PUSH_MAP: Record<
   onAgentQuestionRequest: IPC.agentQuestionRequest,
   onWindowMaximizedChanged: IPC.windowMaximizedChanged,
   onSystemThemeChanged: IPC.themeChanged,
-  onBrowserState: IPC.browserState
+  onBrowserState: IPC.browserState,
+  onPtyData: IPC.ptyData,
+  onPtyExit: IPC.ptyExit
 }
 
 describe('main/renderer IPC contract', () => {
@@ -140,7 +155,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(false)
     }
-    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(82)
+    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(89)
   })
 
   it('maps every VyotiqApi push listener to a push channel', () => {
@@ -149,7 +164,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(true)
     }
-    expect(Object.keys(VYOTIQ_PUSH_MAP)).toHaveLength(6)
+    expect(Object.keys(VYOTIQ_PUSH_MAP)).toHaveLength(8)
   })
 
   it('accounts for every IPC channel as invoke or push', () => {

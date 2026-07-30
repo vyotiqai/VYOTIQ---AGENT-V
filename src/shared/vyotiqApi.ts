@@ -163,6 +163,22 @@ export interface VyotiqApi {
     path?: string
     staged?: boolean
   }) => Promise<IpcResult<{ content: string }>>
+  prView: (workspacePath: string) => Promise<IpcResult<import('./ipc').PrView | null>>
+  prMerge: (
+    workspacePath: string,
+    method: import('./ipc').PrMergeMethod
+  ) => Promise<IpcResult<{ detail: string }>>
+  ptyCreate: (payload: {
+    workspacePath: string
+    cols?: number
+    rows?: number
+  }) => Promise<IpcResult<import('./ipc').PtySessionInfo>>
+  ptyList: () => Promise<IpcResult<import('./ipc').PtySessionInfo[]>>
+  ptyWrite: (id: string, data: string) => Promise<IpcResult<boolean>>
+  ptyResize: (id: string, cols: number, rows: number) => Promise<IpcResult<boolean>>
+  ptyKill: (id: string) => Promise<IpcResult<boolean>>
+  onPtyData: (handler: (event: { id: string; data: string }) => void) => () => void
+  onPtyExit: (handler: (event: { id: string; exitCode: number | null }) => void) => () => void
   windowMinimize: () => Promise<IpcResult<true>>
   windowMaximize: () => Promise<IpcResult<boolean>>
   windowClose: () => Promise<IpcResult<true>>

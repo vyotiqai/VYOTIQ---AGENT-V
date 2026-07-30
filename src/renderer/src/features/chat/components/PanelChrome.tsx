@@ -29,7 +29,7 @@ export function EmptyPanel({
   title,
   body
 }: {
-  icon: 'terminal' | 'file' | 'branch'
+  icon: 'terminal' | 'file' | 'branch' | 'pullRequest'
   title: string
   body: string
 }) {

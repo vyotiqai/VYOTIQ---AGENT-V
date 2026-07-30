@@ -1,6 +1,6 @@
 # Vyotiq Agent V
 
-Lean Electron desktop coding agent: natural-language harness, workspace tools, multi-provider chat, live context management, and file-backed long-term memory. Includes a built-in live agent browser (navigate, snapshot, click, type) and a docked terminal / changes side rail. No embedding RAG or GitHub.
+Lean Electron desktop coding agent: natural-language harness, workspace tools, multi-provider chat, live context management, and file-backed long-term memory. Includes a built-in live agent browser (navigate, snapshot, click, type), interactive terminal dock (xterm + `node-pty` when available), git Changes panel, and optional GitHub pull-request panel via the [`gh`](https://cli.github.com/) CLI (`gh auth login` required). No embedding RAG.
 
 ## Stack
 
@@ -16,6 +16,17 @@ pnpm install
 pnpm dev
 ```
 
+### Interactive terminal (`node-pty`)
+
+The Terminal panel prefers a real PTY via optional `node-pty` (matched to Electron’s ABI via postinstall / `@electron/rebuild`). If the native module cannot load, a pipe-shell fallback is used (line editing / resize degraded).
+
+On Windows, a full source rebuild needs Visual Studio Build Tools with **Spectre-mitigated libraries**. Prebuilds for Electron often work without a local compile — do not force `npm_config_build_from_source`. To rebuild explicitly:
+
+```bash
+npx @electron/rebuild -f -w node-pty
+```
+
+Project paths with spaces are fine when using prebuilds; if a source rebuild fails, rebuild once via a junction (`mklink /J C:\vyotiq-dev "<repo>"`) without renaming the project.
 ## Scripts
 
 | Script | Purpose |

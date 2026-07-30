@@ -29,6 +29,12 @@ import {
   GitStatusRequestSchema,
   GitCommitRequestSchema,
   GitDiffRequestSchema,
+  PrViewRequestSchema,
+  PrMergeRequestSchema,
+  PtyCreateRequestSchema,
+  PtyIdRequestSchema,
+  PtyWriteRequestSchema,
+  PtyResizeRequestSchema,
   ToolApprovalResponseSchema,
   AgentQuestionResponseSchema,
   ListPendingAgentQuestionsRequestSchema,
@@ -179,6 +185,14 @@ import {
 import { canonicalizeWorkspacePath, isCuratedDocPath, isSafeWorkspaceRelPath, workspacePathsEqual } from '../../shared/workspacePath'
 import { relative, isAbsolute, join } from 'path'
 import { commitAll, readGitDiff, readGitStatus } from '@main/git/git'
+import { prMerge, prView } from '@main/git/gh'
+import {
+  createPtySession,
+  killPty,
+  listPtySessions,
+  resizePty,
+  writePty
+} from '@main/app/ptySessions'
 import { applyTitleBarTheme } from '@main/app/window'
 import { logsDirectory } from '../logging/init'
 import { applySentryTelemetry, isSentryBuildConfigured } from '../logging/sentry'
@@ -932,6 +946,87 @@ export function registerIpc(): void {
       return ok({ content: result.content })
     } catch (err) {
       return failFrom(err, IPC.gitDiff)
+    }
+  })
+
+  ipcMain.handle(IPC.prView, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = PrViewRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      return ok(await prView(req.workspacePath))
+    } catch (err) {
+      return failFrom(err, IPC.prView)
+    }
+  })
+
+  ipcMain.handle(IPC.prMerge, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = PrMergeRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      return ok(await prMerge(req.workspacePath, req.method))
+    } catch (err) {
+      return failFrom(err, IPC.prMerge)
+    }
+  })
+
+  ipcMain.handle(IPC.ptyCreate, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = PtyCreateRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      const win = BrowserWindow.fromWebContents(event.sender)
+      if (!win) return fail('No window')
+      return ok(
+        createPtySession({
+          cwd: req.workspacePath,
+          cols: req.cols,
+          rows: req.rows,
+          sendTo: win
+        })
+      )
+    } catch (err) {
+      return failFrom(err, IPC.ptyCreate)
+    }
+  })
+
+  ipcMain.handle(IPC.ptyList, async (event) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      return ok(listPtySessions())
+    } catch (err) {
+      return failFrom(err, IPC.ptyList)
+    }
+  })
+
+  ipcMain.handle(IPC.ptyWrite, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = PtyWriteRequestSchema.parse(raw)
+      return ok(writePty(req.id, req.data))
+    } catch (err) {
+      return failFrom(err, IPC.ptyWrite)
+    }
+  })
+
+  ipcMain.handle(IPC.ptyResize, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = PtyResizeRequestSchema.parse(raw)
+      return ok(resizePty(req.id, req.cols, req.rows))
+    } catch (err) {
+      return failFrom(err, IPC.ptyResize)
+    }
+  })
+
+  ipcMain.handle(IPC.ptyKill, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = PtyIdRequestSchema.parse(raw)
+      return ok(killPty(req.id))
+    } catch (err) {
+      return failFrom(err, IPC.ptyKill)
     }
   })
 

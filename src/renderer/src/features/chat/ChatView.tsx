@@ -4,8 +4,11 @@ import { MessageList } from './components/MessageList'
 import { AgentBrowserPanel } from './components/AgentBrowserPanel'
 import { ChangesPanel } from './components/ChangesPanel'
 import { PlanPanel } from './components/PlanPanel'
+import { PrPanel } from './components/PrPanel'
 import { ChatSideRail } from './components/ChatSideRail'
+import { DockTabBar, defaultDockTab } from './components/DockTabBar'
 import { TerminalPanel } from './components/TerminalPanel'
+import { isPlanDraftReady } from './components/composer/PlanHandoff'
 import { Composer } from './components/composer'
 import { RunSessionProvider } from './RunSessionContext'
 import {
@@ -22,6 +25,7 @@ import {
   BROWSER_PANEL_OPEN_KEY,
   CHAT_COLUMN_MAX,
   CHAT_GUTTER,
+  CHAT_RIGHT_PANEL,
   COMPOSER_DOCK_CLEARANCE_PX,
   COMPOSER_DOCK_FADE_PX,
   COMPOSER_DOCK_FALLBACK_PX,
@@ -281,7 +285,13 @@ export function ChatView({
   const [activeRightPanel, setActiveRightPanel] = useState<ChatRightPanelId | null>(() => {
     try {
       const raw = localStorage.getItem(RIGHT_PANEL_KEY)
-      if (raw === 'browser' || raw === 'terminal' || raw === 'changes' || raw === 'plan') {
+      if (
+        raw === 'browser' ||
+        raw === 'terminal' ||
+        raw === 'changes' ||
+        raw === 'plan' ||
+        raw === 'pr'
+      ) {
         return raw
       }
       // Legacy Files rail → Changes (list + Keep/Discard in one panel).
@@ -295,10 +305,39 @@ export function ChatView({
     return null
   })
   const [browserActive, setBrowserActive] = useState(false)
+  const [ptyRunning, setPtyRunning] = useState(false)
+  const [changesActive, setChangesActive] = useState(false)
+  const [planReady, setPlanReady] = useState(false)
+  const [prActive, setPrActive] = useState(false)
+  const [prNumber, setPrNumber] = useState<number | null>(null)
+  const [dockTabs, setDockTabs] = useState<ChatRightPanelId[]>(() =>
+    activeRightPanel ? [activeRightPanel] : []
+  )
+  /** Session-scoped: skip auto-open after the user closes a panel until they open it again. */
+  const dismissedPanelsRef = useRef<Set<ChatRightPanelId>>(new Set())
+  const wasChangesActiveRef = useRef(false)
   const liveItems = useChatLiveItems(itemsStore, items)
+  const gitRevision = useMemo(() => {
+    let n = 0
+    for (const item of liveItems) {
+      if (item.kind === 'tool' && item.tool.status === 'done') n += 1
+    }
+    return n + (running ? 0 : 1)
+  }, [liveItems, running])
 
-  const setRightPanel = useCallback((next: ChatRightPanelId | null) => {
-    setActiveRightPanel(next)
+  const agentTerminalRunning = useMemo(
+    () =>
+      liveItems.some(
+        (item) =>
+          item.kind === 'tool' &&
+          item.tool.name === 'terminal' &&
+          item.tool.status === 'running'
+      ),
+    [liveItems]
+  )
+  const terminalActive = agentTerminalRunning || ptyRunning
+
+  const persistRightPanel = useCallback((next: ChatRightPanelId | null) => {
     try {
       if (next) localStorage.setItem(RIGHT_PANEL_KEY, next)
       else localStorage.removeItem(RIGHT_PANEL_KEY)
@@ -308,6 +347,45 @@ export function ChatView({
     }
   }, [])
 
+  const setRightPanel = useCallback(
+    (next: ChatRightPanelId | null) => {
+      if (next === null) {
+        setActiveRightPanel((current) => {
+          if (current) dismissedPanelsRef.current.add(current)
+          return null
+        })
+      } else {
+        dismissedPanelsRef.current.delete(next)
+        setActiveRightPanel(next)
+        setDockTabs((prev) => (prev.includes(next) ? prev : [...prev, next]))
+      }
+      persistRightPanel(next)
+    },
+    [persistRightPanel]
+  )
+
+  const tryAutoOpenPanel = useCallback(
+    (panel: ChatRightPanelId) => {
+      if (dismissedPanelsRef.current.has(panel)) return
+      setActiveRightPanel((current) => {
+        if (current === panel) return current
+        if (
+          current === 'browser' ||
+          current === 'terminal' ||
+          current === 'changes' ||
+          current === 'plan' ||
+          current === 'pr'
+        ) {
+          return current
+        }
+        setDockTabs((prev) => (prev.includes(panel) ? prev : [...prev, panel]))
+        persistRightPanel(panel)
+        return panel
+      })
+    },
+    [persistRightPanel]
+  )
+
   const toggleRightPanel = useCallback(
     (panel: ChatRightPanelId) => {
       setRightPanel(activeRightPanel === panel ? null : panel)
@@ -316,33 +394,25 @@ export function ChatView({
   )
 
   useEffect(() => {
+    setPrNumber(null)
+    setPrActive(false)
+    wasChangesActiveRef.current = false
+  }, [workspacePath])
+
+  useEffect(() => {
     let cancelled = false
     let wasOpen = false
     void window.vyotiq?.browserGetState?.().then((res) => {
       if (cancelled || !res.ok) return
       wasOpen = Boolean(res.data.open)
       setBrowserActive(wasOpen)
-      // Initial fetch only seeds browserActive — panel restore comes from localStorage.
     })
     const unsub = window.vyotiq?.onBrowserState?.((next) => {
       if (cancelled) return
       const open = Boolean(next.open)
       setBrowserActive(open)
-      // Rising edge only: agent just opened a page — show the browser panel
-      // without stealing Terminal / Changes / Plan.
       if (open && !wasOpen) {
-        setActiveRightPanel((current) => {
-          if (current === 'terminal' || current === 'changes' || current === 'plan') {
-            return current
-          }
-          try {
-            localStorage.setItem(RIGHT_PANEL_KEY, 'browser')
-            localStorage.setItem(BROWSER_PANEL_OPEN_KEY, '1')
-          } catch {
-            /* ignore */
-          }
-          return 'browser'
-        })
+        tryAutoOpenPanel('browser')
       }
       wasOpen = open
     })
@@ -350,7 +420,110 @@ export function ChatView({
       cancelled = true
       unsub?.()
     }
+  }, [tryAutoOpenPanel])
+
+  // Rail accent: interactive PTY sessions (poll so accent survives dock close)
+  useEffect(() => {
+    let cancelled = false
+    const tick = (): void => {
+      void window.vyotiq?.ptyList?.().then((res) => {
+        if (cancelled || !res.ok) return
+        setPtyRunning(res.data.some((s) => s.running))
+      })
+    }
+    tick()
+    const id = window.setInterval(tick, 3000)
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
   }, [])
+
+  // Rail accent: dirty git or unresolved writes + auto-open on rising edge
+  useEffect(() => {
+    if (!workspacePath) {
+      setChangesActive(false)
+      wasChangesActiveRef.current = false
+      return
+    }
+    let cancelled = false
+    void window.vyotiq?.gitStatus?.(workspacePath).then((res) => {
+      if (cancelled) return
+      const dirty = Boolean(res.ok && res.data && res.data.fileCount > 0)
+      const unresolved = Boolean(canUndoWrites && writeResolvablePaths && writeResolvablePaths.size > 0)
+      const next = dirty || unresolved
+      setChangesActive(next)
+      if (next && !wasChangesActiveRef.current) {
+        tryAutoOpenPanel('changes')
+      }
+      wasChangesActiveRef.current = next
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [workspacePath, gitRevision, canUndoWrites, writeResolvablePaths, tryAutoOpenPanel])
+
+  // PR rail accent (light poll)
+  useEffect(() => {
+    if (!workspacePath) return
+    let cancelled = false
+    const tick = (): void => {
+      void window.vyotiq?.prView?.(workspacePath).then((res) => {
+        if (cancelled) return
+        if (res.ok && res.data) {
+          setPrActive(true)
+          setPrNumber(res.data.number)
+        } else {
+          setPrActive(false)
+        }
+      })
+    }
+    tick()
+    const id = window.setInterval(tick, 60_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
+  }, [workspacePath])
+
+  // Plan ready badge + auto-open in plan mode
+  useEffect(() => {
+    if (!workspacePath || !activeRunId) {
+      setPlanReady(false)
+      return
+    }
+    let cancelled = false
+    const tick = (): void => {
+      void window.vyotiq.readRunArtifact?.({ workspacePath, runId: activeRunId, name: 'plan.md' }).then(
+        (res) => {
+          if (cancelled) return
+          const ready = Boolean(res.ok && isPlanDraftReady(res.data?.content))
+          setPlanReady(ready)
+          if (ready && agentMode === 'plan') {
+            tryAutoOpenPanel('plan')
+          }
+        }
+      )
+    }
+    tick()
+    if (!running) return undefined
+    const id = window.setInterval(tick, 2000)
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
+  }, [workspacePath, activeRunId, running, agentMode, tryAutoOpenPanel])
+
+  // Auto-open terminal when agent starts a prominent terminal tool
+  useEffect(() => {
+    if (!agentTerminalRunning) return
+    tryAutoOpenPanel('terminal')
+  }, [agentTerminalRunning, tryAutoOpenPanel])
+
+  const tabItems = useMemo(
+    () => dockTabs.map((id) => defaultDockTab(id, id === 'pr' ? prNumber : null)),
+    [dockTabs, prNumber]
+  )
 
   // Transcript scrolls behind the floating composer, so it has to reserve the
   // dock height plus the fade painted above it (not included in offsetHeight).
@@ -514,45 +687,113 @@ export function ChatView({
             </div>
           )}
         </div>
-        {activeRightPanel === 'browser' ? (
-          <AgentBrowserPanel
-            workspacePath={workspacePath}
-            activeRunId={activeRunId}
-            onClose={() => setRightPanel(null)}
-          />
-        ) : null}
-        {activeRightPanel === 'terminal' ? (
-          <TerminalPanel
-            items={liveItems}
-            onClose={() => setRightPanel(null)}
-            onLoadToolContent={onLoadToolContent}
-          />
-        ) : null}
-        {activeRightPanel === 'changes' ? (
-          <ChangesPanel
-            items={liveItems}
-            onClose={() => setRightPanel(null)}
-            writeFileResolutions={writeFileResolutions}
-            resolvablePaths={writeResolvablePaths}
-            canResolve={canUndoWrites}
-            resolveBusy={undoBusy}
-            onKeepWriteFile={onKeepWriteFile}
-            onDiscardWriteFile={onDiscardWriteFile}
-            onKeepAllWrites={onKeepAllWrites}
-            onDiscardAllWrites={onUndoWrites}
-          />
-        ) : null}
-        {activeRightPanel === 'plan' ? (
-          <PlanPanel
-            workspacePath={workspacePath}
-            runId={activeRunId}
-            running={running}
-            onClose={() => setRightPanel(null)}
-          />
+        {activeRightPanel ? (
+          <aside className={CHAT_RIGHT_PANEL} data-right-dock>
+            <DockTabBar
+              active={activeRightPanel}
+              tabs={tabItems}
+              onSelect={(id) => setRightPanel(id)}
+              onCloseDock={() => setRightPanel(null)}
+              onOpenPanel={(id) => setRightPanel(id)}
+            />
+            {dockTabs.includes('browser') ? (
+              <div
+                className={cn(
+                  'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+                  activeRightPanel === 'browser' ? 'flex' : 'hidden'
+                )}
+                aria-hidden={activeRightPanel !== 'browser'}
+              >
+                <AgentBrowserPanel
+                  workspacePath={workspacePath}
+                  activeRunId={activeRunId}
+                  onClose={() => setRightPanel(null)}
+                />
+              </div>
+            ) : null}
+            {dockTabs.includes('terminal') ? (
+              <div
+                className={cn(
+                  'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+                  activeRightPanel === 'terminal' ? 'flex' : 'hidden'
+                )}
+                aria-hidden={activeRightPanel !== 'terminal'}
+              >
+                <TerminalPanel
+                  items={liveItems}
+                  workspacePath={workspacePath}
+                  onLoadToolContent={onLoadToolContent}
+                  onSessionsChange={(sessions) => {
+                    setPtyRunning(sessions.some((s) => s.running))
+                  }}
+                />
+              </div>
+            ) : null}
+            {dockTabs.includes('changes') ? (
+              <div
+                className={cn(
+                  'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+                  activeRightPanel === 'changes' ? 'flex' : 'hidden'
+                )}
+                aria-hidden={activeRightPanel !== 'changes'}
+              >
+                <ChangesPanel
+                  items={liveItems}
+                  workspacePath={workspacePath}
+                  gitRevision={gitRevision}
+                  onViewPr={() => setRightPanel('pr')}
+                  writeFileResolutions={writeFileResolutions}
+                  resolvablePaths={writeResolvablePaths}
+                  canResolve={canUndoWrites}
+                  resolveBusy={undoBusy}
+                  onKeepWriteFile={onKeepWriteFile}
+                  onDiscardWriteFile={onDiscardWriteFile}
+                  onKeepAllWrites={onKeepAllWrites}
+                  onDiscardAllWrites={onUndoWrites}
+                />
+              </div>
+            ) : null}
+            {dockTabs.includes('pr') ? (
+              <div
+                className={cn(
+                  'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+                  activeRightPanel === 'pr' ? 'flex' : 'hidden'
+                )}
+                aria-hidden={activeRightPanel !== 'pr'}
+              >
+                <PrPanel
+                  workspacePath={workspacePath}
+                  onPrMeta={(meta) => {
+                    setPrNumber(meta?.number ?? null)
+                    setPrActive(Boolean(meta))
+                  }}
+                />
+              </div>
+            ) : null}
+            {dockTabs.includes('plan') ? (
+              <div
+                className={cn(
+                  'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+                  activeRightPanel === 'plan' ? 'flex' : 'hidden'
+                )}
+                aria-hidden={activeRightPanel !== 'plan'}
+              >
+                <PlanPanel
+                  workspacePath={workspacePath}
+                  runId={activeRunId}
+                  running={running}
+                />
+              </div>
+            ) : null}
+          </aside>
         ) : null}
         <ChatSideRail
           activePanel={activeRightPanel}
           browserActive={browserActive}
+          terminalActive={terminalActive}
+          changesActive={changesActive}
+          planReady={planReady}
+          prActive={prActive}
           onSelectPanel={toggleRightPanel}
         />
       </div>

@@ -113,6 +113,41 @@ const api: VyotiqApi = {
   gitCommit: (workspacePath, message, push) =>
     ipcRenderer.invoke(IPC.gitCommit, { workspacePath, message, push }),
   gitDiff: (payload) => ipcRenderer.invoke(IPC.gitDiff, payload),
+  prView: (workspacePath) => ipcRenderer.invoke(IPC.prView, { workspacePath }),
+  prMerge: (workspacePath, method) =>
+    ipcRenderer.invoke(IPC.prMerge, { workspacePath, method }),
+  ptyCreate: (payload) => ipcRenderer.invoke(IPC.ptyCreate, payload),
+  ptyList: () => ipcRenderer.invoke(IPC.ptyList),
+  ptyWrite: (id, data) => ipcRenderer.invoke(IPC.ptyWrite, { id, data }),
+  ptyResize: (id, cols, rows) => ipcRenderer.invoke(IPC.ptyResize, { id, cols, rows }),
+  ptyKill: (id) => ipcRenderer.invoke(IPC.ptyKill, { id }),
+  onPtyData: (handler) => {
+    const listener = (_: IpcRendererEvent, raw: unknown): void => {
+      if (!raw || typeof raw !== 'object') return
+      const rec = raw as { id?: unknown; data?: unknown }
+      if (typeof rec.id !== 'string' || typeof rec.data !== 'string') return
+      handler({ id: rec.id, data: rec.data })
+    }
+    ipcRenderer.on(IPC.ptyData, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.ptyData, listener)
+    }
+  },
+  onPtyExit: (handler) => {
+    const listener = (_: IpcRendererEvent, raw: unknown): void => {
+      if (!raw || typeof raw !== 'object') return
+      const rec = raw as { id?: unknown; exitCode?: unknown }
+      if (typeof rec.id !== 'string') return
+      handler({
+        id: rec.id,
+        exitCode: typeof rec.exitCode === 'number' ? rec.exitCode : null
+      })
+    }
+    ipcRenderer.on(IPC.ptyExit, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.ptyExit, listener)
+    }
+  },
   windowMinimize: () => ipcRenderer.invoke(IPC.windowMinimize),
   windowMaximize: () => ipcRenderer.invoke(IPC.windowMaximize),
   windowClose: () => ipcRenderer.invoke(IPC.windowClose),

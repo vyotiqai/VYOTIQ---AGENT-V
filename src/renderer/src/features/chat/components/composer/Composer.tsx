@@ -429,9 +429,10 @@ export function Composer({
     <div
       className={cn(
         isDock
-          ? // Full-bleed dock: scrollbar-gutter matches the transcript scrollport so
-            // the centered column stays aligned. Side-rail pad clears the floating rail.
-            'pointer-events-none absolute inset-x-0 bottom-0 z-sticky overflow-y-hidden bg-bg pb-3 [scrollbar-gutter:stable] before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-6 before:bg-gradient-to-t before:from-bg before:via-bg/70 before:to-transparent'
+          ? // Full-bleed floating dock: scrollbar-gutter matches the transcript
+            // scrollport. Side-rail pad clears the floating rail. No opaque bar —
+            // fade + chrome shadow keep it floating over the transcript.
+            'pointer-events-none absolute inset-x-0 bottom-0 z-sticky overflow-y-hidden pb-3 [scrollbar-gutter:stable] before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-6 before:bg-gradient-to-t before:from-bg before:via-bg/70 before:to-transparent'
           : 'shrink-0 w-full pb-0 pt-0',
         isDock ? CHAT_STAGE_INSET : '',
         className
