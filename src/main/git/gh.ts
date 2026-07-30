@@ -189,7 +189,7 @@ function execErrorText(err: unknown): string {
 
 /** Expected “no PR / no GitHub repo” outcomes — return null instead of failing IPC. */
 function isExpectedPrAbsence(message: string): boolean {
-  return /no pull requests found|no open pull requests|could not find a pull request|no pull request|not a git repository|unable to determine base repository|could not determine base repository|could not resolve to a repository|no default remote|no remotes found|does not have a remote|repository not found|HTTP 404/i.test(
+  return /no pull requests found|no open pull requests|could not find a pull request|no pull request|not a git repository|unable to determine base repository|could not determine base repository|could not resolve to a (?:repository|pullrequest)|no git remotes found|no remotes found|no default remote|does not have a remote|repository not found|HTTP 404/i.test(
     message
   )
 }

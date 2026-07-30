@@ -51,6 +51,20 @@ describe('gh helpers', () => {
     await expect(prView('/ws')).resolves.toBeNull()
   })
 
+  it('prView returns null when the repo has no git remotes', async () => {
+    execFileAsync
+      .mockResolvedValueOnce({ stdout: 'gh version 2.0', stderr: '' })
+      .mockRejectedValueOnce(
+        Object.assign(
+          new Error(
+            'Command failed: gh pr view --json number,title,url,state,baseRefName,headRefName,baseRefOid,headRefOid,body,additions,deletions\nno git remotes found\n'
+          ),
+          { stderr: 'no git remotes found\n' }
+        )
+      )
+    await expect(prView('/ws')).resolves.toBeNull()
+  })
+
   it('prView falls back when optional JSON fields are unknown', async () => {
     execFileAsync
       .mockResolvedValueOnce({ stdout: 'gh version 2.0', stderr: '' })
