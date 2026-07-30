@@ -303,6 +303,8 @@ describe('runSubagent', () => {
     for (const name of SUBAGENT_TOOLS) {
       expect(system).toContain(name)
     }
+    expect(system).toMatch(/may run diagnostics/i)
+    expect(system).toMatch(/cannot[\s\S]*terminal tool/i)
   })
 
   it('includes workspace rules in the child system prompt', async () => {
@@ -416,8 +418,83 @@ describe('runSubagent', () => {
       depth: 0
     })
 
-    const context = executeTool.mock.calls[0]![4] as { depth: number }
+    const context = executeTool.mock.calls[0]![4] as { depth: number; agentMode?: string }
     expect(context.depth).toBe(MAX_SUBAGENT_DEPTH)
+    expect(context.agentMode).toBe('agent')
+  })
+
+  it('runs diagnostics under agent mode when parent is not Ask', async () => {
+    let call = 0
+    streamChat.mockImplementation(() => {
+      call += 1
+      if (call === 1) {
+        return stream([
+          {
+            type: 'tool_call',
+            toolCall: {
+              id: 't1',
+              name: 'diagnostics',
+              arguments: '{"kind":"typecheck"}'
+            }
+          },
+          { type: 'done' }
+        ])()
+      }
+      return stream([{ type: 'text', text: 'No type errors.' }, { type: 'done' }])()
+    })
+    executeTool.mockResolvedValue({
+      ok: true,
+      summary: 'typecheck',
+      content: 'No diagnostics.'
+    })
+
+    const outcome = await runSubagent({
+      task: 'run typecheck',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0,
+      parentMode: 'agent'
+    })
+
+    expect(executeTool).toHaveBeenCalledTimes(1)
+    expect(executeTool.mock.calls[0]![0]).toBe('diagnostics')
+    const context = executeTool.mock.calls[0]![4] as { agentMode?: string }
+    expect(context.agentMode).toBe('agent')
+    expect(outcome.ok).toBe(true)
+    expect(outcome.report).toBe('No type errors.')
+  })
+
+  it('rejects diagnostics when parent mode is Ask', async () => {
+    let call = 0
+    streamChat.mockImplementation(() => {
+      call += 1
+      if (call === 1) {
+        return stream([
+          {
+            type: 'tool_call',
+            toolCall: {
+              id: 't1',
+              name: 'diagnostics',
+              arguments: '{"kind":"typecheck"}'
+            }
+          },
+          { type: 'done' }
+        ])()
+      }
+      return stream([{ type: 'text', text: 'Could not run diagnostics.' }, { type: 'done' }])()
+    })
+
+    const outcome = await runSubagent({
+      task: 'run typecheck',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0,
+      parentMode: 'ask'
+    })
+
+    expect(executeTool).not.toHaveBeenCalled()
+    expect(outcome.ok).toBe(true)
+    expect(outcome.report).toBe('Could not run diagnostics.')
   })
 
   it('refuses to nest a second level', async () => {

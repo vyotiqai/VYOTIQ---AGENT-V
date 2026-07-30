@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, rmSync, statSync } from 'fs'
 import { resolve } from 'path'
 import { resolveInsideWorkspace } from '../../workspace/safePath'
+import { missingPathHint } from './read'
 
 /** Delete a file, or a directory when the caller opts into recursion. */
 export function toolDelete(workspaceRoot: string, pathArg: string, recursive = false): string {
@@ -12,7 +13,7 @@ export function toolDelete(workspaceRoot: string, pathArg: string, recursive = f
     throw new Error('Refusing to delete the workspace root')
   }
   if (!existsSync(resolved)) {
-    throw new Error(`Path not found: ${target}`)
+    throw new Error(missingPathHint(workspaceRoot, target))
   }
 
   const stat = statSync(resolved)

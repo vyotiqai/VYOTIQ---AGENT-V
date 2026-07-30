@@ -81,4 +81,18 @@ describe('harness tool catalog', () => {
     expect(harness).not.toMatch(/\*\*terminal\*\* —/)
     expect(harness).not.toMatch(/\*\*glob\*\* —/)
   })
+
+  it('keeps advisory contract and checkpoint truths without mode workflow essays', () => {
+    const harnessPath = join(process.cwd(), 'resources', 'harness', 'default.md')
+    const harness = readFileSync(harnessPath, 'utf8')
+    expect(harness).toMatch(/not Keep\/Discard checkpointed/i)
+    expect(harness).toMatch(/receipt\.json/i)
+    expect(harness).toMatch(/Verify before done|verify-before-done|soft-nudge/i)
+    expect(harness).toMatch(/harness-review|harness\/proposals/i)
+    expect(harness).toMatch(/mode section/i)
+    expect(harness).not.toMatch(/or graph search/)
+    // Mode-specific diagnostics / terminal / subagent rules live in modeSectionMarkdown.
+    expect(harness).not.toMatch(/Ask mode[\s\S]*no `diagnostics`/i)
+    expect(harness).not.toMatch(/In Plan mode you may use `diagnostics`/i)
+  })
 })

@@ -8,6 +8,7 @@ import type {
   UndoWritesResult,
   ResolveWritesResult,
   ReadRunArtifactResult,
+  HarnessReviewResult,
   GitCommitResult,
   GitStatus,
   IpcResult,
@@ -96,8 +97,12 @@ export interface VyotiqApi {
   readRunArtifact: (payload: {
     workspacePath: string
     runId: string
-    name: 'plan.md' | 'contract.md' | 'browser/snapshot.jpg'
+    name: 'plan.md' | 'contract.md' | 'receipt.json' | 'browser/snapshot.jpg'
   }) => Promise<IpcResult<ReadRunArtifactResult>>
+  harnessReview: (payload: {
+    workspacePath: string
+    limit?: number
+  }) => Promise<IpcResult<HarnessReviewResult>>
   onChatEvent: (handler: (event: AgentEvent) => void) => () => void
   onToolApprovalRequest: (handler: (request: ToolApprovalRequest) => void) => () => void
   respondToolApproval: (

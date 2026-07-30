@@ -92,6 +92,14 @@ const ThinkingPrefsSchema = z.object({
 export const ToolApprovalModeSchema = z.enum(['off', 'mutating', 'all'])
 export type ToolApprovalMode = z.infer<typeof ToolApprovalModeSchema>
 
+/**
+ * Soft gate when the model stops with no tool calls in Agent mode.
+ * `off` — never nudge. `notice` — one soft verify reminder. `require` — one reminder
+ * after an external typecheck when the run lacks diagnostics evidence.
+ */
+export const VerifyBeforeDoneModeSchema = z.enum(['off', 'notice', 'require'])
+export type VerifyBeforeDoneMode = z.infer<typeof VerifyBeforeDoneModeSchema>
+
 export const TerminalShellSchema = z.enum(['auto', 'cmd', 'powershell', 'bash'])
 export type TerminalShell = z.infer<typeof TerminalShellSchema>
 
@@ -134,6 +142,11 @@ export const SettingsSchema = z.object({
    * Empty = auto-detect from package.json scripts / tsc.
    */
   diagnosticsCommand: z.string().default(''),
+  /**
+   * Soft verify-before-done gate in Agent mode (at most one continue).
+   * Default `notice` — nudge once when finishing without diagnostics evidence.
+   */
+  verifyBeforeDone: VerifyBeforeDoneModeSchema.default('notice'),
   /** When set, sub-agents use this provider instead of `provider`. */
   subagentProvider: ProviderIdSchema.optional(),
   /** When set, sub-agents use this model instead of `model`. */
@@ -163,6 +176,7 @@ export const DEFAULT_SETTINGS: Settings = {
   toolApproval: DEFAULT_TOOL_APPROVAL,
   terminalShell: 'auto',
   diagnosticsCommand: '',
+  verifyBeforeDone: 'notice',
   marketplace: DEFAULT_MARKETPLACE_SETTINGS
 }
 

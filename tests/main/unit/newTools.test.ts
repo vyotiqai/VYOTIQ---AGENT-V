@@ -192,6 +192,11 @@ describe('toolDelete', () => {
     expect(() => toolDelete(root, '..')).toThrow()
     expect(() => toolDelete(root, '.')).toThrow(/workspace root/)
   })
+
+  it('reports File not found with similar names when the path is missing', () => {
+    expect(() => toolDelete(root, 'src/missing.ts')).toThrow(/File not found: src\/missing\.ts/)
+    expect(() => toolDelete(root, 'src/missing.ts')).toThrow(/Similar names in parent directory/)
+  })
 })
 
 describe('toolStrReplace', () => {

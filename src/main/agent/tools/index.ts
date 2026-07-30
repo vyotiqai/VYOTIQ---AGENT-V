@@ -647,6 +647,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
         workspace,
         signal,
         depth: context.depth ?? 0,
+        parentMode: resolveAgentMode(context),
         emit: context.onProgress,
         onContextUsage: context.onSubagentContextUsage
       })

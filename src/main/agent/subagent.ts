@@ -1,4 +1,4 @@
-import type { ChatMessage, ProviderId } from '../../shared/ipc'
+import type { AgentInteractionMode, ChatMessage, ProviderId } from '../../shared/ipc'
 import { DEFAULT_SETTINGS } from '../../shared/ipc'
 import { defaultModelFor, ollamaOpenAiBaseUrl } from '../../shared/providers'
 import { resolveServiceTier } from '../../shared/domain/modelSelection'
@@ -47,7 +47,36 @@ export const SUBAGENT_TOOLS = [
   'memory_read'
 ] as const
 
-const SUBAGENT_TOOL_SET = new Set<string>(SUBAGENT_TOOLS)
+export type SubagentToolName = (typeof SUBAGENT_TOOLS)[number]
+
+/** Subagent tools allowed given the parent run mode (Ask cannot spawn diagnostics). */
+export function subagentToolsForParentMode(
+  parentMode: AgentInteractionMode = 'agent'
+): readonly SubagentToolName[] {
+  if (parentMode === 'ask') {
+    return SUBAGENT_TOOLS.filter((name) => name !== 'diagnostics')
+  }
+  return SUBAGENT_TOOLS
+}
+
+const SUBAGENT_SYSTEM_BASE = `You are a research sub-agent working inside a larger coding agent.
+
+You have read-only tools. You cannot edit files, use the terminal tool, or call MCP tools.
+
+Investigate the task you are given and finish with a single self-contained report:
+- Answer the question directly in the first sentence.
+- Cite concrete file paths and line numbers for everything you claim.
+- Say plainly what you could not determine rather than guessing.
+
+The report is the only thing the parent agent sees, so it must stand on its own.`
+
+function subagentSystemForTools(tools: readonly string[]): string {
+  const list = tools.join(', ')
+  const diagNote = tools.includes('diagnostics')
+    ? 'You may run diagnostics (typecheck/lint). '
+    : 'Diagnostics are not available in this sub-agent (parent is in Ask mode). '
+  return `${SUBAGENT_SYSTEM_BASE}\n\nAvailable tools: ${list}.\n${diagNote}`
+}
 
 function withRepairedArguments(call: ToolCall): ToolCall {
   const raw = call.arguments || '{}'
@@ -60,31 +89,17 @@ function withRepairedArguments(call: ToolCall): ToolCall {
   }
 }
 
-function isAllowedSubagentTool(name: string): boolean {
-  return SUBAGENT_TOOL_SET.has(name)
-}
-
 /** A sub-agent may not spawn another one — callers must pass depth 0 (ceiling is exclusive). */
 export const MAX_SUBAGENT_DEPTH = 1
 
-const SUBAGENT_SYSTEM = `You are a research sub-agent working inside a larger coding agent.
-
-You have read-only tools: read, search, glob, grep, list_dir, web_fetch, git_status, git_diff, diagnostics, memory_read. You cannot edit files, run terminal commands, or call MCP tools.
-
-Investigate the task you are given and finish with a single self-contained report:
-- Answer the question directly in the first sentence.
-- Cite concrete file paths and line numbers for everything you claim.
-- Say plainly what you could not determine rather than guessing.
-
-The report is the only thing the parent agent sees, so it must stand on its own.`
-
 const SUBAGENT_RULES_MAX_CHARS = 64 * 1024
 
-function buildSubagentSystem(workspaceRules: string): string {
+function buildSubagentSystem(workspaceRules: string, tools: readonly string[]): string {
+  const base = subagentSystemForTools(tools)
   const rules = workspaceRules.trim()
-  if (!rules) return SUBAGENT_SYSTEM
+  if (!rules) return base
   const capped = rules.slice(0, SUBAGENT_RULES_MAX_CHARS)
-  return `${SUBAGENT_SYSTEM}\n\n${capped}${rules.length > capped.length ? '\n… (truncated)' : ''}`
+  return `${base}\n\n${capped}${rules.length > capped.length ? '\n… (truncated)' : ''}`
 }
 
 export type SubagentUpdate = {
@@ -107,6 +122,8 @@ export type SubagentOptions = {
   signal: AbortSignal
   /** Nesting level of the caller: 0 for the top-level run. */
   depth: number
+  /** Parent Ask/Plan/Agent mode — Ask strips diagnostics from the child allowlist. */
+  parentMode?: AgentInteractionMode
   emit?: (update: SubagentUpdate) => void
   onContextUsage?: (usage: SubagentContextUsage) => void
 }
@@ -124,8 +141,8 @@ export class SubagentDepthError extends Error {
   }
 }
 
-function subagentToolDefs() {
-  const allowed = new Set<string>(SUBAGENT_TOOLS)
+function subagentToolDefs(allowedTools: readonly string[]) {
+  const allowed = new Set<string>(allowedTools)
   return AGENT_TOOLS.filter((tool) => allowed.has(tool.name)).map((tool) => ({
     name: tool.name,
     description: tool.description,
@@ -141,6 +158,10 @@ function subagentToolDefs() {
  */
 export async function runSubagent(options: SubagentOptions): Promise<SubagentOutcome> {
   if (options.depth >= MAX_SUBAGENT_DEPTH) throw new SubagentDepthError()
+
+  const parentMode = options.parentMode ?? 'agent'
+  const allowedToolNames = subagentToolsForParentMode(parentMode)
+  const allowedToolSet = new Set<string>(allowedToolNames)
 
   const globalSettings = getSettings()
   const override = findWorkspaceSettingsOverride(readWorkspacesState(), options.workspace)
@@ -181,9 +202,12 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
     baseUrl,
     options.signal
   )
-  const tools = modelInfo.supportsTools === false ? [] : subagentToolDefs()
+  const tools = modelInfo.supportsTools === false ? [] : subagentToolDefs(allowedToolNames)
   const toolsJsonEstimate = tools.length ? estimateTextTokens(JSON.stringify(tools)) : 0
-  const system = buildSubagentSystem(await buildWorkspaceRulesSection(options.workspace))
+  const system = buildSubagentSystem(
+    await buildWorkspaceRulesSection(options.workspace),
+    allowedToolNames
+  )
   const overheadTokens = estimateSubagentOverheadTokens(system, toolsJsonEstimate)
 
   const messages: ChatMessage[] = [
@@ -331,12 +355,12 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
         text: `${call.name} ${summarizeToolArgs(call.name, call.arguments)}`.trim()
       })
 
-      if (!isAllowedSubagentTool(call.name)) {
+      if (!allowedToolSet.has(call.name)) {
         messages.push({
           role: 'tool',
           toolCallId: call.id,
           toolName: call.name,
-          content: `Tool "${call.name}" is not available to sub-agents. Use only: ${SUBAGENT_TOOLS.join(', ')}.`,
+          content: `Tool "${call.name}" is not available to sub-agents. Use only: ${allowedToolNames.join(', ')}.`,
           ok: false
         })
         continue
@@ -347,8 +371,9 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
       try {
         const result = await executeTool(call.name, call.arguments, options.workspace, options.signal, {
           depth: options.depth + 1,
-          // Sub-agents are investigation-only; keep the execute gate aligned.
-          agentMode: 'ask'
+          // Allowlist is the hard gate; use agent mode so Ask does not deny remaining tools.
+          // Diagnostics is already stripped from the allowlist when parentMode is ask.
+          agentMode: 'agent'
         })
         content = result.content
         ok = result.ok

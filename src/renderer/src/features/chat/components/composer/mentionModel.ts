@@ -448,8 +448,15 @@ export function buildRootMentionItems(opts: {
       id: 'lints-typecheck',
       kind: 'lints',
       diagnosticsKind: 'typecheck',
-      label: 'Lints',
+      label: 'Typecheck',
       subtitle: 'Run typecheck and inject errors'
+    })
+    items.push({
+      id: 'lints-lint',
+      kind: 'lints',
+      diagnosticsKind: 'lint',
+      label: 'Lint',
+      subtitle: 'Run lint and inject errors'
     })
   }
 

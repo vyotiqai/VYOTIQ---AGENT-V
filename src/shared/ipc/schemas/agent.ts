@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AgentInteractionModeSchema } from './settings'
+import { AgentInteractionModeSchema, VerifyBeforeDoneModeSchema } from './settings'
 
 export const MAX_IMAGE_BYTES = 4 * 1024 * 1024
 export const MAX_IMAGE_DATA_URL_CHARS = Math.ceil(MAX_IMAGE_BYTES * (4 / 3)) + 128
@@ -407,8 +407,86 @@ export const ResolveWritesResultSchema = z.object({
 export type ResolveWritesResult = z.infer<typeof ResolveWritesResultSchema>
 
 /** Run-dir artifacts readable via `runs:readArtifact`. */
-export const RunArtifactNameSchema = z.enum(['plan.md', 'contract.md', 'browser/snapshot.jpg'])
+export const RunArtifactNameSchema = z.enum([
+  'plan.md',
+  'contract.md',
+  'receipt.json',
+  'browser/snapshot.jpg'
+])
 export type RunArtifactName = z.infer<typeof RunArtifactNameSchema>
+
+/** Per-run receipt.json written at agent loop teardown. */
+export const RUN_RECEIPT_VERSION = 2 as const
+
+export const RunReceiptToolStatSchema = z.object({
+  ok: z.number().int().min(0),
+  failed: z.number().int().min(0)
+})
+export type RunReceiptToolStat = z.infer<typeof RunReceiptToolStatSchema>
+
+export const RunReceiptSchema = z.object({
+  version: z.literal(RUN_RECEIPT_VERSION),
+  writtenAt: z.string().min(1),
+  runId: z.string().min(1),
+  status: z.enum(['running', 'cancelled', 'error', 'done']),
+  step: z.number().int().min(0),
+  goal: z.string().optional(),
+  mode: z.string().optional(),
+  consecutiveToolFailureSteps: z.number().int().min(0).optional(),
+  statusError: z.string().optional(),
+  incomplete: z
+    .object({
+      reason: IncompleteReasonSchema,
+      message: z.string().optional()
+    })
+    .optional(),
+  tokenUsage: z
+    .object({
+      inputTokens: z.number().int().min(0).optional(),
+      outputTokens: z.number().int().min(0).optional()
+    })
+    .optional(),
+  compactionCount: z.number().int().min(0),
+  toolStats: z.object({
+    totalCalls: z.number().int().min(0),
+    ok: z.number().int().min(0),
+    failed: z.number().int().min(0),
+    byName: z.record(z.string(), RunReceiptToolStatSchema)
+  }),
+  failureClusters: z.array(
+    z.object({
+      key: z.string(),
+      count: z.number().int().min(1)
+    })
+  ),
+  unreadEditPaths: z.array(z.string()),
+  wroteFiles: z.array(z.string()),
+  diagnostics: z.object({
+    calls: z.number().int().min(0),
+    ok: z.number().int().min(0)
+  }),
+  verifyBeforeDone: z.object({
+    mode: VerifyBeforeDoneModeSchema,
+    nudged: z.boolean(),
+    victoryClaimWithoutTools: z.boolean()
+  }),
+  contractExcerpt: z.string()
+})
+export type RunReceipt = z.infer<typeof RunReceiptSchema>
+
+export const HarnessReviewRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  limit: z.number().int().min(1).max(100).optional()
+})
+export type HarnessReviewRequest = z.infer<typeof HarnessReviewRequestSchema>
+
+export const HarnessReviewResultSchema = z.object({
+  proposalPath: z.string().min(1),
+  relativePath: z.string().min(1),
+  receiptCount: z.number().int().min(0),
+  summary: z.string()
+})
+export type HarnessReviewResult = z.infer<typeof HarnessReviewResultSchema>
 
 export const ReadRunArtifactRequestSchema = z.object({
   workspacePath: z.string().min(1),

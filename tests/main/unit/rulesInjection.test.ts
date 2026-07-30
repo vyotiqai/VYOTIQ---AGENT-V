@@ -6,6 +6,7 @@ import {
   buildWorkspaceRulesSection,
   clearRulesCache,
   formatWorkspaceRules,
+  listWorkspaceRulesForMention,
   readWorkspaceRules
 } from '@main/agent/context/rules'
 
@@ -83,6 +84,28 @@ describe('workspace rules', () => {
     expect(paths).toContain('.cursor/rules/always.mdc')
     expect(paths).not.toContain('.cursor/rules/requestable.mdc')
     expect(files.find((f) => f.path.endsWith('always.mdc'))?.content).toBe('always on')
+  })
+
+  it('lists alwaysApply:false rules for @-mentions but not auto-inject', async () => {
+    mkdirSync(join(workspace, '.cursor', 'rules'), { recursive: true })
+    writeFileSync(
+      join(workspace, '.cursor', 'rules', 'requestable.mdc'),
+      ['---', 'alwaysApply: false', 'description: only on request', '---', '', 'secret rule'].join(
+        '\n'
+      )
+    )
+    writeFileSync(join(workspace, 'AGENTS.md'), 'agent rules')
+
+    const injected = (await readWorkspaceRules(workspace)).map((f) => f.path)
+    expect(injected).toContain('AGENTS.md')
+    expect(injected).not.toContain('.cursor/rules/requestable.mdc')
+
+    const mentioned = await listWorkspaceRulesForMention(workspace)
+    const req = mentioned.find((r) => r.path === '.cursor/rules/requestable.mdc')
+    expect(req).toBeDefined()
+    expect(req!.alwaysApply).toBe(false)
+    expect(req!.description).toBe('only on request')
+    expect(mentioned.some((r) => r.path === 'AGENTS.md' && r.alwaysApply)).toBe(true)
   })
 
   it('ignores files with unrelated extensions', async () => {

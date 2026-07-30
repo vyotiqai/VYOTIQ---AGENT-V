@@ -35,6 +35,7 @@ export const IPC = {
   runsUndoWrites: 'runs:undoWrites',
   runsResolveWrites: 'runs:resolveWrites',
   runsReadArtifact: 'runs:readArtifact',
+  harnessReview: 'harness:review',
   browserState: 'browser:state',
   browserGetState: 'browser:getState',
   browserFocus: 'browser:focus',

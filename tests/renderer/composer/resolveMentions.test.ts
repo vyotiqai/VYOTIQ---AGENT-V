@@ -42,12 +42,15 @@ describe('resolveComposerMentions', () => {
           messages: [{ role: 'user', content: 'earlier goal' }]
         }
       })),
-      workspaceDiagnostics: vi.fn(async () => ({
+      workspaceDiagnostics: vi.fn(async ({ kind }: { kind?: string }) => ({
         ok: true as const,
         data: {
           ok: true,
-          kind: 'typecheck' as const,
-          content: 'command: tsc\ndiagnostics: 1\n\nsrc/x.ts:1:1: error: boom'
+          kind: (kind === 'lint' ? 'lint' : 'typecheck') as 'lint' | 'typecheck',
+          content:
+            kind === 'lint'
+              ? 'command: eslint\ndiagnostics: 1\n\nsrc/y.ts:2:1: error: lint-boom'
+              : 'command: tsc\ndiagnostics: 1\n\nsrc/x.ts:1:1: error: boom'
         }
       }))
     }
@@ -159,6 +162,22 @@ describe('resolveComposerMentions', () => {
     expect(result.text).not.toContain('alwaysApply')
     expect(result.text).toContain('Referenced diagnostics (typecheck)')
     expect(result.text).toContain('src/x.ts:1:1')
+    expect(result.error).toBeNull()
+  })
+
+  it('resolves lint diagnostics mentions', async () => {
+    const draft = mentionMarker({ kind: 'lints', diagnosticsKind: 'lint' })
+    const result = await resolveComposerMentions({
+      workspacePath: '/ws',
+      draft,
+      existingFiles: []
+    })
+    expect(window.vyotiq.workspaceDiagnostics).toHaveBeenCalledWith({
+      workspacePath: '/ws',
+      kind: 'lint'
+    })
+    expect(result.text).toContain('Referenced diagnostics (lint)')
+    expect(result.text).toContain('lint-boom')
     expect(result.error).toBeNull()
   })
 })

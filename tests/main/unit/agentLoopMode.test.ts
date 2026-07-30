@@ -10,6 +10,7 @@ const userData = join(tmpdir(), `vyotiq-mode-${process.pid}-${Date.now()}`)
 
 const getSettings = vi.fn(() => ({
   ...DEFAULT_SETTINGS,
+  verifyBeforeDone: 'off' as const,
   provider: 'ollama' as const,
   model: 'qwen2.5',
   ollamaBaseUrl: 'http://127.0.0.1:11434'
@@ -126,6 +127,7 @@ describe('runAgent mode and API key', () => {
     getSettings.mockReset()
     getSettings.mockImplementation(() => ({
       ...DEFAULT_SETTINGS,
+      verifyBeforeDone: 'off' as const,
       provider: 'ollama' as const,
       model: 'qwen2.5',
       ollamaBaseUrl: 'http://127.0.0.1:11434'
@@ -220,6 +222,7 @@ describe('runAgent mode and API key', () => {
   it('exits early with PROVIDER_AUTH when a non-ollama API key is missing', async () => {
     getSettings.mockImplementation(() => ({
       ...DEFAULT_SETTINGS,
+      verifyBeforeDone: 'off' as const,
       provider: 'openai' as const,
       model: 'gpt-4o'
     }))

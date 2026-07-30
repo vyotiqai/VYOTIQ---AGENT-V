@@ -81,6 +81,15 @@ export const BUILTIN_COMMANDS: SlashCommandDescriptor[] = [
     kind: 'builtin',
     group: 'App',
     availability: 'ready'
+  },
+  {
+    id: 'builtin:harness-review',
+    trigger: 'harness-review',
+    label: 'Harness review',
+    description: 'Mine recent run receipts into a .vyotiq/harness/proposals/ draft',
+    kind: 'builtin',
+    group: 'App',
+    availability: 'ready'
   }
 ]
 
@@ -112,6 +121,9 @@ export function resolveBuiltin(
       return { action: 'client', clientAction: 'set_mode_plan' }
     case 'builtin:agent':
       return { action: 'client', clientAction: 'set_mode_agent' }
+    case 'builtin:harness-review':
+      // Resolved in resolveSlashCommand (needs workspace + main-process mining).
+      return null
     default:
       return null
   }

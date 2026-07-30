@@ -539,7 +539,12 @@ export function ChatView({
           />
         ) : null}
         {activeRightPanel === 'plan' ? (
-          <PlanPanel onClose={() => setRightPanel(null)} />
+          <PlanPanel
+            workspacePath={workspacePath}
+            runId={activeRunId}
+            running={running}
+            onClose={() => setRightPanel(null)}
+          />
         ) : null}
         <ChatSideRail
           activePanel={activeRightPanel}

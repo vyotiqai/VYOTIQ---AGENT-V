@@ -19,6 +19,12 @@ export const TERMINAL_SHELL_OPTIONS = [
   { value: 'bash', label: 'Bash' }
 ]
 
+export const VERIFY_BEFORE_DONE_OPTIONS = [
+  { value: 'off', label: 'Off' },
+  { value: 'notice', label: 'Soft notice (default)' },
+  { value: 'require', label: 'Require diagnostics once' }
+]
+
 export const ACTIVE_PROVIDER_OPTIONS = PROVIDER_DEFAULTS.map((p) => ({
   value: p.id,
   label: p.label

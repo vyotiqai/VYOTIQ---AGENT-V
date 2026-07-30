@@ -38,6 +38,7 @@ const api: VyotiqApi = {
     }),
   resolveWrites: (payload) => ipcRenderer.invoke(IPC.runsResolveWrites, payload),
   readRunArtifact: (payload) => ipcRenderer.invoke(IPC.runsReadArtifact, payload),
+  harnessReview: (payload) => ipcRenderer.invoke(IPC.harnessReview, payload),
   onChatEvent: (handler) => {
     const listener = (_: IpcRendererEvent, raw: unknown): void => {
       const parsed = AgentEventSchema.safeParse(raw)

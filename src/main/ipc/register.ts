@@ -8,6 +8,7 @@ import {
   UndoWritesRequestSchema,
   ResolveWritesRequestSchema,
   ReadRunArtifactRequestSchema,
+  HarnessReviewRequestSchema,
   SetSettingsRequestSchema,
   SetSecretRequestSchema,
   ClearSecretRequestSchema,
@@ -63,6 +64,7 @@ import {
   type UndoWritesResult,
   type ResolveWritesResult,
   type ReadRunArtifactResult,
+  type HarnessReviewResult,
   type ListRunsResult,
   type RunSummary,
   type SecretsStatus,
@@ -108,6 +110,7 @@ import {
   createWorkspaceRule,
   openSlashFile
 } from '@main/agent/slashCommands'
+import { runHarnessReview } from '@main/agent/harnessReview'
 import {
   setSecret,
   clearSecret,
@@ -734,6 +737,20 @@ export function registerIpc(): void {
         return ok({ name: req.name, exists: true, content })
       } catch (err) {
         return failFrom(err, IPC.runsReadArtifact)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    IPC.harnessReview,
+    async (event, raw): Promise<IpcResult<HarnessReviewResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = HarnessReviewRequestSchema.parse(raw)
+        if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+        return ok(runHarnessReview(req.workspacePath, { limit: req.limit }))
+      } catch (err) {
+        return failFrom(err, IPC.harnessReview)
       }
     }
   )

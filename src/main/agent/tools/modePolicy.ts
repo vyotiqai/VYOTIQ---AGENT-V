@@ -72,7 +72,12 @@ export function modeSectionMarkdown(mode: AgentInteractionMode): string | null {
         '',
         'You are in Agent mode. You may edit files, run the `terminal` tool, write memory,',
         'and use the full tools catalog (subject to user approval settings).',
-        'Writes are checkpointed for Keep/Discard; prefer non-destructive commands.',
+        'Workspace writes are checkpointed for Keep/Discard; plan.md / contract.md run',
+        'artifacts are not. Prefer non-destructive commands.',
+            'After edits or commands, verify against the goal (re-read, `diagnostics`, or a',
+            'focused test via `terminal`). Settings may soft-nudge once before a no-tool finish.',
+            'You may delegate broad research with `subagent`;',
+            'the parent alone edits and uses the `terminal` tool.',
         'Follow the run contract; if an approved `## Plan` is present, implement it unless',
         'the user redirects you. Use `ask_question` for ambiguous product decisions and',
         '`switch_mode` if Ask or Plan fits better.'
@@ -84,7 +89,7 @@ export function modeSectionMarkdown(mode: AgentInteractionMode): string | null {
         'You are in Ask mode. Use read-only tools liberally to investigate and answer',
         '(built-ins plus MCP tools that declare readOnlyHint). Only avoid mutating tools.',
         'Do not edit files, delete paths, run the `terminal` tool, run `diagnostics`,',
-        'or write memory.',
+        'or write memory. `subagent` is allowed for broad read-only research.',
         'If the user needs changes, explain what you would do and suggest switching to Agent mode.'
       ].join('\n')
     case 'plan':
@@ -96,7 +101,7 @@ export function modeSectionMarkdown(mode: AgentInteractionMode): string | null {
         'and keep todos via `todo_write`. Prefer updating the injected `## Plan` rather than',
         're-deriving it from scratch each turn.',
         '`diagnostics` is allowed. Do not edit application code, delete files, run the `terminal`',
-        'tool, or spawn `subagent`.',
+        'tool, or spawn `subagent` (not Plan).',
         'End with a clear plan the user can approve by switching to Agent mode.'
       ].join('\n')
     default: {

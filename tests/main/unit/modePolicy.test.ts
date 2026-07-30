@@ -145,4 +145,17 @@ describe('modePolicy', () => {
     expect(plan).toMatch(/`diagnostics` is allowed/)
     expect(plan).toMatch(/`terminal`/)
   })
+
+  it('mode sections carry workflow moved out of the static harness', () => {
+    const agent = modeSectionMarkdown('agent')!
+    const ask = modeSectionMarkdown('ask')!
+    const plan = modeSectionMarkdown('plan')!
+    expect(agent).toMatch(/verify against the goal/i)
+    expect(agent).toMatch(/soft-nudge/i)
+    expect(agent).toMatch(/`diagnostics`/)
+    expect(agent).toMatch(/`terminal`/)
+    expect(agent).toMatch(/`subagent`/)
+    expect(ask).toMatch(/`subagent` is allowed/)
+    expect(plan).toMatch(/spawn `subagent` \(not Plan\)/)
+  })
 })

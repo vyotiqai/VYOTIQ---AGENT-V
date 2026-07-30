@@ -1,11 +1,12 @@
-import type { ProviderId, TerminalShell, ToolApprovalMode } from '@shared/ipc'
+import type { ProviderId, TerminalShell, ToolApprovalMode, VerifyBeforeDoneMode } from '@shared/ipc'
 import { defaultModelFor } from '@shared/providers'
 import { Input, Menu, Button } from '@renderer/lib/ui'
 import type { SettingsFormState } from '../hooks/useSettingsForm'
 import {
   ACTIVE_PROVIDER_OPTIONS,
   TERMINAL_SHELL_OPTIONS,
-  TOOL_APPROVAL_OPTIONS
+  TOOL_APPROVAL_OPTIONS,
+  VERIFY_BEFORE_DONE_OPTIONS
 } from '../constants'
 import { SettingsRow } from '../components/SettingsRow'
 
@@ -207,6 +208,23 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
           value={form.settings.diagnosticsCommand ?? ''}
           onChange={(e) => {
             void form.runUpdate({ diagnosticsCommand: e.target.value })
+          }}
+        />
+      </SettingsRow>
+
+      <SettingsRow
+        title="Verify before done"
+        description="When the agent stops with no tool calls in Agent mode, optionally nudge once to run diagnostics against the run contract. Never a hard step limit. Global setting."
+      >
+        <Menu
+          aria-label="Verify before done"
+          value={form.settings.verifyBeforeDone ?? 'notice'}
+          options={VERIFY_BEFORE_DONE_OPTIONS}
+          searchable={false}
+          placement="down"
+          disabled={form.formLocked}
+          onChange={(v) => {
+            void form.runUpdate({ verifyBeforeDone: v as VerifyBeforeDoneMode })
           }}
         />
       </SettingsRow>

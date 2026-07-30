@@ -44,11 +44,18 @@ import { CONTEXT_TRIM_WATERMARK_SUMMARY, isTrimWatermarkCompaction } from './con
 import { executeStepToolCalls } from './executeStepTools'
 import { loadHarness } from './harness'
 import {
+  applyToolCallToKnownPaths,
   combineLoopHints,
+  editPathsFromToolCall,
   loopHintForConsecutiveFailures,
   loopHintForOmittedMcpTools,
-  maxParallelReadToolsForFailureStreak
+  loopHintForUnreadEdits,
+  maxParallelReadToolsForFailureStreak,
+  seedKnownPathsFromMessages,
+  toolArgsFromCall,
+  unreadExistingEditPaths
 } from './loopPolicy'
+import { resolveInsideWorkspace } from '../workspace/safePath'
 import { MAX_PARALLEL_READ_TOOLS } from './tools/classify'
 import { getProvider } from './providers'
 import { resolveModelInfo } from './modelResolve'
@@ -68,8 +75,10 @@ import {
   appendMessage,
   createRun,
   loadCompaction,
+  loadEvents,
   loadMessages,
   loadStatus,
+  readContract,
   readContractAsync,
   readPlanAsync,
   DEFAULT_PLAN_STUB,
@@ -80,6 +89,13 @@ import {
   flushEventAppends,
   flushMessageAppends
 } from './state'
+import { writeRunReceiptBestEffort } from './runReceipt'
+import {
+  externalDiagnosticsCheck,
+  runHasDiagnosticsEvidence,
+  shouldNudgeVerifyBeforeDone,
+  verifyNudgeMessage
+} from './verifyBeforeDone'
 import { toolResultEventForIpc, toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
 import { AGENT_TOOLS } from './types'
 import { listMcpToolDefinitions, parseMcpToolName, syncMcpServers } from './mcp'
@@ -307,6 +323,7 @@ export async function* runAgent(input: {
   // Entire body in try/finally so early returns (missing key, etc.) always clear the abort map.
   let runDir: string | null = null
   let checkpointFlushed = false
+  let verifyNudged = false
   const writeStatus = (patch: Parameters<typeof updateStatus>[1]): void => {
     if (!runDir || !isCurrentInvoke(runId, invokeId)) return
     updateStatus(runDir, patch)
@@ -384,6 +401,9 @@ export async function* runAgent(input: {
     } else {
       foldedMessages = 0
     }
+
+    const knownPaths = seedKnownPathsFromMessages(messages)
+    let unreadEditHint: string | undefined
 
     logger.info('Agent run started', {
       scope: 'agent',
@@ -594,7 +614,9 @@ export async function* runAgent(input: {
     let overflowRetryUsed = false
     let truncationContinues = 0
     let toolLeakContinues = 0
+    let verifyContinues = 0
     const MAX_TRUNCATION_CONTINUES = 2
+    const verifyBeforeDoneMode = settings.verifyBeforeDone ?? 'notice'
 
     while (true) {
       if (controller.signal.aborted) break
@@ -656,7 +678,8 @@ export async function* runAgent(input: {
         modeSection: modeSectionMarkdown(agentMode) ?? undefined,
         loopHint: combineLoopHints(
           omittedMcpHint,
-          loopHintForConsecutiveFailures(consecutiveToolFailureSteps)
+          loopHintForConsecutiveFailures(consecutiveToolFailureSteps),
+          unreadEditHint
         ),
         providerId,
         provider,
@@ -764,7 +787,8 @@ export async function* runAgent(input: {
             modeSection: modeSectionMarkdown(agentMode) ?? undefined,
             loopHint: combineLoopHints(
               omittedMcpHint,
-              loopHintForConsecutiveFailures(consecutiveToolFailureSteps)
+              loopHintForConsecutiveFailures(consecutiveToolFailureSteps),
+              unreadEditHint
             ),
             providerId,
             provider,
@@ -1211,6 +1235,58 @@ export async function* runAgent(input: {
           continue
         }
 
+        // Soft verify-before-done: at most one continue (never a hard step ceiling).
+        if (
+          !incomplete &&
+          !controller.signal.aborted &&
+          shouldNudgeVerifyBeforeDone({
+            verifyMode: verifyBeforeDoneMode,
+            agentMode,
+            hasEvidence: runHasDiagnosticsEvidence(messages),
+            alreadyNudged: verifyContinues > 0,
+            incomplete
+          })
+        ) {
+          let extras: string | undefined
+          let skipNudge = false
+          if (verifyBeforeDoneMode === 'require') {
+            try {
+              const check = await externalDiagnosticsCheck(workspace, controller.signal)
+              if (check.clean) {
+                skipNudge = true
+                logger.info('Verify-before-done: external typecheck clean', {
+                  scope: 'agent',
+                  correlationId: runId,
+                  step
+                })
+              } else {
+                extras = check.excerpt
+              }
+            } catch (err) {
+              if (controller.signal.aborted) break
+              extras = `External typecheck could not run: ${formatError(err)}`
+            }
+          }
+          if (!skipNudge) {
+            verifyContinues += 1
+            verifyNudged = true
+            const kind = verifyBeforeDoneMode === 'require' ? 'require' : 'notice'
+            logger.info('Verify-before-done nudge', {
+              scope: 'agent',
+              correlationId: runId,
+              step,
+              mode: verifyBeforeDoneMode
+            })
+            const nudge: ChatMessage = {
+              role: 'user',
+              content: verifyNudgeMessage(kind, extras)
+            }
+            messages.push(nudge)
+            appendMessage(runDir, nudge)
+            continue
+          }
+        }
+
         if (incomplete) {
           const incompleteEv: AgentEvent = {
             type: 'incomplete',
@@ -1335,6 +1411,22 @@ export async function* runAgent(input: {
           throw err
         }
       )
+
+      // Snapshot existence before writes so new-file creates do not false-nag.
+      const pathExistsNow = (rel: string): boolean => {
+        try {
+          return existsSync(resolveInsideWorkspace(workspace, rel))
+        } catch {
+          return false
+        }
+      }
+      const existedBeforeEdit = new Set<string>()
+      for (const call of uniqueToolCalls) {
+        const args = toolArgsFromCall(call.arguments)
+        for (const path of editPathsFromToolCall(call.name, args)) {
+          if (pathExistsNow(path)) existedBeforeEdit.add(path)
+        }
+      }
       for (;;) {
         while (liveEvents.length) {
           const ev = liveEvents.shift()!
@@ -1361,6 +1453,35 @@ export async function* runAgent(input: {
         appendMessage(runDir!, toolMsg)
       }
       stepToolsOk = toolOutcome.stepToolsOk
+
+      const okByCallId = new Map<string, boolean>()
+      for (const msg of toolOutcome.messages) {
+        if (msg.role === 'tool' && msg.toolCallId) {
+          okByCallId.set(msg.toolCallId, msg.ok !== false)
+        }
+      }
+      // Apply successful reads first so same-step read+edit does not nag.
+      for (const call of uniqueToolCalls) {
+        const args = toolArgsFromCall(call.arguments)
+        const ok = okByCallId.get(call.id) ?? false
+        if (call.name === 'read') {
+          applyToolCallToKnownPaths(knownPaths, call.name, args, ok)
+        }
+      }
+      const unreadThisStep: string[] = []
+      for (const call of uniqueToolCalls) {
+        const args = toolArgsFromCall(call.arguments)
+        const ok = okByCallId.get(call.id) ?? false
+        unreadThisStep.push(
+          ...unreadExistingEditPaths(knownPaths, call.name, args, (rel) =>
+            existedBeforeEdit.has(rel)
+          )
+        )
+        if (call.name !== 'read') {
+          applyToolCallToKnownPaths(knownPaths, call.name, args, ok)
+        }
+      }
+      unreadEditHint = loopHintForUnreadEdits(unreadThisStep)
 
       if (uniqueToolCalls.length > 0) {
         if (stepToolsOk) {
@@ -1425,6 +1546,16 @@ export async function* runAgent(input: {
       }
       await flushMessageAppends(runDir)
       await flushEventAppends(runDir)
+      writeRunReceiptBestEffort({
+        runDir,
+        runId,
+        loadStatus,
+        loadMessages: () => loadMessages(workspace, runId),
+        loadEvents,
+        readContract,
+        verifyMode: settings.verifyBeforeDone ?? 'notice',
+        verifyNudged
+      })
     }
     clearRunAbort(runId, invokeId)
   }

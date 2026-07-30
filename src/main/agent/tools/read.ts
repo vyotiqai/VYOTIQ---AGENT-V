@@ -85,6 +85,11 @@ function formatMissingFileHint(workspaceRoot: string, relPath: string): string {
   ].join('\n')
 }
 
+/** Shared by read/delete so missing-path errors stay consistent for the model. */
+export function missingPathHint(workspaceRoot: string, relPath: string): string {
+  return formatMissingFileHint(workspaceRoot, relPath)
+}
+
 export function toolRead(
   workspaceRoot: string,
   pathArg: string,

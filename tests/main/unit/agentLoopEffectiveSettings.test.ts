@@ -32,7 +32,8 @@ vi.mock('@main/settings/settings', () => ({
     model: 'qwen2.5',
     ollamaBaseUrl: 'http://127.0.0.1:11434',
     theme: 'system',
-    telemetryEnabled: false
+    telemetryEnabled: false,
+    verifyBeforeDone: 'off'
   }),
   readLegacyWorkspacePath: () => null,
   clearSettingsCacheForTests: () => undefined

@@ -2,8 +2,16 @@ import { describe, expect, it } from 'vitest'
 import {
   CONSECUTIVE_TOOL_FAILURE_HINT_THRESHOLD,
   CONSECUTIVE_TOOL_FAILURE_SERIAL_THRESHOLD,
+  applyToolCallToKnownPaths,
+  combineLoopHints,
+  editPathsFromToolCall,
   loopHintForConsecutiveFailures,
-  maxParallelReadToolsForFailureStreak
+  loopHintForUnreadEdits,
+  maxParallelReadToolsForFailureStreak,
+  normalizeWorkspaceRelPath,
+  readPathFromToolCall,
+  seedKnownPathsFromMessages,
+  unreadExistingEditPaths
 } from '@main/agent/loopPolicy'
 
 describe('loopPolicy', () => {
@@ -24,5 +32,79 @@ describe('loopPolicy', () => {
     expect(
       maxParallelReadToolsForFailureStreak(CONSECUTIVE_TOOL_FAILURE_SERIAL_THRESHOLD, 4)
     ).toBe(1)
+  })
+
+  it('normalizes workspace-relative paths', () => {
+    expect(normalizeWorkspaceRelPath('  src\\foo.ts  ')).toBe('src/foo.ts')
+  })
+
+  it('extracts read and edit paths from tool calls', () => {
+    expect(readPathFromToolCall('read', { path: 'a\\b.ts' })).toBe('a/b.ts')
+    expect(readPathFromToolCall('grep', { path: 'a.ts' })).toBeNull()
+    expect(editPathsFromToolCall('str_replace', { path: 'x.ts' })).toEqual(['x.ts'])
+    expect(
+      editPathsFromToolCall('multi_edit', {
+        edits: [{ path: 'a.ts' }, { path: 'b\\c.ts' }, { path: 1 }]
+      })
+    ).toEqual(['a.ts', 'b/c.ts'])
+  })
+
+  it('treats concrete grep include and glob pattern as inspect paths', () => {
+    const known = new Set<string>()
+    applyToolCallToKnownPaths(known, 'grep', { pattern: 'foo', include: 'src/a.ts' }, true)
+    expect(known.has('src/a.ts')).toBe(true)
+    applyToolCallToKnownPaths(known, 'glob', { pattern: 'src/**/*.ts' }, true)
+    expect(known.has('src/**/*.ts')).toBe(false)
+    applyToolCallToKnownPaths(known, 'glob', { pattern: 'src/b.ts' }, true)
+    expect(known.has('src/b.ts')).toBe(true)
+  })
+  it('tracks known paths only on successful read/write', () => {
+    const known = new Set<string>()
+    applyToolCallToKnownPaths(known, 'read', { path: 'a.ts' }, false)
+    expect(known.size).toBe(0)
+    applyToolCallToKnownPaths(known, 'read', { path: 'a.ts' }, true)
+    expect(known.has('a.ts')).toBe(true)
+    applyToolCallToKnownPaths(known, 'edit', { path: 'b.ts' }, true)
+    expect(known.has('b.ts')).toBe(true)
+  })
+
+  it('nags only for existing unread edit paths', () => {
+    const known = new Set(['seen.ts'])
+    const exists = (p: string) => p === 'exists.ts' || p === 'seen.ts'
+    expect(
+      unreadExistingEditPaths(known, 'str_replace', { path: 'exists.ts' }, exists)
+    ).toEqual(['exists.ts'])
+    expect(
+      unreadExistingEditPaths(known, 'str_replace', { path: 'seen.ts' }, exists)
+    ).toEqual([])
+    expect(
+      unreadExistingEditPaths(known, 'edit', { path: 'brand-new.ts' }, exists)
+    ).toEqual([])
+    expect(unreadExistingEditPaths(known, 'read', { path: 'exists.ts' }, exists)).toEqual([])
+  })
+
+  it('builds an unread-edit run notice and combines with other hints', () => {
+    expect(loopHintForUnreadEdits([])).toBeUndefined()
+    const hint = loopHintForUnreadEdits(['a.ts', 'b.ts'])
+    expect(hint).toMatch(/without a prior read/i)
+    expect(hint).toMatch(/a\.ts/)
+    expect(hint).toMatch(/does not block/i)
+    const combined = combineLoopHints(hint, loopHintForConsecutiveFailures(3))
+    expect(combined).toMatch(/without a prior read/i)
+    expect(combined).toMatch(/tool failures/i)
+  })
+
+  it('seeds known paths from assistant toolCalls on resume', () => {
+    const known = seedKnownPathsFromMessages([
+      {
+        role: 'assistant',
+        toolCalls: [
+          { name: 'read', arguments: '{"path":"src/a.ts"}' },
+          { name: 'str_replace', arguments: '{"path":"src\\\\b.ts","old_string":"x","new_string":"y"}' }
+        ]
+      }
+    ])
+    expect(known.has('src/a.ts')).toBe(true)
+    expect(known.has('src/b.ts')).toBe(true)
   })
 })

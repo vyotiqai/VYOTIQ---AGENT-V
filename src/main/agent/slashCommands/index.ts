@@ -17,6 +17,7 @@ import { listSkillCommands, resolveSkillCommand } from './skills'
 import { listWorkspaceCommands, resolveWorkspaceCommand } from './workspaceCommands'
 import { listRuleCommands, resolveRuleCommand } from './ruleCommands'
 import { listMcpCommands, resolveMcpCommand } from './mcp'
+import { runHarnessReview } from '../harnessReview'
 
 function marketplaceOverridesFor(
   workspacePath: string | null | undefined
@@ -126,6 +127,22 @@ export async function resolveSlashCommand(
     buildHelpMessage(await listSlashCommands(workspacePath))
   )
   if (builtin) return builtin
+
+  if (id === 'builtin:harness-review') {
+    if (!workspacePath) {
+      return {
+        action: 'send',
+        message: 'Open a workspace before running `/harness-review`.'
+      }
+    }
+    try {
+      const result = runHarnessReview(workspacePath)
+      return { action: 'open_file', path: result.proposalPath }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { action: 'send', message: `Harness review failed: ${msg}` }
+    }
+  }
 
   if (id.startsWith('skill:')) {
     const result = resolveSkillCommand(id, trailingText, overrides)
