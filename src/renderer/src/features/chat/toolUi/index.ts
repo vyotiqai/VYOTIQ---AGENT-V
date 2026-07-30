@@ -2,7 +2,7 @@ export { isProminentTool, toolPresentation, toolCategory, toolLabel, categoryLab
 export { getToolEntry, getToolBody, toolHasBody, getToolHeaderMeta } from './registry'
 export { ToolBodyView } from './presentation'
 export { ProminentChrome, CompactRow } from './chrome'
-export { basename, fileBadge, fileBadgeInfo } from './pathUtils'
+export { basename } from './pathUtils'
 export type { ToolBodyProps, ToolBodyContext, ToolHeaderMeta, ToolPresentation, ToolCategory } from './types'
 
 // Re-export parsers for tests and transcript utilities

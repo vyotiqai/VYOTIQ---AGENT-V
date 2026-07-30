@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { FileTypeIcon } from '@renderer/lib/fileIcons'
 import { TOOL_BODY_INNER, TOOL_BODY_PAD } from '@renderer/lib/utils/layout'
 import { DiffPreview } from '../../components/DiffPreview'
 import type { ToolBodyProps } from '../types'
@@ -34,6 +35,7 @@ export function GitStatusBody({ tool, loading, loadFailed }: ToolBodyProps) {
               className="flex min-w-0 items-center gap-2 font-mono text-[11px] text-fg/80"
             >
               <span className="w-8 shrink-0 text-tertiary">{file.status}</span>
+              <FileTypeIcon path={file.path} size={14} />
               <span className="min-w-0 flex-1 truncate" title={file.path}>
                 {basename(file.path) || file.path}
               </span>

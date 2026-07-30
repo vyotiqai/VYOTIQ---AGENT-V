@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { FileTypeIcon } from '@renderer/lib/fileIcons'
 import { cn } from '@renderer/lib/ui'
 import { TOOL_BODY_INNER, TOOL_BODY_PAD } from '@renderer/lib/utils/layout'
 import type { ToolBodyProps } from '../types'
@@ -44,10 +45,11 @@ export function DiagnosticsBody({ tool, loading, loadFailed }: ToolBodyProps) {
         <ul className={`${TOOL_BODY_INNER} m-0 max-h-48 list-none space-y-1.5 overflow-auto p-0`}>
           {data.issues.map((issue, i) => (
             <li key={`${issue.file}:${issue.line}:${issue.col}:${i}`} className="min-w-0 text-[11px]">
-              <div className="flex min-w-0 items-baseline gap-2 font-mono">
+              <div className="flex min-w-0 items-center gap-2 font-mono">
                 <span className={cn('shrink-0 uppercase', severityClass(issue.severity))}>
                   {issue.severity}
                 </span>
+                <FileTypeIcon path={issue.file} size={14} />
                 <span className="min-w-0 truncate text-fg/80" title={`${issue.file}:${issue.line}`}>
                   {basename(issue.file) || issue.file}:{issue.line}:{issue.col}
                 </span>

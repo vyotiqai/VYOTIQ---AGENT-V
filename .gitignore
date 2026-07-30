@@ -4,5 +4,7 @@ out
 .DS_Store
 .eslintcache
 *.log*
+# Material Icon Theme SVGs (synced from material-icon-theme on postinstall/build)
+src/renderer/public/file-icons/
 # Added by code-review-graph
 .code-review-graph/

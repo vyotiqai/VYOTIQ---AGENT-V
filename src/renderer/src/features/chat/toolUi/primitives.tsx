@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { FileTypeIcon } from '@renderer/lib/fileIcons'
 import { Icon } from '@renderer/lib/icons'
 import { TOOL_BODY_INNER, TOOL_BODY_PAD } from '@renderer/lib/utils/layout'
 import { cn } from '@renderer/lib/ui'
@@ -62,7 +63,8 @@ export function PathList({ paths }: { paths: string[] }) {
   return (
     <ul className={cn(TOOL_BODY_INNER, 'm-0 max-h-48 list-none overflow-auto p-0')}>
       {paths.map((path) => (
-        <li key={path} className="group flex min-w-0 items-center gap-1 py-0.5">
+        <li key={path} className="group flex min-w-0 items-center gap-1.5 py-0.5">
+          <FileTypeIcon path={path} size={14} />
           <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-fg/80" title={path}>
             {path}
           </span>
@@ -90,9 +92,13 @@ export function DirListing({
       {entries.map((entry) => (
         <div
           key={entry.name}
-          className="grid grid-cols-[auto_1fr_auto] items-baseline gap-x-2 py-0.5 font-mono text-[11px]"
+          className="grid grid-cols-[auto_1fr_auto] items-center gap-x-2 py-0.5 font-mono text-[11px]"
         >
-          <span className="text-tertiary">{entry.kind === 'dir' ? 'dir' : 'file'}</span>
+          <FileTypeIcon
+            path={entry.name}
+            kind={entry.kind === 'dir' ? 'folder' : 'file'}
+            size={14}
+          />
           <span className="min-w-0 truncate text-fg/80" title={entry.name}>
             {entry.name}
             {entry.kind === 'dir' ? '/' : ''}
@@ -117,8 +123,12 @@ export function MatchList({
     <div className={cn(TOOL_BODY_INNER, 'flex max-h-48 flex-col gap-2 overflow-auto')}>
       {groups.map((group) => (
         <div key={group.file}>
-          <div className="truncate font-mono text-[10px] font-medium text-tertiary" title={group.file}>
-            {group.file}
+          <div
+            className="flex min-w-0 items-center gap-1.5 truncate font-mono text-[10px] font-medium text-tertiary"
+            title={group.file}
+          >
+            <FileTypeIcon path={group.file} size={12} />
+            <span className="min-w-0 truncate">{group.file}</span>
           </div>
           {group.matches.map((match) => (
             <div

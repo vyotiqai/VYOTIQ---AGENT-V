@@ -1,11 +1,9 @@
 import { memo } from 'react'
-import { cn } from '@renderer/lib/ui'
-import { fileBadgeInfo } from '../toolUi'
+import { FileTypeIcon } from '@renderer/lib/fileIcons'
 
 /**
- * The file's type as a short mark, sitting where a file icon normally would.
- *
- * Text rather than an icon set: `TS` / `{}` / `$` / `M↓` match screenshot chrome.
+ * File-type icon for tool cards / changes panels (Material Icon Theme).
+ * Kept as `FileBadge` so existing call sites stay stable.
  */
 export const FileBadge = memo(function FileBadge({
   path,
@@ -14,20 +12,5 @@ export const FileBadge = memo(function FileBadge({
   path: string
   className?: string
 }) {
-  const badge = fileBadgeInfo(path)
-  if (!badge) return null
-
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        'inline-flex shrink-0 items-center justify-center rounded-sm border border-border',
-        'px-1 py-px font-mono text-[9px] leading-none uppercase text-tertiary',
-        badge.className,
-        className
-      )}
-    >
-      {badge.label}
-    </span>
-  )
+  return <FileTypeIcon path={path} size={14} className={className} />
 })

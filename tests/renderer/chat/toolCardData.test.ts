@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  fileBadge,
   parseDiffPreview,
   parseEditCardData,
   parseTerminalCardData
@@ -153,25 +152,5 @@ describe('parseDiffPreview', () => {
     expect(lines.some((line) => line.kind === 'context' && line.text === 'api/layout.tsx')).toBe(
       true
     )
-  })
-})
-
-describe('fileBadge', () => {
-  it('marks a file with screenshot-style glyphs', () => {
-    expect(fileBadge('src/features/chat/ChatView.tsx')).toBe('TS')
-    expect(fileBadge('C:\\ws\\styles.css')).toBe('css')
-    expect(fileBadge('pkg.json')).toBe('{}')
-    expect(fileBadge('run.sh')).toBe('$')
-  })
-
-  it('shortens extensions that are spelled out', () => {
-    expect(fileBadge('a.javascript')).toBe('JS')
-    expect(fileBadge('notes.markdown')).toBe('M↓')
-  })
-
-  it('declines when there is nothing useful to show', () => {
-    expect(fileBadge('Makefile')).toBeNull()
-    expect(fileBadge('.gitignore')).toBeNull()
-    expect(fileBadge('archive.backup2024')).toBeNull()
   })
 })

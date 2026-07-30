@@ -1,5 +1,6 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
+import { FileTypeIcon } from '@renderer/lib/fileIcons'
 import { Icon, type IconName } from '@renderer/lib/icons'
 import { useDropdownMenu } from '@renderer/lib/hooks/useDropdownMenu'
 import { cn } from '@renderer/lib/ui/cn'
@@ -55,7 +56,7 @@ function PathTree({ path }: { path: string }) {
             {isLast ? (
               <FileTypeBadge path={path} />
             ) : (
-              <Icon name="folder" size={12} className="text-muted" />
+              <FileTypeIcon path={part} kind="folder" size={14} />
             )}
             <span className={cn('truncate', isLast && 'font-medium text-fg')}>{part}</span>
           </div>

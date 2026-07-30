@@ -8,12 +8,12 @@ import {
   type FormEvent,
   type KeyboardEvent
 } from 'react'
+import { fileIconUrl } from '@renderer/lib/fileIcons'
 import { cn } from '@renderer/lib/ui/cn'
 import {
   MENTION_END,
   MENTION_START,
   decodeMentionPayload,
-  fileBadgeForPath,
   mentionLabel,
   mentionMarker,
   parseComposerDocument,
@@ -41,21 +41,6 @@ function chipClassName(): string {
   ].join(' ')
 }
 
-function badgeBackground(className: string): string {
-  if (className.includes('sky-600')) return '#0284c7'
-  if (className.includes('sky-700')) return '#0369a1'
-  if (className.includes('amber')) return '#d97706'
-  if (className.includes('slate')) return '#64748b'
-  if (className.includes('yellow')) return '#ca8a04'
-  if (className.includes('pink')) return '#db2777'
-  if (className.includes('orange-600')) return '#ea580c'
-  if (className.includes('blue-700')) return '#1d4ed8'
-  if (className.includes('orange-800')) return '#9a3412'
-  if (className.includes('cyan')) return '#0e7490'
-  if (className.includes('rose')) return '#be123c'
-  return '#475569'
-}
-
 function buildChipElement(mention: ComposerMention): HTMLSpanElement {
   const span = document.createElement('span')
   span.contentEditable = 'false'
@@ -64,13 +49,15 @@ function buildChipElement(mention: ComposerMention): HTMLSpanElement {
   span.setAttribute('data-mention-kind', mention.kind)
 
   if (mention.kind === 'file' || mention.kind === 'docs') {
-    const badgeInfo = fileBadgeForPath(mention.path)
-    const badge = document.createElement('span')
-    badge.className =
-      'inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded px-0.5 text-[9px] font-semibold leading-none text-white'
-    badge.textContent = badgeInfo.label
-    badge.style.background = badgeBackground(badgeInfo.className)
-    span.appendChild(badge)
+    const img = document.createElement('img')
+    img.src = fileIconUrl(mention.path)
+    img.alt = ''
+    img.setAttribute('aria-hidden', 'true')
+    img.width = 14
+    img.height = 14
+    img.draggable = false
+    img.className = 'shrink-0 object-contain'
+    span.appendChild(img)
   } else {
     const ico = document.createElement('span')
     ico.className = 'text-[11px] opacity-70'

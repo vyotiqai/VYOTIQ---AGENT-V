@@ -7,8 +7,8 @@
   "author": "Vyotiq",
   "homepage": "https://vyotiq.com",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "pnpm typecheck && electron-vite build",
+    "dev": "pnpm sync:file-icons && electron-vite dev",
+    "build": "pnpm sync:file-icons && pnpm typecheck && electron-vite build",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
@@ -21,7 +21,8 @@
     "pack:mac": "pnpm build && electron-builder --mac",
     "pack:linux": "pnpm build && electron-builder --linux",
     "sync:provider-icons": "node scripts/sync-provider-brand-paths.mjs",
-    "postinstall": "node node_modules/electron/install.js && (electron-builder install-app-deps || node -e \"console.warn('[vyotiq] native module rebuild failed — node-pty will use pipe fallback if unavailable')\")"
+    "sync:file-icons": "node scripts/sync-file-icons.mjs",
+    "postinstall": "node node_modules/electron/install.js && (electron-builder install-app-deps || node -e \"console.warn('[vyotiq] native module rebuild failed — node-pty will use pipe fallback if unavailable')\") && node scripts/sync-file-icons.mjs"
   },
   "dependencies": {
     "@electron-toolkit/utils": "^4.0.0",
@@ -37,6 +38,7 @@
     "electron-log": "^5.4.4",
     "gpt-tokenizer": "^3.4.0",
     "lucide-react": "^1.27.0",
+    "material-icon-theme": "^5.37.0",
     "react-markdown": "^10.1.0",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",

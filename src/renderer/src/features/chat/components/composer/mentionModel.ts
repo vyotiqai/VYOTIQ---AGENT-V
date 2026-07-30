@@ -113,68 +113,6 @@ export function pathSegments(path: string): string[] {
     .filter(Boolean)
 }
 
-export function fileExt(path: string): string {
-  const base = basenamePath(path)
-  const dot = base.lastIndexOf('.')
-  if (dot <= 0) return ''
-  return base.slice(dot + 1).toLowerCase()
-}
-
-export type FileBadgeInfo = {
-  label: string
-  className: string
-}
-
-/** Extension badge for menus/chips (Cursor-like TS / MD pills). */
-export function fileBadgeForPath(path: string): FileBadgeInfo {
-  const ext = fileExt(path)
-  switch (ext) {
-    case 'ts':
-    case 'mts':
-    case 'cts':
-      return { label: 'TS', className: 'bg-sky-600 text-white' }
-    case 'tsx':
-      return { label: 'TSX', className: 'bg-sky-700 text-white' }
-    case 'js':
-    case 'mjs':
-    case 'cjs':
-      return { label: 'JS', className: 'bg-amber-500 text-black' }
-    case 'jsx':
-      return { label: 'JSX', className: 'bg-amber-600 text-white' }
-    case 'md':
-    case 'mdx':
-    case 'markdown':
-    case 'mdc':
-      return { label: 'MD', className: 'bg-slate-500 text-white' }
-    case 'json':
-    case 'jsonc':
-      return { label: 'JSON', className: 'bg-yellow-600 text-black' }
-    case 'css':
-    case 'scss':
-      return { label: 'CSS', className: 'bg-pink-600 text-white' }
-    case 'html':
-    case 'htm':
-      return { label: 'HTML', className: 'bg-orange-600 text-white' }
-    case 'py':
-      return { label: 'PY', className: 'bg-blue-700 text-white' }
-    case 'rs':
-      return { label: 'RS', className: 'bg-orange-800 text-white' }
-    case 'go':
-      return { label: 'GO', className: 'bg-cyan-700 text-white' }
-    case 'yml':
-    case 'yaml':
-      return { label: 'YML', className: 'bg-rose-700 text-white' }
-    default:
-      if (ext) {
-        return {
-          label: ext.slice(0, 4).toUpperCase(),
-          className: 'bg-surface-2 text-fg'
-        }
-      }
-      return { label: 'FILE', className: 'bg-surface-2 text-muted' }
-  }
-}
-
 export function mentionLabel(mention: ComposerMention): string {
   switch (mention.kind) {
     case 'file':
