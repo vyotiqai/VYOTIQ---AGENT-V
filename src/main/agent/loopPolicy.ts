@@ -94,9 +94,14 @@ export function isConcreteWorkspacePath(value: string): boolean {
   return true
 }
 
+/** Tools whose successful concrete paths count as inspect for read-before-edit. */
+export function isInspectToolName(name: string): boolean {
+  return name === 'read' || name === 'grep' || name === 'glob'
+}
+
 /**
  * Paths that count as “seen” for read-before-edit: `read`, or concrete
- * `grep` include/path / `glob` pattern (no wildcards).
+ * `grep` include / `glob` pattern (no wildcards).
  */
 export function inspectPathsFromToolCall(
   name: string,
@@ -107,14 +112,12 @@ export function inspectPathsFromToolCall(
     return path ? [path] : []
   }
   if (name === 'grep') {
-    const paths: string[] = []
-    for (const key of ['path', 'include'] as const) {
-      const raw = args[key]
-      if (typeof raw === 'string' && isConcreteWorkspacePath(raw)) {
-        paths.push(normalizeWorkspaceRelPath(raw))
-      }
+    // Schema/executor only accept `include` (not `path`); ignore hallucinated path args.
+    const raw = args.include
+    if (typeof raw === 'string' && isConcreteWorkspacePath(raw)) {
+      return [normalizeWorkspaceRelPath(raw)]
     }
-    return paths
+    return []
   }
   if (name === 'glob') {
     const pattern = typeof args.pattern === 'string' ? args.pattern : ''

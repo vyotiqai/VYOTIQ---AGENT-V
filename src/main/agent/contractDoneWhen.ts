@@ -168,7 +168,13 @@ export function shouldNudgeContractDoneWhen(opts: {
   if (opts.agentMode !== 'agent') return false
   if (opts.incomplete) return false
   if (opts.criteria.length === 0) return false
-  if (opts.results.every((r) => r.met)) return false
+  // Incomplete evaluation (e.g. abort mid-loop) must not vacuous-pass via [].every().
+  if (
+    opts.results.length === opts.criteria.length &&
+    opts.results.every((r) => r.met)
+  ) {
+    return false
+  }
   if (opts.mode === 'notice' && opts.alreadyNudged) return false
   return true
 }

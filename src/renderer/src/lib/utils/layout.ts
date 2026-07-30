@@ -8,6 +8,9 @@ export const CHAT_GUTTER = 'px-4 sm:px-5'
  */
 export const CHAT_STAGE_INSET = 'pl-4 pr-10 sm:pl-5'
 
+/** Width of the floating chat side rail (icon strip) in pixels (`w-10`). */
+export const CHAT_SIDE_RAIL_WIDTH_PX = 40
+
 /** Width of the floating chat side rail (icon strip). */
 export const CHAT_SIDE_RAIL_WIDTH = 'w-10'
 

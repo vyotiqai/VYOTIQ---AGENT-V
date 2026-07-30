@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { cn } from '@renderer/lib/ui/cn'
-import { CHAT_RIGHT_PANEL } from '@renderer/lib/utils/layout'
+import { CHAT_RIGHT_PANEL, CHAT_SIDE_RAIL_WIDTH_PX } from '@renderer/lib/utils/layout'
 import type { AgentBrowserState } from '@shared/ipc'
 import {
   clearBrowserRecents,
@@ -97,10 +97,17 @@ export function AgentBrowserPanel({
       if (cancelled) return
       const r = el.getBoundingClientRect()
       if (r.width < 2 || r.height < 2) return
+      // Native WebContentsView paints above the renderer — clamp so bounds never
+      // cover the floating side-rail strip (CSS pr-10 alone is not enough if
+      // layout timing / rounding extends into that zone).
+      const x = Math.round(r.x)
+      const rightLimit = Math.round(window.innerWidth) - CHAT_SIDE_RAIL_WIDTH_PX
+      const width = Math.max(0, Math.min(Math.round(r.width), rightLimit - x))
+      if (width < 2) return
       void window.vyotiq.browserSetBounds?.({
-        x: Math.round(r.x),
+        x,
         y: Math.round(r.y),
-        width: Math.round(r.width),
+        width,
         height: Math.round(r.height)
       })
     }

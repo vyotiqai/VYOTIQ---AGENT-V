@@ -148,6 +148,46 @@ describe('ChatView composer placement', () => {
     expect(document.querySelector('[data-agent-browser-panel]')).toBeNull()
   })
 
+  it('restores the Plan panel from localStorage on mount', () => {
+    localStorage.setItem('vyotiq.rightPanel', 'plan')
+    render(<ChatView {...baseProps} items={[]} />)
+
+    expect(document.querySelector('[data-plan-panel]')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Hide plan panel/i })).toBeTruthy()
+  })
+
+  it('does not steal Plan when browser opens on a rising edge', () => {
+    let browserHandler: ((state: { open: boolean; url: string; title: string }) => void) | null =
+      null
+    Object.defineProperty(window, 'vyotiq', {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(window.vyotiq as object),
+        browserGetState: vi.fn().mockResolvedValue({
+          ok: true,
+          data: { open: false, url: '', title: '' }
+        }),
+        onBrowserState: vi.fn((handler: typeof browserHandler) => {
+          browserHandler = handler
+          return () => {
+            browserHandler = null
+          }
+        })
+      }
+    })
+
+    localStorage.setItem('vyotiq.rightPanel', 'plan')
+    render(<ChatView {...baseProps} items={[]} />)
+
+    expect(document.querySelector('[data-plan-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-agent-browser-panel]')).toBeNull()
+
+    browserHandler?.({ open: true, url: 'https://example.com', title: 'Example' })
+    expect(document.querySelector('[data-plan-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-agent-browser-panel]')).toBeNull()
+  })
+
   it('shows Recents in the empty browser panel when history exists', () => {
     localStorage.setItem(
       'vyotiq.browserRecents',

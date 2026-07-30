@@ -151,8 +151,10 @@ export const SettingsSchema = z.object({
    */
   diagnosticsCommand: z.string().default(''),
   /**
-   * Soft verify-before-done gate in Agent mode (at most one continue).
-   * Default `notice` — nudge once when finishing without diagnostics evidence.
+   * Verify-before-done gate in Agent mode.
+   * `notice` — soft-nudge at most once when finishing without clean diagnostics evidence.
+   * `require` — re-check typecheck and keep blocking finish until clean (or abort).
+   * Default `notice`.
    */
   verifyBeforeDone: VerifyBeforeDoneModeSchema.default('notice'),
   /**

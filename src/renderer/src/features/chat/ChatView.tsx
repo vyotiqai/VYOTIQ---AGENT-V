@@ -281,7 +281,7 @@ export function ChatView({
   const [activeRightPanel, setActiveRightPanel] = useState<ChatRightPanelId | null>(() => {
     try {
       const raw = localStorage.getItem(RIGHT_PANEL_KEY)
-      if (raw === 'browser' || raw === 'terminal' || raw === 'changes') {
+      if (raw === 'browser' || raw === 'terminal' || raw === 'changes' || raw === 'plan') {
         return raw
       }
       // Legacy Files rail → Changes (list + Keep/Discard in one panel).
@@ -322,18 +322,17 @@ export function ChatView({
       if (cancelled || !res.ok) return
       wasOpen = Boolean(res.data.open)
       setBrowserActive(wasOpen)
-      // Only auto-open on first load when no panel preference is restored yet.
-      // Do not override a persisted Terminal/Changes selection.
+      // Initial fetch only seeds browserActive — panel restore comes from localStorage.
     })
     const unsub = window.vyotiq?.onBrowserState?.((next) => {
       if (cancelled) return
       const open = Boolean(next.open)
       setBrowserActive(open)
       // Rising edge only: agent just opened a page — show the browser panel
-      // without stealing an already-selected Terminal/Changes panel.
+      // without stealing Terminal / Changes / Plan.
       if (open && !wasOpen) {
         setActiveRightPanel((current) => {
-          if (current === 'terminal' || current === 'changes') {
+          if (current === 'terminal' || current === 'changes' || current === 'plan') {
             return current
           }
           try {

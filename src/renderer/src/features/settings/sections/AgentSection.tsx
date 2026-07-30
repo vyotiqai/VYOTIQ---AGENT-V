@@ -37,7 +37,9 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
     <>
       {form.workspaceOverrideActive ? (
         <p className="m-0 mb-3 rounded-md border border-border bg-surface px-2.5 py-2 text-xs text-secondary">
-          Editing this workspace’s overrides. Changes here apply only while the override is on.
+          Workspace override is on — compaction, memory, thinking, approval, and sub-agent
+          fields apply to this workspace only. Rows marked Global setting still update
+          app-wide settings.
         </p>
       ) : null}
 
@@ -275,7 +277,7 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
 
       <SettingsRow
         title="Contract done-when"
-        description="Mechanical checks from contract.md Done-when bullets that mention file paths or typecheck/diagnostics. Notice nudges once; require keeps blocking until those criteria pass. Subjective bullets stay advisory. Global setting."
+        description="In Agent mode: mechanical checks from contract.md Done-when bullets that mention file paths or typecheck/diagnostics. Notice nudges once; require keeps blocking until those criteria pass. Subjective bullets stay advisory. Global setting."
       >
         <Menu
           aria-label="Contract done-when"
@@ -292,7 +294,7 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
 
       <SettingsRow
         title="Read before edit"
-        description="Before editing an existing file: notice soft-reminds after unread edits; require blocks edit/str_replace/multi_edit until the path was read (or concrete grep/glob) this run. New-file creates are exempt. Global setting."
+        description="In Agent mode, before editing an existing file: notice soft-reminds after unread edits; require blocks edit/str_replace/multi_edit until the path was read (or concrete grep/glob) this run. New-file creates are exempt. Global setting."
       >
         <Menu
           aria-label="Read before edit"
@@ -309,7 +311,7 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
 
       <SettingsRow
         title="LLM harness proposal rewriter"
-        description="Experimental. When on, /harness-review may rewrite the proposed default.md body via the configured model. Apply stays human-confirm + vitest gate. Default off (rule-based notes only)."
+        description="Experimental. When on, /harness-review may rewrite the proposed default.md body via the configured model. Apply stays human-confirm + vitest gate. Default off (rule-based notes only). Global setting."
       >
         <label className="inline-flex items-center gap-2 text-xs text-secondary">
           <input

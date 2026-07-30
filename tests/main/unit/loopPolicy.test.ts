@@ -5,6 +5,7 @@ import {
   applyToolCallToKnownPaths,
   combineLoopHints,
   editPathsFromToolCall,
+  isInspectToolName,
   loopHintForConsecutiveFailures,
   loopHintForUnreadEdits,
   maxParallelReadToolsForFailureStreak,
@@ -13,6 +14,7 @@ import {
   readBeforeEditBlockMessage,
   readPathFromToolCall,
   seedKnownPathsFromMessages,
+  toolArgsFromCall,
   unreadExistingEditPaths
 } from '@main/agent/loopPolicy'
 
@@ -110,7 +112,7 @@ describe('loopPolicy', () => {
     expect(known.has('src/b.ts')).toBe(true)
   })
 
-  it('partitions require-mode unread edits; same-step read allows edit', () => {
+  it('partitions require-mode unread edits; same-step read/grep/glob allows edit', () => {
     const exists = (p: string) => p === 'src/a.ts'
     const blockedOnly = partitionReadBeforeEditCalls({
       known: new Set(),
@@ -121,7 +123,7 @@ describe('loopPolicy', () => {
     expect(blockedOnly.allowed).toHaveLength(0)
     expect(readBeforeEditBlockMessage(blockedOnly.blocked[0]!.paths)).toMatch(/require/i)
 
-    const sameStep = partitionReadBeforeEditCalls({
+    const sameStepRead = partitionReadBeforeEditCalls({
       known: new Set(),
       calls: [
         { id: '1', name: 'edit', arguments: '{"path":"src/a.ts","content":"x"}' },
@@ -129,7 +131,55 @@ describe('loopPolicy', () => {
       ],
       pathExists: exists
     })
-    expect(sameStep.blocked).toHaveLength(0)
-    expect(sameStep.allowed).toHaveLength(2)
+    expect(sameStepRead.blocked).toHaveLength(0)
+    expect(sameStepRead.allowed).toHaveLength(2)
+
+    const sameStepGrep = partitionReadBeforeEditCalls({
+      known: new Set(),
+      calls: [
+        { id: '1', name: 'edit', arguments: '{"path":"src/a.ts","content":"x"}' },
+        { id: '2', name: 'grep', arguments: '{"pattern":"foo","include":"src/a.ts"}' }
+      ],
+      pathExists: exists
+    })
+    expect(sameStepGrep.blocked).toHaveLength(0)
+    expect(sameStepGrep.allowed).toHaveLength(2)
+
+    // Hallucinated grep `path` (not in schema) must not unlock edits.
+    const hallucinatedPath = partitionReadBeforeEditCalls({
+      known: new Set(),
+      calls: [
+        { id: '1', name: 'edit', arguments: '{"path":"src/a.ts","content":"x"}' },
+        { id: '2', name: 'grep', arguments: '{"pattern":"foo","path":"src/a.ts"}' }
+      ],
+      pathExists: exists
+    })
+    expect(hallucinatedPath.blocked).toHaveLength(1)
+    expect(hallucinatedPath.allowed).toHaveLength(1)
+  })
+
+  it('treats same-step concrete grep as inspect for notice-mode unread hints', () => {
+    const known = new Set<string>()
+    const exists = (p: string) => p === 'src/a.ts'
+    const calls = [
+      { id: '1', name: 'grep' as const, arguments: '{"pattern":"x","include":"src/a.ts"}' },
+      { id: '2', name: 'edit' as const, arguments: '{"path":"src/a.ts","content":"y"}' }
+    ]
+    for (const call of calls) {
+      if (isInspectToolName(call.name)) {
+        applyToolCallToKnownPaths(known, call.name, toolArgsFromCall(call.arguments), true)
+      }
+    }
+    const unread: string[] = []
+    for (const call of calls) {
+      unread.push(
+        ...unreadExistingEditPaths(known, call.name, toolArgsFromCall(call.arguments), exists)
+      )
+      if (!isInspectToolName(call.name)) {
+        applyToolCallToKnownPaths(known, call.name, toolArgsFromCall(call.arguments), true)
+      }
+    }
+    expect(unread).toHaveLength(0)
+    expect(loopHintForUnreadEdits(unread)).toBeUndefined()
   })
 })

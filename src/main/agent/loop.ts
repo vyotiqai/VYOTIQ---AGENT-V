@@ -47,6 +47,7 @@ import {
   applyToolCallToKnownPaths,
   combineLoopHints,
   editPathsFromToolCall,
+  isInspectToolName,
   loopHintForConsecutiveFailures,
   loopHintForOmittedMcpTools,
   loopHintForUnreadEdits,
@@ -1265,6 +1266,7 @@ export async function* runAgent(input: {
           if (verifyNeedsNudge && verifyBeforeDoneMode === 'require') {
             try {
               const check = await externalDiagnosticsCheck(workspace, controller.signal)
+              if (controller.signal.aborted) break
               if (check.clean) {
                 verifyNeedsNudge = false
                 logger.info('Verify-before-done: external typecheck clean', {
@@ -1286,6 +1288,7 @@ export async function* runAgent(input: {
           if (contractDoneWhenMode !== 'off' && agentMode === 'agent') {
             try {
               const contractText = await readContractAsync(runDir)
+              if (controller.signal.aborted) break
               const bullets = parseDoneWhenBullets(contractText)
               const criteria = parseCheckableCriteria(bullets)
               lastContractCheckableCount = criteria.length
@@ -1295,6 +1298,7 @@ export async function* runAgent(input: {
                   criteria,
                   controller.signal
                 )
+                if (controller.signal.aborted) break
                 lastContractUnmet = unmetCriteriaSummaries(contractFailures)
                 contractNeedsNudge = shouldNudgeContractDoneWhen({
                   mode: contractDoneWhenMode,
@@ -1317,6 +1321,8 @@ export async function* runAgent(input: {
               })
             }
           }
+
+          if (controller.signal.aborted) break
 
           if (verifyNeedsNudge || contractNeedsNudge) {
             const parts: string[] = []
@@ -1354,6 +1360,8 @@ export async function* runAgent(input: {
             continue
           }
         }
+
+        if (controller.signal.aborted) break
 
         if (incomplete) {
           const incompleteEv: AgentEvent = {
@@ -1570,11 +1578,12 @@ export async function* runAgent(input: {
           okByCallId.set(msg.toolCallId, msg.ok !== false)
         }
       }
-      // Apply successful reads first so same-step read+edit does not nag.
+      // Apply successful inspect tools first so same-step inspect+edit does not nag
+      // (matches require-mode partition: read / concrete grep / concrete glob).
       for (const call of callsToExecute) {
         const args = toolArgsFromCall(call.arguments)
         const ok = okByCallId.get(call.id) ?? false
-        if (call.name === 'read') {
+        if (isInspectToolName(call.name)) {
           applyToolCallToKnownPaths(knownPaths, call.name, args, ok)
         }
       }
@@ -1587,7 +1596,7 @@ export async function* runAgent(input: {
             existedBeforeEdit.has(rel)
           )
         )
-        if (call.name !== 'read') {
+        if (!isInspectToolName(call.name)) {
           applyToolCallToKnownPaths(knownPaths, call.name, args, ok)
         }
       }

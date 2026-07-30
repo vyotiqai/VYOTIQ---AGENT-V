@@ -364,6 +364,43 @@ describe('runAgent verify-before-done + receipt', () => {
     expect(receipt.verifyBeforeDone.nudged).toBe(true)
   })
 
+  it('does not nudge verify-before-done in Ask mode', async () => {
+    getSettings.mockImplementation(() => ({
+      ...DEFAULT_SETTINGS,
+      verifyBeforeDone: 'require' as const,
+      contractDoneWhen: 'require' as const,
+      provider: 'ollama' as const,
+      model: 'qwen2.5',
+      ollamaBaseUrl: 'http://127.0.0.1:11434',
+      theme: 'system' as const,
+      telemetryEnabled: false
+    }))
+
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      yield { type: 'text', text: 'Done without tools.' }
+      yield { type: 'done', stopReason: 'end_turn' }
+    })
+
+    for await (const _ev of runAgent({
+      runId: 'verify-ask',
+      messages: [{ role: 'user', content: 'explain' }],
+      workspacePath: workspace,
+      mode: 'ask'
+    })) {
+      // drain
+    }
+
+    expect(call).toBe(1)
+    expect(toolDiagnosticsAsync).not.toHaveBeenCalled()
+    const receipt = JSON.parse(
+      readFileSync(join(resolveRunDir(workspace, 'verify-ask'), RUN_RECEIPT_FILENAME), 'utf8')
+    ) as { verifyBeforeDone: { nudged: boolean }; contractDoneWhen: { nudged: boolean } }
+    expect(receipt.verifyBeforeDone.nudged).toBe(false)
+    expect(receipt.contractDoneWhen.nudged).toBe(false)
+  })
+
   it('records wroteFiles from a real edit checkpoint', async () => {
     getSettings.mockImplementation(() => ({
       ...DEFAULT_SETTINGS,

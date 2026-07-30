@@ -157,6 +157,68 @@ Ship it
         incomplete: undefined
       })
     ).toBe(false)
+    expect(
+      shouldNudgeContractDoneWhen({
+        mode: 'require',
+        agentMode: 'ask',
+        criteria,
+        results,
+        alreadyNudged: false,
+        incomplete: undefined
+      })
+    ).toBe(false)
+    expect(
+      shouldNudgeContractDoneWhen({
+        mode: 'require',
+        agentMode: 'plan',
+        criteria,
+        results,
+        alreadyNudged: false,
+        incomplete: undefined
+      })
+    ).toBe(false)
+    // Partial / empty results must not vacuous-pass via [].every().
+    expect(
+      shouldNudgeContractDoneWhen({
+        mode: 'require',
+        agentMode: 'agent',
+        criteria,
+        results: [],
+        alreadyNudged: false,
+        incomplete: undefined
+      })
+    ).toBe(true)
+    expect(
+      shouldNudgeContractDoneWhen({
+        mode: 'notice',
+        agentMode: 'agent',
+        criteria,
+        results: [],
+        alreadyNudged: false,
+        incomplete: undefined
+      })
+    ).toBe(true)
+  })
+
+  it('stops evaluation on abort and leaves incomplete results for the nudge gate', async () => {
+    writeFileSync(join(workspace, 'a.ts'), 'export {}\n')
+    const criteria = parseCheckableCriteria(['Need `a.ts`', 'Typecheck is clean'])
+    expect(criteria.length).toBeGreaterThanOrEqual(2)
+    const ac = new AbortController()
+    ac.abort()
+    const results = await evaluateContractCriteria(workspace, criteria, ac.signal)
+    expect(results).toHaveLength(0)
+    expect(externalDiagnosticsCheck).not.toHaveBeenCalled()
+    expect(
+      shouldNudgeContractDoneWhen({
+        mode: 'require',
+        agentMode: 'agent',
+        criteria,
+        results,
+        alreadyNudged: false,
+        incomplete: undefined
+      })
+    ).toBe(true)
   })
 
   it('builds nudge message and unmet summaries', () => {
