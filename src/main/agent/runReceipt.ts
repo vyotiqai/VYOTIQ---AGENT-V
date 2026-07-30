@@ -322,10 +322,10 @@ export function writeRunReceiptBestEffort(input: {
   contractDoneWhenNudged?: boolean
   contractCheckableCriteria?: number
   contractUnmetCriteria?: string[]
-}): void {
+}): RunReceipt | null {
   try {
     const status = input.loadStatus(input.runDir)
-    if (!status) return
+    if (!status) return null
     const receipt = buildRunReceipt({
       runId: input.runId,
       status,
@@ -341,11 +341,13 @@ export function writeRunReceiptBestEffort(input: {
       runDir: input.runDir
     })
     writeRunReceipt(input.runDir, receipt)
+    return receipt
   } catch (err) {
     logger.warn('Failed to write run receipt', {
       scope: 'agent',
       correlationId: input.runId,
       err
     })
+    return null
   }
 }

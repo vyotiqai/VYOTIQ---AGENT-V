@@ -22,9 +22,9 @@ When Settings ΓåÆ Agent ΓåÆ LLM harness proposal rewriter is on, review ma
 rewrite the proposed body via the configured model (still human-confirm to apply).
 After editing a proposalΓÇÖs Proposed harness body,
 `/harness-apply` confirms, writes only `resources/harness/default.md`, runs a fixed
-vitest subset (refuses if gate sources are dirty or git status cannot be checked), and reverts that file on failure.
+vitest subset including the frozen held-out grader (refuses if gate sources are dirty or git status cannot be checked), and reverts that file on failure.
 Applied harness text is loaded on the next invoke / new run (not mid-step).
-Evaluator / gate-test changes need a normal PR, not harness-apply.
+Evaluator / held-out fixture / gate-test changes need a normal PR, not harness-apply.
 
 ## Tool policy
 

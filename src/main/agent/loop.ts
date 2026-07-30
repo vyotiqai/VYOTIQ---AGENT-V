@@ -60,6 +60,7 @@ import {
 import { resolveInsideWorkspace } from '../workspace/safePath'
 import { MAX_PARALLEL_READ_TOOLS } from './tools/classify'
 import { disposeTerminalSessionsForInvoke } from './tools/terminalSessions'
+import { disposeSubagentsForInvoke } from './subagentRegistry'
 import { getProvider } from './providers'
 import { resolveModelInfo } from './modelResolve'
 import { requestMaxOutputTokens } from './providers/requestLimits'
@@ -98,6 +99,7 @@ import {
   flushMessageAppends
 } from './state'
 import { writeRunReceiptBestEffort } from './runReceipt'
+import { writeTrajectoryArtifactsBestEffort } from './runTrajectory'
 import {
   contractDoneWhenNudgeMessage,
   evaluateContractCriteria,
@@ -1748,7 +1750,7 @@ export async function* runAgent(input: {
       }
       await flushMessageAppends(runDir)
       await flushEventAppends(runDir)
-      writeRunReceiptBestEffort({
+      const receipt = writeRunReceiptBestEffort({
         runDir,
         runId,
         loadStatus,
@@ -1762,8 +1764,16 @@ export async function* runAgent(input: {
         contractCheckableCriteria: lastContractCheckableCount,
         contractUnmetCriteria: lastContractUnmet
       })
+      // Observational AHE sidecars — best-effort; must not block receipt success.
+      writeTrajectoryArtifactsBestEffort({
+        runDir,
+        runId,
+        loadEvents,
+        receipt
+      })
     }
     disposeTerminalSessionsForInvoke(runId, invokeId)
+    await disposeSubagentsForInvoke(runId, invokeId)
     clearRunAbort(runId, invokeId)
   }
 }

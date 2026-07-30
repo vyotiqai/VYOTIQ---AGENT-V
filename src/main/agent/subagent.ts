@@ -23,6 +23,7 @@ import { AGENT_TOOLS } from './types'
 import type { ToolCall } from './providers/types'
 import { executeTool } from './tools'
 import { repairToolArgs } from './toolArgsRepair'
+import { registerSubagent, unregisterSubagent } from './subagentRegistry'
 import {
   contentWindow,
   contextWindowFor,
@@ -130,6 +131,12 @@ export type SubagentOptions = {
   parentMode?: AgentInteractionMode
   /** Parent run directory; when set, the report is written under subagents/<id>/. */
   runDir?: string
+  /** Parent run id — enables explicit registry dispose-for-invoke. */
+  runId?: string
+  /** Parent chat invoke id — scopes registry dispose. */
+  invokeId?: number
+  /** Parent tool-call id (for registry diagnostics). */
+  parentToolCallId?: string
   emit?: (update: SubagentUpdate) => void
   onContextUsage?: (usage: SubagentContextUsage) => void
 }
@@ -234,6 +241,26 @@ function subagentToolDefs(allowedTools: readonly string[]) {
 export async function runSubagent(options: SubagentOptions): Promise<SubagentOutcome> {
   if (options.depth >= MAX_SUBAGENT_DEPTH) throw new SubagentDepthError()
 
+  let registryId: string | undefined
+  if (typeof options.runId === 'string' && typeof options.invokeId === 'number') {
+    const reg = registerSubagent({
+      runId: options.runId,
+      invokeId: options.invokeId,
+      parentSignal: options.signal,
+      parentToolCallId: options.parentToolCallId
+    })
+    registryId = reg.id
+    options = { ...options, signal: reg.signal }
+  }
+
+  try {
+    return await runSubagentImpl(options)
+  } finally {
+    if (registryId) unregisterSubagent(registryId)
+  }
+}
+
+async function runSubagentImpl(options: SubagentOptions): Promise<SubagentOutcome> {
   const parentMode = options.parentMode ?? 'agent'
   const allowedToolNames = subagentToolsForParentMode(parentMode)
   const allowedToolSet = new Set<string>(allowedToolNames)

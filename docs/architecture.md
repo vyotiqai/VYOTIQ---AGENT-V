@@ -188,6 +188,8 @@ Per-workspace runs live under AppData `workspaces/{workspaceId}/sessions/{runId}
 - `contract.md` — goal + done-when (subjective bullets advisory; path/typecheck bullets may be mechanically gated via `contractDoneWhen`)
 - `plan.md` — Plan-mode draft (auto-injected as `## Plan` when non-empty / non-stub)
 - `receipt.json` — end-of-run structured summary (tool stats, failure clusters, unread edits, verify + contractDoneWhen metadata, optional `subagents[]` index of file-backed reports, contract excerpt)
+- `trajectory.jsonl` — observational AHE step/event flight recorder derived from `events.jsonl` (no LLM; not auto-merged into harness)
+- `prediction.json` — observational prediction manifest (`observed_only: true`; heuristic harness-section targets only — never auto-applied)
 - `status.json` — run status metadata (includes `mode`, `consecutiveToolFailureSteps`)
 
 Legacy `.vyotiq/runs/` folders are migrated into AppData on startup.
@@ -200,26 +202,28 @@ Follow-up turns use incremental IPC (`newMessages` + `runId`); main loads prior 
 
 **Contract done-when** (Settings → Agent → `contractDoneWhen`: `off` | `notice` | `require`, default `require`) parses `contract.md` `## Done when` bullets for **checkable** patterns only: backtick/path tokens that must exist on disk, and typecheck/diagnostics language (reuses the external typecheck check). Subjective default-template bullets are skipped — with no checkable criteria the gate is inactive. `notice` soft-nudges once; `require` blocks finish until unmet criteria pass. Runs after the verify-before-done gate; both may combine into one user nudge.
 
-**Harness editing scaffold** (not full Self-Harness / Meta-Harness): each run’s `receipt.json` (and indexed subagent `report.md` files) can be mined with `/harness-review` into `.vyotiq/harness/proposals/*.md` via rule-based weakness extraction with **evidence buckets** (heuristic tags — not AHE). Optional Settings → Agent → `harnessProposalRewriter` (default off) may one-shot rewrite the proposed harness body via the configured model; apply stays human-gated. After a human edits the proposal’s `## Proposed harness body`, `/harness-apply` (confirm dialog) writes only `resources/harness/default.md`, runs a fixed vitest subset (`HARNESS_EVAL_TESTS` in `harnessApply.ts`), refuses apply when gate sources (`harnessApply.ts` + those tests) are dirty in git **or** when `.git` exists but `git status` fails (fail-closed), and reverts that file on failure. Changing evaluator code or the gate test list is a normal PR — not part of `/harness-apply`. Ask mode still denies `diagnostics` on the parent and strips it from subagent tool allowlists.
+**Harness editing scaffold** (not full Self-Harness / Meta-Harness): each run’s `receipt.json` (and indexed subagent `report.md` files) can be mined with `/harness-review` into `.vyotiq/harness/proposals/*.md` via rule-based weakness extraction with **evidence buckets** (heuristic tags — not AHE). Optional Settings → Agent → `harnessProposalRewriter` (default off) may one-shot rewrite the proposed harness body via the configured model; apply stays human-gated. After a human edits the proposal’s `## Proposed harness body`, `/harness-apply` (confirm dialog) writes only `resources/harness/default.md`, runs a fixed vitest subset (`HARNESS_EVAL_TESTS` in `harnessApply.ts`, including the frozen held-out grader in `harnessHeldOutEval.ts`), refuses apply when gate sources (`harnessApply.ts` + `harnessHeldOutEval.ts` + those tests) are dirty in git **or** when `.git` exists but `git status` fails (fail-closed), and reverts that file on failure. Changing evaluator code, held-out fixtures, or the gate test list is a normal PR — not part of `/harness-apply`. Ask mode still denies `diagnostics` on the parent and strips it from subagent tool allowlists. Operator map: [Source-linked Harness Handbook](./harness-handbook.md) (failure modes → harness sections → evidence sources; docs only — no product UI).
 
 **Read before edit** (Settings → Agent → `readBeforeEdit`: `off` | `notice` | `require`, default `notice`): in Agent mode, soft-notices after unread edits (`notice`) or **blocks** `edit` / `str_replace` / `multi_edit` on existing unread paths before execution (`require`). Same-step inspect+edit and new-file creates are exempt.
 
 **Sub-agent reports:** Successful (and failed) sub-agent runs persist `subagents/<id>/report.md` (+ `status.json`) under the run directory. The tool result includes the report text and path; `read` remaps `subagents/.../report.md` to the run dir so the parent can re-read after compaction. Parent `receipt.json` may include a minimal `subagents[]` index (`id`, `status`, `reportPath`) scanned at write time. `/harness-review` rule-mines those reports into evidence bullets/buckets (no LLM summarization of report prose).
 
+**Sub-agent process ownership:** In-flight `subagent` tool calls register in `subagentRegistry` (child `AbortController` linked to the parent run signal). Loop invoke teardown, `chatCancelResult` / Stop, and workspace remove call `disposeSubagentsForInvoke` / `disposeSubagentsForRun` so nested work is hard-cancelled (in-process — not OS process trees).
+
 ### Future harness research (proposed)
 
-Net-new behaviors from harness research audits — **documented only; not implemented** in this codebase:
+Net-new behaviors from harness research audits. Rows marked **shipped** are in-tree; others remain **documented only; not implemented**:
 
-| Proposal | Why (evidence / source intent) | Explicitly unimplemented |
+| Proposal | Why (evidence / source intent) | Status |
 |---|---|---|
-| Fixed-evaluator / held-out Self-Harness experiment | Need a frozen grader + held-out tasks before any auto-apply loop is trustworthy | No autonomous apply loop; `/harness-apply` stays human-gated with a fixed vitest subset |
-| AHE-style raw trajectory + prediction manifests | Observational AHE needs raw trajectories and prediction records, not only heuristic evidence buckets | Receipts keep heuristic buckets; no AHE manifests or section auto-merge |
-| Source-linked Harness Handbook | Operators need a durable map from failure modes → harness sections with source citations | Handbook remains a docs proposal; not a product UI |
-| Explicit background-subagent process management | Background agent terminals already have run/invoke ownership; full subagent process trees need the same clarity | No separate subagent process manager beyond current run-owned terminal dispose + MCP session sync |
-| DGM-style autonomous self-modification | Apply surface is one file + human confirm | Out of product scope |
-| Unsupervised Self-Harness (auto-apply rewriter loop) | Rewriter is opt-in + human confirm only | Fixed evaluator + auto-merge not product scope |
+| Fixed-evaluator / held-out Self-Harness experiment | Need a frozen grader + held-out tasks before any auto-apply loop is trustworthy | **Shipped (experiment)** — `harnessHeldOutEval.ts` frozen fixtures grade receipt → buckets / prediction targets; included in `HARNESS_EVAL_TESTS`; **no** autonomous apply loop |
+| AHE-style raw trajectory + prediction manifests | Observational AHE needs raw trajectories and prediction records, not only heuristic evidence buckets | **Shipped (observational)** — run dir `trajectory.jsonl` + `prediction.json` (`observed_only`); `/harness-review` may cite paths; **no** section auto-merge or auto-apply |
+| Source-linked Harness Handbook | Operators need a durable map from failure modes → harness sections with source citations | **Shipped (docs)** — [harness-handbook.md](./harness-handbook.md); not a product UI; apply stays human-gated |
+| Explicit background-subagent process management | Background agent terminals already have run/invoke ownership; full subagent process trees need the same clarity | **Shipped** — `subagentRegistry` registers in-process children with per-child abort linked to parent; `disposeSubagentsForInvoke` / `disposeSubagentsForRun` on loop teardown, cancel, and workspace remove |
+| DGM-style autonomous self-modification | Apply surface is one file + human confirm | **Out of product scope** |
+| Unsupervised Self-Harness (auto-apply rewriter loop) | Rewriter is opt-in + human confirm only | **Out of product scope** — fixed evaluator + auto-merge not product scope |
 
-Do **not** treat this table as a backlog commitment to ship those systems.
+Do **not** treat unimplemented rows as a backlog commitment to ship those systems.
 
 ## Observability
 

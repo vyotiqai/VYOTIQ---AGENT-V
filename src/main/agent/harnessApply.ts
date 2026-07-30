@@ -21,7 +21,7 @@ export const RECEIPT_NOTES_HEADING = '## Receipt review notes'
 
 /** Apply mutates only this relative path; evaluator / gate changes are PR-only. */
 export const HARNESS_APPLY_SURFACE_NOTE =
-  '`/harness-apply` writes only `resources/harness/default.md`. Changing evaluator code, `HARNESS_EVAL_TESTS`, or gate unit tests requires a normal PR — not harness-apply.'
+  '`/harness-apply` writes only `resources/harness/default.md`. Changing evaluator code, `HARNESS_EVAL_TESTS`, held-out fixtures (`harnessHeldOutEval.ts`), or gate unit tests requires a normal PR — not harness-apply.'
 
 /**
  * Fixed vitest subset used as the harness-apply gate.
@@ -38,7 +38,9 @@ export const HARNESS_EVAL_TESTS = [
   'tests/main/unit/harnessApply.test.ts',
   'tests/main/unit/agentLoopVerify.test.ts',
   'tests/main/unit/contractDoneWhen.test.ts',
-  'tests/main/unit/agentLoopContractDoneWhen.test.ts'
+  'tests/main/unit/agentLoopContractDoneWhen.test.ts',
+  /** Frozen held-out grader — never auto-applies; edit cases only via PR. */
+  'tests/main/unit/harnessHeldOutEval.test.ts'
 ] as const
 
 /** Patterns that attempt to disable or hollow out the apply gate inside a proposed harness body. */
@@ -53,6 +55,7 @@ export function proposalAttemptsGateTamper(proposedBody: string): boolean {
 /** Gate implementation + evaluator tests — must be clean in git before apply. */
 export const HARNESS_GATE_SOURCE_PATHS = [
   'src/main/agent/harnessApply.ts',
+  'src/main/agent/harnessHeldOutEval.ts',
   ...HARNESS_EVAL_TESTS
 ] as const
 

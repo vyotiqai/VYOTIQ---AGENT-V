@@ -7,6 +7,10 @@ import { resolveInsideWorkspace } from '../workspace/safePath'
 import { resolveRunDir, workspaceSessionsRoot } from '../storage/paths'
 import { RUN_RECEIPT_FILENAME } from './runReceipt'
 import {
+  predictionArtifactExists,
+  trajectoryArtifactExists
+} from './runTrajectory'
+import {
   HARNESS_APPLY_SURFACE_NOTE,
   HARNESS_EVAL_TESTS,
   upsertReceiptNotes,
@@ -554,7 +558,14 @@ export function buildProposalMarkdown(
     'Gate tests (`pnpm exec vitest run`):',
     evalList,
     '',
-    '- On failure, `resources/harness/default.md` is reverted from backup',
+    'Held-out experiment: frozen grader in `harnessHeldOutEval.ts` (receipt → bucket / prediction fixtures). Runs inside the vitest gate; **never** auto-applies harness text.',
+    '',
+    '## How to apply',
+    '',
+    '1. Edit the proposed body above if needed.',
+    '2. Run `/harness-apply` and confirm.',
+    '3. Apply writes only `resources/harness/default.md`, then runs the fixed vitest subset (incl. held-out eval).',
+    '4. On gate failure the file is reverted from backup.',
     ''
   ].join('\n')
 }
@@ -588,6 +599,28 @@ export async function runHarnessReview(
   const receipts = collectRecentReceipts(workspacePath, opts)
   const subagentReports = loadSubagentReports(workspacePath, receipts)
   const summary = summarizeWeaknesses(receipts, subagentReports)
+
+  let trajRuns = 0
+  let predRuns = 0
+  for (const { runId } of receipts) {
+    try {
+      const runDir = resolveRunDir(workspacePath, runId)
+      if (trajectoryArtifactExists(runDir)) trajRuns++
+      if (predictionArtifactExists(runDir)) predRuns++
+    } catch {
+      // skip unreadable run dirs
+    }
+  }
+  if (trajRuns > 0) {
+    summary.bullets.push(
+      `${trajRuns} run(s) have observational \`trajectory.jsonl\` (AHE flight recorder — not auto-merged).`
+    )
+  }
+  if (predRuns > 0) {
+    summary.bullets.push(
+      `${predRuns} run(s) have observational \`prediction.json\` (observed_only — never auto-applied to harness).`
+    )
+  }
 
   let proposedBody: string | undefined
   let llmAssisted = false

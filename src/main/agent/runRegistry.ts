@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto'
 import { contentDisplayText, type ChatMessage } from '../../shared/ipc'
+import { disposeSubagentsForRun } from './subagentRegistry'
 
 export type FollowUpEntry = {
   id: string
@@ -249,5 +250,6 @@ export function chatCancelResult(
   entry.streamInterrupt?.abort()
   entry.streamInterrupt = null
   entry.controller.abort()
+  void disposeSubagentsForRun(runId)
   return { ok: true, data: true }
 }

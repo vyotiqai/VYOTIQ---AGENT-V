@@ -649,10 +649,13 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
         signal,
         depth: context.depth ?? 0,
         parentMode: resolveAgentMode(context),
-        runDir: context.runDir,
-        emit: context.onProgress,
-        onContextUsage: context.onSubagentContextUsage
-      })
+          runDir: context.runDir,
+          runId: context.runId,
+          invokeId: context.invokeId,
+          parentToolCallId: context.toolCallId,
+          emit: context.onProgress,
+          onContextUsage: context.onSubagentContextUsage
+        })
     } catch (err) {
       if (err instanceof SubagentDepthError) return toolFail('subagent', summary, err.message)
       throw err

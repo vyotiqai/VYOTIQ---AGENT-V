@@ -168,6 +168,7 @@ import { collectWorkspaceFiles } from '../agent/tools/walk'
 import { listWorkspaceRulesForMention } from '../agent/context/rules'
 import { toolDiagnosticsAsync } from '../agent/tools/diagnostics'
 import { disposeTerminalSessionsForWorkspace as disposeAgentTerminalSessionsForWorkspace } from '../agent/tools/terminalSessions'
+import { disposeSubagentsForRun } from '../agent/subagentRegistry'
 import {
   chatCancelResult,
   listActiveRuns,
@@ -357,7 +358,10 @@ export function registerIpc(): void {
             `Workspace has ${activeRuns.length} active run(s). Confirm “Stop run and close” to continue.`
           )
         }
-        for (const run of activeRuns) chatCancelResult(run.runId)
+        for (const run of activeRuns) {
+          chatCancelResult(run.runId)
+          void disposeSubagentsForRun(run.runId)
+        }
         disposeAgentTerminalSessionsForWorkspace(path)
         disposePtySessionsForWorkspace(path)
         const next = removeWorkspace(path)

@@ -458,9 +458,61 @@ export const RunArtifactNameSchema = z.enum([
   'plan.md',
   'contract.md',
   'receipt.json',
-  'browser/snapshot.jpg'
+  'browser/snapshot.jpg',
+  'trajectory.jsonl',
+  'prediction.json'
 ])
 export type RunArtifactName = z.infer<typeof RunArtifactNameSchema>
+
+export const TRAJECTORY_FILENAME = 'trajectory.jsonl' as const
+export const PREDICTION_FILENAME = 'prediction.json' as const
+export const PREDICTION_MANIFEST_VERSION = 1 as const
+
+/** One observational row in trajectory.jsonl (derived from events.jsonl). */
+export const TrajectoryRowSchema = z.object({
+  at: z.string().optional(),
+  step: z.number().int().min(0),
+  kind: z.string().min(1),
+  tool: z.string().optional(),
+  toolCallId: z.string().optional(),
+  ok: z.boolean().optional(),
+  summary: z.string().optional(),
+  reason: z.string().optional(),
+  status: z.string().optional(),
+  mode: z.string().optional(),
+  parentToolCallId: z.string().optional(),
+  subagentKind: z.string().optional(),
+  inputTokens: z.number().int().min(0).optional(),
+  outputTokens: z.number().int().min(0).optional(),
+  estimatedTokens: z.number().int().min(0).optional(),
+  overflow: z.boolean().optional(),
+  fileCount: z.number().int().min(0).optional()
+})
+export type TrajectoryRow = z.infer<typeof TrajectoryRowSchema>
+
+/** Observational prediction manifest — never auto-applied to harness sections. */
+export const PredictionEntrySchema = z.object({
+  at: z.string().min(1),
+  step: z.number().int().min(0).optional(),
+  type: z.literal('harness_section'),
+  target: z.enum(['context', 'tool_policy', 'memory', 'work_style']),
+  bucket: z
+    .enum(['system_prompt', 'tool_policy', 'loop_notices', 'verify', 'memory'])
+    .optional(),
+  confidence: z.number().min(0).max(1),
+  observed_only: z.literal(true),
+  reason: z.string().optional()
+})
+export type PredictionEntry = z.infer<typeof PredictionEntrySchema>
+
+export const PredictionManifestSchema = z.object({
+  version: z.literal(PREDICTION_MANIFEST_VERSION),
+  runId: z.string().min(1),
+  writtenAt: z.string().min(1),
+  observed_only: z.literal(true),
+  predictions: z.array(PredictionEntrySchema)
+})
+export type PredictionManifest = z.infer<typeof PredictionManifestSchema>
 
 /** Per-run receipt.json written at agent loop teardown. */
 export const RUN_RECEIPT_VERSION = 4 as const

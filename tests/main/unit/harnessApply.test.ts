@@ -128,12 +128,17 @@ describe('harnessApply', () => {
       'tests/main/unit/harnessApply.test.ts',
       'tests/main/unit/agentLoopVerify.test.ts',
       'tests/main/unit/contractDoneWhen.test.ts',
-      'tests/main/unit/agentLoopContractDoneWhen.test.ts'
+      'tests/main/unit/agentLoopContractDoneWhen.test.ts',
+      'tests/main/unit/harnessHeldOutEval.test.ts'
     ]
     for (const file of required) {
       expect(HARNESS_EVAL_TESTS).toContain(file)
     }
     expect(HARNESS_EVAL_TESTS.length).toBe(required.length)
+  })
+
+  it('includes held-out grader in gate source paths', () => {
+    expect(HARNESS_GATE_SOURCE_PATHS).toContain('src/main/agent/harnessHeldOutEval.ts')
   })
 
   it('detects and refuses gate-tamper proposals', async () => {

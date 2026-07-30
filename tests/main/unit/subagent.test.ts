@@ -108,6 +108,77 @@ describe('runSubagent', () => {
     expect(outcome.steps).toBe(1)
   })
 
+  it('registers with subagentRegistry and clears on finish when runId/invokeId set', async () => {
+    const {
+      countActiveSubagentsForInvoke,
+      resetSubagentRegistryForTests
+    } = await import('@main/agent/subagentRegistry')
+    resetSubagentRegistryForTests()
+    streamChat.mockImplementation(
+      stream([{ type: 'text', text: 'ok' }, { type: 'done' }])
+    )
+    await runSubagent({
+      task: 'look',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0,
+      runId: 'run-reg',
+      invokeId: 7
+    })
+    expect(countActiveSubagentsForInvoke('run-reg', 7)).toBe(0)
+  })
+
+  it('aborts via disposeSubagentsForInvoke while streaming', async () => {
+    const {
+      disposeSubagentsForInvoke,
+      countActiveSubagentsForInvoke,
+      resetSubagentRegistryForTests
+    } = await import('@main/agent/subagentRegistry')
+    resetSubagentRegistryForTests()
+
+    let resolveHang: (() => void) | undefined
+    const hang = new Promise<void>((r) => {
+      resolveHang = r
+    })
+    streamChat.mockImplementation(async function* (req: { signal?: AbortSignal }) {
+      yield { type: 'text' as const, text: 'partial' }
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = (): void => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+        if (req.signal?.aborted) {
+          onAbort()
+          return
+        }
+        req.signal?.addEventListener('abort', onAbort, { once: true })
+        void hang.then(() => {
+          req.signal?.removeEventListener('abort', onAbort)
+          resolve()
+        })
+      })
+      yield { type: 'done' as const }
+    })
+
+    const parent = new AbortController()
+    const running = runSubagent({
+      task: 'slow',
+      workspace: '/ws',
+      signal: parent.signal,
+      depth: 0,
+      runId: 'run-disp',
+      invokeId: 3
+    })
+
+    // Allow registration + stream start
+    await new Promise((r) => setTimeout(r, 20))
+    expect(countActiveSubagentsForInvoke('run-disp', 3)).toBe(1)
+    const disposed = await disposeSubagentsForInvoke('run-disp', 3)
+    expect(disposed).toBe(1)
+    const outcome = await running
+    expect(outcome.ok).toBe(false)
+    expect(outcome.report).toMatch(/cancelled|abort/i)
+    expect(countActiveSubagentsForInvoke('run-disp', 3)).toBe(0)
+    resolveHang?.()
+  })
+
   it('fails fast when the sub-agent provider API key is missing', async () => {
     getSettings.mockReturnValue({
       ...DEFAULT_SETTINGS,

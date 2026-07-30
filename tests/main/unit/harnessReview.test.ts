@@ -115,6 +115,31 @@ describe('harnessReview', () => {
     expect(existsSync(result.proposalPath)).toBe(true)
   })
 
+  it('cites observational AHE trajectory and prediction artifacts in proposals', async () => {
+    const sessions = workspaceSessionsRoot(workspace)
+    const runDir = join(sessions, 'run-a')
+    mkdirSync(runDir, { recursive: true })
+    writeFileSync(join(runDir, RUN_RECEIPT_FILENAME), JSON.stringify(sampleReceipt()), 'utf8')
+    writeFileSync(join(runDir, 'trajectory.jsonl'), '{"step":0,"kind":"status"}\n', 'utf8')
+    writeFileSync(
+      join(runDir, 'prediction.json'),
+      JSON.stringify({
+        version: 1,
+        runId: 'run-a',
+        writtenAt: 't',
+        observed_only: true,
+        predictions: []
+      }),
+      'utf8'
+    )
+
+    const result = await runHarnessReview(workspace)
+    const body = readFileSync(result.proposalPath, 'utf8')
+    expect(body).toMatch(/trajectory\.jsonl/)
+    expect(body).toMatch(/prediction\.json/)
+    expect(body).toMatch(/observed_only|not auto-applied|not auto-merged/i)
+  })
+
   it('migrates known legacy receipt versions without overstating diagnostics cleanliness', () => {
     const sessions = workspaceSessionsRoot(workspace)
     for (const version of [2, 3, 4]) {
