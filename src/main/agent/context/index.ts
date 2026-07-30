@@ -33,4 +33,5 @@ export {
   readWorkspaceRules
 } from './rules'
 export { promoteCompactionToMemory } from './memoryPromote'
+export { buildSessionEnvSection } from './sessionEnv'
 export type { AssembleResult, CompactionRecord, AssembleInput } from './types'

@@ -30,6 +30,7 @@ import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/worksp
 import {
   assembleContext,
   allocateBudget,
+  buildSessionEnvSection,
   compactionTriggerTokens,
   contentWindow,
   contextWindowFor,
@@ -124,33 +125,10 @@ import { buildSkillsSection, loadEnabledSkills, loadPluginRules } from './skills
 import { beginWriteCheckpoint, finalizeWriteCheckpoint } from './checkpoints'
 import { isMcpToolPermitted } from '../../shared/utils/mcpToolPolicy'
 import { filterToolDefsForMode, modeSectionMarkdown } from './tools/modePolicy'
-import { resolveTerminalShell } from './tools/terminal'
 import { existsSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
 export { cancelRun, clearRunAbort, registerRunAbort, resetActiveRunsForTests }
-
-function buildSessionEnvSection(
-  mode: AgentInteractionMode,
-  terminalShellPref: string | undefined
-): string {
-  const shell = resolveTerminalShell(
-    (terminalShellPref as 'auto' | 'cmd' | 'powershell' | 'bash' | undefined) ?? 'auto'
-  )
-  const platform =
-    process.platform === 'win32'
-      ? 'Windows'
-      : process.platform === 'darwin'
-        ? 'macOS'
-        : process.platform
-  return [
-    '## Session',
-    `Date (UTC): ${new Date().toISOString()}`,
-    `OS: ${platform} (${process.platform} ${process.arch})`,
-    `Terminal shell: ${shell}`,
-    `Interaction mode: ${mode}`
-  ].join('\n')
-}
 
 function dedupeToolCalls(calls: ToolCall[]): ToolCall[] {
   const seen = new Map<string, ToolCall>()

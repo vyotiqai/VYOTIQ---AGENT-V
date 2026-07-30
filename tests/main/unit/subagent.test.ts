@@ -61,6 +61,7 @@ import {
   runSubagent,
   SubagentDepthError,
   SUBAGENT_TOOLS,
+  buildSubagentSystem,
   writeSubagentReportFiles,
   type SubagentUpdate
 } from '@main/agent/subagent'
@@ -399,6 +400,35 @@ describe('runSubagent', () => {
     const req = streamChat.mock.calls[0]![0] as { system?: string }
     expect(req.system).toContain('### AGENTS.md')
     expect(req.system).toContain('Use the project conventions.')
+  })
+
+  it('injects Session env into the child system prompt', async () => {
+    streamChat.mockImplementation(stream([{ type: 'text', text: 'done' }, { type: 'done' }]))
+
+    await runSubagent({
+      task: 'look around',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0,
+      parentMode: 'plan'
+    })
+
+    const req = streamChat.mock.calls[0]![0] as { system?: string }
+    expect(req.system).toContain('## Session')
+    expect(req.system).toContain('Date (UTC):')
+    expect(req.system).toContain('Date (local):')
+    expect(req.system).toContain('OS version:')
+    expect(req.system).toContain('Interaction mode: plan')
+  })
+
+  it('buildSubagentSystem appends session env before rules', () => {
+    const system = buildSubagentSystem(
+      '## Workspace rules\nBe careful.',
+      ['read', 'search'],
+      '## Session\nDate (UTC): 2026-01-01T00:00:00.000Z'
+    )
+    expect(system).toContain('## Session')
+    expect(system.indexOf('## Session')).toBeLessThan(system.indexOf('## Workspace rules'))
   })
 
   it('caps oversized workspace rules in the child system prompt', async () => {

@@ -30,7 +30,8 @@ import {
   estimateMessagesTokens,
   estimateSubagentOverheadTokens,
   estimateTextTokens,
-  prepareSubagentMessages
+  prepareSubagentMessages,
+  buildSessionEnvSection
 } from './context'
 import { buildWorkspaceRulesSection } from './context/rules'
 
@@ -99,12 +100,20 @@ export const MAX_SUBAGENT_DEPTH = 1
 
 const SUBAGENT_RULES_MAX_CHARS = 64 * 1024
 
-function buildSubagentSystem(workspaceRules: string, tools: readonly string[]): string {
-  const base = subagentSystemForTools(tools)
+/** Build sub-agent system prompt. Exported for unit tests. */
+export function buildSubagentSystem(
+  workspaceRules: string,
+  tools: readonly string[],
+  sessionEnv?: string
+): string {
+  const parts = [subagentSystemForTools(tools)]
+  if (sessionEnv?.trim()) parts.push(sessionEnv.trim())
   const rules = workspaceRules.trim()
-  if (!rules) return base
-  const capped = rules.slice(0, SUBAGENT_RULES_MAX_CHARS)
-  return `${base}\n\n${capped}${rules.length > capped.length ? '\n… (truncated)' : ''}`
+  if (rules) {
+    const capped = rules.slice(0, SUBAGENT_RULES_MAX_CHARS)
+    parts.push(`${capped}${rules.length > capped.length ? '\n… (truncated)' : ''}`)
+  }
+  return parts.join('\n\n')
 }
 
 export type SubagentUpdate = {
@@ -306,11 +315,15 @@ async function runSubagentImpl(options: SubagentOptions): Promise<SubagentOutcom
   )
   const tools = modelInfo.supportsTools === false ? [] : subagentToolDefs(allowedToolNames)
   const toolsJsonEstimate = tools.length ? estimateTextTokens(JSON.stringify(tools)) : 0
-  const system = buildSubagentSystem(
-    await buildWorkspaceRulesSection(options.workspace),
-    allowedToolNames
+  const workspaceRules = await buildWorkspaceRulesSection(options.workspace)
+  const overheadTokens = estimateSubagentOverheadTokens(
+    buildSubagentSystem(
+      workspaceRules,
+      allowedToolNames,
+      buildSessionEnvSection(parentMode, settings.terminalShell)
+    ),
+    toolsJsonEstimate
   )
-  const overheadTokens = estimateSubagentOverheadTokens(system, toolsJsonEstimate)
 
   const messages: ChatMessage[] = [
     {
@@ -327,6 +340,12 @@ async function runSubagentImpl(options: SubagentOptions): Promise<SubagentOutcom
   while (true) {
     if (options.signal.aborted) break
     steps++
+
+    const system = buildSubagentSystem(
+      workspaceRules,
+      allowedToolNames,
+      buildSessionEnvSection(parentMode, settings.terminalShell)
+    )
 
     const preparedMessages = prepareSubagentMessages(messages, modelInfo, overheadTokens)
     const estimatedTokens =
