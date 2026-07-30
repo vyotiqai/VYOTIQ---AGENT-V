@@ -33,7 +33,11 @@ vi.mock('@main/settings/settings', () => ({
     model: 'qwen2.5',
     ollamaBaseUrl: 'http://127.0.0.1:11434',
     theme: 'system',
-    telemetryEnabled: false
+    telemetryEnabled: false,
+    // Isolate stop-reason behavior from soft finish gates (default contract
+    // includes "Typecheck is clean"; require mode would nudge forever here).
+    verifyBeforeDone: 'off',
+    contractDoneWhen: 'off'
   }),
   readLegacyWorkspacePath: () => null
 }))

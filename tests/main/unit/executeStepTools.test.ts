@@ -230,7 +230,7 @@ describe('executeStepToolCalls', () => {
     expect(order).toEqual(['read', 'read'])
   })
 
-  it('serializes reads when an approval gate is present so prompts cannot stack', async () => {
+  it('keeps parallel reads when an approval gate is present', async () => {
     let concurrent = 0
     let maxConcurrent = 0
     let authorizeCalls = 0
@@ -260,8 +260,9 @@ describe('executeStepToolCalls', () => {
       ctx
     )
 
+    // Approval gates each tool; read-only batches still run in parallel.
     expect(authorizeCalls).toBe(3)
-    expect(maxConcurrent).toBe(1)
+    expect(maxConcurrent).toBeGreaterThan(1)
   })
 
   it('emits tool_result live for each parallel tool as it finishes', async () => {
