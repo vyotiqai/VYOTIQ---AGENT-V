@@ -76,6 +76,19 @@ beforeEach(() => {
         ok: true,
         data: { staged: true, detail: 'Staged all changes' }
       }),
+      gitStagePaths: vi.fn().mockResolvedValue({
+        ok: true,
+        data: { staged: true, detail: 'Staged path' }
+      }),
+      gitUnstagePaths: vi.fn().mockResolvedValue({
+        ok: true,
+        data: { unstaged: true, detail: 'Unstaged path' }
+      }),
+      gitBranches: vi.fn().mockResolvedValue({
+        ok: true,
+        data: [{ name: 'main', current: true }]
+      }),
+      gitCheckout: vi.fn().mockResolvedValue({ ok: true, data: { detail: 'Checked out main' } }),
       gitLog: vi.fn().mockResolvedValue({
         ok: true,
         data: [
@@ -141,7 +154,23 @@ beforeEach(() => {
         data: { content: '@@ -1 +1 @@\n-old\n+new\n' }
       }),
       prClose: vi.fn().mockResolvedValue({ ok: true, data: { detail: 'closed' } }),
-      prEditTitle: vi.fn().mockResolvedValue({ ok: true, data: { title: 'feat: panels' } })
+      prEditTitle: vi.fn().mockResolvedValue({ ok: true, data: { title: 'feat: panels' } }),
+      githubAuthStatus: vi.fn().mockResolvedValue({
+        ok: true,
+        data: {
+          ghAvailable: true,
+          clientIdConfigured: false,
+          hasAppToken: false,
+          pending: false,
+          userCode: null,
+          verificationUri: null,
+          error: null
+        }
+      }),
+      githubAuthStart: vi.fn(),
+      githubAuthCancel: vi.fn(),
+      githubAuthLogout: vi.fn(),
+      shellOpenExternal: vi.fn().mockResolvedValue({ ok: true, data: true })
     }
   })
 })
@@ -154,26 +183,26 @@ afterEach(() => {
 describe('ChangesPanel', () => {
   it('renders git dirty files from gitStatus', async () => {
     render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
-    expect(await screen.findByText('a.ts')).toBeTruthy()
+    expect((await screen.findAllByText('a.ts')).length).toBeGreaterThan(0)
     expect(screen.getByText(/Commit & Push/)).toBeTruthy()
   })
 
   it('includes deleted files in Staged scope and excludes untracked', async () => {
     render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
-    await screen.findByText('a.ts')
+    await screen.findAllByText('a.ts')
     fireEvent.click(screen.getByRole('button', { name: /Uncommitted/i }))
     fireEvent.click(screen.getByRole('button', { name: /^Staged/i }))
-    expect(await screen.findByText('gone.ts')).toBeTruthy()
+    expect((await screen.findAllByText('gone.ts')).length).toBeGreaterThan(0)
     expect(screen.queryByText('new.ts')).toBeNull()
   })
 
   it('passes staged:true to gitDiff when expanded under Staged scope', async () => {
     render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
-    await screen.findByText('a.ts')
+    await screen.findAllByText('a.ts')
     fireEvent.click(screen.getByRole('button', { name: /Uncommitted/i }))
     fireEvent.click(screen.getByRole('button', { name: /^Staged/i }))
-    const row = await screen.findByText('a.ts')
-    fireEvent.click(row)
+    const rows = await screen.findAllByText('a.ts')
+    fireEvent.click(rows[0]!)
     await waitFor(() => {
       expect(window.vyotiq.gitDiff).toHaveBeenCalledWith({
         workspacePath: '/ws',
@@ -185,9 +214,16 @@ describe('ChangesPanel', () => {
     })
   })
 
+  it('shows dual flat list and tree columns', async () => {
+    render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
+    await screen.findAllByText('a.ts')
+    expect(screen.getByText('Tree')).toBeTruthy()
+    expect(screen.getByText(/Files Changed/i)).toBeTruthy()
+  })
+
   it('exposes Layout, Ignore Whitespace, and Find in the more menu', async () => {
     render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
-    await screen.findByText('a.ts')
+    await screen.findAllByText('a.ts')
     fireEvent.click(screen.getByRole('button', { name: /More changes actions/i }))
     expect(screen.getByText(/Layout/i)).toBeTruthy()
     expect(screen.getByRole('switch', { name: /Ignore Whitespace/i })).toBeTruthy()
@@ -198,7 +234,7 @@ describe('ChangesPanel', () => {
 
   it('lists commits from gitLog under Commits scope', async () => {
     render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
-    await screen.findByText('a.ts')
+    await screen.findAllByText('a.ts')
     fireEvent.click(screen.getByRole('button', { name: /Uncommitted/i }))
     fireEvent.click(screen.getByRole('button', { name: /^Commits/i }))
     expect(await screen.findByText('first')).toBeTruthy()
@@ -208,7 +244,7 @@ describe('ChangesPanel', () => {
 
   it('primary Commit & Push sends push:true after composing', async () => {
     render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
-    await screen.findByText('a.ts')
+    await screen.findAllByText('a.ts')
     fireEvent.click(screen.getByRole('button', { name: /Commit & Push/i }))
     const input = await screen.findByRole('textbox', { name: /Commit message/i })
     fireEvent.change(input, { target: { value: 'ship it' } })
@@ -220,7 +256,7 @@ describe('ChangesPanel', () => {
 
   it('Staged scope commits without staging all', async () => {
     render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
-    await screen.findByText('a.ts')
+    await screen.findAllByText('a.ts')
     fireEvent.click(screen.getByRole('button', { name: /Uncommitted/i }))
     fireEvent.click(screen.getByRole('button', { name: /^Staged/i }))
     fireEvent.click(screen.getByRole('button', { name: /Commit & Push/i }))
@@ -234,7 +270,7 @@ describe('ChangesPanel', () => {
 
   it('Unstaged scope exposes Stage All', async () => {
     render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
-    await screen.findByText('a.ts')
+    await screen.findAllByText('a.ts')
     fireEvent.click(screen.getByRole('button', { name: /Uncommitted/i }))
     fireEvent.click(screen.getByRole('button', { name: /^Unstaged/i }))
     fireEvent.click(screen.getByRole('button', { name: /^Stage All$/i }))
@@ -272,7 +308,7 @@ describe('ChangesPanel', () => {
         preferredScopeToken={0}
       />
     )
-    await screen.findByText('a.ts')
+    await screen.findAllByText('a.ts')
     expect(screen.getByRole('button', { name: /Uncommitted/i })).toBeTruthy()
     rerender(
       <ChangesPanel
@@ -406,7 +442,7 @@ describe('PrPanel', () => {
     render(<PrPanel workspacePath="/ws" />)
     await screen.findByText(/feat: panels/)
     expect(screen.getByRole('button', { name: /^Reviews/i })).toBeTruthy()
-    fireEvent.click(screen.getByText('a.ts'))
+    fireEvent.click(screen.getAllByText('a.ts')[0]!)
     await waitFor(() => {
       expect(window.vyotiq.prDiff).toHaveBeenCalledWith({
         workspacePath: '/ws',
@@ -426,6 +462,8 @@ describe('PrPanel', () => {
     await screen.findByText(/feat: panels/)
     fireEvent.click(screen.getByRole('button', { name: /PR actions/i }))
     expect(screen.getByRole('button', { name: /Expand All Files/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Collapse All/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /View on Web/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Find in Diff/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Edit Title/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Close PR/i })).toBeTruthy()

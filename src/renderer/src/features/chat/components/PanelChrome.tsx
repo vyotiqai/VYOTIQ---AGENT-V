@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { Icon } from '@renderer/lib/icons'
 
 export function PanelHeader({
@@ -27,17 +28,22 @@ export function PanelHeader({
 export function EmptyPanel({
   icon,
   title,
-  body
+  body,
+  actions
 }: {
   icon: 'terminal' | 'file' | 'branch' | 'pullRequest'
   title: string
   body: string
+  actions?: ReactNode
 }) {
   return (
     <div className="flex h-full flex-col items-center justify-center px-6 text-center">
       <Icon name={icon} size={28} className="mb-3 text-muted/50" />
       <p className="text-[12px] font-medium text-fg/80">{title}</p>
       <p className="mt-1 max-w-[16rem] text-[11px] leading-relaxed text-muted">{body}</p>
+      {actions ? (
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-2">{actions}</div>
+      ) : null}
     </div>
   )
 }

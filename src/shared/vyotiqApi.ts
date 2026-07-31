@@ -30,6 +30,7 @@ import type {
   ToolApprovalDecision,
   ToolApprovalRequest,
   AgentQuestionRequest,
+  AgentQuestionAnswer,
   ExtractAttachmentRequest,
   ExtractAttachmentResult,
   McpStatusResult,
@@ -133,7 +134,7 @@ export interface VyotiqApi {
   onAgentQuestionRequest: (handler: (request: AgentQuestionRequest) => void) => () => void
   respondAgentQuestion: (
     requestId: string,
-    answers: string[],
+    answers: AgentQuestionAnswer[],
     runId: string
   ) => Promise<IpcResult<boolean>>
   listPendingAgentQuestions: (runId: string) => Promise<IpcResult<AgentQuestionRequest[]>>
@@ -170,6 +171,21 @@ export interface VyotiqApi {
     mode?: 'all' | 'staged'
   ) => Promise<IpcResult<GitCommitResult>>
   gitStageAll: (workspacePath: string) => Promise<IpcResult<{ staged: boolean; detail: string }>>
+  gitStagePaths: (payload: {
+    workspacePath: string
+    paths: string[]
+  }) => Promise<IpcResult<{ staged: boolean; detail: string }>>
+  gitUnstagePaths: (payload: {
+    workspacePath: string
+    paths: string[]
+  }) => Promise<IpcResult<{ unstaged: boolean; detail: string }>>
+  gitBranches: (
+    workspacePath: string
+  ) => Promise<IpcResult<import('./ipc').GitBranchEntry[]>>
+  gitCheckout: (
+    workspacePath: string,
+    branch: string
+  ) => Promise<IpcResult<{ detail: string }>>
   gitLog: (payload: {
     workspacePath: string
     limit?: number
@@ -200,6 +216,11 @@ export interface VyotiqApi {
     workspacePath: string,
     title: string
   ) => Promise<IpcResult<{ title: string }>>
+  githubAuthStatus: () => Promise<IpcResult<import('./ipc').GithubAuthStatus>>
+  githubAuthStart: () => Promise<IpcResult<import('./ipc').GithubAuthStatus>>
+  githubAuthCancel: () => Promise<IpcResult<import('./ipc').GithubAuthStatus>>
+  githubAuthLogout: () => Promise<IpcResult<import('./ipc').GithubAuthStatus>>
+  shellOpenExternal: (url: string) => Promise<IpcResult<true>>
   ptyCreate: (payload: {
     workspacePath: string
     cols?: number

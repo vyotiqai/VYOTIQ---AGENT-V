@@ -37,6 +37,27 @@ beforeEach(() => {
       prDiff: vi.fn().mockResolvedValue({ ok: true, data: { content: '' } }),
       prClose: vi.fn().mockResolvedValue({ ok: true, data: { detail: 'closed' } }),
       prEditTitle: vi.fn().mockResolvedValue({ ok: true, data: { title: 't' } }),
+      githubAuthStatus: vi.fn().mockResolvedValue({
+        ok: true,
+        data: {
+          ghAvailable: true,
+          clientIdConfigured: false,
+          hasAppToken: false,
+          pending: false,
+          userCode: null,
+          verificationUri: null,
+          error: null
+        }
+      }),
+      shellOpenExternal: vi.fn().mockResolvedValue({ ok: true, data: true }),
+      gitStageAll: vi.fn().mockResolvedValue({ ok: true, data: { staged: true, detail: 'ok' } }),
+      gitStagePaths: vi.fn().mockResolvedValue({ ok: true, data: { staged: true, detail: 'ok' } }),
+      gitUnstagePaths: vi.fn().mockResolvedValue({
+        ok: true,
+        data: { unstaged: true, detail: 'ok' }
+      }),
+      gitBranches: vi.fn().mockResolvedValue({ ok: true, data: [] }),
+      gitCheckout: vi.fn().mockResolvedValue({ ok: true, data: { detail: 'ok' } }),
       ptyList: vi.fn().mockImplementation((_workspacePath?: string) =>
         Promise.resolve({ ok: true, data: [] })
       ),

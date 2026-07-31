@@ -531,3 +531,91 @@ export async function stageAll(cwd: string): Promise<{ staged: boolean; detail: 
   await stageNonNoisePaths(cwd, paths)
   return { staged: true, detail: 'Staged all changes' }
 }
+
+function sanitizeRelativePaths(paths: string[]): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const raw of paths) {
+    const path = raw.replace(/\\/g, '/').trim()
+    if (!path || path.startsWith('/') || path.includes('..') || isNoisePath(path)) continue
+    if (seen.has(path)) continue
+    seen.add(path)
+    out.push(path)
+  }
+  return out
+}
+
+/** Stage specific relative paths (noise trees rejected). */
+export async function stagePaths(
+  cwd: string,
+  paths: string[]
+): Promise<{ staged: boolean; detail: string }> {
+  if (!isGitRepo(cwd)) throw new Error('Not a git repository')
+  const clean = sanitizeRelativePaths(paths)
+  if (clean.length === 0) {
+    return { staged: false, detail: 'Nothing to stage' }
+  }
+  await stageNonNoisePaths(cwd, clean)
+  return {
+    staged: true,
+    detail: clean.length === 1 ? `Staged ${clean[0]}` : `Staged ${clean.length} paths`
+  }
+}
+
+/** Unstage specific relative paths (`git restore --staged`). */
+export async function unstagePaths(
+  cwd: string,
+  paths: string[]
+): Promise<{ unstaged: boolean; detail: string }> {
+  if (!isGitRepo(cwd)) throw new Error('Not a git repository')
+  const clean = sanitizeRelativePaths(paths)
+  if (clean.length === 0) {
+    return { unstaged: false, detail: 'Nothing to unstage' }
+  }
+  for (let i = 0; i < clean.length; i += STAGE_PATH_BATCH) {
+    const chunk = clean.slice(i, i + STAGE_PATH_BATCH)
+    await git(['restore', '--staged', '--', ...chunk], cwd, WRITE_TIMEOUT_MS)
+  }
+  return {
+    unstaged: true,
+    detail: clean.length === 1 ? `Unstaged ${clean[0]}` : `Unstaged ${clean.length} paths`
+  }
+}
+
+export type GitBranchEntry = {
+  name: string
+  current: boolean
+}
+
+/** Local branches (`git branch --list`). */
+export async function listLocalBranches(cwd: string): Promise<GitBranchEntry[]> {
+  if (!isGitRepo(cwd)) throw new Error('Not a git repository')
+  const raw = await git(['branch', '--list', '--format=%(refname:short)%09%(HEAD)'], cwd, READ_TIMEOUT_MS)
+  const out: GitBranchEntry[] = []
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trimEnd()
+    if (!trimmed) continue
+    const [name, head] = trimmed.split('\t')
+    if (!name?.trim()) continue
+    out.push({ name: name.trim(), current: head?.trim() === '*' })
+  }
+  out.sort((a, b) => {
+    if (a.current !== b.current) return a.current ? -1 : 1
+    return a.name.localeCompare(b.name)
+  })
+  return out
+}
+
+/** Check out an existing local branch. */
+export async function checkoutBranch(
+  cwd: string,
+  branch: string
+): Promise<{ detail: string }> {
+  if (!isGitRepo(cwd)) throw new Error('Not a git repository')
+  const name = branch.trim()
+  if (!name || name.includes('..') || /[\s\\]/.test(name)) {
+    throw new Error('Invalid branch name')
+  }
+  await git(['checkout', name], cwd, WRITE_TIMEOUT_MS)
+  return { detail: `Checked out ${name}` }
+}

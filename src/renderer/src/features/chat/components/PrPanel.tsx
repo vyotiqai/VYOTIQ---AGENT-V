@@ -3,11 +3,13 @@ import { Button, cn, Switch } from '@renderer/lib/ui'
 import { Icon, type IconName } from '@renderer/lib/icons'
 import { MarkdownContent } from '@renderer/lib/ui/MarkdownContent'
 import { CHAT_RIGHT_PANEL_BODY } from '@renderer/lib/utils/layout'
-import type { PrFile, PrMergeMethod, PrReview, PrView } from '@shared/ipc'
+import type { GithubAuthStatus, PrFile, PrMergeMethod, PrReview, PrView } from '@shared/ipc'
 import { EmptyPanel } from './PanelChrome'
-import { DiffPreview, type DiffLayout } from './DiffPreview'
-import { FileBadge } from './FileBadge'
-import { basename, parseUnifiedDiff, type DiffLine } from '../toolUi'
+import { type DiffLayout } from './DiffPreview'
+import {
+  ChangedFilesBrowser,
+  type BrowserFileEntry
+} from './ChangedFilesBrowser'
 
 type PrTab = 'changes' | 'description' | 'commits' | 'checks' | 'reviews'
 
@@ -76,6 +78,45 @@ function changeBadge(changeType: PrFile['changeType']): string | null {
   }
 }
 
+function prStatusLetter(changeType: PrFile['changeType']): BrowserFileEntry['statusLetter'] {
+  switch (changeType) {
+    case 'ADDED':
+      return 'A'
+    case 'DELETED':
+      return 'D'
+    case 'RENAMED':
+      return 'R'
+    case 'COPIED':
+      return 'C'
+    case 'MODIFIED':
+    case 'CHANGED':
+    case 'UNKNOWN':
+      return 'M'
+    default: {
+      const _exhaustive: never = changeType
+      return _exhaustive
+    }
+  }
+}
+
+function toPrBrowserEntry(file: PrFile): BrowserFileEntry {
+  const label = changeBadge(file.changeType)
+  return {
+    path: file.path,
+    statusLetter: prStatusLetter(file.changeType),
+    statusLabel: label,
+    statusTone: label === 'New' ? 'success' : 'muted',
+    added: file.additions,
+    removed: file.deletions
+  }
+}
+
+function needsGithubConnect(error: string | null, auth: GithubAuthStatus | null): boolean {
+  if (auth?.pending) return true
+  if (error && /auth|login|HTTP 401|HTTP 403/i.test(error)) return true
+  return false
+}
+
 function checksLabel(pr: PrView): string {
   const total = pr.checks.length
   if (total === 0) return 'Checks'
@@ -108,128 +149,6 @@ function mergeMethodIcon(method: PrMergeMethod): IconName {
 function reviewsLabel(pr: PrView): string {
   const n = pr.latestReviews.length || pr.reviews.length
   return n > 0 ? `Reviews ${n}` : 'Reviews'
-}
-
-function PrFileRow({
-  workspacePath,
-  file,
-  expanded,
-  onToggle,
-  viewed,
-  onToggleViewed,
-  layout,
-  wordWrap,
-  findQuery,
-  ignoreWhitespace
-}: {
-  workspacePath: string
-  file: PrFile
-  expanded: boolean
-  onToggle: () => void
-  viewed: boolean
-  onToggleViewed: () => void
-  layout: DiffLayout
-  wordWrap: boolean
-  findQuery: string
-  ignoreWhitespace: boolean
-}) {
-  const [lines, setLines] = useState<DiffLine[] | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [diffError, setDiffError] = useState<string | null>(null)
-  const badge = changeBadge(file.changeType)
-
-  useEffect(() => {
-    if (!expanded) return
-    let cancelled = false
-    setLoading(true)
-    setDiffError(null)
-    void window.vyotiq
-      .prDiff({
-        workspacePath,
-        path: file.path,
-        ignoreWhitespace
-      })
-      .then((res) => {
-        if (cancelled) return
-        if (!res.ok) {
-          setLines([])
-          setDiffError(res.error)
-          return
-        }
-        setLines(parseUnifiedDiff(res.data.content))
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [expanded, workspacePath, file.path, ignoreWhitespace])
-
-  return (
-    <li className="min-w-0 border-b border-border/40 last:border-b-0">
-      <div className="flex w-full min-w-0 items-center gap-2 px-2 py-1 text-xs hover:bg-surface/60">
-        <button
-          type="button"
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
-          onClick={onToggle}
-          aria-expanded={expanded}
-        >
-          <span className="shrink-0 text-tertiary">{expanded ? '▾' : '▸'}</span>
-          <FileBadge path={file.path} />
-          <span className="min-w-0 flex-1 truncate text-fg" title={file.path}>
-            {basename(file.path)}
-          </span>
-          <span className="shrink-0 tabular-nums">
-            {file.additions > 0 ? (
-              <span className="text-success">+{file.additions}</span>
-            ) : null}
-            {file.deletions > 0 ? (
-              <span className="ml-1 text-danger">-{file.deletions}</span>
-            ) : null}
-          </span>
-          {badge ? (
-            <span
-              className={cn(
-                'shrink-0 text-[10px]',
-                badge === 'New' ? 'text-success' : 'text-muted'
-              )}
-            >
-              {badge}
-            </span>
-          ) : null}
-        </button>
-        <input
-          type="checkbox"
-          className="size-3.5 shrink-0 accent-accent"
-          checked={viewed}
-          aria-label={`Mark ${file.path} as viewed`}
-          onChange={onToggleViewed}
-          onClick={(e) => e.stopPropagation()}
-        />
-      </div>
-      {expanded ? (
-        <div className="border-t border-border/40 bg-surface-2/30 px-2 py-1">
-          {loading ? (
-            <p className="m-0 px-1 py-1 text-[11px] text-muted">Loading diff…</p>
-          ) : lines && lines.length > 0 ? (
-            <DiffPreview
-              lines={lines}
-              path={file.path}
-              expanded
-              layout={layout}
-              findQuery={findQuery}
-              wordWrap={wordWrap}
-            />
-          ) : (
-            <p className="m-0 px-1 py-1 text-[11px] text-muted">
-              {diffError ? diffError : 'No textual diff'}
-            </p>
-          )}
-        </div>
-      ) : null}
-    </li>
-  )
 }
 
 function ReviewCard({ review }: { review: PrReview }) {
@@ -298,6 +217,9 @@ export function PrPanel({
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
   const [preferredMerge, setPreferredMerge] = useState<PrMergeMethod>('squash')
+  const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  const [auth, setAuth] = useState<GithubAuthStatus | null>(null)
+  const [authBusy, setAuthBusy] = useState(false)
   const headerMenusRef = useRef<HTMLDivElement>(null)
   const findInputRef = useRef<HTMLInputElement>(null)
   const titleInputRef = useRef<HTMLInputElement>(null)
@@ -338,6 +260,10 @@ export function PrPanel({
     setLoading(true)
     setError(null)
     try {
+      if (window.vyotiq.githubAuthStatus) {
+        const authRes = await window.vyotiq.githubAuthStatus()
+        if (seq === loadSeqRef.current && authRes.ok) setAuth(authRes.data)
+      }
       const res = await window.vyotiq.prView(workspacePath)
       if (seq !== loadSeqRef.current) return
       if (!res.ok) {
@@ -360,6 +286,54 @@ export function PrPanel({
       if (seq === loadSeqRef.current) setLoading(false)
     }
   }, [workspacePath])
+
+  const refreshAuth = useCallback(async () => {
+    if (!window.vyotiq?.githubAuthStatus) return
+    const res = await window.vyotiq.githubAuthStatus()
+    if (res.ok) setAuth(res.data)
+  }, [])
+
+  useEffect(() => {
+    if (!auth?.pending) return undefined
+    const id = window.setInterval(() => {
+      void refreshAuth().then(() => {
+        void load()
+      })
+    }, 2000)
+    return () => window.clearInterval(id)
+  }, [auth?.pending, refreshAuth, load])
+
+  const connectGithub = useCallback(async () => {
+    if (!window.vyotiq?.githubAuthStart) return
+    setAuthBusy(true)
+    setNotice(null)
+    try {
+      const res = await window.vyotiq.githubAuthStart()
+      if (res.ok) {
+        setAuth(res.data)
+        setNotice(
+          res.data.userCode
+            ? `Enter code ${res.data.userCode} in the browser to finish connecting.`
+            : 'Complete authorization in your browser.'
+        )
+        setNoticeFailed(false)
+      } else {
+        setNotice(res.error)
+        setNoticeFailed(true)
+      }
+    } finally {
+      setAuthBusy(false)
+    }
+  }, [])
+
+  const openExternal = useCallback(async (url: string) => {
+    if (!window.vyotiq?.shellOpenExternal) return
+    const res = await window.vyotiq.shellOpenExternal(url)
+    if (!res.ok) {
+      setNotice(res.error)
+      setNoticeFailed(true)
+    }
+  }, [])
 
   useEffect(() => {
     void load()
@@ -440,6 +414,74 @@ export function PrPanel({
     setExpanded(new Set(pr.files.map((f) => f.path)))
     closeMenus()
   }, [pr, closeMenus])
+
+  const collapseAll = useCallback(() => {
+    setExpanded(new Set())
+    closeMenus()
+  }, [closeMenus])
+
+  const fetchPrDiff = useCallback(
+    async (path: string) => {
+      if (!workspacePath) return { error: 'No workspace' }
+      const res = await window.vyotiq.prDiff({
+        workspacePath,
+        path,
+        ignoreWhitespace
+      })
+      if (!res.ok) return { error: res.error }
+      return { content: res.data.content }
+    },
+    [workspacePath, ignoreWhitespace]
+  )
+
+  const browserFiles = useMemo(
+    () => (pr ? pr.files.map(toPrBrowserEntry) : []),
+    [pr]
+  )
+
+  const filteredBrowserFiles = useMemo(() => {
+    const q = findQuery.trim().toLowerCase()
+    if (!q) return browserFiles
+    return browserFiles.filter((f) => f.path.toLowerCase().includes(q))
+  }, [browserFiles, findQuery])
+
+  const showConnect = needsGithubConnect(error, auth)
+
+  const connectActions = (
+    <>
+      <Button
+        variant="subtle"
+        className="h-7 px-2.5 text-[11px]"
+        disabled={authBusy || Boolean(auth?.pending)}
+        onClick={() => void connectGithub()}
+      >
+        {auth?.pending ? 'Waiting…' : 'Connect GitHub'}
+      </Button>
+      {auth?.pending && auth.verificationUri ? (
+        <Button
+          variant="subtle"
+          className="h-7 px-2.5 text-[11px]"
+          onClick={() => void openExternal(auth.verificationUri!)}
+        >
+          Open verification
+        </Button>
+      ) : null}
+      {auth?.hasAppToken ? (
+        <Button
+          variant="subtle"
+          className="h-7 px-2.5 text-[11px]"
+          onClick={() => {
+            void window.vyotiq.githubAuthLogout?.().then((res) => {
+              if (res.ok) setAuth(res.data)
+              void load()
+            })
+          }}
+        >
+          Disconnect
+        </Button>
+      ) : null}
+    </>
+  )
 
   const closePr = useCallback(async () => {
     if (!workspacePath || !window.vyotiq?.prClose || !pr) return
@@ -620,6 +662,13 @@ export function PrPanel({
                   <button
                     type="button"
                     className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                    onClick={collapseAll}
+                  >
+                    Collapse All
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
                     onClick={() => {
                       closeMenus()
                       setFindOpen(true)
@@ -638,6 +687,16 @@ export function PrPanel({
                   >
                     <span>Refresh Changes</span>
                     <span className="text-muted">Ctrl+R</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                    onClick={() => {
+                      closeMenus()
+                      void openExternal(pr.url)
+                    }}
+                  >
+                    View on Web
                   </button>
                   <button
                     type="button"
@@ -858,12 +917,26 @@ export function PrPanel({
           <EmptyPanel
             icon="pullRequest"
             title={prEmptyTitle(error)}
-            body={error ?? 'Connect GitHub CLI (`gh auth login`) to view PRs for this branch.'}
+            body={
+              showConnect
+                ? auth?.userCode
+                  ? `Enter ${auth.userCode} at GitHub to authorize VYOTIQ.`
+                  : 'Connect GitHub to view pull requests for this branch.'
+                : (error ?? 'Connect GitHub to view PRs for this branch.')
+            }
+            actions={showConnect || auth?.pending ? connectActions : undefined}
           />
         ) : tab === 'description' ? (
           <MarkdownContent content={pr.body || '_No description_'} className="text-sm" />
         ) : tab === 'commits' ? (
-          pr.commits.length === 0 ? (
+          showConnect && pr.commits.length === 0 ? (
+            <EmptyPanel
+              icon="pullRequest"
+              title="GitHub authentication required"
+              body="Connect GitHub to load commits for this pull request."
+              actions={connectActions}
+            />
+          ) : pr.commits.length === 0 ? (
             <p className="m-0 text-[11px] text-muted">No commits reported for this pull request.</p>
           ) : (
             <ul className="m-0 list-none space-y-1.5 p-0">
@@ -881,7 +954,9 @@ export function PrPanel({
         ) : tab === 'checks' ? (
           <ul className="m-0 list-none space-y-1 p-0">
             {pr.checks.length === 0 ? (
-              <li className="text-[11px] text-muted">No checks reported.</li>
+              <li className="text-[11px] text-muted">
+                No CI checks configured — they&apos;ll appear here once set up.
+              </li>
             ) : (
               pr.checks.map((c, i) => (
                 <li
@@ -896,68 +971,69 @@ export function PrPanel({
           </ul>
         ) : tab === 'reviews' ? (
           <div className="space-y-3">
-            {pr.reviewDecision ? (
-              <p className="m-0 text-[11px] text-muted">
-                Decision:{' '}
-                <span className="font-medium text-fg">{pr.reviewDecision}</span>
-              </p>
-            ) : null}
-            {pr.reviewRequests.length > 0 ? (
-              <p className="m-0 text-[11px] text-muted">
-                Requested: {pr.reviewRequests.join(', ')}
-              </p>
-            ) : null}
-            {(pr.latestReviews.length ? pr.latestReviews : pr.reviews).length === 0 ? (
-              <p className="m-0 text-[11px] text-muted">No reviews yet for this pull request.</p>
+            {showConnect &&
+            (pr.latestReviews.length ? pr.latestReviews : pr.reviews).length === 0 ? (
+              <EmptyPanel
+                icon="pullRequest"
+                title="GitHub authentication required"
+                body="Connect GitHub to load reviews for this pull request."
+                actions={
+                  <>
+                    {connectActions}
+                    <Button
+                      variant="subtle"
+                      className="h-7 px-2.5 text-[11px]"
+                      onClick={() => void openExternal(pr.url)}
+                    >
+                      View on Web
+                    </Button>
+                  </>
+                }
+              />
             ) : (
-              <ul className="m-0 list-none space-y-2 p-0">
-                {(pr.latestReviews.length ? pr.latestReviews : pr.reviews).map((r, i) => (
-                  <ReviewCard key={`${r.author}-${r.submittedAt ?? i}`} review={r} />
-                ))}
-              </ul>
+              <>
+                {pr.reviewDecision ? (
+                  <p className="m-0 text-[11px] text-muted">
+                    Decision:{' '}
+                    <span className="font-medium text-fg">{pr.reviewDecision}</span>
+                  </p>
+                ) : null}
+                {pr.reviewRequests.length > 0 ? (
+                  <p className="m-0 text-[11px] text-muted">
+                    Requested: {pr.reviewRequests.join(', ')}
+                  </p>
+                ) : null}
+                {(pr.latestReviews.length ? pr.latestReviews : pr.reviews).length === 0 ? (
+                  <p className="m-0 text-[11px] text-muted">No reviews yet for this pull request.</p>
+                ) : (
+                  <ul className="m-0 list-none space-y-2 p-0">
+                    {(pr.latestReviews.length ? pr.latestReviews : pr.reviews).map((r, i) => (
+                      <ReviewCard key={`${r.author}-${r.submittedAt ?? i}`} review={r} />
+                    ))}
+                  </ul>
+                )}
+              </>
             )}
           </div>
         ) : (
           <>
-            <div className="mb-2 flex items-center gap-2">
-              <p className="m-0 min-w-0 flex-1 text-[11px] text-muted">
-                {pr.files.length} Files Changed{' '}
-                <span className="text-success">+{pr.additions}</span>{' '}
-                <span className="text-danger">-{pr.deletions}</span>
-              </p>
-              <button
-                type="button"
-                className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-muted hover:bg-surface-2"
-                aria-label={
-                  layout === 'unified' ? 'Switch to split layout' : 'Switch to unified layout'
-                }
-                onClick={() =>
-                  setLayout((prev) => (prev === 'unified' ? 'split' : 'unified'))
-                }
-              >
-                {layout === 'unified' ? 'Unified' : 'Split'}
-              </button>
-            </div>
             {pr.files.length === 0 ? (
               <p className="m-0 text-[11px] text-muted">No files changed.</p>
             ) : (
-              <ul className="m-0 list-none space-y-0 p-0">
-                {pr.files.map((f) => (
-                  <PrFileRow
-                    key={f.path}
-                    workspacePath={workspacePath!}
-                    file={f}
-                    expanded={expanded.has(f.path)}
-                    onToggle={() => togglePath(f.path)}
-                    viewed={viewed.has(f.path)}
-                    onToggleViewed={() => toggleViewed(f.path)}
-                    layout={layout}
-                    wordWrap={wordWrap}
-                    findQuery={findQuery}
-                    ignoreWhitespace={ignoreWhitespace}
-                  />
-                ))}
-              </ul>
+              <ChangedFilesBrowser
+                files={filteredBrowserFiles}
+                totals={{ added: pr.additions, removed: pr.deletions }}
+                expanded={expanded}
+                onToggleExpand={togglePath}
+                selectedPath={selectedPath}
+                onSelectPath={setSelectedPath}
+                fetchDiff={fetchPrDiff}
+                layout={layout}
+                wordWrap={wordWrap}
+                findQuery={findQuery}
+                viewedPaths={viewed}
+                onToggleViewed={toggleViewed}
+              />
             )}
           </>
         )}

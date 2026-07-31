@@ -116,6 +116,11 @@ const api: VyotiqApi = {
   gitCommit: (workspacePath, message, push, mode) =>
     ipcRenderer.invoke(IPC.gitCommit, { workspacePath, message, push, mode }),
   gitStageAll: (workspacePath) => ipcRenderer.invoke(IPC.gitStageAll, { workspacePath }),
+  gitStagePaths: (payload) => ipcRenderer.invoke(IPC.gitStagePaths, payload),
+  gitUnstagePaths: (payload) => ipcRenderer.invoke(IPC.gitUnstagePaths, payload),
+  gitBranches: (workspacePath) => ipcRenderer.invoke(IPC.gitBranches, { workspacePath }),
+  gitCheckout: (workspacePath, branch) =>
+    ipcRenderer.invoke(IPC.gitCheckout, { workspacePath, branch }),
   gitLog: (payload) => ipcRenderer.invoke(IPC.gitLog, payload),
   gitCommitFiles: (payload) => ipcRenderer.invoke(IPC.gitCommitFiles, payload),
   gitDiff: (payload) => ipcRenderer.invoke(IPC.gitDiff, payload),
@@ -126,6 +131,11 @@ const api: VyotiqApi = {
   prClose: (workspacePath) => ipcRenderer.invoke(IPC.prClose, { workspacePath }),
   prEditTitle: (workspacePath, title) =>
     ipcRenderer.invoke(IPC.prEditTitle, { workspacePath, title }),
+  githubAuthStatus: () => ipcRenderer.invoke(IPC.githubAuthStatus),
+  githubAuthStart: () => ipcRenderer.invoke(IPC.githubAuthStart),
+  githubAuthCancel: () => ipcRenderer.invoke(IPC.githubAuthCancel),
+  githubAuthLogout: () => ipcRenderer.invoke(IPC.githubAuthLogout),
+  shellOpenExternal: (url) => ipcRenderer.invoke(IPC.shellOpenExternal, { url }),
   ptyCreate: (payload) => ipcRenderer.invoke(IPC.ptyCreate, payload),
   ptyList: (workspacePath) =>
     ipcRenderer.invoke(IPC.ptyList, workspacePath ? { workspacePath } : {}),

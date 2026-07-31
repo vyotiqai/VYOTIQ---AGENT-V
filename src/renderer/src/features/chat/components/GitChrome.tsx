@@ -19,6 +19,8 @@ export type GitChrome = {
   refresh: () => void
   commit: (message: string, push: boolean, mode?: 'all' | 'staged') => Promise<boolean>
   stageAll: () => Promise<boolean>
+  stagePaths: (paths: string[]) => Promise<boolean>
+  unstagePaths: (paths: string[]) => Promise<boolean>
 }
 
 /**
@@ -80,6 +82,44 @@ export function useGitChrome(
     }
   }, [workspacePath, busy, refresh])
 
+  const stagePaths = useCallback(
+    async (paths: string[]): Promise<boolean> => {
+      if (!workspacePath || busy || paths.length === 0) return false
+      setBusy(true)
+      setNotice(null)
+      setNoticeFailed(false)
+      try {
+        const stageResult = await window.vyotiq.gitStagePaths({ workspacePath, paths })
+        setNotice(stageResult.ok ? stageResult.data.detail : stageResult.error)
+        setNoticeFailed(!stageResult.ok)
+        return stageResult.ok
+      } finally {
+        setBusy(false)
+        refresh()
+      }
+    },
+    [workspacePath, busy, refresh]
+  )
+
+  const unstagePaths = useCallback(
+    async (paths: string[]): Promise<boolean> => {
+      if (!workspacePath || busy || paths.length === 0) return false
+      setBusy(true)
+      setNotice(null)
+      setNoticeFailed(false)
+      try {
+        const result = await window.vyotiq.gitUnstagePaths({ workspacePath, paths })
+        setNotice(result.ok ? result.data.detail : result.error)
+        setNoticeFailed(!result.ok)
+        return result.ok
+      } finally {
+        setBusy(false)
+        refresh()
+      }
+    },
+    [workspacePath, busy, refresh]
+  )
+
   return {
     status,
     result,
@@ -90,7 +130,9 @@ export function useGitChrome(
     noticeFailed,
     refresh,
     commit,
-    stageAll
+    stageAll,
+    stagePaths,
+    unstagePaths
   }
 }
 

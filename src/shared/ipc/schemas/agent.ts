@@ -680,25 +680,52 @@ export type ListPendingToolApprovalsRequest = z.infer<
   typeof ListPendingToolApprovalsRequestSchema
 >
 
+export const AgentQuestionTypeSchema = z.enum(['single', 'multi', 'boolean', 'text'])
+
+export const AgentQuestionItemSchema = z
+  .object({
+    id: z.string().min(1),
+    prompt: z.string().min(1),
+    type: AgentQuestionTypeSchema,
+    options: z.array(z.string().min(1)).optional(),
+    allowCustom: z.boolean().optional()
+  })
+  .superRefine((item, ctx) => {
+    if (item.type === 'single' || item.type === 'multi') {
+      if (!item.options || item.options.length < 2) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `${item.type} requires at least 2 options`,
+          path: ['options']
+        })
+      }
+    }
+  })
+
 /**
- * A structured question waiting on the user. The loop is parked on this request,
- * so the renderer must answer it or cancel the run.
+ * A structured question form waiting on the user. The loop is parked on this
+ * request, so the renderer must answer it or cancel the run.
  */
 export const AgentQuestionRequestSchema = z.object({
   requestId: z.string().min(1),
   runId: z.string().min(1),
   toolCallId: z.string().min(1),
-  question: z.string().min(1),
-  options: z.array(z.string().min(1)).optional(),
-  allowMultiple: z.boolean().optional(),
-  allowCustom: z.boolean().optional()
+  title: z.string().min(1).optional(),
+  questions: z.array(AgentQuestionItemSchema).min(1).max(8)
 })
 export type AgentQuestionRequest = z.infer<typeof AgentQuestionRequestSchema>
+export type AgentQuestionItem = z.infer<typeof AgentQuestionItemSchema>
+
+export const AgentQuestionAnswerSchema = z.object({
+  questionId: z.string().min(1),
+  values: z.array(z.string())
+})
+export type AgentQuestionAnswer = z.infer<typeof AgentQuestionAnswerSchema>
 
 export const AgentQuestionResponseSchema = z.object({
   requestId: z.string().min(1),
   runId: z.string().min(1),
-  answers: z.array(z.string())
+  answers: z.array(AgentQuestionAnswerSchema)
 })
 export type AgentQuestionResponse = z.infer<typeof AgentQuestionResponseSchema>
 

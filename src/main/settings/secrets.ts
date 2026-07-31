@@ -13,6 +13,8 @@ type SecretsFile = Record<string, string>
 
 const MCP_AUTH_PREFIX = 'mcp-auth:'
 const MCP_OAUTH_PREFIX = 'mcp-oauth:'
+/** Single-app GitHub user access token (device OAuth). */
+const GITHUB_TOKEN_KEY = 'github:access_token'
 
 function secretsPath(): string {
   return join(app.getPath('userData'), 'secrets.json')
@@ -265,4 +267,33 @@ export function patchMcpOAuthState(
   const next: McpOAuthStoredState = { ...prev, ...patch }
   setMcpOAuthState(serverId, next)
   return next
+}
+
+/** Persist GitHub device-OAuth access token (OS encrypted). */
+export function setGithubAccessToken(token: string): void {
+  const trimmed = token.trim()
+  if (!trimmed) throw new Error('GitHub token cannot be empty')
+  const data = readFile()
+  data[GITHUB_TOKEN_KEY] = encryptBlob(trimmed)
+  writeFile(data)
+  logger.info('GitHub access token saved', { scope: 'secrets' })
+}
+
+export function getGithubAccessToken(): string | null {
+  const encrypted = readFile()[GITHUB_TOKEN_KEY]
+  if (!encrypted) return null
+  return decryptBlob(encrypted)
+}
+
+export function hasGithubAccessToken(): boolean {
+  const encrypted = readFile()[GITHUB_TOKEN_KEY]
+  return typeof encrypted === 'string' && encrypted.length > 0
+}
+
+export function clearGithubAccessToken(): void {
+  const data = readFile()
+  if (!(GITHUB_TOKEN_KEY in data)) return
+  delete data[GITHUB_TOKEN_KEY]
+  writeFile(data)
+  logger.info('GitHub access token cleared', { scope: 'secrets' })
 }

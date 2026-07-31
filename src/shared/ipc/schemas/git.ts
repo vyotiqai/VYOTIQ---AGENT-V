@@ -88,6 +88,45 @@ export const GitStageAllResultSchema = z.object({
 })
 export type GitStageAllResult = z.infer<typeof GitStageAllResultSchema>
 
+export const GitStagePathsRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  paths: z.array(z.string().min(1)).min(1).max(500)
+})
+
+export const GitUnstagePathsRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  paths: z.array(z.string().min(1)).min(1).max(500)
+})
+
+export const GitUnstagePathsResultSchema = z.object({
+  unstaged: z.boolean(),
+  detail: z.string()
+})
+export type GitUnstagePathsResult = z.infer<typeof GitUnstagePathsResultSchema>
+
+export const GitBranchEntrySchema = z.object({
+  name: z.string().min(1),
+  current: z.boolean()
+})
+export type GitBranchEntry = z.infer<typeof GitBranchEntrySchema>
+
+export const GitBranchesRequestSchema = z.object({
+  workspacePath: z.string().min(1)
+})
+
+export const GitBranchesResultSchema = z.array(GitBranchEntrySchema)
+export type GitBranchesResult = z.infer<typeof GitBranchesResultSchema>
+
+export const GitCheckoutRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  branch: z.string().min(1).max(255)
+})
+
+export const GitCheckoutResultSchema = z.object({
+  detail: z.string()
+})
+export type GitCheckoutResult = z.infer<typeof GitCheckoutResultSchema>
+
 export const GitDiffRequestSchema = z.object({
   workspacePath: z.string().min(1),
   path: z.string().optional(),

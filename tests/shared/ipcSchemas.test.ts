@@ -279,17 +279,18 @@ describe('ipc schemas', () => {
         requestId: 'q1',
         runId: 'r1',
         toolCallId: 't1',
-        question: 'Ready?',
-        options: ['yes', 'no']
-      }).question
+        questions: [
+          { id: 'q1', prompt: 'Ready?', type: 'single', options: ['yes', 'no'] }
+        ]
+      }).questions[0]!.prompt
     ).toBe('Ready?')
     expect(
       AgentQuestionResponseSchema.parse({
         requestId: 'q1',
         runId: 'r1',
-        answers: ['yes']
+        answers: [{ questionId: 'q1', values: ['yes'] }]
       }).answers
-    ).toEqual(['yes'])
+    ).toEqual([{ questionId: 'q1', values: ['yes'] }])
     expect(
       AgentEventSchema.parse({
         type: 'incomplete',
@@ -455,6 +456,7 @@ describe('ipc schemas', () => {
     const parsed = SettingsSchema.parse(DEFAULT_SETTINGS)
     expect(parsed).toEqual(DEFAULT_SETTINGS)
     expect(parsed.telemetryEnabled).toBe(false)
+    expect(parsed.autoModeSwitch).toBe(false)
     // Legacy settings files omit telemetryEnabled — default fills it
     const legacy = SettingsSchema.parse({
       provider: 'ollama',
@@ -463,6 +465,7 @@ describe('ipc schemas', () => {
       theme: 'system'
     })
     expect(legacy.telemetryEnabled).toBe(false)
+    expect(legacy.autoModeSwitch).toBe(false)
     expect(SetSettingsRequestSchema.parse({ telemetryEnabled: true })).toEqual({
       telemetryEnabled: true
     })
@@ -573,6 +576,40 @@ describe('ipc schemas', () => {
         detail: 'Git is not installed or not on PATH'
       }).kind
     ).toBe('unavailable')
+  })
+
+  it('parses stage/unstage path and github auth schemas', async () => {
+    const {
+      GitStagePathsRequestSchema,
+      GitUnstagePathsRequestSchema,
+      GitBranchesResultSchema,
+      GithubAuthStatusSchema,
+      ShellOpenExternalRequestSchema,
+      SettingsSchema,
+      DEFAULT_SETTINGS
+    } = await import('@shared/ipc')
+    expect(
+      GitStagePathsRequestSchema.parse({ workspacePath: '/ws', paths: ['a.ts'] }).paths
+    ).toEqual(['a.ts'])
+    expect(
+      GitUnstagePathsRequestSchema.parse({ workspacePath: '/ws', paths: ['a.ts'] }).paths[0]
+    ).toBe('a.ts')
+    expect(GitBranchesResultSchema.parse([{ name: 'main', current: true }])).toHaveLength(1)
+    expect(
+      GithubAuthStatusSchema.parse({
+        ghAvailable: true,
+        clientIdConfigured: false,
+        hasAppToken: false,
+        pending: false,
+        userCode: null,
+        verificationUri: null,
+        error: null
+      }).pending
+    ).toBe(false)
+    expect(ShellOpenExternalRequestSchema.parse({ url: 'https://github.com' }).url).toContain(
+      'github'
+    )
+    expect(SettingsSchema.parse(DEFAULT_SETTINGS).githubClientId).toBe('')
   })
 
   it('parses pty list/create request schemas', async () => {

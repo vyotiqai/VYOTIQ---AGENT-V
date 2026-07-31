@@ -1,6 +1,7 @@
 import { execFile as execFileCb } from 'child_process'
 import { promisify } from 'util'
 import type { PrChangeType, PrReview, PrView } from '../../shared/ipc'
+import { resolveGhTokenForCli } from '@main/git/githubAuth'
 
 const execFile = promisify(execFileCb)
 
@@ -15,11 +16,15 @@ function capDiff(text: string): string {
   return `${text.slice(0, DIFF_CAP_CHARS)}\n\n… [diff truncated]`
 }
 
-const GH_ENV = {
-  ...process.env,
-  GH_PROMPT_DISABLED: '1',
-  GIT_TERMINAL_PROMPT: '0',
-  GCM_INTERACTIVE: 'never'
+function buildGhEnv(): NodeJS.ProcessEnv {
+  const token = resolveGhTokenForCli()
+  return {
+    ...process.env,
+    GH_PROMPT_DISABLED: '1',
+    GIT_TERMINAL_PROMPT: '0',
+    GCM_INTERACTIVE: 'never',
+    ...(token ? { GH_TOKEN: token } : {})
+  }
 }
 
 const GIT_ENV = {
@@ -36,7 +41,7 @@ async function gh(args: string[], cwd: string, timeout = TIMEOUT_MS): Promise<st
     timeout,
     maxBuffer: MAX_BUFFER,
     windowsHide: true,
-    env: GH_ENV
+    env: buildGhEnv()
   })
   return stdout
 }
@@ -59,7 +64,7 @@ export async function ghAvailable(): Promise<boolean> {
       encoding: 'utf8',
       timeout: 5000,
       windowsHide: true,
-      env: GH_ENV
+      env: buildGhEnv()
     })
     return true
   } catch {

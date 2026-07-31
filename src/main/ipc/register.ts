@@ -32,6 +32,10 @@ import {
   GitStatusRequestSchema,
   GitCommitRequestSchema,
   GitStageAllRequestSchema,
+  GitStagePathsRequestSchema,
+  GitUnstagePathsRequestSchema,
+  GitBranchesRequestSchema,
+  GitCheckoutRequestSchema,
   GitDiffRequestSchema,
   GitLogRequestSchema,
   GitCommitFilesRequestSchema,
@@ -40,6 +44,7 @@ import {
   PrDiffRequestSchema,
   PrCloseRequestSchema,
   PrEditTitleRequestSchema,
+  ShellOpenExternalRequestSchema,
   PtyCreateRequestSchema,
   PtyListRequestSchema,
   PtyIdRequestSchema,
@@ -207,9 +212,25 @@ import {
 } from '@main/workspace/workspaces'
 import { canonicalizeWorkspacePath, isCuratedDocPath, isSafeWorkspaceRelPath, workspacePathsEqual } from '../../shared/workspacePath'
 import { relative, isAbsolute, join } from 'path'
-import { commitAll, readGitCommitFiles, readGitDiff, readGitLog, stageAll } from '@main/git/git'
+import {
+  checkoutBranch,
+  commitAll,
+  listLocalBranches,
+  readGitCommitFiles,
+  readGitDiff,
+  readGitLog,
+  stageAll,
+  stagePaths,
+  unstagePaths
+} from '@main/git/git'
 import { invalidateGitStatusCache, readGitStatusCached } from '@main/git/gitStatusCache'
 import { prClose, prDiff, prEditTitle, prMerge, prView } from '@main/git/gh'
+import {
+  cancelGithubAuth,
+  githubAuthStatus,
+  logoutGithubAuth,
+  startGithubAuth
+} from '@main/git/githubAuth'
 import {
   createPtySession,
   disposePtySessionsForWorkspace,
@@ -761,6 +782,10 @@ export function registerIpc(): void {
         if (!isActive(req.runId)) {
           return fail('Run is not active')
         }
+        const workspace = getRunWorkspace(req.runId)
+        if (!workspace || !isOpenWorkspace(workspace)) {
+          return fail('Workspace is not open')
+        }
         const result = enqueueFollowUp(req.runId, req.message)
         if (!result.ok) return fail(result.error)
         logger.info('Chat follow-up queued', {
@@ -805,6 +830,10 @@ export function registerIpc(): void {
       if (!senderOk(event)) return fail('Invalid sender')
       try {
         const req = ChatFollowUpRemoveRequestSchema.parse(raw)
+        const workspace = getRunWorkspace(req.runId)
+        if (!workspace || !isOpenWorkspace(workspace)) {
+          return fail('Workspace is not open')
+        }
         const result = removeFollowUp(req.runId, req.id)
         if (!result.ok) return fail(result.error)
         return ok({ removed: result.removed, queueLength: result.queueLength })
@@ -1112,6 +1141,56 @@ export function registerIpc(): void {
     }
   })
 
+  ipcMain.handle(IPC.gitStagePaths, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = GitStagePathsRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      const result = await stagePaths(req.workspacePath, req.paths)
+      invalidateGitStatusCache(req.workspacePath)
+      return ok(result)
+    } catch (err) {
+      return failFrom(err, IPC.gitStagePaths)
+    }
+  })
+
+  ipcMain.handle(IPC.gitUnstagePaths, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = GitUnstagePathsRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      const result = await unstagePaths(req.workspacePath, req.paths)
+      invalidateGitStatusCache(req.workspacePath)
+      return ok(result)
+    } catch (err) {
+      return failFrom(err, IPC.gitUnstagePaths)
+    }
+  })
+
+  ipcMain.handle(IPC.gitBranches, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = GitBranchesRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      return ok(await listLocalBranches(req.workspacePath))
+    } catch (err) {
+      return failFrom(err, IPC.gitBranches)
+    }
+  })
+
+  ipcMain.handle(IPC.gitCheckout, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = GitCheckoutRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      const result = await checkoutBranch(req.workspacePath, req.branch)
+      invalidateGitStatusCache(req.workspacePath)
+      return ok(result)
+    } catch (err) {
+      return failFrom(err, IPC.gitCheckout)
+    }
+  })
+
   ipcMain.handle(IPC.gitLog, async (event, raw) => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
@@ -1209,6 +1288,64 @@ export function registerIpc(): void {
       return ok(await prEditTitle(req.workspacePath, req.title))
     } catch (err) {
       return failFrom(err, IPC.prEditTitle)
+    }
+  })
+
+  ipcMain.handle(IPC.githubAuthStatus, async (event) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      return ok(await githubAuthStatus())
+    } catch (err) {
+      return failFrom(err, IPC.githubAuthStatus)
+    }
+  })
+
+  ipcMain.handle(IPC.githubAuthStart, async (event) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      return ok(await startGithubAuth())
+    } catch (err) {
+      return failFrom(err, IPC.githubAuthStart)
+    }
+  })
+
+  ipcMain.handle(IPC.githubAuthCancel, async (event) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      cancelGithubAuth()
+      return ok(await githubAuthStatus())
+    } catch (err) {
+      return failFrom(err, IPC.githubAuthCancel)
+    }
+  })
+
+  ipcMain.handle(IPC.githubAuthLogout, async (event) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      logoutGithubAuth()
+      return ok(await githubAuthStatus())
+    } catch (err) {
+      return failFrom(err, IPC.githubAuthLogout)
+    }
+  })
+
+  ipcMain.handle(IPC.shellOpenExternal, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = ShellOpenExternalRequestSchema.parse(raw)
+      let parsed: URL
+      try {
+        parsed = new URL(req.url)
+      } catch {
+        return fail('Invalid URL')
+      }
+      if (parsed.protocol !== 'https:') {
+        return fail('Only https URLs can be opened')
+      }
+      await shell.openExternal(parsed.toString())
+      return ok(true as const)
+    } catch (err) {
+      return failFrom(err, IPC.shellOpenExternal)
     }
   })
 

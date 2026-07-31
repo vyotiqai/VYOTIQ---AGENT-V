@@ -138,10 +138,20 @@ export const SettingsSchema = z.object({
    * Default off — rule-based notes-append only. Apply stays human-gated.
    */
   harnessProposalRewriter: z.boolean().default(false),
+  /**
+   * When true, the agent may call `switch_mode` mid-run as the task phase changes.
+   * When false, only the user changes mode (composer picker or slash). Default off.
+   */
+  autoModeSwitch: z.boolean().default(false),
   /** When set, sub-agents use this provider instead of `provider`. */
   subagentProvider: ProviderIdSchema.optional(),
   /** When set, sub-agents use this model instead of `model`. */
   subagentModel: z.string().min(1).optional(),
+  /**
+   * GitHub App / OAuth App client ID for in-app device-flow Connect.
+   * Empty falls back to `VYOTIQ_GITHUB_CLIENT_ID` env.
+   */
+  githubClientId: z.string().default(''),
   marketplace: MarketplaceSettingsSchema.default(DEFAULT_MARKETPLACE_SETTINGS)
 })
 export type Settings = z.infer<typeof SettingsSchema>
@@ -167,6 +177,8 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalShell: 'auto',
   diagnosticsCommand: '',
   harnessProposalRewriter: false,
+  autoModeSwitch: false,
+  githubClientId: '',
   marketplace: DEFAULT_MARKETPLACE_SETTINGS
 }
 

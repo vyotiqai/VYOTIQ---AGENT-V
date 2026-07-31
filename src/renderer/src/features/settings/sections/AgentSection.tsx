@@ -35,6 +35,17 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
     void form.runUpdate({ diagnosticsCommand: diagnosticsDraft })
   }
 
+  const persistedGithubClientId = form.settings.githubClientId ?? ''
+  const [githubClientIdDraft, setGithubClientIdDraft] = useState(persistedGithubClientId)
+  useEffect(() => {
+    setGithubClientIdDraft(persistedGithubClientId)
+  }, [persistedGithubClientId])
+
+  const persistGithubClientId = (): void => {
+    if (githubClientIdDraft === persistedGithubClientId) return
+    void form.runUpdate({ githubClientId: githubClientIdDraft })
+  }
+
   return (
     <>
       {form.workspaceOverrideActive ? (
@@ -259,6 +270,50 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
           }}
           onBlur={() => {
             persistDiagnostics()
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              ;(e.target as HTMLInputElement).blur()
+            }
+          }}
+        />
+      </SettingsRow>
+
+      <SettingsRow
+        title="Automatic mode switching"
+        description="When on, the agent may call switch_mode mid-run as the task moves between investigate, plan, and implement. When off, only you change mode (composer picker or slash). Default off. Global setting."
+      >
+        <label className="inline-flex items-center gap-2 text-xs text-secondary">
+          <input
+            type="checkbox"
+            className="size-3.5 accent-fg"
+            aria-label="Automatic mode switching"
+            disabled={form.formLocked}
+            checked={form.settings.autoModeSwitch ?? false}
+            onChange={(e) => {
+              void form.runUpdate({ autoModeSwitch: e.target.checked })
+            }}
+          />
+          {form.settings.autoModeSwitch ? 'On' : 'Off'}
+        </label>
+      </SettingsRow>
+
+      <SettingsRow
+        stacked
+        title="GitHub client ID"
+        description="OAuth / GitHub App client ID for in-app Connect GitHub (device flow) in the PR panel. Leave blank to use VYOTIQ_GITHUB_CLIENT_ID from the environment. Global setting."
+      >
+        <Input
+          className="w-full max-w-md"
+          placeholder="Iv1… or OAuth app client id"
+          disabled={form.formLocked}
+          value={githubClientIdDraft}
+          onChange={(e) => {
+            setGithubClientIdDraft(e.target.value)
+          }}
+          onBlur={() => {
+            persistGithubClientId()
           }}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
