@@ -33,12 +33,8 @@ export const HARNESS_EVAL_TESTS = [
   'tests/main/unit/modePolicy.test.ts',
   'tests/main/unit/loopPolicy.test.ts',
   'tests/main/unit/runReceipt.test.ts',
-  'tests/main/unit/verifyBeforeDone.test.ts',
   'tests/main/unit/harnessReview.test.ts',
   'tests/main/unit/harnessApply.test.ts',
-  'tests/main/unit/agentLoopVerify.test.ts',
-  'tests/main/unit/contractDoneWhen.test.ts',
-  'tests/main/unit/agentLoopContractDoneWhen.test.ts',
   /** Frozen held-out grader — never auto-applies; edit cases only via PR. */
   'tests/main/unit/harnessHeldOutEval.test.ts'
 ] as const

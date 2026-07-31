@@ -42,38 +42,11 @@ export type ToolStepContext = {
   mcpToolPolicies?: ReadonlyMap<string, { allowedTools?: string[]; deniedTools?: string[] }>
 }
 
-/**
- * Applied in call order after a batch settles, not inside the parallel workers:
- * whichever call happens to finish first should not decide who gets the hint.
- */
-function applyRepeatFailureHint(
-  ctx: ToolStepContext,
-  outcome: ToolOutcome
-): ToolOutcome {
+/** Count repeated failures silently (no didactic recipe injected into tool results). */
+function recordRepeatFailure(ctx: ToolStepContext, outcome: ToolOutcome): void {
   const key = outcome.failureKey
-  if (!key || !ctx.failedToolKeys) return outcome
-  const count = (ctx.failedToolKeys.get(key) ?? 0) + 1
-  ctx.failedToolKeys.set(key, count)
-  if (count < 2) return outcome
-
-  const summary = key.slice(key.indexOf(':') + 1)
-  const prefix = `[Repeated failure #${count} for ${summary} — stop guessing paths; read README/manifests, then use search or dir.]`
-  const withHint = (text: string): string => [prefix, text].join('\n')
-
-  return {
-    ...outcome,
-    message: {
-      ...outcome.message,
-      content: withHint(
-        typeof outcome.message.content === 'string' ? outcome.message.content : ''
-      )
-    },
-    events: outcome.events.map((ev) =>
-      ev.type === 'tool_result' && ev.content !== undefined
-        ? { ...ev, content: withHint(ev.content) }
-        : ev
-    )
-  }
+  if (!key || !ctx.failedToolKeys) return
+  ctx.failedToolKeys.set(key, (ctx.failedToolKeys.get(key) ?? 0) + 1)
 }
 
 function isMalformedToolCall(call: ToolCall): string | null {
@@ -440,14 +413,14 @@ export async function executeStepToolCalls(
   flushBatch()
 
   const collect = async (outcome: ToolOutcome): Promise<void> => {
-    const final = applyRepeatFailureHint(ctx, outcome)
+    recordRepeatFailure(ctx, outcome)
     // Full output must be durable before the truncated live event can be expanded.
-    await ctx.appendMessage(final.message)
-    persistToolResult(ctx, final)
-    for (const ev of final.events) emitToolResult(ctx, ev)
-    messages.push(final.message)
-    events.push(...final.events)
-    if (!final.ok) stepToolsOk = false
+    await ctx.appendMessage(outcome.message)
+    persistToolResult(ctx, outcome)
+    for (const ev of outcome.events) emitToolResult(ctx, ev)
+    messages.push(outcome.message)
+    events.push(...outcome.events)
+    if (!outcome.ok) stepToolsOk = false
   }
 
   for (const group of groups) {

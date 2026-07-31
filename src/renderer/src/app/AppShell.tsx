@@ -8,6 +8,7 @@ import {
 } from 'react'
 import { Sidebar } from './sidebar'
 import { BreakpointProvider, useIsDesktop } from '@renderer/lib/context/BreakpointProvider'
+import { TitleBarAccessoryProvider } from '@renderer/lib/context/TitleBarAccessory'
 import { useOverlayPanel } from '@renderer/lib/hooks/useOverlayPanel'
 import { usePersistedBoolean } from '@renderer/lib/hooks/usePersistedBoolean'
 import { usePersistedNumber } from '@renderer/lib/hooks/usePersistedNumber'
@@ -358,7 +359,9 @@ export function AppShell(
 ): ReactElement {
   return (
     <BreakpointProvider>
-      <AppShellInner {...props} />
+      <TitleBarAccessoryProvider>
+        <AppShellInner {...props} />
+      </TitleBarAccessoryProvider>
     </BreakpointProvider>
   )
 }

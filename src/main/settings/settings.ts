@@ -113,6 +113,10 @@ function stripLegacyFields(raw: Record<string, unknown>): Record<string, unknown
     maxSteps: _maxSteps,
     maxAgentSteps: _maxAgentSteps,
     maxSubagentSteps: _maxSubagentSteps,
+    verifyBeforeDone: _verifyBeforeDone,
+    contractDoneWhen: _contractDoneWhen,
+    readBeforeEdit: _readBeforeEdit,
+    memoryAutoPromote: _memoryAutoPromote,
     ...rest
   } = raw
   return rest
@@ -176,7 +180,11 @@ export function getSettings(): Settings {
       'workspacePath' in raw ||
       'maxSteps' in raw ||
       'maxAgentSteps' in raw ||
-      'maxSubagentSteps' in raw
+      'maxSubagentSteps' in raw ||
+      'verifyBeforeDone' in raw ||
+      'contractDoneWhen' in raw ||
+      'readBeforeEdit' in raw ||
+      'memoryAutoPromote' in raw
     ) {
       try {
         writeSettings(data)
@@ -247,6 +255,16 @@ function assertMcpServersAcked(
   }
 }
 
+export type SetSettingsOptions = {
+  /**
+   * Skip the remoteInstallAcked gate. Main-process only — used when syncing
+   * already-installed marketplace MCP packages into settings (bundled installs
+   * intentionally do not require ack; untrusted sources are gated at install).
+   * Never pass from renderer IPC.
+   */
+  skipMcpAck?: boolean
+}
+
 /**
  * Merge a partial into the latest settings and persist.
  * Always re-reads the in-memory cache so concurrent IPC partials compose
@@ -256,12 +274,17 @@ function assertMcpServersAcked(
  * Sync RMW is atomic on the main-process event loop; use `enqueueSettingsMutation`
  * when an async caller must await between read and write of derived state.
  */
-export function setSettings(partial: Partial<Settings>): Settings {
+export function setSettings(
+  partial: Partial<Settings>,
+  opts?: SetSettingsOptions
+): Settings {
   const prev = getSettings()
   let mcpServers = partial.mcpServers
   if (mcpServers !== undefined) {
     mcpServers = restoreRedactedMcpHeaders(prev.mcpServers ?? [], mcpServers)
-    assertMcpServersAcked(prev, partial, mcpServers)
+    if (!opts?.skipMcpAck) {
+      assertMcpServersAcked(prev, partial, mcpServers)
+    }
   }
   const merged = { ...prev, ...partial, ...(mcpServers !== undefined ? { mcpServers } : {}) }
   if (typeof merged.ollamaBaseUrl === 'string') {

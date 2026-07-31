@@ -57,11 +57,6 @@ function NestedToolRow({
         hasBody={hasBody}
         onToggle={() => onToolToggle?.(item.id, !isToolExpanded)}
       />
-      {!hasBody && nested.status === 'running' ? (
-        <div className="border-t border-border/40 bg-surface px-3 py-1.5 text-[11px] text-tertiary">
-          <TextShimmer>Working…</TextShimmer>
-        </div>
-      ) : null}
       {hasBody && isToolExpanded ? (
         <ToolRowOutput
           tool={item.tool}
@@ -182,11 +177,6 @@ export const ToolGroup = memo(function ToolGroup({
           interrupted={isInterrupted}
           onToggle={toggleSingle}
         />
-        {!hasBody && nested.status === 'running' ? (
-          <div className="border-t border-border/40 bg-surface px-3 py-1.5 text-[11px] text-tertiary">
-            <TextShimmer>Working…</TextShimmer>
-          </div>
-        ) : null}
         {hasBody && isToolExpanded ? (
           <ToolRowOutput
             tool={item.tool}

@@ -23,15 +23,14 @@ This handbook is **guidance for humans** editing harness proposals. It does **no
 
 ## Context (`## Context`)
 
-**What this section governs:** What the agent receives each turn (chat, harness, snapshot, memory, contract, plan, mode, tools catalog); how contract / verify-before-done / receipts / harness-review–apply relate to finishing and improving the harness.
+**What this section governs:** What the agent receives each turn (chat, harness, snapshot, memory, contract, plan, mode, tools catalog); how receipts / harness-review–apply relate to improving the harness.
 
 | Failure mode | Bucket | Evidence sources |
 |---|---|---|
-| Agent finishes without meeting checkable Done-when / verify expectations | `verify` | `receipt.verifyBeforeDone`, `receipt.contractDoneWhen`, victory-claim-without-tools, verify nudges |
 | Recurring sub-agent tasks suggest missing parent guidance | `system_prompt` | Sub-agent `report.md` task text (≥2× same normalized task); proposal meta line to keep harness small |
 | Operators unsure which harness surface to edit | `system_prompt` | Proposal `## Evidence buckets` → map to a **narrow** `default.md` edit |
 
-**Receipt / review citations:** `verifyBeforeDone.*`, `contractDoneWhen.*`, `subagents[]`, proposal sections `## Evidence` / `## Evidence buckets`.
+**Receipt / review citations:** `subagents[]`, proposal sections `## Evidence` / `## Evidence buckets`.
 
 **Apply gate:** Only `resources/harness/default.md` is written; gate sources dirty or git status failure → refuse; vitest failure → revert.
 
@@ -39,7 +38,7 @@ This handbook is **guidance for humans** editing harness proposals. It does **no
 
 ## Tool policy (`## Tool policy`)
 
-**What this section governs:** Call tools to act; read-before-edit; MCP naming/approval; parallel read-only exploration.
+**What this section governs:** Call tools to act; prefer read before blind edits; MCP naming/approval; parallel read-only exploration.
 
 | Failure mode | Bucket | Evidence sources |
 |---|---|---|
@@ -71,11 +70,11 @@ This handbook is **guidance for humans** editing harness proposals. It does **no
 
 | Failure mode | Bucket | Evidence sources |
 |---|---|---|
-| Edits on paths never read this run | `loop_notices` | `receipt.unreadEditPaths`; Settings `readBeforeEdit` |
+| Edits on paths never read this run | `loop_notices` | `receipt.unreadEditPaths` (observational) |
 | Sub-agent reports with uncertainty language | `loop_notices` | Rule match on `report.md` prose in `summarizeWeaknesses` |
 | Destructive or out-of-workspace risk (operator judgment) | _(manual)_ | Not auto-bucketed — edit **Work style** Safety bullets by hand |
 
-**Suggested edit focus:** Strengthen read-before-edit / Work style for paths that repeatedly appear unread.
+**Suggested edit focus:** Prefer inspect-before-edit guidance in Work style when unread paths recur in receipts.
 
 ---
 

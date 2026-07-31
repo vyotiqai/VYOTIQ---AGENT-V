@@ -28,7 +28,6 @@ describe('resolveEffectiveSettings', () => {
       showThinking: false,
       compactionTriggerRatio: 0.85,
       keepRecentTurns: 20,
-      memoryAutoPromote: false
     })
     expect(effective).toEqual({
       provider: 'openai',
@@ -40,7 +39,6 @@ describe('resolveEffectiveSettings', () => {
       showThinking: false,
       compactionTriggerRatio: 0.85,
       keepRecentTurns: 20,
-      memoryAutoPromote: false,
       toolApproval: DEFAULT_SETTINGS.toolApproval
     })
   })

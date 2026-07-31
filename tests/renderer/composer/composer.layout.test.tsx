@@ -16,7 +16,6 @@ const chatSettings: EffectiveChatSettings = {
   model: 'qwen2.5',
   compactionTriggerRatio: DEFAULT_SETTINGS.compactionTriggerRatio,
   keepRecentTurns: DEFAULT_SETTINGS.keepRecentTurns,
-  memoryAutoPromote: DEFAULT_SETTINGS.memoryAutoPromote,
   thinkingEnabled: DEFAULT_SETTINGS.thinkingEnabled,
   thinkingEffort: DEFAULT_SETTINGS.thinkingEffort,
   showThinking: DEFAULT_SETTINGS.showThinking

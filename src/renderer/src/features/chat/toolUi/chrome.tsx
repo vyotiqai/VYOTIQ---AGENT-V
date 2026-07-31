@@ -15,7 +15,7 @@ export function ProminentChrome({
   body,
   expanded,
   hasBody,
-  running,
+  running: _running,
   clampWhenCollapsed = true,
   onToggle
 }: {
@@ -58,11 +58,6 @@ export function ProminentChrome({
           }
         >
           {body}
-        </div>
-      ) : null}
-      {!hasBody && running ? (
-        <div className="border-t border-border bg-surface px-3 py-2 text-[11px] text-tertiary">
-          <TextShimmer>Working…</TextShimmer>
         </div>
       ) : null}
     </div>

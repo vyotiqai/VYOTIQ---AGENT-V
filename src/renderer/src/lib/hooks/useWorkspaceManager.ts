@@ -124,6 +124,30 @@ function scrollKeyForRun(runId: string | null): string {
   return runId ?? DRAFT_SCROLL_KEY
 }
 
+/** Keep scroll entries for open tabs, active run, and draft only. @internal */
+export function pruneScrollTopByRunId(
+  scrollTopByRunId: Record<string, number>,
+  keep: { openRunIds: string[]; activeRunId: string | null }
+): Record<string, number> {
+  const allowed = new Set<string>([DRAFT_SCROLL_KEY, ...keep.openRunIds])
+  if (keep.activeRunId) allowed.add(keep.activeRunId)
+  const next: Record<string, number> = {}
+  for (const [key, value] of Object.entries(scrollTopByRunId)) {
+    if (allowed.has(key)) next[key] = value
+  }
+  return next
+}
+
+/** Remove one deleted run's scroll entry. @internal */
+export function omitRunScrollTop(
+  scrollTopByRunId: Record<string, number>,
+  runId: string
+): Record<string, number> {
+  if (!(runId in scrollTopByRunId)) return scrollTopByRunId
+  const { [runId]: _removed, ...rest } = scrollTopByRunId
+  return rest
+}
+
 export type WorkspaceContext = {
   path: string
   runs: RunSummary[]
@@ -159,7 +183,10 @@ function uiStateFromContext(ctx: WorkspaceContext): WorkspaceUiState {
     activeRunId: ctx.activeRunId,
     openRunIds: [...ctx.openRunIds],
     scrollTop,
-    scrollTopByRunId: { ...ctx.ui.scrollTopByRunId },
+    scrollTopByRunId: pruneScrollTopByRunId(ctx.ui.scrollTopByRunId, {
+      openRunIds: ctx.openRunIds,
+      activeRunId: ctx.activeRunId
+    }),
     composerDraft: ctx.ui.composerDraft,
     agentMode: ctx.ui.agentMode
   }
@@ -167,12 +194,16 @@ function uiStateFromContext(ctx: WorkspaceContext): WorkspaceUiState {
 
 function contextFromRegistry(path: string, registry: WorkspacesState): WorkspaceContext {
   const ui = registry.uiStateByPath[path] ?? defaultUiState()
-  const scrollTopByRunId = { ...(ui.scrollTopByRunId ?? {}) }
+  let scrollTopByRunId = { ...(ui.scrollTopByRunId ?? {}) }
   if (ui.scrollTop > 0 && ui.activeRunId && scrollTopByRunId[ui.activeRunId] === undefined) {
     scrollTopByRunId[ui.activeRunId] = ui.scrollTop
   } else if (ui.scrollTop > 0 && !ui.activeRunId && scrollTopByRunId[DRAFT_SCROLL_KEY] === undefined) {
     scrollTopByRunId[DRAFT_SCROLL_KEY] = ui.scrollTop
   }
+  scrollTopByRunId = pruneScrollTopByRunId(scrollTopByRunId, {
+    openRunIds: ui.openRunIds ?? [],
+    activeRunId: ui.activeRunId ?? null
+  })
   return {
     path,
     runs: [],
@@ -1186,6 +1217,23 @@ export function useWorkspaceManager() {
     [activeWorkspace, bump, forgetRunRouting, schedulePersistUiState]
   )
 
+  const purgeDeletedRunUi = useCallback(
+    (workspacePath: string, runId: string): void => {
+      const ctx = contextsRef.current[workspacePath]
+      if (!ctx) return
+      const scrollTopByRunId = omitRunScrollTop(ctx.ui.scrollTopByRunId, runId)
+      if (scrollTopByRunId === ctx.ui.scrollTopByRunId) return
+      const nextCtx: WorkspaceContext = {
+        ...ctx,
+        ui: { ...ctx.ui, scrollTopByRunId }
+      }
+      contextsRef.current = { ...contextsRef.current, [workspacePath]: nextCtx }
+      setContexts((prev) => ({ ...prev, [workspacePath]: nextCtx }))
+      schedulePersistUiState(workspacePath, nextCtx)
+    },
+    [schedulePersistUiState]
+  )
+
   const setComposerDraft = useCallback(
     (draft: string) => {
       if (!activeWorkspace) return
@@ -1512,6 +1560,7 @@ export function useWorkspaceManager() {
     onApprovalDecision,
     onQuestionSubmit,
     collapsedTurns,
-    chatActions
+    chatActions,
+    purgeDeletedRunUi
   }
 }

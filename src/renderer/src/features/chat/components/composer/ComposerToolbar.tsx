@@ -214,7 +214,7 @@ export function ComposerToolbar({
           running={running}
         />
         <ModelPicker
-          className="min-w-0 max-w-[10rem] shrink @max-[420px]:max-w-[min(100%,12rem)]"
+          className="min-w-0 max-w-[14rem] shrink @max-[420px]:max-w-[min(100%,14rem)]"
           triggerClassName={modelPillTrigger}
           providers={providers}
           optionsByProvider={optionsByProvider}

@@ -3,6 +3,7 @@ import { Icon } from '@renderer/lib/icons'
 import { IconButton, cn } from '@renderer/lib/ui'
 import { TITLE_BAR_HEIGHT } from '@renderer/lib/utils/layout'
 import { useIsDesktop } from '@renderer/lib/context/BreakpointProvider'
+import { useTitleBarAccessory } from '@renderer/lib/context/TitleBarAccessory'
 import { MACOS_TITLEBAR_INSET_PX } from '@shared/windowChrome'
 
 function useShowWindowControls(): boolean {
@@ -40,6 +41,7 @@ export function TitleBar({
   const showControls = useShowWindowControls()
   const maximized = useMaximized()
   const isDarwin = window.vyotiq?.platform === 'darwin'
+  const { setHost, occupied } = useTitleBarAccessory()
 
   return (
     <header
@@ -67,10 +69,17 @@ export function TitleBar({
       ) : null}
 
       <div
-        className="min-w-0 flex-1 self-stretch"
-        aria-hidden
+        ref={setHost}
+        className={cn(
+          'min-w-0 flex-1 self-stretch',
+          // Keep the host draggable; DockTabBar marks only interactive clusters no-drag
+          // so the middle spacer remains a real window-drag region.
+          occupied && 'flex items-stretch'
+        )}
+        data-titlebar-accessory
+        aria-hidden={occupied ? undefined : true}
         onDoubleClick={() => {
-          if (showControls) void window.vyotiq?.windowMaximize()
+          if (!occupied && showControls) void window.vyotiq?.windowMaximize()
         }}
       />
 

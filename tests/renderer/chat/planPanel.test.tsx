@@ -92,7 +92,7 @@ describe('PlanPanel', () => {
         name: 'receipt.json',
         exists: true,
         content: JSON.stringify({
-          version: 4,
+          version: 5,
           writtenAt: '2026-07-30T00:00:00.000Z',
           runId: 'run-3',
           status: 'done',
@@ -103,16 +103,6 @@ describe('PlanPanel', () => {
           unreadEditPaths: ['x.ts'],
           wroteFiles: ['y.ts'],
           diagnostics: { calls: 0, ok: 0, clean: 0 },
-          verifyBeforeDone: {
-            mode: 'notice',
-            nudged: true,
-            victoryClaimWithoutTools: false
-          },
-          contractDoneWhen: {
-            mode: 'require',
-            nudged: false,
-            checkableCriteria: 0
-          },
           contractExcerpt: '',
           subagents: [
             { id: 'sa-1', status: 'ok', reportPath: 'subagents/sa-1/report.md' }

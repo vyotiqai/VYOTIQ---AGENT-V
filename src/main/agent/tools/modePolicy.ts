@@ -80,10 +80,8 @@ export function modeSectionMarkdown(mode: AgentInteractionMode): string | null {
         'and use the full tools catalog (subject to user approval settings).',
         'Workspace writes are checkpointed for Keep/Discard; plan.md / contract.md run',
         'artifacts are not. Prefer non-destructive commands.',
-            'After edits or commands, verify against the goal (re-read, `diagnostics`, or a',
-            'focused test via `terminal`). Settings may soft-nudge once before a no-tool finish.',
-            'You may delegate broad research with `subagent`;',
-            'the parent alone edits and uses the `terminal` tool.',
+        'You may delegate broad research with `subagent`;',
+        'the parent alone edits and uses the `terminal` tool.',
         'Follow the run contract; if an approved `## Plan` is present, implement it unless',
         'the user redirects you. Use `ask_question` for ambiguous product decisions and',
         '`switch_mode` if Ask or Plan fits better.'

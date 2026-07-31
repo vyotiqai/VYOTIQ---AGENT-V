@@ -11,7 +11,7 @@ afterEach(() => {
 })
 
 describe('TurnSummary', () => {
-  it('shows phase label with shimmer while active', () => {
+  it('shows turn Work label when expanded and active (phase shown on tools)', () => {
     render(
       <TurnSummary
         span={{
@@ -25,7 +25,7 @@ describe('TurnSummary', () => {
       />
     )
 
-    expect(screen.getByRole('button', { name: /Collapse turn work, Thinking · 3s/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Collapse turn work, Work · 3s/i })).toBeTruthy()
     expect(document.querySelector('.vy-text-shimmer--active')).toBeTruthy()
   })
 
@@ -44,6 +44,27 @@ describe('TurnSummary', () => {
     )
 
     expect(screen.getByRole('button', { name: /Thinking · 3s/i })).toBeTruthy()
+  })
+
+  it('uses phaseStartedAt for collapsed tool-phase duration', () => {
+    const turnStart = Date.now() - 250_000
+    const phaseStart = Date.now() - 4_000
+    render(
+      <TurnSummary
+        span={{
+          startedAt: turnStart,
+          endedAt: null,
+          active: true,
+          activity: { kind: 'tool', label: 'Editing', detail: 'file' },
+          phaseStartedAt: phaseStart
+        }}
+        collapsed={true}
+        onToggle={() => {}}
+      />
+    )
+
+    expect(screen.getByRole('button', { name: /Editing file · 4s/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /4m/i })).toBeNull()
   })
 
   it('shows worked label without shimmer when finished', () => {
@@ -83,7 +104,7 @@ describe('TurnSummary', () => {
     expect(screen.getByRole('button', { name: /Planning/i })).toBeTruthy()
   })
 
-  it('shows phase label when expanded before duration is reportable', () => {
+  it('shows Work when expanded before duration is reportable', () => {
     render(
       <TurnSummary
         span={{
@@ -97,10 +118,10 @@ describe('TurnSummary', () => {
       />
     )
 
-    expect(screen.getByRole('button', { name: /Collapse turn work, Thinking/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Collapse turn work, Work$/i })).toBeTruthy()
   })
 
-  it('keeps awaiting approval visible when expanded without duration', () => {
+  it('keeps Work collapse control when expanded during approval', () => {
     render(
       <TurnSummary
         span={{
@@ -114,6 +135,6 @@ describe('TurnSummary', () => {
       />
     )
 
-    expect(screen.getByRole('button', { name: /Awaiting approval/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Collapse turn work, Work$/i })).toBeTruthy()
   })
 })

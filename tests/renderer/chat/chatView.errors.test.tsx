@@ -40,7 +40,6 @@ const baseProps = {
     model: 'qwen2.5',
     compactionTriggerRatio: 0.7,
     keepRecentTurns: 12,
-    memoryAutoPromote: true,
     thinkingEnabled: true,
     thinkingEffort: 'medium' as const,
     showThinking: true

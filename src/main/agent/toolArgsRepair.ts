@@ -7,7 +7,12 @@
  * guessed.
  */
 
-const MAX_REPAIR_BYTES = 256 * 1024
+/**
+ * Linear scan is cheap; size only bounds pathological / DoS-sized payloads.
+ * Live evidence: Luna streamed a truncated `edit` at ~293 KiB — under the old
+ * 256 KiB cap repair was skipped and the call failed as TOOL_ARGS.
+ */
+export const MAX_REPAIR_BYTES = 1024 * 1024
 
 type ScanState = {
   /** Open containers in order, e.g. ['{', '[']. */

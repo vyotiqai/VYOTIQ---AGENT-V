@@ -240,7 +240,7 @@ describe('executeStepToolCalls', () => {
     }
   })
 
-  it('prepends repeat hint when the same path fails twice in one run', async () => {
+  it('counts repeated failures silently without injecting recipe text', async () => {
     executeTool.mockResolvedValue({
       ok: false,
       summary: 'core/build.gradle.kts',
@@ -255,8 +255,9 @@ describe('executeStepToolCalls', () => {
     await executeStepToolCalls([call], ctx)
     const second = await executeStepToolCalls([call], ctx)
 
-    expect(second.messages[0]?.content).toMatch(/Repeated failure #2/)
     expect(second.messages[0]?.content).toMatch(/File not found/)
+    expect(String(second.messages[0]?.content)).not.toMatch(/Repeated failure|stop guessing/i)
+    expect(failedToolKeys.size).toBeGreaterThan(0)
   })
 
   it('feeds a denied approval back as a tool failure without running the tool', async () => {

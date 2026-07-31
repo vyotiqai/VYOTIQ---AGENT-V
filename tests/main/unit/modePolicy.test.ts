@@ -160,9 +160,8 @@ describe('modePolicy', () => {
     const agent = modeSectionMarkdown('agent')!
     const ask = modeSectionMarkdown('ask')!
     const plan = modeSectionMarkdown('plan')!
-    expect(agent).toMatch(/verify against the goal/i)
-    expect(agent).toMatch(/soft-nudge/i)
-    expect(agent).toMatch(/`diagnostics`/)
+    expect(agent).not.toMatch(/soft-nudge/i)
+    expect(agent).not.toMatch(/verify against the goal/i)
     expect(agent).toMatch(/`terminal`/)
     expect(agent).toMatch(/`subagent`/)
     expect(ask).toMatch(/`subagent` is allowed/)

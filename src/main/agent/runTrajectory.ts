@@ -197,8 +197,6 @@ export function buildPredictionManifest(
     | 'unreadEditPaths'
     | 'failureClusters'
     | 'consecutiveToolFailureSteps'
-    | 'verifyBeforeDone'
-    | 'contractDoneWhen'
     | 'compactionCount'
     | 'toolStats'
   >,
@@ -231,21 +229,6 @@ export function buildPredictionManifest(
       reason: receipt.failureClusters[0]
         ? `Top failure: ${receipt.failureClusters[0].key}`
         : 'Consecutive tool-failure streak ≥ 3'
-    })
-  }
-  if (
-    receipt.verifyBeforeDone.nudged ||
-    receipt.verifyBeforeDone.victoryClaimWithoutTools ||
-    receipt.contractDoneWhen.nudged
-  ) {
-    predictions.push({
-      at: writtenAt,
-      type: 'harness_section',
-      target: 'context',
-      bucket: 'verify',
-      confidence: 0,
-      observed_only: true,
-      reason: 'Verify / contract done-when pressure observed'
     })
   }
   if (receipt.compactionCount >= 2) {

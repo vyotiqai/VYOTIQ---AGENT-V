@@ -16,8 +16,7 @@ import {
   toolArgsFromCall,
   unreadExistingEditPaths
 } from './loopPolicy'
-import { countDiagnosticsCalls } from './verifyBeforeDone'
-import type { VerifyBeforeDoneMode, ContractDoneWhenMode } from '../../shared/ipc'
+import { parseDiagnosticLines } from './tools/diagnostics'
 import { logger } from '../../shared/logger'
 
 export { RUN_RECEIPT_VERSION }
@@ -238,33 +237,37 @@ export function scanSubagentsForReceipt(runDir: string): RunReceiptSubagent[] {
   return out.sort((a, b) => a.id.localeCompare(b.id))
 }
 
+function countDiagnosticsCalls(messages: readonly ChatMessage[]): {
+  calls: number
+  ok: number
+  clean: number
+} {
+  let calls = 0
+  let ok = 0
+  let clean = 0
+  for (const msg of messages) {
+    if (msg.role !== 'tool' || msg.toolName !== 'diagnostics') continue
+    calls++
+    if (msg.ok !== false) {
+      ok++
+      const items = parseDiagnosticLines(contentToText(msg.content ?? ''))
+      if (!items.some((d) => (d.severity ?? 'error') === 'error')) clean++
+    }
+  }
+  return { calls, ok, clean }
+}
+
 export function buildRunReceipt(input: {
   runId: string
   status: RunStatus
   messages: readonly ChatMessage[]
   events: readonly PersistedEvent[]
   contract: string
-  verifyMode: VerifyBeforeDoneMode
-  verifyNudged: boolean
-  contractDoneWhenMode?: ContractDoneWhenMode
-  contractDoneWhenNudged?: boolean
-  contractCheckableCriteria?: number
-  contractUnmetCriteria?: string[]
   /** When set, scan for file-backed subagent reports. */
   runDir?: string
 }): RunReceipt {
-  const latestAssistant = [...input.messages].reverse().find((message) => message.role === 'assistant')
-  const victoryClaimWithoutTools = Boolean(
-    latestAssistant &&
-      (!latestAssistant.toolCalls || latestAssistant.toolCalls.length === 0) &&
-      /\b(done|completed|finished|all set|ready to merge|task (is )?complete)\b/i.test(
-        contentToText(latestAssistant.content)
-      )
-  )
-
   const incomplete = lastIncompleteFromEvents(input.events, input.status.invokeId)
   const tokenUsage = tokenUsageFromEvents(input.events)
-  const unmet = input.contractUnmetCriteria?.slice(0, 12)
   const subagents = input.runDir ? scanSubagentsForReceipt(input.runDir) : []
 
   const receipt: RunReceipt = {
@@ -287,17 +290,6 @@ export function buildRunReceipt(input: {
     unreadEditPaths: unreadEditPathsFromMessages(input.messages),
     wroteFiles: wroteFilesFromEvents(input.events),
     diagnostics: countDiagnosticsCalls(input.messages),
-    verifyBeforeDone: {
-      mode: input.verifyMode,
-      nudged: input.verifyNudged,
-      victoryClaimWithoutTools
-    },
-    contractDoneWhen: {
-      mode: input.contractDoneWhenMode ?? 'require',
-      nudged: input.contractDoneWhenNudged ?? false,
-      checkableCriteria: input.contractCheckableCriteria ?? 0,
-      ...(unmet && unmet.length > 0 ? { unmetCriteria: unmet } : {})
-    },
     contractExcerpt: contractExcerpt(input.contract),
     ...(subagents.length > 0 ? { subagents } : {})
   }
@@ -316,12 +308,6 @@ export function writeRunReceiptBestEffort(input: {
   loadMessages: () => ChatMessage[]
   loadEvents: (dir: string) => PersistedEvent[]
   readContract: (dir: string) => string
-  verifyMode: VerifyBeforeDoneMode
-  verifyNudged: boolean
-  contractDoneWhenMode?: ContractDoneWhenMode
-  contractDoneWhenNudged?: boolean
-  contractCheckableCriteria?: number
-  contractUnmetCriteria?: string[]
 }): RunReceipt | null {
   try {
     const status = input.loadStatus(input.runDir)
@@ -332,12 +318,6 @@ export function writeRunReceiptBestEffort(input: {
       messages: input.loadMessages(),
       events: input.loadEvents(input.runDir),
       contract: input.readContract(input.runDir),
-      verifyMode: input.verifyMode,
-      verifyNudged: input.verifyNudged,
-      contractDoneWhenMode: input.contractDoneWhenMode,
-      contractDoneWhenNudged: input.contractDoneWhenNudged,
-      contractCheckableCriteria: input.contractCheckableCriteria,
-      contractUnmetCriteria: input.contractUnmetCriteria,
       runDir: input.runDir
     })
     writeRunReceipt(input.runDir, receipt)

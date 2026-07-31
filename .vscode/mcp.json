@@ -1,7 +1,7 @@
 {
   "servers": {
     "code-review-graph": {
-      "command": "uvx",
+      "command": "C:\\Users\\admin\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\\uvx.exe",
       "args": [
         "code-review-graph",
         "serve"

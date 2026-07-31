@@ -13,6 +13,7 @@ import { getSecret, hasStoredSecretBlob, secretStatus } from '@main/settings/sec
 import { getSettings } from '@main/settings/settings'
 import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/workspace/workspaces'
 import { getProvider } from './providers'
+import { isStreamIdleTimeoutError } from './providers/sse'
 import {
   runWithStreamRetry,
   shouldRetryProviderStreamError
@@ -485,6 +486,17 @@ async function runSubagentImpl(options: SubagentOptions): Promise<SubagentOutcom
       })
     } catch (err) {
       if (isAbortError(err)) break
+      if (isStreamIdleTimeoutError(err)) {
+        logger.warn('Sub-agent stream idle timeout', {
+          scope: 'agent',
+          code: 'PROVIDER_TIMEOUT',
+          provider: providerId,
+          step: steps,
+          idleMs: err.idleMs
+        })
+        streamFailure = { ok: false, report: `Sub-agent failed: ${err.message}`, steps }
+        break
+      }
       throw err
     }
 

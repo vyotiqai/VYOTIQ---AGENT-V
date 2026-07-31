@@ -1,21 +1,8 @@
 /** After this many consecutive all-failure tool steps, run read-only tools one at a time. */
 export const CONSECUTIVE_TOOL_FAILURE_SERIAL_THRESHOLD = 2
 
-/** After this many consecutive all-failure tool steps, inject a run notice into system context. */
-export const CONSECUTIVE_TOOL_FAILURE_HINT_THRESHOLD = 3
-
 const WRITE_TOOLS = new Set(['edit', 'str_replace', 'multi_edit'])
 const FILE_MUTATION_TOOLS = new Set([...WRITE_TOOLS, 'delete'])
-const UNREAD_EDIT_HINT_PATH_CAP = 5
-
-export function loopHintForConsecutiveFailures(streak: number): string | undefined {
-  if (streak < CONSECUTIVE_TOOL_FAILURE_HINT_THRESHOLD) return undefined
-  return [
-    `Last ${streak} agent steps had only tool failures.`,
-    'Stop guessing paths: read README and manifest files from the workspace top-level listing, use search or dir, then one narrow retry.',
-    'If still blocked, explain to the user instead of firing many parallel reads.'
-  ].join(' ')
-}
 
 /** Tell the model which MCP tools were dropped from the tools catalog this run. */
 export function loopHintForOmittedMcpTools(omittedNames: readonly string[]): string | undefined {
@@ -95,7 +82,7 @@ export function isConcreteWorkspacePath(value: string): boolean {
   return true
 }
 
-/** Tools whose successful concrete paths count as inspect for read-before-edit. */
+/** Tools whose successful concrete paths count as inspect for path tracking. */
 export function isInspectToolName(name: string): boolean {
   return name === 'read' || name === 'grep' || name === 'glob'
 }
@@ -106,8 +93,8 @@ export function isFileMutationToolName(name: string): boolean {
 }
 
 /**
- * Paths that count as “seen” for read-before-edit: `read`, or concrete
- * `grep` include / `glob` pattern (no wildcards).
+ * Paths that count as “seen”: `read`, or concrete `grep` include / `glob` pattern
+ * (no wildcards).
  */
 export function inspectPathsFromToolCall(
   name: string,
@@ -164,61 +151,6 @@ export function unreadExistingEditPaths(
   return unread
 }
 
-export function loopHintForUnreadEdits(paths: readonly string[]): string | undefined {
-  if (paths.length === 0) return undefined
-  const unique = [...new Set(paths.map(normalizeWorkspaceRelPath).filter(Boolean))]
-  if (unique.length === 0) return undefined
-  const shown = unique.slice(0, UNREAD_EDIT_HINT_PATH_CAP)
-  const more = unique.length > UNREAD_EDIT_HINT_PATH_CAP ? ` (+${unique.length - UNREAD_EDIT_HINT_PATH_CAP} more)` : ''
-  return [
-    `Edited path(s) without a prior read in this run: ${shown.join(', ')}${more}.`,
-    'Prefer `read` (or grep/glob) before editing existing files. This notice does not block tools.'
-  ].join(' ')
-}
-
-/** Error content when `readBeforeEdit: require` blocks a write tool. */
-export function readBeforeEditBlockMessage(paths: readonly string[]): string {
-  const unique = [...new Set(paths.map(normalizeWorkspaceRelPath).filter(Boolean))]
-  const shown = unique.slice(0, UNREAD_EDIT_HINT_PATH_CAP)
-  const more = unique.length > UNREAD_EDIT_HINT_PATH_CAP ? ` (+${unique.length - UNREAD_EDIT_HINT_PATH_CAP} more)` : ''
-  return [
-    `Read-before-edit is set to require. Blocked edit of unread existing path(s): ${shown.join(', ')}${more}.`,
-    'Call `read` (or concrete grep/glob) on the path first, then retry the edit.'
-  ].join(' ')
-}
-
-export type ToolCallLike = { id: string; name: string; arguments: string }
-
-/**
- * Partition tool calls for `readBeforeEdit: require`.
- * Same-step inspect paths (read/grep/glob) count as seen before writes in the batch.
- */
-export function partitionReadBeforeEditCalls(input: {
-  known: ReadonlySet<string>
-  calls: readonly ToolCallLike[]
-  pathExists: (rel: string) => boolean
-}): { allowed: ToolCallLike[]; blocked: Array<{ call: ToolCallLike; paths: string[] }> } {
-  const knownForGate = new Set(input.known)
-  for (const call of input.calls) {
-    const args = parseToolArgs(call.arguments)
-    for (const path of inspectPathsFromToolCall(call.name, args)) {
-      knownForGate.add(path)
-    }
-  }
-  const allowed: ToolCallLike[] = []
-  const blocked: Array<{ call: ToolCallLike; paths: string[] }> = []
-  for (const call of input.calls) {
-    const args = parseToolArgs(call.arguments)
-    const unread = unreadExistingEditPaths(knownForGate, call.name, args, input.pathExists)
-    if (unread.length > 0) {
-      blocked.push({ call, paths: unread })
-    } else {
-      allowed.push(call)
-    }
-  }
-  return { allowed, blocked }
-}
-
 type SeedMessage = {
   role: string
   toolCalls?: Array<{ id: string; name: string; arguments: string }>
@@ -229,7 +161,7 @@ type SeedMessage = {
 }
 
 /**
- * Seed known paths from transcript so resume does not false-nag.
+ * Seed known paths from transcript (used by receipts for unread-edit observation).
  * Only calls with a matching successful tool result count as seen.
  */
 export function seedKnownPathsFromMessages(messages: readonly SeedMessage[]): Set<string> {

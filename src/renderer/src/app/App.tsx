@@ -62,6 +62,7 @@ export function App() {
     openRunTab,
     openRunInWorkspace,
     closeRunTab,
+    purgeDeletedRunUi,
     setSessionQuery,
     addWorkspace,
     switchWorkspace,
@@ -464,6 +465,23 @@ export function App() {
                 kind: entry.kind,
                 version: entry.version
               }
+        // Registry installs require ack; prompt here so slash/skills paths match Marketplace UI.
+        if (payload.source === 'registry' && !settings.marketplace?.remoteInstallAcked) {
+          const ok = window.confirm(
+            'Marketplace packages (remote catalogs, git/npm/zip, local path folders) and MCP endpoints are unsigned. Install only from sources you trust. Continue?'
+          )
+          if (!ok) return
+          const ack = await update({
+            marketplace: {
+              registryUrl: settings.marketplace?.registryUrl ?? '',
+              remoteInstallAcked: true
+            }
+          })
+          if (!ack.ok) {
+            setSettingsError(ack.error)
+            return
+          }
+        }
         const res = await window.vyotiq.marketplaceInstall(payload)
         if (!res.ok) setSettingsError(res.error)
       },
@@ -482,7 +500,7 @@ export function App() {
         setSettingsError(message)
       }
     }),
-    [activeWorkspace, onCompactContext, onUndoWrites, setAgentMode, setSettingsError]
+    [activeWorkspace, onCompactContext, onUndoWrites, setAgentMode, setSettingsError, settings.marketplace, update]
   )
 
   const operationalError = settingsError ?? workspaceError
@@ -553,6 +571,7 @@ export function App() {
       setSettingsError(res.error)
       return
     }
+    purgeDeletedRunUi(activeWorkspace, runId)
     closeRunTab(runId)
     refreshActiveRuns()
   }
@@ -564,6 +583,7 @@ export function App() {
       setSettingsError(res.error)
       return
     }
+    purgeDeletedRunUi(path, runId)
     if (activeWorkspace && workspacePathsEqual(path, activeWorkspace)) {
       closeRunTab(runId)
     }

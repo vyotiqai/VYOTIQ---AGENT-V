@@ -227,9 +227,7 @@ function buildSystem(parts: {
         '## Prior session summary',
         // Summaries accumulate across compactions, so this needs a cap like every
         // other section or it can crowd out the harness it sits beside.
-        capText(parts.compaction.summary, mw),
-        '',
-        '_Context was compacted. Promote durable facts into `.vyotiq/memory/` (`index.md` / `state.md` / `notes/`) via memory_write — chat history may be truncated._'
+        capText(parts.compaction.summary, mw)
       ].join('\n')
     )
   }

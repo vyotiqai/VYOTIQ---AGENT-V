@@ -9,7 +9,6 @@ import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/worksp
 import { allocateBudget, contentWindow, contextWindowFor } from './context/budget'
 import { compactMessages, preserveRecentMessagesAsync } from './context/compact'
 import { estimateMessagesTokensAsync } from './context/estimate'
-import { promoteCompactionToMemory } from './context/memoryPromote'
 import { isTrimWatermarkCompaction, KEEP_RECENT_TURNS } from './context/types'
 import { resolveModelInfo } from './modelResolve'
 import { getProvider } from './providers'
@@ -104,17 +103,6 @@ export async function compactRunNow(input: {
   const foldedMessages = folded + toSummarize.length
   const compactionRecord = { ...record, foldedMessages }
   saveCompaction(runDir, compactionRecord)
-  if (settings.memoryAutoPromote) {
-    try {
-      promoteCompactionToMemory(input.workspacePath, compactionRecord)
-    } catch (err) {
-      logger.warn('Memory auto-promote failed', {
-        scope: 'agent',
-        correlationId: input.runId,
-        err
-      })
-    }
-  }
 
   logger.info('Manual compaction complete', {
     scope: 'agent',

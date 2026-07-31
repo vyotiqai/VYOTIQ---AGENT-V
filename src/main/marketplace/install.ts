@@ -254,8 +254,10 @@ export function syncMarketplaceMcpIntoSettings(): void {
       })
     }
   }
-  // Plugin-expanded MCP is handled in resolveEffectiveMcpServers
-  setSettings({ mcpServers: [...manual, ...fromMarketplace] })
+  // Plugin-expanded MCP is handled in resolveEffectiveMcpServers.
+  // Skip ack: untrusted sources are gated in installMarketplacePackage; bundled
+  // sync must not fail assertMcpServersAcked (AppData: marketplace:install IPC).
+  setSettings({ mcpServers: [...manual, ...fromMarketplace] }, { skipMcpAck: true })
 }
 
 /**

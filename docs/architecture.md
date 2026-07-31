@@ -148,7 +148,7 @@ flowchart TB
 | Memory index | `.vyotiq/memory/index.md` + `state.md` |
 | Compaction summary | `sessions/{runId}/compaction.json` (persisted) |
 
-Compaction triggers at `compactionTriggerRatio` of the model content window (15% buffer reserved). Text tokens are counted with `gpt-tokenizer` (BPE); large blobs fall back to `chars/4`. From step 2 onward, compaction and the context meter prefer provider-reported `inputTokens` when available (`Math.max(estimate, provider)` with a guard against inflated early readings). The composer shows a live context-window meter via `context_usage` events. Structured summaries may auto-promote into `.vyotiq/memory/` when `memoryAutoPromote` is enabled.
+Compaction triggers at `compactionTriggerRatio` of the model content window (15% buffer reserved). Text tokens are counted with `gpt-tokenizer` (BPE); large blobs fall back to `chars/4`. From step 2 onward, compaction and the context meter prefer provider-reported `inputTokens` when available (`Math.max(estimate, provider)` with a guard against inflated early readings). The composer shows a live context-window meter via `context_usage` events. Durable facts are written with `memory_write` when the agent chooses (no auto-promote on compaction).
 
 Read-only / parallel-safe **built-in** tools (`read`, `search`, `glob`, `grep`, `list_dir`, `web_fetch`, `web_search`, `memory_list`, `memory_read`, `subagent`, `git_status`, `git_diff`, `diagnostics`, `mcp_list_tools`) may execute in parallel (up to 4 concurrent calls; sub-agents up to 2) even when tool approval is on — approval still gates each mutating/network/MCP call individually. Mutating tools (`edit`, `str_replace`, `multi_edit`, `delete`, `terminal`, `todo_write`, `memory_write`, `git_commit`) and all `browser_*` tools run serially (browser tools are never parallel-safe). MCP tools that declare `readOnlyHint: true` may also run in parallel (hint still untrusted for approval exemption). MCP resource/prompt built-ins (`mcp_list_resources`, `mcp_read_resource`, `mcp_list_prompts`, `mcp_get_prompt`) are serial and approval-exempt like `mcp_list_tools`, but not parallel-safe. `web_fetch`, `web_search`, and all `browser_*` tools are still gated in `mutating` approval mode (network egress). **MCP tools are never approval-exempt via `readOnlyHint`** — the hint is not trusted for approval. In `mutating`/`all` modes MCP tools still require approval unless the user allowlists that tool for the session or workspace.
 
@@ -185,9 +185,9 @@ Per-workspace runs live under AppData `workspaces/{workspaceId}/sessions/{runId}
 - `messages.jsonl` — canonical chat transcript
 - `events.jsonl` — streamed agent events (including compaction)
 - `compaction.json` — last compaction record
-- `contract.md` — goal + done-when (subjective bullets advisory; path/typecheck bullets may be mechanically gated via `contractDoneWhen`)
+- `contract.md` — goal + done-when (advisory)
 - `plan.md` — Plan-mode draft (auto-injected as `## Plan` when non-empty / non-stub)
-- `receipt.json` — end-of-run structured summary (tool stats, failure clusters, unread edits, verify + contractDoneWhen metadata, optional `subagents[]` index of file-backed reports, contract excerpt)
+- `receipt.json` — end-of-run structured summary (tool stats, failure clusters, unread edits, diagnostics counts, optional `subagents[]` index of file-backed reports, contract excerpt)
 - `trajectory.jsonl` — observational AHE step/event flight recorder derived from `events.jsonl` (no LLM; not auto-merged into harness)
 - `prediction.json` — observational prediction manifest (`observed_only: true`; heuristic harness-section targets only — never auto-applied)
 - `status.json` — run status metadata (includes `mode`, `consecutiveToolFailureSteps`)
@@ -196,15 +196,11 @@ Legacy `.vyotiq/runs/` folders are migrated into AppData on startup.
 
 Follow-up turns use incremental IPC (`newMessages` + `runId`); main loads prior messages from disk.
 
-### Verify before done + harness editing scaffold
-
-**Verify before done** (Settings → Agent → `verifyBeforeDone`: `off` | `notice` | `require`) in Agent mode: when the model stops with no tool calls and no **clean** `diagnostics` evidence yet (`ok` with no error-severity lines — `ok: true` plus errors is not evidence), the loop may inject a nudge and continue. `notice` soft-nudges at most once. `require` blocks finish until met: it re-runs an external typecheck on each finish attempt and keeps nudging while dirty (until typecheck is clean, clean diagnostics evidence exists, or the user aborts).
-
-**Contract done-when** (Settings → Agent → `contractDoneWhen`: `off` | `notice` | `require`, default `require`) parses `contract.md` `## Done when` bullets for **checkable** patterns only: backtick/path tokens that must exist on disk, and typecheck/diagnostics language (reuses the external typecheck check). Subjective default-template bullets are skipped — with no checkable criteria the gate is inactive. `notice` soft-nudges once; `require` blocks finish until unmet criteria pass. Runs after the verify-before-done gate; both may combine into one user nudge.
+### Harness editing scaffold
 
 **Harness editing scaffold** (not full Self-Harness / Meta-Harness): each run’s `receipt.json` (and indexed subagent `report.md` files) can be mined with `/harness-review` into `.vyotiq/harness/proposals/*.md` via rule-based weakness extraction with **evidence buckets** (heuristic tags — not AHE). Optional Settings → Agent → `harnessProposalRewriter` (default off) may one-shot rewrite the proposed harness body via the configured model; apply stays human-gated. After a human edits the proposal’s `## Proposed harness body`, `/harness-apply` (confirm dialog) writes only `resources/harness/default.md`, runs a fixed vitest subset (`HARNESS_EVAL_TESTS` in `harnessApply.ts`, including the frozen held-out grader in `harnessHeldOutEval.ts`), refuses apply when gate sources (`harnessApply.ts` + `harnessHeldOutEval.ts` + those tests) are dirty in git **or** when `.git` exists but `git status` fails (fail-closed), and reverts that file on failure. Changing evaluator code, held-out fixtures, or the gate test list is a normal PR — not part of `/harness-apply`. Ask mode still denies `diagnostics` on the parent and strips it from subagent tool allowlists. Operator map: [Source-linked Harness Handbook](./harness-handbook.md) (failure modes → harness sections → evidence sources; docs only — no product UI).
 
-**Read before edit** (Settings → Agent → `readBeforeEdit`: `off` | `notice` | `require`, default `notice`): in Agent mode, soft-notices after unread edits (`notice`) or **blocks** `edit` / `str_replace` / `multi_edit` on existing unread paths before execution (`require`). Same-step inspect+edit and new-file creates are exempt.
+The agent loop finishes when the model stops with no tool calls (unless truncated continue or a pending user follow-up). There are no verify-before-done, contract done-when, or read-before-edit finish/edit gates.
 
 **Sub-agent reports:** Successful (and failed) sub-agent runs persist `subagents/<id>/report.md` (+ `status.json`) under the run directory. The tool result includes the report text and path; `read` remaps `subagents/.../report.md` to the run dir so the parent can re-read after compaction. Parent `receipt.json` may include a minimal `subagents[]` index (`id`, `status`, `reportPath`) scanned at write time. `/harness-review` rule-mines those reports into evidence bullets/buckets (no LLM summarization of report prose).
 

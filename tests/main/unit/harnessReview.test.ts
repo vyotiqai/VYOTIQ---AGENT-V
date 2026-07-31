@@ -40,16 +40,6 @@ function sampleReceipt(overrides?: Partial<RunReceipt>): RunReceipt {
     unreadEditPaths: ['src/foo.ts'],
     wroteFiles: ['src/foo.ts'],
     diagnostics: { calls: 0, ok: 0, clean: 0 },
-    verifyBeforeDone: {
-      mode: 'notice',
-      nudged: true,
-      victoryClaimWithoutTools: true
-    },
-    contractDoneWhen: {
-      mode: 'require',
-      nudged: false,
-      checkableCriteria: 0
-    },
     contractExcerpt: '## Done when',
     ...overrides
   }
@@ -85,7 +75,7 @@ describe('harnessReview', () => {
     expect(summary.bullets.some((b) => /Recurring failure/.test(b))).toBe(true)
     expect(summary.evidenceBuckets.some((b) => b.component === 'loop_notices')).toBe(true)
     expect(summary.evidenceBuckets.some((b) => b.component === 'tool_policy')).toBe(true)
-    expect(summary.evidenceBuckets.some((b) => b.component === 'verify')).toBe(true)
+    expect(summary.evidenceBuckets.some((b) => b.component === 'verify')).toBe(false)
     expect(summary.evidenceBuckets.some((b) => b.component === 'system_prompt')).toBe(true)
 
     // Provide a harness so the proposal includes a Proposed harness body.
@@ -154,7 +144,9 @@ describe('harnessReview', () => {
         version,
         diagnostics: { calls: 2, ok: 2 }
       } as Record<string, unknown>
-      if (version < 4) delete legacy.contractDoneWhen
+      if (version < 4) {
+        // older receipts lacked diagnostics.clean; migrate fills it
+      }
       writeFileSync(join(runDir, RUN_RECEIPT_FILENAME), JSON.stringify(legacy), 'utf8')
     }
 
@@ -163,11 +155,8 @@ describe('harnessReview', () => {
     for (const { receipt } of collected) {
       expect(receipt.version).toBe(RUN_RECEIPT_VERSION)
       expect(receipt.diagnostics).toEqual({ calls: 2, ok: 2, clean: 0 })
-      expect(receipt.contractDoneWhen).toEqual({
-        mode: 'require',
-        nudged: false,
-        checkableCriteria: 0
-      })
+      expect(receipt).not.toHaveProperty('verifyBeforeDone')
+      expect(receipt).not.toHaveProperty('contractDoneWhen')
     }
   })
 
@@ -183,7 +172,6 @@ describe('harnessReview', () => {
           failureClusters: [],
           unreadEditPaths: [],
           toolStats: { totalCalls: 1, ok: 1, failed: 0, byName: { subagent: { ok: 1, failed: 0 } } },
-          verifyBeforeDone: { mode: 'notice', nudged: false, victoryClaimWithoutTools: false },
           subagents: [{ id: 'abc123', status: 'failed', reportPath: 'subagents/abc123/report.md' }]
         })
       ),
@@ -230,7 +218,6 @@ describe('harnessReview', () => {
           runId: 'run-b',
           failureClusters: [],
           unreadEditPaths: [],
-          verifyBeforeDone: { mode: 'notice', nudged: false, victoryClaimWithoutTools: false }
         })
       ),
       'utf8'

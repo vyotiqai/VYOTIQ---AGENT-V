@@ -100,6 +100,15 @@ export function attachWebContentsCrashLogging(
   webContents: Electron.WebContents
 ): void {
   webContents.on('render-process-gone', (_event, details) => {
+    // Dev rebuild / intentional teardown — not a crash.
+    if (details.reason === 'killed' || details.reason === 'clean-exit') {
+      logger.info('Renderer process gone', {
+        scope: 'main',
+        reason: details.reason,
+        exitCode: details.exitCode
+      })
+      return
+    }
     let crashDumpsPath: string | undefined
     try {
       crashDumpsPath = app.getPath('crashDumps')

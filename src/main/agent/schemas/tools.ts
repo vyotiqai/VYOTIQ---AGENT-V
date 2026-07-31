@@ -71,54 +71,75 @@ const searchArgs = z.object({
     .optional()
 })
 
-const terminalArgs = z
-  .object({
-    command: z
-      .string()
-      .describe(
-        'Shell command to run at workspace root. Required to start; omit when polling an existing session_id. Shell comes from Settings → Agent → Terminal shell.'
-      )
-      .optional(),
-    working_directory: z
-      .string()
-      .describe(
-        'Optional subdirectory inside the workspace for cwd (default: workspace root). Must resolve inside the workspace.'
-      )
-      .optional(),
-    session_id: z
-      .string()
-      .min(1)
-      .describe('Poll/await an existing background terminal session')
-      .optional(),
-    block_until_ms: z
-      .number()
-      .int()
-      .min(0)
-      .max(TERMINAL_MAX_TIMEOUT_MS)
-      .describe(
-        'How long to wait before returning (default: full timeout for foreground; use 0 to start background immediately). When polling, wait up to this many ms for exit or pattern.'
-      )
-      .optional(),
-    pattern: z
-      .string()
-      .max(USER_REGEX_MAX_LENGTH)
-      .describe(
-        `Optional regex matched against combined stdout+stderr; return early when matched (max ${USER_REGEX_MAX_LENGTH} chars)`
-      )
-      .optional(),
-    timeoutMs: z
-      .number()
-      .int()
-      .min(1)
-      .max(TERMINAL_MAX_TIMEOUT_MS)
-      .describe(
-        `Foreground timeout in ms when block_until_ms is omitted (default 60000, max ${TERMINAL_MAX_TIMEOUT_MS})`
-      )
-      .optional()
-  })
-  .refine((v) => Boolean(v.command?.trim()) || Boolean(v.session_id?.trim()), {
-    message: 'Provide command to start a shell, or session_id to poll one'
-  })
+const TERMINAL_SESSION_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+/** Drop invented session_id labels when a command is also present (poll footgun). */
+function coerceTerminalSessionId(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
+  const v = raw as Record<string, unknown>
+  const sid = typeof v.session_id === 'string' ? v.session_id.trim() : ''
+  const cmd = typeof v.command === 'string' ? v.command.trim() : ''
+  if (sid && cmd && !TERMINAL_SESSION_UUID_RE.test(sid)) {
+    const { session_id: _drop, ...rest } = v
+    return rest
+  }
+  return raw
+}
+
+const terminalArgs = z.preprocess(
+  coerceTerminalSessionId,
+  z
+    .object({
+      command: z
+        .string()
+        .describe(
+          'Shell command to run at workspace root. Required to start; omit when polling an existing session_id. Shell comes from Settings → Agent → Terminal shell.'
+        )
+        .optional(),
+      working_directory: z
+        .string()
+        .describe(
+          'Optional subdirectory inside the workspace for cwd (default: workspace root). Must resolve inside the workspace.'
+        )
+        .optional(),
+      session_id: z
+        .string()
+        .uuid()
+        .describe(
+          'Only the session_id UUID from a prior terminal tool result (background start). Never invent labels; omit session_id and pass command for a new shell.'
+        )
+        .optional(),
+      block_until_ms: z
+        .number()
+        .int()
+        .min(0)
+        .max(TERMINAL_MAX_TIMEOUT_MS)
+        .describe(
+          'How long to wait before returning (default: full timeout for foreground; use 0 to start background immediately). When polling, wait up to this many ms for exit or pattern.'
+        )
+        .optional(),
+      pattern: z
+        .string()
+        .max(USER_REGEX_MAX_LENGTH)
+        .describe(
+          `Optional regex matched against combined stdout+stderr; return early when matched (max ${USER_REGEX_MAX_LENGTH} chars)`
+        )
+        .optional(),
+      timeoutMs: z
+        .number()
+        .int()
+        .min(1)
+        .max(TERMINAL_MAX_TIMEOUT_MS)
+        .describe(
+          `Foreground timeout in ms when block_until_ms is omitted (default 60000, max ${TERMINAL_MAX_TIMEOUT_MS})`
+        )
+        .optional()
+    })
+    .refine((v) => Boolean(v.command?.trim()) || Boolean(v.session_id?.trim()), {
+      message: 'Provide command to start a shell, or session_id to poll one'
+    })
+)
 
 const gitCommitArgs = z.object({
   message: z.string().min(1).describe('Commit message'),
@@ -699,7 +720,7 @@ const TOOL_REGISTRY = {
   },
   terminal: {
     description:
-      'Run a shell command with cwd at the workspace root (or working_directory under it). Output is capped. Use block_until_ms: 0 to start in the background (returns session_id); poll with session_id + block_until_ms / pattern.',
+      'Run a shell command with cwd at the workspace root (or working_directory under it). Output is capped. Use block_until_ms: 0 to start in the background (returns session_id: <uuid>); poll only with that UUID plus block_until_ms / pattern. Never invent session_id labels — omit session_id and pass command for a new shell.',
     schema: terminalArgs
   },
   memory_list: {

@@ -3,7 +3,12 @@
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
-import { useWorkspaceManager, WORKSPACE_MANAGER_LIMITS } from '@renderer/lib/hooks/useWorkspaceManager'
+import {
+  useWorkspaceManager,
+  WORKSPACE_MANAGER_LIMITS,
+  pruneScrollTopByRunId,
+  omitRunScrollTop
+} from '@renderer/lib/hooks/useWorkspaceManager'
 import type { AgentEvent, WorkspacesState } from '@shared/ipc'
 
 type Handler = (event: AgentEvent) => void
@@ -356,14 +361,17 @@ describe('useWorkspaceManager', () => {
       vi.advanceTimersByTime(300)
     })
 
-    expect(updateWorkspaceUiState).toHaveBeenCalledWith('/ws-a', {
-      activeRunId: null,
-      openRunIds: [],
-      scrollTop: 0,
-      scrollTopByRunId: {},
-      composerDraft: 'hello',
-      agentMode: 'agent'
-    })
+    expect(updateWorkspaceUiState).toHaveBeenCalledWith(
+      '/ws-a',
+      expect.objectContaining({
+        activeRunId: null,
+        openRunIds: [],
+        scrollTop: 0,
+        scrollTopByRunId: {},
+        composerDraft: 'hello',
+        agentMode: 'agent'
+      })
+    )
 
     updateWorkspaceUiState.mockClear()
 
@@ -865,5 +873,29 @@ describe('useWorkspaceManager', () => {
     expect(
       result.current.chat.items.some((i) => i.kind === 'message' && i.content.includes('EVICT_LEAK'))
     ).toBe(false)
+  })
+})
+
+describe('scrollTopByRunId prune helpers', () => {
+  it('keeps open/active/draft keys only', () => {
+    const pruned = pruneScrollTopByRunId(
+      {
+        'run-open': 10,
+        'run-gone': 99,
+        'run-active': 20,
+        __draft__: 5
+      },
+      { openRunIds: ['run-open'], activeRunId: 'run-active' }
+    )
+    expect(pruned).toEqual({
+      'run-open': 10,
+      'run-active': 20,
+      __draft__: 5
+    })
+  })
+
+  it('omitRunScrollTop removes a deleted run key', () => {
+    expect(omitRunScrollTop({ a: 1, b: 2 }, 'a')).toEqual({ b: 2 })
+    expect(omitRunScrollTop({ a: 1 }, 'missing')).toEqual({ a: 1 })
   })
 })

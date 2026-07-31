@@ -4,6 +4,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { ChatView } from '@renderer/features/chat/ChatView'
+import { TitleBar } from '@renderer/app/TitleBar'
+import { BreakpointProvider } from '@renderer/lib/context/BreakpointProvider'
+import { TitleBarAccessoryProvider } from '@renderer/lib/context/TitleBarAccessory'
 import { COMPOSER_DOCK_CLEARANCE_PX, COMPOSER_DOCK_FADE_PX } from '@renderer/lib/utils/layout'
 
 beforeEach(() => {
@@ -96,7 +99,6 @@ const baseProps = {
     model: 'qwen2.5',
     compactionTriggerRatio: 0.7,
     keepRecentTurns: 12,
-    memoryAutoPromote: true,
     thinkingEnabled: true,
     thinkingEffort: 'medium' as const,
     showThinking: true
@@ -393,6 +395,10 @@ describe('ChatView composer placement', () => {
     expect(screen.getByRole('tab', { name: /^Terminal$/i })).toBeTruthy()
     expect(document.querySelector('[data-dock-tab-variant="immersive"]')).toBeTruthy()
     expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    // Collapse control must not reuse the window-minimize (minus) icon.
+    expect(screen.getByRole('button', { name: /^Collapse panel$/i })).toBeTruthy()
+    const tablist = document.querySelector('[data-dock-tab-bar] [role="tablist"]')
+    expect(tablist?.className).toMatch(/\bflex-row\b/)
     fireEvent.click(screen.getByRole('button', { name: /^Collapse panel$/i }))
     expect(document.querySelector('[data-dock-immersive]')).toBeNull()
     const restored = document.querySelector('[data-right-dock]') as HTMLElement | null
@@ -406,6 +412,49 @@ describe('ChatView composer placement', () => {
     expect(
       document.querySelector('[data-terminal-panel]')?.parentElement?.className
     ).toMatch(/\bhidden\b/)
+  })
+
+  it('portals immersive dock tabs into the titlebar when the shell host is present', () => {
+    render(
+      <BreakpointProvider>
+        <TitleBarAccessoryProvider>
+          <TitleBar drawerOpen={false} onToggleSidebar={() => {}} />
+          <ChatView {...baseProps} items={[]} />
+        </TitleBarAccessoryProvider>
+      </BreakpointProvider>
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Expand panel$/i }))
+
+    const titlebar = document.querySelector('[data-titlebar]')
+    const accessory = document.querySelector('[data-titlebar-accessory]')
+    const immersiveBar = document.querySelector('[data-dock-tab-variant="immersive"]')
+    expect(titlebar).toBeTruthy()
+    expect(accessory).toBeTruthy()
+    expect(immersiveBar).toBeTruthy()
+    expect(accessory?.contains(immersiveBar)).toBe(true)
+    expect(document.querySelector('[data-dock-immersive] [data-dock-tab-bar]')).toBeNull()
+    expect(screen.getByRole('tab', { name: /^Agent$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Collapse panel$/i })).toBeTruthy()
+
+    // Accessory host stays draggable; only tab/action clusters are no-drag.
+    expect(accessory?.className).not.toMatch(/app-region-no-drag/)
+    const tablist = immersiveBar?.querySelector('[role="tablist"]')
+    expect(tablist?.className).toMatch(/app-region-no-drag/)
+    expect(tablist?.className).not.toMatch(/\bflex-1\b/)
+    expect(immersiveBar?.querySelector('[data-titlebar-drag-spacer]')).toBeTruthy()
+
+    // Agent tab matches other tabs: icon then label.
+    const agentTab = screen.getByRole('tab', { name: /^Agent$/i })
+    const agentChildren = Array.from(agentTab.childNodes).filter(
+      (n) => n.nodeType === Node.ELEMENT_NODE
+    ) as Element[]
+    expect(agentChildren[0]?.tagName.toLowerCase()).toBe('svg')
+    expect(agentChildren[1]?.textContent).toMatch(/^Agent$/i)
+
+    expect(screen.getByRole('button', { name: /^Add panel$/i })).toBeTruthy()
+    const collapse = screen.getByRole('button', { name: /^Collapse panel$/i })
+    expect(collapse.parentElement?.className).toMatch(/\bpr-2\b/)
   })
 
   it('collapsing immersive from Agent restores full chat without a side dock', () => {

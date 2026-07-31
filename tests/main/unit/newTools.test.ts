@@ -182,6 +182,37 @@ describe('terminal / grep pattern bounds', () => {
     )
     expect(result.ok).toBe(false)
   })
+
+  it('rejects invented terminal session_id labels', () => {
+    const result = validateToolArgs(
+      'terminal',
+      JSON.stringify({ session_id: 'inspect2', block_until_ms: 1000 })
+    )
+    expect(result.ok).toBe(false)
+  })
+
+  it('accepts a UUID session_id for polling', () => {
+    const result = validateToolArgs(
+      'terminal',
+      JSON.stringify({
+        session_id: '550e8400-e29b-41d4-a716-446655440000',
+        block_until_ms: 1000
+      })
+    )
+    expect(result.ok).toBe(true)
+  })
+
+  it('strips invented session_id when command is also present', () => {
+    const result = validateToolArgs(
+      'terminal',
+      JSON.stringify({ command: 'echo hi', session_id: 'run1' })
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.data.session_id).toBeUndefined()
+      expect(result.data.command).toBe('echo hi')
+    }
+  })
 })
 
 describe('tool arg bounds', () => {

@@ -35,9 +35,7 @@ vi.mock('@main/settings/settings', () => ({
     theme: 'system',
     telemetryEnabled: false,
     // Isolate stop-reason behavior from soft finish gates (default contract
-    // includes "Typecheck is clean"; require mode would nudge forever here).
-    verifyBeforeDone: 'off',
-    contractDoneWhen: 'off'
+    // may include a typecheck criterion; require mode would nudge forever here).
   }),
   readLegacyWorkspacePath: () => null
 }))

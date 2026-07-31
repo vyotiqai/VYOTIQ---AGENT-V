@@ -731,11 +731,20 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     return toolOk('switch_mode', mode, content)
   },
   terminal: async (workspace, args, signal, context) => {
-    const sessionId =
+    const rawSessionId =
       typeof args.session_id === 'string' && args.session_id.trim()
         ? args.session_id.trim()
         : ''
     const command = typeof args.command === 'string' ? args.command : ''
+    // Invented labels (e.g. "run1") with a command: ignore session_id and run the command.
+    const uuidRe =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    const sessionId =
+      rawSessionId && uuidRe.test(rawSessionId)
+        ? rawSessionId
+        : rawSessionId && !command.trim()
+          ? rawSessionId
+          : ''
     const shell = getSettings().terminalShell ?? 'auto'
     const pattern = typeof args.pattern === 'string' ? args.pattern : undefined
     const useSessionApi = Boolean(sessionId) || typeof args.block_until_ms === 'number'

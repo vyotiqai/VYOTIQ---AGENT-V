@@ -123,12 +123,8 @@ describe('harnessApply', () => {
       'tests/main/unit/modePolicy.test.ts',
       'tests/main/unit/loopPolicy.test.ts',
       'tests/main/unit/runReceipt.test.ts',
-      'tests/main/unit/verifyBeforeDone.test.ts',
       'tests/main/unit/harnessReview.test.ts',
       'tests/main/unit/harnessApply.test.ts',
-      'tests/main/unit/agentLoopVerify.test.ts',
-      'tests/main/unit/contractDoneWhen.test.ts',
-      'tests/main/unit/agentLoopContractDoneWhen.test.ts',
       'tests/main/unit/harnessHeldOutEval.test.ts'
     ]
     for (const file of required) {

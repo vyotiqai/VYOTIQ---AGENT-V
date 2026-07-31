@@ -21,7 +21,7 @@ export const TurnSummary = memo(function TurnSummary({
   panelId?: string
   onToggle: () => void
 }) {
-  const { startedAt, endedAt, active, activity } = span
+  const { startedAt, endedAt, active, activity, phaseStartedAt } = span
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -31,15 +31,38 @@ export const TurnSummary = memo(function TurnSummary({
     return () => window.clearInterval(interval)
   }, [active, startedAt])
 
-  const elapsedMs =
+  const turnElapsedMs =
     startedAt == null ? null : active ? now - startedAt : endedAt == null ? null : endedAt - startedAt
 
-  const duration = elapsedMs != null && elapsedMs >= MIN_REPORTABLE_MS ? formatElapsed(elapsedMs) : ''
+  const phaseAnchor = phaseStartedAt ?? startedAt
+  const phaseElapsedMs =
+    phaseAnchor == null
+      ? null
+      : active
+        ? now - phaseAnchor
+        : endedAt == null
+          ? null
+          : endedAt - phaseAnchor
+
+  const turnDuration =
+    turnElapsedMs != null && turnElapsedMs >= MIN_REPORTABLE_MS ? formatElapsed(turnElapsedMs) : ''
+  const phaseDuration =
+    phaseElapsedMs != null && phaseElapsedMs >= MIN_REPORTABLE_MS ? formatElapsed(phaseElapsedMs) : ''
+
   const phaseLabel = activity ? formatRunActivityLabel(activity) : 'Working'
-  // Always keep the phase visible (collapsed or expanded) so the control stays
-  // readable once a duration appears — tools show verbs, this shows context.
-  const activeLabel = duration ? `${phaseLabel} · ${duration}` : phaseLabel
-  const doneLabel = duration ? `Worked for ${duration}` : 'Worked'
+
+  // Expanded + active: tools already show the phase — only turn duration here.
+  // Collapsed + active: full phase label; tool phases use phaseStartedAt duration.
+  let activeLabel: string
+  if (!collapsed) {
+    activeLabel = turnDuration ? `Work · ${turnDuration}` : 'Work'
+  } else if (activity?.kind === 'tool') {
+    activeLabel = phaseDuration ? `${phaseLabel} · ${phaseDuration}` : phaseLabel
+  } else {
+    activeLabel = turnDuration ? `${phaseLabel} · ${turnDuration}` : phaseLabel
+  }
+
+  const doneLabel = turnDuration ? `Worked for ${turnDuration}` : 'Worked'
   const accessibleName = active
     ? collapsed
       ? activeLabel

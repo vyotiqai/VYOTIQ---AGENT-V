@@ -28,7 +28,6 @@ export const WorkspaceSettingsOverrideSchema = z.object({
   model: z.string().min(1).optional(),
   compactionTriggerRatio: z.number().min(0.5).max(0.95).optional(),
   keepRecentTurns: z.number().int().min(4).max(50).optional(),
-  memoryAutoPromote: z.boolean().optional(),
   thinkingEnabled: z.boolean().optional(),
   thinkingEffort: ThinkingEffortSchema.optional(),
   showThinking: z.boolean().optional(),

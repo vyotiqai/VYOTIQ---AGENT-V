@@ -61,16 +61,6 @@ function baseReceipt(overrides: Partial<RunReceipt> & Pick<RunReceipt, 'runId'>)
     unreadEditPaths: [],
     wroteFiles: [],
     diagnostics: { calls: 0, ok: 0, clean: 0 },
-    verifyBeforeDone: {
-      mode: 'notice',
-      nudged: false,
-      victoryClaimWithoutTools: false
-    },
-    contractDoneWhen: {
-      mode: 'require',
-      nudged: false,
-      checkableCriteria: 0
-    },
     contractExcerpt: '## Done when',
     ...overrides
   }
@@ -118,31 +108,6 @@ export const HELD_OUT_CASES: readonly HeldOutCase[] = [
       buckets: ['tool_policy', 'system_prompt'],
       absentBuckets: ['loop_notices', 'verify', 'memory'],
       predictionTargets: ['tool_policy']
-    }
-  },
-  {
-    id: 'verify-contract-pressure',
-    description: 'Verify / victory-claim maps to verify + context prediction',
-    receipts: [
-      baseReceipt({
-        runId: 'held-out-verify',
-        toolStats: { totalCalls: 1, ok: 1, failed: 0, byName: { read: { ok: 1, failed: 0 } } },
-        verifyBeforeDone: {
-          mode: 'require',
-          nudged: true,
-          victoryClaimWithoutTools: true
-        },
-        contractDoneWhen: {
-          mode: 'require',
-          nudged: true,
-          checkableCriteria: 2
-        }
-      })
-    ],
-    expect: {
-      buckets: ['verify', 'system_prompt'],
-      absentBuckets: ['loop_notices', 'tool_policy', 'memory'],
-      predictionTargets: ['context']
     }
   },
   {

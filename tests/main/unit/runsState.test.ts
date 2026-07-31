@@ -137,6 +137,7 @@ describe('listRuns / interruptOrphanRuns', () => {
     writeStatus(wsDir, {
       status: 'running',
       step: 1,
+      invokeId: 3,
       updatedAt: '2026-01-01T00:00:00.000Z',
       goal: 'also left',
       workspacePath: workspace
@@ -153,6 +154,7 @@ describe('listRuns / interruptOrphanRuns', () => {
     const wsStatus = JSON.parse(readFileSync(join(wsDir, 'status.json'), 'utf8')) as {
       status: string
       error?: string
+      invokeId?: number
     }
     const finished = JSON.parse(
       readFileSync(join(resolveRunDir(workspace, 'finished'), 'status.json'), 'utf8')
@@ -160,6 +162,7 @@ describe('listRuns / interruptOrphanRuns', () => {
 
     expect(wsStatus.status).toBe('cancelled')
     expect(wsStatus.error).toMatch(/Interrupted/)
+    expect(wsStatus.invokeId).toBe(3)
     expect(finished.status).toBe('done')
 
     const wsEvents = loadEvents(wsDir, 'orphan-ws')
@@ -167,7 +170,8 @@ describe('listRuns / interruptOrphanRuns', () => {
     expect(wsEvents[0]?.event).toMatchObject({
       type: 'status',
       status: 'cancelled',
-      runId: 'orphan-ws'
+      runId: 'orphan-ws',
+      invokeId: 3
     })
   })
 

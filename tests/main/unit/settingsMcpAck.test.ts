@@ -70,6 +70,44 @@ describe('setSettings mcpServers ack gate', () => {
     expect(getSettings().mcpServers.some((s) => s.id === 'new-stdio')).toBe(true)
   })
 
+  it('skipMcpAck allows marketplace sync without remoteInstallAcked', async () => {
+    const { clearSettingsCacheForTests, setSettings, getSettings } = await import(
+      '@main/settings/settings'
+    )
+    clearSettingsCacheForTests()
+    expect(getSettings().marketplace?.remoteInstallAcked).toBe(false)
+    const next = setSettings(
+      {
+        mcpServers: [
+          {
+            id: 'bundled-mcp',
+            name: 'Bundled',
+            enabled: true,
+            transport: 'stdio',
+            command: 'uvx',
+            source: 'marketplace'
+          }
+        ]
+      },
+      { skipMcpAck: true }
+    )
+    expect(next.mcpServers.some((s) => s.id === 'bundled-mcp')).toBe(true)
+    expect(() =>
+      setSettings({
+        mcpServers: [
+          {
+            id: 'manual-mcp',
+            name: 'Manual',
+            enabled: true,
+            transport: 'stdio',
+            command: 'npx',
+            source: 'manual'
+          }
+        ]
+      })
+    ).toThrow(/Acknowledge marketplace/i)
+  })
+
   it('restores Authorization when renderer echoes [redacted] back', async () => {
     const {
       clearSettingsCacheForTests,

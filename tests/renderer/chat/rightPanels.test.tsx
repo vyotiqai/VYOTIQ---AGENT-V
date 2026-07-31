@@ -268,6 +268,32 @@ describe('DockTabBar', () => {
     fireEvent.click(screen.getByRole('button', { name: /Expand panel/i }))
     expect(onToggleExpanded).toHaveBeenCalled()
   })
+
+  it('immersive layout hugs tabs, exposes drag spacer, and keeps Add panel next to tabs', () => {
+    const onSelect = vi.fn()
+    render(
+      <DockTabBar
+        variant="immersive"
+        active="agent"
+        tabs={[
+          { id: 'agent', label: 'Agent', icon: 'bot', closable: false },
+          defaultDockTab('terminal')
+        ]}
+        onSelect={onSelect}
+        onCloseTab={vi.fn()}
+        onOpenPanel={vi.fn()}
+        expanded
+        onToggleExpanded={vi.fn()}
+      />
+    )
+    const bar = document.querySelector('[data-dock-tab-variant="immersive"]')
+    const tablist = bar?.querySelector('[role="tablist"]')
+    expect(tablist?.className).not.toMatch(/\bflex-1\b/)
+    expect(bar?.querySelector('[data-titlebar-drag-spacer]')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Add panel$/i })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^Add panel$/i }))
+    expect(screen.getByRole('menuitem', { name: /Browser/i })).toBeTruthy()
+  })
 })
 
 describe('PrPanel', () => {

@@ -79,31 +79,10 @@ function ReceiptSummary({
       </section>
 
       <section>
-        <h3 className="m-0 text-xs font-medium uppercase tracking-wide text-muted">Verify</h3>
+        <h3 className="m-0 text-xs font-medium uppercase tracking-wide text-muted">Diagnostics</h3>
         <p className="m-0 mt-1 text-xs">
-          mode={receipt.verifyBeforeDone.mode} · nudged=
-          {receipt.verifyBeforeDone.nudged ? 'yes' : 'no'} · diagnostics=
           {receipt.diagnostics.clean}/{receipt.diagnostics.calls} clean
         </p>
-      </section>
-
-      <section>
-        <h3 className="m-0 text-xs font-medium uppercase tracking-wide text-muted">
-          Contract done-when
-        </h3>
-        <p className="m-0 mt-1 text-xs">
-          mode={receipt.contractDoneWhen.mode} · nudged=
-          {receipt.contractDoneWhen.nudged ? 'yes' : 'no'} · checkable=
-          {receipt.contractDoneWhen.checkableCriteria}
-        </p>
-        {receipt.contractDoneWhen.unmetCriteria &&
-        receipt.contractDoneWhen.unmetCriteria.length > 0 ? (
-          <ul className="mt-1 list-disc pl-4 text-xs text-muted">
-            {receipt.contractDoneWhen.unmetCriteria.slice(0, 8).map((u) => (
-              <li key={u}>{u}</li>
-            ))}
-          </ul>
-        ) : null}
       </section>
 
       {subagents && subagents.length > 0 ? (

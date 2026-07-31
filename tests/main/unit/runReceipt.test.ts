@@ -94,8 +94,6 @@ describe('runReceipt', () => {
       messages,
       events,
       contract: '## Goal\n\nFix\n\n## Done when\n\n- tests pass\n',
-      verifyMode: 'notice',
-      verifyNudged: true
     })
     expect(receipt.version).toBe(RUN_RECEIPT_VERSION)
     expect(receipt.toolStats.totalCalls).toBe(3)
@@ -106,17 +104,7 @@ describe('runReceipt', () => {
     expect(receipt.unreadEditPaths).not.toContain('a.ts')
     expect(receipt.wroteFiles).toEqual(['b.ts'])
     expect(receipt.diagnostics).toEqual({ calls: 1, ok: 1, clean: 1 })
-    expect(receipt.verifyBeforeDone).toEqual({
-      mode: 'notice',
-      nudged: true,
-      victoryClaimWithoutTools: true
-    })
-    expect(receipt.contractDoneWhen).toEqual({
-      mode: 'require',
-      nudged: false,
-      checkableCriteria: 0
-    })
-    expect(receipt.contractExcerpt).toMatch(/Done when/)
+            expect(receipt.contractExcerpt).toMatch(/Done when/)
     expect(receipt.statusError).toBe('boom')
     expect(receipt.incomplete).toEqual({ reason: 'truncated', message: 'cut off' })
     expect(receipt.tokenUsage).toEqual({ inputTokens: 100, outputTokens: 20 })
@@ -179,12 +167,9 @@ describe('runReceipt', () => {
         }
       ],
       contract: '',
-      verifyMode: 'off',
-      verifyNudged: false
     })
 
     expect(receipt.incomplete).toBeUndefined()
-    expect(receipt.verifyBeforeDone.victoryClaimWithoutTools).toBe(false)
     expect(receipt.tokenUsage).toEqual({ inputTokens: 10, outputTokens: 2 })
   })
 
@@ -209,8 +194,6 @@ describe('runReceipt', () => {
       messages,
       events: [],
       contract: '',
-      verifyMode: 'off',
-      verifyNudged: false
     })
     expect(receipt.unreadEditPaths).not.toContain('seen.ts')
     expect(receipt.unreadEditPaths).toContain('other.ts')
@@ -229,8 +212,6 @@ describe('runReceipt', () => {
         messages: [],
         events: [],
         contract: '',
-        verifyMode: 'off',
-        verifyNudged: false
       })
       writeRunReceipt(dir, receipt)
       const raw = JSON.parse(readFileSync(join(dir, RUN_RECEIPT_FILENAME), 'utf8'))
@@ -238,12 +219,7 @@ describe('runReceipt', () => {
       expect(raw.status).toBe('cancelled')
       expect(raw.version).toBe(RUN_RECEIPT_VERSION)
       expect(raw.compactionCount).toBe(0)
-      expect(raw.contractDoneWhen).toEqual({
-        mode: 'require',
-        nudged: false,
-        checkableCriteria: 0
-      })
-      expect(raw.subagents).toBeUndefined()
+            expect(raw.subagents).toBeUndefined()
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -285,8 +261,6 @@ describe('runReceipt', () => {
         messages: [],
         events: [],
         contract: '',
-        verifyMode: 'off',
-        verifyNudged: false,
         runDir: dir
       })
       expect(receipt.subagents).toEqual([

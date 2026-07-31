@@ -1,5 +1,6 @@
 import type { Ref } from 'react'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { MessageList } from './components/MessageList'
 import { AgentBrowserPanel } from './components/AgentBrowserPanel'
 import { ChangesPanel } from './components/ChangesPanel'
@@ -25,6 +26,7 @@ import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effective
 import { Alert, PanelResizeHandle } from '@renderer/lib/ui'
 import { usePersistedBoolean } from '@renderer/lib/hooks/usePersistedBoolean'
 import { usePersistedNumber } from '@renderer/lib/hooks/usePersistedNumber'
+import { useTitleBarAccessory } from '@renderer/lib/context/TitleBarAccessory'
 import {
   BROWSER_PANEL_OPEN_KEY,
   CHAT_COLUMN_MAX,
@@ -383,6 +385,13 @@ export function ChatView({
   }, [])
   const dockMaxPx = clampDockWidthPx(DOCK_WIDTH_MAX_PX)
   const dockImmersive = dockExpanded && dockTabs.length > 0
+  const { host: titleBarHost, setOccupied: setTitleBarOccupied } = useTitleBarAccessory()
+
+  useLayoutEffect(() => {
+    setTitleBarOccupied(dockImmersive)
+    return () => setTitleBarOccupied(false)
+  }, [dockImmersive, setTitleBarOccupied])
+
   /** Session-scoped: skip auto-open after the user closes a panel until they open it again. */
   const dismissedPanelsRef = useRef<Set<ChatRightPanelId>>(new Set())
   const wasChangesActiveRef = useRef(false)
@@ -910,13 +919,8 @@ export function ChatView({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="relative flex min-h-0 min-w-0 flex-1">
-        {dockImmersive ? (
-          <div
-            className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-bg"
-            data-dock-immersive
-            data-dock-expanded="1"
-          >
+      {dockImmersive && titleBarHost
+        ? createPortal(
             <DockTabBar
               variant="immersive"
               active={immersiveTab}
@@ -926,7 +930,30 @@ export function ChatView({
               onOpenPanel={(id) => setRightPanel(id)}
               expanded
               onToggleExpanded={toggleDockExpanded}
-            />
+            />,
+            titleBarHost
+          )
+        : null}
+      <div className="relative flex min-h-0 min-w-0 flex-1">
+        {dockImmersive ? (
+          <div
+            className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-bg"
+            data-dock-immersive
+            data-dock-expanded="1"
+          >
+            {/* Fallback when TitleBar host is absent (unit tests / non-shell mounts). */}
+            {!titleBarHost ? (
+              <DockTabBar
+                variant="immersive"
+                active={immersiveTab}
+                tabs={immersiveTabItems}
+                onSelect={selectImmersiveTab}
+                onCloseTab={closeDockTab}
+                onOpenPanel={(id) => setRightPanel(id)}
+                expanded
+                onToggleExpanded={toggleDockExpanded}
+              />
+            ) : null}
             <div
               className={cn(
                 'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',

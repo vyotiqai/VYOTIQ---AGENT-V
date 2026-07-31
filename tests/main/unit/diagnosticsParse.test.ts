@@ -1,5 +1,18 @@
-import { describe, expect, it } from 'vitest'
-import { parseDiagnosticLines } from '../../../src/main/agent/tools/diagnostics'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
+import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
+import {
+  execPackageCommand,
+  hasTypeScriptProject,
+  parseDiagnosticLines,
+  parseEslintJsonDiagnostics,
+  toolDiagnosticsAsync
+} from '../../../src/main/agent/tools/diagnostics'
+
+vi.mock('@main/settings/settings', () => ({
+  getSettings: () => ({})
+}))
 
 describe('parseDiagnosticLines', () => {
   it('parses tsc-style diagnostics', () => {
@@ -27,5 +40,91 @@ describe('parseDiagnosticLines', () => {
       severity: 'error',
       message: 'Missing semicolon'
     })
+  })
+
+  it('parses eslint --format json output', () => {
+    const text = JSON.stringify([
+      {
+        filePath: 'C:\\proj\\src\\a.ts',
+        messages: [
+          {
+            line: 4,
+            column: 2,
+            severity: 2,
+            message: "'x' is never reassigned",
+            ruleId: 'prefer-const'
+          },
+          {
+            line: 9,
+            column: 1,
+            severity: 1,
+            message: 'Unexpected console',
+            ruleId: 'no-console'
+          }
+        ]
+      }
+    ])
+    const items = parseEslintJsonDiagnostics(text)
+    expect(items).toHaveLength(2)
+    expect(items![0]).toMatchObject({
+      file: 'C:\\proj\\src\\a.ts',
+      line: 4,
+      col: 2,
+      severity: 'error',
+      message: "'x' is never reassigned (prefer-const)"
+    })
+    expect(items![1]).toMatchObject({
+      severity: 'warning',
+      message: 'Unexpected console (no-console)'
+    })
+    expect(parseDiagnosticLines(`npm warn noise\n${text}`)).toHaveLength(2)
+  })
+})
+
+describe('execPackageCommand', () => {
+  it('inserts -- for npm so flags are not swallowed as npm config', () => {
+    expect(execPackageCommand('npm', 'eslint', '. --format json')).toBe(
+      'npm exec -- eslint . --format json'
+    )
+    expect(execPackageCommand('npm', 'tsc', '--noEmit --pretty false')).toBe(
+      'npm exec -- tsc --noEmit --pretty false'
+    )
+  })
+
+  it('keeps pnpm exec without --', () => {
+    expect(execPackageCommand('pnpm', 'eslint', '. --format json')).toBe(
+      'pnpm exec eslint . --format json'
+    )
+  })
+})
+
+describe('hasTypeScriptProject / typecheck skip', () => {
+  let workspace: string
+
+  beforeEach(() => {
+    workspace = join(tmpdir(), `vyotiq-diag-${process.pid}-${Date.now()}`)
+    mkdirSync(workspace, { recursive: true })
+  })
+
+  afterEach(() => {
+    if (existsSync(workspace)) rmSync(workspace, { recursive: true, force: true })
+  })
+
+  it('is false for empty workspace and true when tsconfig exists', () => {
+    expect(hasTypeScriptProject(workspace)).toBe(false)
+    writeFileSync(join(workspace, 'package.json'), JSON.stringify({ name: 'x' }))
+    expect(hasTypeScriptProject(workspace)).toBe(false)
+    writeFileSync(join(workspace, 'tsconfig.json'), '{}')
+    expect(hasTypeScriptProject(workspace)).toBe(true)
+  })
+
+  it('skips typecheck with ok when no TypeScript project (live 81cee96f)', async () => {
+    const result = await toolDiagnosticsAsync(
+      workspace,
+      'typecheck',
+      new AbortController().signal
+    )
+    expect(result.ok).toBe(true)
+    expect(result.content).toContain('typecheck skipped')
   })
 })

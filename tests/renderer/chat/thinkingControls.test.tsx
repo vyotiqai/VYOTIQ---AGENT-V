@@ -15,7 +15,6 @@ const chatSettings: EffectiveChatSettings = {
   model: 'gpt-5.6',
   compactionTriggerRatio: 0.7,
   keepRecentTurns: 12,
-  memoryAutoPromote: true,
   thinkingEnabled: true,
   thinkingEffort: 'medium',
   showThinking: true

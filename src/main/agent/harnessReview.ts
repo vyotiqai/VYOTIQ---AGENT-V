@@ -152,24 +152,20 @@ function migrateLegacyReceipt(raw: unknown): unknown {
       ? diagnostics.clean
       : 0
 
+  const {
+    verifyBeforeDone: _verifyBeforeDone,
+    contractDoneWhen: _contractDoneWhen,
+    ...rest
+  } = receipt
+
   return {
-    ...receipt,
+    ...rest,
     version: RUN_RECEIPT_VERSION,
     diagnostics: {
       calls: diagnostics.calls,
       ok: diagnostics.ok,
       clean
-    },
-    contractDoneWhen:
-      receipt.contractDoneWhen &&
-      typeof receipt.contractDoneWhen === 'object' &&
-      !Array.isArray(receipt.contractDoneWhen)
-        ? receipt.contractDoneWhen
-        : {
-            mode: 'require',
-            nudged: false,
-            checkableCriteria: 0
-          }
+    }
   }
 }
 
@@ -227,12 +223,8 @@ export function summarizeWeaknesses(
   const failureRuns = new Map<string, Set<string>>()
   const unreadCounts = new Map<string, number>()
   const unreadRuns = new Map<string, Set<string>>()
-  const victoryRuns = new Set<string>()
-  const verifyNudgeRuns = new Set<string>()
   const highFailureRuns = new Set<string>()
   const compactionHeavyRuns = new Set<string>()
-  let victoryClaims = 0
-  let verifyNudges = 0
   let highFailureStreaks = 0
   let toolFailTotal = 0
   let toolCallTotal = 0
@@ -252,14 +244,6 @@ export function summarizeWeaknesses(
     for (const path of receipt.unreadEditPaths) {
       unreadCounts.set(path, (unreadCounts.get(path) ?? 0) + 1)
       addRunSource(unreadRuns, path, runId)
-    }
-    if (receipt.verifyBeforeDone.victoryClaimWithoutTools) {
-      victoryClaims++
-      victoryRuns.add(runId)
-    }
-    if (receipt.verifyBeforeDone.nudged) {
-      verifyNudges++
-      verifyNudgeRuns.add(runId)
     }
     if ((receipt.consecutiveToolFailureSteps ?? 0) >= 3) {
       highFailureStreaks++
@@ -302,16 +286,6 @@ export function summarizeWeaknesses(
       `Unread-before-edit (${count}×${formatRunSources(unreadRuns.get(path) ?? [])}): ${path}`
     )
   }
-  if (victoryClaims > 0) {
-    bullets.push(
-      `${victoryClaims} run(s) claimed done without tools after last assistant turn${formatRunSources(victoryRuns)}.`
-    )
-  }
-  if (verifyNudges > 0) {
-    bullets.push(
-      `${verifyNudges} run(s) received a verify-before-done nudge${formatRunSources(verifyNudgeRuns)}.`
-    )
-  }
   if (highFailureStreaks > 0) {
     bullets.push(
       `${highFailureStreaks} run(s) had consecutive tool-failure streaks ≥ 3${formatRunSources(highFailureRuns)}.`
@@ -331,7 +305,7 @@ export function summarizeWeaknesses(
     pushBucket(
       bucketMap,
       'loop_notices',
-      `Unread-before-edit paths (${topUnread.length} distinct) — strengthen read-before-edit run notice / Work style.`
+      `Unread-before-edit paths (${topUnread.length} distinct) observed across receipts.`
     )
   }
   if (topFailures.length > 0 || highFailureStreaks > 0) {
@@ -342,13 +316,6 @@ export function summarizeWeaknesses(
       top
         ? `Top failure cluster: ${top[0]} (${top[1]}×) — recovery / narrower-retry guidance.`
         : `${highFailureStreaks} high consecutive-failure streak(s).`
-    )
-  }
-  if (victoryClaims > 0 || verifyNudges > 0) {
-    pushBucket(
-      bucketMap,
-      'verify',
-      `${verifyNudges} verify nudge(s), ${victoryClaims} victory-claim-without-tools — reinforce verify / contract Done-when: notice soft once; require blocks finish until met.`
     )
   }
   if (compactionHeavy > 0 || memoryToolFails > 0) {
@@ -438,19 +405,9 @@ export function summarizeWeaknesses(
   }))
 
   const suggestions: string[] = []
-  if (topUnread.length > 0) {
-    suggestions.push(
-      '- Strengthen **Work style** / read-before-edit guidance for paths that repeatedly appear unread.'
-    )
-  }
   if (topFailures.length > 0) {
     suggestions.push(
       '- Add a short recovery hint for the top failure cluster (path checks, narrower retries).'
-    )
-  }
-  if (victoryClaims > 0 || verifyNudges > 0) {
-    suggestions.push(
-      '- Reinforce verify-before-done / contract Done-when: notice soft once; require blocks finish until met.'
     )
   }
   if (compactionHeavy > 0 || memoryToolFails > 0 || highStepReports > 0) {

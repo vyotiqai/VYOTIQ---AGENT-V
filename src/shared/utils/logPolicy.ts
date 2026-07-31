@@ -47,7 +47,8 @@ export const ALLOWED_LOG_FIELD_KEYS = new Set([
   'cachedInputTokens',
   'attempt',
   'messageCount',
-  'toolCallId'
+  'toolCallId',
+  'providerMessage'
 ])
 
 const PATH_IN_TEXT =

@@ -46,6 +46,12 @@ export type TurnSpan = {
   active: boolean
   /** What the agent is doing while the turn is active. */
   activity?: RunActivityPhase | null
+  /**
+   * When activity is a tool phase, start of that tool/group; otherwise equals
+   * turn `startedAt`. Used so collapsed labels don't attribute whole-turn time
+   * to the current phase.
+   */
+  phaseStartedAt?: number | null
 }
 
 /**
@@ -245,7 +251,7 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
     case 'user':
       return `user:${row.id}:${row.item.content.length}:${row.item.at ?? ''}`
     case 'turn':
-      return `turn:${row.id}:${row.span.startedAt}:${row.span.endedAt}:${row.span.active}:${activityFingerprint(row.span.activity)}`
+      return `turn:${row.id}:${row.span.startedAt}:${row.span.endedAt}:${row.span.active}:${row.span.phaseStartedAt ?? ''}:${activityFingerprint(row.span.activity)}`
     case 'thinking':
       return `thinking:${row.id}:${row.item.thinking?.length ?? 0}:${row.item.thinkingStreaming ? 1 : 0}:${row.item.thinkingExpanded ?? ''}`
     case 'text':
@@ -504,6 +510,39 @@ function isRowActive(row: TranscriptRow): boolean {
   }
 }
 
+/** Earliest start timestamp for the currently running tool phase, if any. */
+function phaseStartedAtFromRows(turnRows: TranscriptRow[]): number | null {
+  const runningCard = [...turnRows]
+    .reverse()
+    .find((row) => row.kind === 'card' && row.item.tool.status === 'running')
+  if (runningCard?.kind === 'card') {
+    return (
+      toMs(runningCard.item.at) ??
+      runningCard.item.groupTiming?.startedAt ??
+      null
+    )
+  }
+
+  const runningActivity = [...turnRows]
+    .reverse()
+    .find(
+      (row) =>
+        row.kind === 'activity' && row.tools.some((item) => item.tool.status === 'running')
+    )
+  if (runningActivity?.kind === 'activity') {
+    let started: number | null = null
+    for (const tool of runningActivity.tools) {
+      if (tool.tool.status !== 'running') continue
+      const t = toMs(tool.at) ?? tool.groupTiming?.startedAt ?? null
+      if (t != null) started = started == null ? t : Math.min(started, t)
+    }
+    if (started != null) return started
+    return rowTimestamps(runningActivity).at
+  }
+
+  return null
+}
+
 /**
  * Append a turn summary after the work block, just before the closing answer.
  *
@@ -577,11 +616,16 @@ function withTurnSummaries(
           })
         : null
 
+      const phaseStartedAt =
+        active && activity?.kind === 'tool'
+          ? (phaseStartedAtFromRows(turnRows) ?? startedAt)
+          : startedAt
+
       out.push({
         kind: 'turn',
         id: `turn:${userRow.id}`,
         turnIndex,
-        span: { startedAt, endedAt, active, activity }
+        span: { startedAt, endedAt, active, activity, phaseStartedAt }
       })
     }
 

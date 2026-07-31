@@ -19,6 +19,7 @@ import {
   shouldRetryThrownStreamError,
   sleepStreamRetryBackoff
 } from './streamRetry'
+import { isStreamIdleTimeoutError } from './providers/sse'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
 import { resolveServiceTier } from '../../shared/domain/modelSelection'
 import { stripToolShapedAssistantText } from '../../shared/transcript'
@@ -35,7 +36,6 @@ import {
   contentWindow,
   contextWindowFor,
   estimateTextTokensAsync,
-  promoteCompactionToMemory,
   preserveRecentMessagesAsync,
   applyFoldedMessagesWatermark,
   trimToolsToBudget,
@@ -45,21 +45,10 @@ import { CONTEXT_TRIM_WATERMARK_SUMMARY, isTrimWatermarkCompaction } from './con
 import { executeStepToolCalls } from './executeStepTools'
 import { loadHarness } from './harness'
 import {
-  applyToolCallToKnownPaths,
   combineLoopHints,
-  editPathsFromToolCall,
-  isInspectToolName,
-  loopHintForConsecutiveFailures,
   loopHintForOmittedMcpTools,
-  loopHintForUnreadEdits,
-  maxParallelReadToolsForFailureStreak,
-  partitionReadBeforeEditCalls,
-  readBeforeEditBlockMessage,
-  seedKnownPathsFromMessages,
-  toolArgsFromCall,
-  unreadExistingEditPaths
+  maxParallelReadToolsForFailureStreak
 } from './loopPolicy'
-import { resolveInsideWorkspace } from '../workspace/safePath'
 import { MAX_PARALLEL_READ_TOOLS } from './tools/classify'
 import { disposeTerminalSessionsForInvoke } from './tools/terminalSessions'
 import { disposeSubagentsForInvoke } from './subagentRegistry'
@@ -106,20 +95,6 @@ import {
 } from './state'
 import { writeRunReceiptBestEffort } from './runReceipt'
 import { writeTrajectoryArtifactsBestEffort } from './runTrajectory'
-import {
-  contractDoneWhenNudgeMessage,
-  evaluateContractCriteria,
-  parseCheckableCriteria,
-  parseDoneWhenBullets,
-  shouldNudgeContractDoneWhen,
-  unmetCriteriaSummaries
-} from './contractDoneWhen'
-import {
-  externalDiagnosticsCheck,
-  runHasDiagnosticsEvidence,
-  shouldNudgeVerifyBeforeDone,
-  verifyNudgeMessage
-} from './verifyBeforeDone'
 import { toolResultEventForIpc, toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
 import { AGENT_TOOLS } from './types'
 import { listMcpToolDefinitions, parseMcpToolName, syncMcpServers } from './mcp'
@@ -134,29 +109,12 @@ import { join } from 'path'
 
 export { cancelRun, clearRunAbort, registerRunAbort, resetActiveRunsForTests }
 
-/** True when the model wrote tool-shaped text instead of emitting real tool calls. */
-function assistantTextHadToolLeak(raw: string, scrubbed: string): boolean {
-  if (!raw.trim()) return false
-  if (raw.trim() === scrubbed.trim()) return false
-  return (
-    /\btool\s*\{/i.test(raw) ||
-    /^tool\s+[a-z_]+/im.test(raw) ||
-    raw.includes('DSML') ||
-    raw.includes('tool_calls')
-  )
-}
-
-const TOOL_LEAK_NUDGE =
-  'You wrote tool-shaped text in the assistant channel instead of issuing real tool calls. Call tools through the tools API — do not narrate them as plain text.'
-
 const INCOMPLETE_MESSAGES: Record<Exclude<IncompleteReason, never>, string> = {
   truncated: 'The model hit its output token limit before finishing this turn.',
   empty_response: 'The model returned an empty response.',
   filtered: 'The provider stopped the response because of a content filter.',
   context_overflow:
-    'Context still exceeds the model window after compaction. Start a new chat or compact manually.',
-  finish_gate:
-    'Verify-before-done or contract done-when criteria were still unmet after repeated nudges.'
+    'Context still exceeds the model window after compaction. Start a new chat or compact manually.'
 }
 
 /** True when two messages are the same role + normalized text (resume dedupe). */
@@ -342,10 +300,6 @@ export async function* runAgent(input: {
   // Entire body in try/finally so early returns (missing key, etc.) always clear the abort map.
   let runDir: string | null = null
   let checkpointFlushed = false
-  let verifyNudged = false
-  let contractDoneWhenNudged = false
-  let lastContractUnmet: string[] = []
-  let lastContractCheckableCount = 0
   const writeStatus = (patch: Parameters<typeof updateStatus>[1]): void => {
     if (!runDir || !isCurrentInvoke(runId, invokeId)) return
     updateStatus(runDir, patch)
@@ -429,9 +383,6 @@ export async function* runAgent(input: {
       foldedMessages = 0
     }
 
-    const knownPaths = seedKnownPathsFromMessages(messages)
-    let unreadEditHint: string | undefined
-
     logger.info('Agent run started', {
       scope: 'agent',
       correlationId: runId,
@@ -513,17 +464,6 @@ export async function* runAgent(input: {
         compaction?.summary !== record.summary || compaction?.createdAt !== record.createdAt
       compaction = record
       saveCompaction(runDir, record)
-      if (workspace && agentMode === 'agent' && settings.memoryAutoPromote && summaryChanged) {
-        try {
-          promoteCompactionToMemory(workspace, record)
-        } catch (err) {
-          logger.warn('Memory auto-promote failed', {
-            scope: 'agent',
-            correlationId: runId,
-            err
-          })
-        }
-      }
       // UI notice only when a real summary changed, not trim watermarks / folded bumps
       if (!summaryChanged || isTrimWatermarkCompaction(record)) {
         return null
@@ -630,15 +570,7 @@ export async function* runAgent(input: {
     let consecutiveToolFailureSteps = loadStatus(runDir)?.consecutiveToolFailureSteps ?? 0
     let overflowRetryUsed = false
     let truncationContinues = 0
-    let toolLeakContinues = 0
-    let verifyContinues = 0
-    let contractDoneWhenContinues = 0
     const MAX_TRUNCATION_CONTINUES = 2
-    /** Circuit breaker for require-mode finish gates (not a max-steps ceiling). */
-    const MAX_REQUIRE_FINISH_NUDGES = 5
-    const verifyBeforeDoneMode = settings.verifyBeforeDone ?? 'notice'
-    const contractDoneWhenMode = settings.contractDoneWhen ?? 'require'
-    const readBeforeEditMode = settings.readBeforeEdit ?? 'notice'
 
     while (true) {
       if (controller.signal.aborted) break
@@ -706,11 +638,7 @@ export async function* runAgent(input: {
         skillsSection,
         pluginRulesSection,
         modeSection: modeSectionMarkdown(agentMode) ?? undefined,
-        loopHint: combineLoopHints(
-          omittedMcpHint,
-          loopHintForConsecutiveFailures(consecutiveToolFailureSteps),
-          unreadEditHint
-        ),
+        loopHint: combineLoopHints(omittedMcpHint),
         providerId,
         provider,
         apiKey,
@@ -815,11 +743,7 @@ export async function* runAgent(input: {
             skillsSection,
             pluginRulesSection,
             modeSection: modeSectionMarkdown(agentMode) ?? undefined,
-            loopHint: combineLoopHints(
-              omittedMcpHint,
-              loopHintForConsecutiveFailures(consecutiveToolFailureSteps),
-              unreadEditHint
-            ),
+            loopHint: combineLoopHints(omittedMcpHint),
             providerId,
             provider,
             apiKey,
@@ -1124,7 +1048,9 @@ export async function* runAgent(input: {
           } else if (chunk.type === 'error') {
             const message = chunk.error ?? 'Provider error'
             const errorCode =
-              chunk.errorCode === 'PROVIDER_HTTP' || chunk.errorCode === 'PROVIDER_NETWORK'
+              chunk.errorCode === 'PROVIDER_HTTP' ||
+              chunk.errorCode === 'PROVIDER_NETWORK' ||
+              chunk.errorCode === 'PROVIDER_TIMEOUT'
                 ? chunk.errorCode
                 : 'PROVIDER_STREAM'
             if (shouldRetryProviderStreamError(message, streamAttempt)) {
@@ -1173,6 +1099,40 @@ export async function* runAgent(input: {
           }
         }
       } catch (err) {
+          if (isStreamIdleTimeoutError(err)) {
+            const message = err.message
+            logger.error('Provider stream idle timeout', {
+              scope: 'agent',
+              code: 'PROVIDER_TIMEOUT',
+              correlationId: runId,
+              provider: providerId,
+              step,
+              idleMs: err.idleMs
+            })
+            yield* flushPartialAssistant(
+              runId,
+              runDir,
+              messages,
+              assistantText,
+              thinkingText,
+              stepReasoningState,
+              dedupeToolCalls(toolCalls),
+              'interrupted'
+            )
+            yield { type: 'error', runId, invokeId, message, code: 'PROVIDER_TIMEOUT' }
+            yield* flushWriteCheckpoint()
+            yield { type: 'status', runId, invokeId, status: 'error' }
+            writeStatus({ status: 'error', error: message })
+            appendEvent(runDir, {
+              type: 'error',
+              runId,
+              invokeId,
+              message,
+              code: 'PROVIDER_TIMEOUT'
+            })
+            appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+            return
+          }
           if (shouldRetryThrownStreamError(err, streamAttempt)) {
             logger.warn('Provider stream disconnected (retrying)', {
               scope: 'agent',
@@ -1308,169 +1268,6 @@ export async function* runAgent(input: {
           continue
         }
 
-        // Model narrated tools as text — nudge once and continue instead of marking done.
-        if (
-          !incomplete &&
-          toolLeakContinues < 1 &&
-          assistantTextHadToolLeak(assistantText, scrubbedAssistantText) &&
-          !controller.signal.aborted
-        ) {
-          toolLeakContinues += 1
-          logger.info('Nudge after tool-shaped assistant text leak', {
-            scope: 'agent',
-            correlationId: runId,
-            step
-          })
-          const nudge: ChatMessage = {
-            role: 'user',
-            content: TOOL_LEAK_NUDGE
-          }
-          messages.push(nudge)
-          appendMessage(runDir, nudge)
-          continue
-        }
-
-        // Soft finish gates: verify-before-done, then contract done-when.
-        // Prefer one combined user nudge per step when both fire.
-        if (!incomplete && !controller.signal.aborted) {
-          let verifyExtras: string | undefined
-          let verifyNeedsNudge = shouldNudgeVerifyBeforeDone({
-            verifyMode: verifyBeforeDoneMode,
-            agentMode,
-            hasEvidence: runHasDiagnosticsEvidence(messages),
-            alreadyNudged: verifyContinues > 0,
-            incomplete
-          })
-          if (verifyNeedsNudge && verifyBeforeDoneMode === 'require') {
-            try {
-              const check = await externalDiagnosticsCheck(workspace, controller.signal)
-              if (controller.signal.aborted) break
-              if (check.clean) {
-                verifyNeedsNudge = false
-                logger.info('Verify-before-done: external typecheck clean', {
-                  scope: 'agent',
-                  correlationId: runId,
-                  step
-                })
-              } else {
-                verifyExtras = check.excerpt
-              }
-            } catch (err) {
-              if (controller.signal.aborted) break
-              verifyExtras = `External typecheck could not run: ${formatError(err)}`
-            }
-          }
-
-          let contractNeedsNudge = false
-          let contractFailures: Awaited<ReturnType<typeof evaluateContractCriteria>> = []
-          if (contractDoneWhenMode !== 'off' && agentMode === 'agent') {
-            try {
-              const contractText = await readContractAsync(runDir)
-              if (controller.signal.aborted) break
-              const bullets = parseDoneWhenBullets(contractText)
-              const criteria = parseCheckableCriteria(bullets)
-              lastContractCheckableCount = criteria.length
-              if (criteria.length > 0) {
-                contractFailures = await evaluateContractCriteria(
-                  workspace,
-                  criteria,
-                  controller.signal
-                )
-                if (controller.signal.aborted) break
-                lastContractUnmet = unmetCriteriaSummaries(contractFailures)
-                contractNeedsNudge = shouldNudgeContractDoneWhen({
-                  mode: contractDoneWhenMode,
-                  agentMode,
-                  criteria,
-                  results: contractFailures,
-                  alreadyNudged: contractDoneWhenContinues > 0,
-                  incomplete
-                })
-              } else {
-                lastContractUnmet = []
-              }
-            } catch (err) {
-              if (controller.signal.aborted) break
-              logger.warn('Contract done-when evaluation failed', {
-                scope: 'agent',
-                correlationId: runId,
-                step,
-                err: formatError(err)
-              })
-            }
-          }
-
-          if (controller.signal.aborted) break
-
-          if (verifyNeedsNudge || contractNeedsNudge) {
-            const requireVerifyBlocked =
-              verifyNeedsNudge &&
-              verifyBeforeDoneMode === 'require' &&
-              verifyContinues >= MAX_REQUIRE_FINISH_NUDGES
-            const requireContractBlocked =
-              contractNeedsNudge &&
-              contractDoneWhenMode === 'require' &&
-              contractDoneWhenContinues >= MAX_REQUIRE_FINISH_NUDGES
-            if (requireVerifyBlocked || requireContractBlocked) {
-              const incompleteEv: AgentEvent = {
-                type: 'incomplete',
-                runId,
-                invokeId,
-                reason: 'finish_gate',
-                step,
-                message: INCOMPLETE_MESSAGES.finish_gate
-              }
-              logger.warn('Stopping run: finish gate still unmet after nudge cap', {
-                scope: 'agent',
-                correlationId: runId,
-                step,
-                verifyContinues,
-                contractDoneWhenContinues
-              })
-              appendEvent(runDir, incompleteEv)
-              yield incompleteEv
-              yield* flushWriteCheckpoint()
-              yield { type: 'status', runId, invokeId, status: 'done' }
-              writeStatus({ status: 'done', error: undefined })
-              appendEvent(runDir, { type: 'status', runId, invokeId, status: 'done' })
-              return
-            }
-            const parts: string[] = []
-            if (verifyNeedsNudge) {
-              verifyContinues += 1
-              verifyNudged = true
-              const kind = verifyBeforeDoneMode === 'require' ? 'require' : 'notice'
-              logger.info('Verify-before-done nudge', {
-                scope: 'agent',
-                correlationId: runId,
-                step,
-                mode: verifyBeforeDoneMode
-              })
-              parts.push(verifyNudgeMessage(kind, verifyExtras))
-            }
-            if (contractNeedsNudge) {
-              contractDoneWhenContinues += 1
-              contractDoneWhenNudged = true
-              const kind = contractDoneWhenMode === 'require' ? 'require' : 'notice'
-              logger.info('Contract done-when nudge', {
-                scope: 'agent',
-                correlationId: runId,
-                step,
-                mode: contractDoneWhenMode,
-                unmet: lastContractUnmet.length
-              })
-              parts.push(contractDoneWhenNudgeMessage(kind, contractFailures))
-            }
-            const nudge: ChatMessage = {
-              role: 'user',
-              content: parts.join('\n\n')
-            }
-            messages.push(nudge)
-            appendMessage(runDir, nudge)
-            continue
-          }
-        }
-
         if (controller.signal.aborted) break
 
         // User steered during the final stream step — keep going instead of closing.
@@ -1583,52 +1380,7 @@ export async function* runAgent(input: {
       const liveToolResultsEmitted = new Set<string>()
       let wakeLiveEvents: (() => void) | null = null
 
-      const pathExistsNow = (rel: string): boolean => {
-        try {
-          return existsSync(resolveInsideWorkspace(workspace, rel))
-        } catch {
-          return false
-        }
-      }
-
-      let callsToExecute = uniqueToolCalls
-      if (readBeforeEditMode === 'require' && agentMode === 'agent') {
-        const { allowed, blocked } = partitionReadBeforeEditCalls({
-          known: knownPaths,
-          calls: uniqueToolCalls,
-          pathExists: pathExistsNow
-        })
-        for (const { call, paths } of blocked) {
-          const content = readBeforeEditBlockMessage(paths)
-          const toolMsg: ChatMessage = {
-            role: 'tool',
-            toolCallId: call.id,
-            toolName: call.name,
-            content,
-            ok: false
-          }
-          messages.push(toolMsg)
-          appendMessage(runDir!, toolMsg)
-          const resultEv = {
-            type: 'tool_result' as const,
-            runId,
-            toolCallId: call.id,
-            name: call.name,
-            summary: 'read-before-edit',
-            ok: false,
-            content
-          }
-          yield toolResultEventForIpc(resultEv)
-          appendEvent(runDir!, toolResultEventForPersistence(resultEv))
-          stepToolsOk = false
-        }
-        callsToExecute = allowed
-      }
-
-      if (callsToExecute.length === 0) {
-        // All calls were policy-blocked — do not count as consecutive tool failures.
-        continue
-      }
+      const callsToExecute = uniqueToolCalls
 
       const toolCtx = {
         runId,
@@ -1684,14 +1436,6 @@ export async function* runAgent(input: {
         }
       )
 
-      // Snapshot existence before writes so new-file creates do not false-nag.
-      const existedBeforeEdit = new Set<string>()
-      for (const call of callsToExecute) {
-        const args = toolArgsFromCall(call.arguments)
-        for (const path of editPathsFromToolCall(call.name, args)) {
-          if (pathExistsNow(path)) existedBeforeEdit.add(path)
-        }
-      }
       for (;;) {
         while (liveEvents.length) {
           const ev = liveEvents.shift()!
@@ -1732,37 +1476,6 @@ export async function* runAgent(input: {
       }
 
       stepToolsOk = stepToolsOk && toolOutcome.stepToolsOk
-
-      const okByCallId = new Map<string, boolean>()
-      for (const msg of toolOutcome.messages) {
-        if (msg.role === 'tool' && msg.toolCallId) {
-          okByCallId.set(msg.toolCallId, msg.ok !== false)
-        }
-      }
-      // Apply successful inspect tools first so same-step inspect+edit does not nag
-      // (matches require-mode partition: read / concrete grep / concrete glob).
-      for (const call of callsToExecute) {
-        const args = toolArgsFromCall(call.arguments)
-        const ok = okByCallId.get(call.id) ?? false
-        if (isInspectToolName(call.name)) {
-          applyToolCallToKnownPaths(knownPaths, call.name, args, ok)
-        }
-      }
-      const unreadThisStep: string[] = []
-      for (const call of callsToExecute) {
-        const args = toolArgsFromCall(call.arguments)
-        const ok = okByCallId.get(call.id) ?? false
-        unreadThisStep.push(
-          ...unreadExistingEditPaths(knownPaths, call.name, args, (rel) =>
-            existedBeforeEdit.has(rel)
-          )
-        )
-        if (!isInspectToolName(call.name)) {
-          applyToolCallToKnownPaths(knownPaths, call.name, args, ok)
-        }
-      }
-      unreadEditHint =
-        readBeforeEditMode === 'notice' ? loopHintForUnreadEdits(unreadThisStep) : undefined
 
       if (uniqueToolCalls.length > 0) {
         if (stepToolsOk) {
@@ -1846,13 +1559,7 @@ export async function* runAgent(input: {
           loadStatus,
           loadMessages: () => loadMessages(workspace, runId),
           loadEvents,
-          readContract,
-          verifyMode: settings.verifyBeforeDone ?? 'notice',
-          verifyNudged,
-          contractDoneWhenMode: settings.contractDoneWhen ?? 'require',
-          contractDoneWhenNudged,
-          contractCheckableCriteria: lastContractCheckableCount,
-          contractUnmetCriteria: lastContractUnmet
+          readContract
         })
         // Observational AHE sidecars — best-effort; must not block receipt success.
         writeTrajectoryArtifactsBestEffort({

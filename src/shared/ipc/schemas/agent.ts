@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AgentInteractionModeSchema, ContractDoneWhenModeSchema, VerifyBeforeDoneModeSchema } from './settings'
+import { AgentInteractionModeSchema } from './settings'
 
 export const MAX_IMAGE_BYTES = 4 * 1024 * 1024
 export const MAX_IMAGE_DATA_URL_CHARS = Math.ceil(MAX_IMAGE_BYTES * (4 / 3)) + 128
@@ -105,8 +105,7 @@ export const IncompleteReasonSchema = z.enum([
   'truncated',
   'empty_response',
   'filtered',
-  'context_overflow',
-  'finish_gate'
+  'context_overflow'
 ])
 export type IncompleteReason = z.infer<typeof IncompleteReasonSchema>
 
@@ -522,7 +521,7 @@ export const PredictionManifestSchema = z.object({
 export type PredictionManifest = z.infer<typeof PredictionManifestSchema>
 
 /** Per-run receipt.json written at agent loop teardown. */
-export const RUN_RECEIPT_VERSION = 4 as const
+export const RUN_RECEIPT_VERSION = 5 as const
 
 export const RunReceiptToolStatSchema = z.object({
   ok: z.number().int().min(0),
@@ -578,17 +577,6 @@ export const RunReceiptSchema = z.object({
     calls: z.number().int().min(0),
     ok: z.number().int().min(0),
     clean: z.number().int().min(0).default(0)
-  }),
-  verifyBeforeDone: z.object({
-    mode: VerifyBeforeDoneModeSchema,
-    nudged: z.boolean(),
-    victoryClaimWithoutTools: z.boolean()
-  }),
-  contractDoneWhen: z.object({
-    mode: ContractDoneWhenModeSchema,
-    nudged: z.boolean(),
-    checkableCriteria: z.number().int().min(0),
-    unmetCriteria: z.array(z.string()).optional()
   }),
   contractExcerpt: z.string(),
   /** Minimal index of file-backed subagent reports under the run dir (no report mining). */

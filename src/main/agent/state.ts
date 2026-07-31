@@ -214,7 +214,6 @@ export function createRun(workspacePath: string, runId: string, goal: string): s
       '## Done when',
       '',
       '- The goal above is satisfied (check outcomes: read results, command output, or user-visible success).',
-      '- Typecheck is clean',
       '- Or blockers are explained clearly and no further narrow retry will help.',
       '- Update this file if scope or done-when changes.',
       ''
@@ -729,11 +728,17 @@ export async function interruptOrphanRuns(workspacePaths: string[]): Promise<num
           dir,
           {
             status: 'cancelled',
-            error: 'Interrupted: app exited while run was active'
+            error: 'Interrupted: app exited while run was active',
+            ...(parsed.data.invokeId != null ? { invokeId: parsed.data.invokeId } : {})
           },
           { sync: true }
         )
-        appendEvent(dir, { type: 'status', status: 'cancelled', runId: name })
+        appendEvent(dir, {
+          type: 'status',
+          status: 'cancelled',
+          runId: name,
+          ...(parsed.data.invokeId != null ? { invokeId: parsed.data.invokeId } : {})
+        })
         eventFlushDirs.push(dir)
         count += 1
       } catch {

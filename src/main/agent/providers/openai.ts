@@ -215,25 +215,31 @@ export function parseOpenAiCompatUsage(raw: unknown): TokenUsage | undefined {
   }
 }
 
+/** GET JSON for model-catalog probes only (not chat streams). */
 async function fetchJson(
   url: string,
   headers: Record<string, string>,
   signal?: AbortSignal,
   providerId?: ProviderId
 ): Promise<unknown> {
+  const logProvider = providerId ?? 'openai-compat'
   let res: Response
   try {
     res = await fetchWithRetry(url, { method: 'GET', headers, signal })
   } catch (err) {
     if (signal?.aborted) throw err
-    logProviderFailure('openai-compat', 'network', {})
+    // Local Ollama (or any catalog host) being down is expected — warn, don't ERROR-spam startup.
+    logProviderFailure(logProvider, 'network', {}, { soft: true })
     throw new Error(formatError(err))
   }
   if (!res.ok) {
     const text = await res.text().catch(() => '')
-    logProviderFailure('openai-compat', 'http', {
-      status: res.status
-    })
+    logProviderFailure(
+      logProvider,
+      'http',
+      { status: res.status, message: scrubProviderErrorSnippet(text) || undefined },
+      { soft: true }
+    )
     throw new Error(formatProviderHttpError(res.status, text, providerId))
   }
   return res.json()
@@ -321,9 +327,11 @@ async function listOpenAiCompatModels(
   signal?: AbortSignal,
   providerId?: ProviderId
 ): Promise<ModelInfo[]> {
+  const catalogProvider = providerId ?? (opts.ollamaVision ? 'ollama' : undefined)
+
   if (opts.listLanguageModels) {
     try {
-      const data = await fetchJson(`${base}/language-models`, headers, signal)
+      const data = await fetchJson(`${base}/language-models`, headers, signal, catalogProvider)
       const models = normalizeXaiLanguageModels(data)
       if (models.length) return models
     } catch {
@@ -335,15 +343,16 @@ async function listOpenAiCompatModels(
   if (opts.ollamaVision) {
     const host = normalizeOllamaHost(base)
     const openAiBase = `${host}/v1`
+    const ollamaId = catalogProvider ?? 'ollama'
     let openAiErr: unknown
     try {
-      const data = await fetchJson(`${openAiBase}/models`, headers, signal, providerId ?? 'ollama')
+      const data = await fetchJson(`${openAiBase}/models`, headers, signal, ollamaId)
       let models = normalizeOpenAiStyleModels(data, {
         requireToolsParam: opts.requireToolsParam,
-        providerId: providerId ?? 'ollama'
+        providerId: ollamaId
       })
       try {
-        const tags = await fetchJson(`${host}/api/tags`, {}, signal)
+        const tags = await fetchJson(`${host}/api/tags`, {}, signal, ollamaId)
         const names = modelsFromOllamaTags(tags).map((m) => m.id)
         models = mergeOllamaTagNames(models, names)
       } catch {
@@ -355,7 +364,7 @@ async function listOpenAiCompatModels(
     }
 
     try {
-      const tags = await fetchJson(`${host}/api/tags`, {}, signal)
+      const tags = await fetchJson(`${host}/api/tags`, {}, signal, ollamaId)
       const models = modelsFromOllamaTags(tags)
       if (models.length) return models
       throw new Error('Ollama /api/tags returned no models')
@@ -569,7 +578,8 @@ export function createOpenAiCompatibleProvider(
         const message = formatProviderHttpError(res.status, text, id)
         logProviderFailure(id, 'http', {
           status: res.status,
-          message: scrubProviderErrorSnippet(text) || message
+          message: scrubProviderErrorSnippet(text) || message,
+          model: req.model
         })
         yield { type: 'error', error: message, errorCode: 'PROVIDER_HTTP' }
         return
@@ -580,7 +590,8 @@ export function createOpenAiCompatibleProvider(
         const message = formatProviderHttpError(status, lastHttpErrorText, id)
         logProviderFailure(id, 'http', {
           status,
-          message: scrubProviderErrorSnippet(lastHttpErrorText) || message
+          message: scrubProviderErrorSnippet(lastHttpErrorText) || message,
+          model: req.model
         })
         yield { type: 'error', error: message, errorCode: 'PROVIDER_HTTP' }
         return

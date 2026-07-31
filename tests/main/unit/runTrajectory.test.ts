@@ -28,8 +28,6 @@ function minimalReceipt(over: Partial<RunReceipt> = {}): RunReceipt {
     unreadEditPaths: [],
     wroteFiles: [],
     diagnostics: { calls: 0, ok: 0, clean: 0 },
-    verifyBeforeDone: { mode: 'notice', nudged: false, victoryClaimWithoutTools: false },
-    contractDoneWhen: { mode: 'require', nudged: false, checkableCriteria: 0 },
     contractExcerpt: '',
     ...over
   }
@@ -102,7 +100,6 @@ describe('runTrajectory', () => {
         unreadEditPaths: ['a.ts'],
         failureClusters: [{ key: 'edit: boom', count: 2 }],
         consecutiveToolFailureSteps: 3,
-        verifyBeforeDone: { mode: 'require', nudged: true, victoryClaimWithoutTools: true },
         compactionCount: 2
       })
     )
@@ -111,7 +108,7 @@ describe('runTrajectory', () => {
     expect(manifest.predictions.every((p) => p.observed_only === true)).toBe(true)
     expect(manifest.predictions.some((p) => p.target === 'work_style')).toBe(true)
     expect(manifest.predictions.some((p) => p.target === 'tool_policy')).toBe(true)
-    expect(manifest.predictions.some((p) => p.bucket === 'verify')).toBe(true)
+    expect(manifest.predictions.some((p) => p.bucket === 'verify')).toBe(false)
     expect(manifest.predictions.some((p) => p.target === 'memory')).toBe(true)
     expect(PredictionManifestSchema.safeParse(manifest).success).toBe(true)
   })

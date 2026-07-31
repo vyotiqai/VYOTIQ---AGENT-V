@@ -92,22 +92,6 @@ const ThinkingPrefsSchema = z.object({
 export const ToolApprovalModeSchema = z.enum(['off', 'mutating', 'all'])
 export type ToolApprovalMode = z.infer<typeof ToolApprovalModeSchema>
 
-/**
- * Soft gate when the model stops with no tool calls in Agent mode.
- * `off` — never nudge. `notice` — one soft verify reminder. `require` — one reminder
- * after an external typecheck when the run lacks diagnostics evidence.
- */
-export const VerifyBeforeDoneModeSchema = z.enum(['off', 'notice', 'require'])
-export type VerifyBeforeDoneMode = z.infer<typeof VerifyBeforeDoneModeSchema>
-
-/** Mechanical contract Done-when gate (paths + typecheck bullets) in Agent mode. */
-export const ContractDoneWhenModeSchema = z.enum(['off', 'notice', 'require'])
-export type ContractDoneWhenMode = z.infer<typeof ContractDoneWhenModeSchema>
-
-/** Soft / hard read-before-edit gate for write tools in Agent mode. */
-export const ReadBeforeEditModeSchema = z.enum(['off', 'notice', 'require'])
-export type ReadBeforeEditMode = z.infer<typeof ReadBeforeEditModeSchema>
-
 export const TerminalShellSchema = z.enum(['auto', 'cmd', 'powershell', 'bash'])
 export type TerminalShell = z.infer<typeof TerminalShellSchema>
 
@@ -133,7 +117,6 @@ export const SettingsSchema = z.object({
   mcpServers: z.array(McpServerSchema).default([]),
   compactionTriggerRatio: z.number().min(0.5).max(0.95).default(0.7),
   keepRecentTurns: z.number().int().min(4).max(50).default(12),
-  memoryAutoPromote: z.boolean().default(true),
   thinkingEnabled: z.boolean().default(true),
   thinkingEffort: ThinkingEffortSchema.default('medium'),
   showThinking: z.boolean().default(true),
@@ -150,25 +133,6 @@ export const SettingsSchema = z.object({
    * Empty = auto-detect from package.json scripts / tsc.
    */
   diagnosticsCommand: z.string().default(''),
-  /**
-   * Verify-before-done gate in Agent mode.
-   * `notice` — soft-nudge at most once when finishing without clean diagnostics evidence.
-   * `require` — re-check typecheck and keep blocking finish until clean (or abort).
-   * Default `notice`.
-   */
-  verifyBeforeDone: VerifyBeforeDoneModeSchema.default('notice'),
-  /**
-   * Mechanical contract Done-when gate in Agent mode.
-   * Parses checkable bullets from `contract.md` (file paths, typecheck language).
-   * Default `require` — keep blocking finish while those criteria are unmet.
-   */
-  contractDoneWhen: ContractDoneWhenModeSchema.default('require'),
-  /**
-   * Read-before-edit for existing files in Agent mode.
-   * `off` — no notice/block. `notice` — soft run notice after unread edits.
-   * `require` — block edit/str_replace/multi_edit until the path was inspected this run.
-   */
-  readBeforeEdit: ReadBeforeEditModeSchema.default('notice'),
   /**
    * When true, `/harness-review` may one-shot rewrite the proposed harness body via the LLM.
    * Default off — rule-based notes-append only. Apply stays human-gated.
@@ -191,7 +155,6 @@ export const DEFAULT_SETTINGS: Settings = {
   mcpServers: [],
   compactionTriggerRatio: 0.7,
   keepRecentTurns: 12,
-  memoryAutoPromote: true,
   thinkingEnabled: true,
   thinkingEffort: 'medium',
   showThinking: true,
@@ -203,9 +166,6 @@ export const DEFAULT_SETTINGS: Settings = {
   toolApproval: DEFAULT_TOOL_APPROVAL,
   terminalShell: 'auto',
   diagnosticsCommand: '',
-  verifyBeforeDone: 'notice',
-  contractDoneWhen: 'require',
-  readBeforeEdit: 'notice',
   harnessProposalRewriter: false,
   marketplace: DEFAULT_MARKETPLACE_SETTINGS
 }

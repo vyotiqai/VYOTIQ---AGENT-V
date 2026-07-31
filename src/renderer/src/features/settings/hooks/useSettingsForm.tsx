@@ -20,7 +20,6 @@ export type AgentSettingsPatch = Partial<
     WorkspaceSettingsOverride,
     | 'compactionTriggerRatio'
     | 'keepRecentTurns'
-    | 'memoryAutoPromote'
     | 'toolApproval'
     | 'subagentProvider'
     | 'subagentModel'
@@ -244,9 +243,6 @@ export function useSettingsForm({
   const agentKeepRecentTurns =
     (workspaceOverrideActive ? effectiveChatSettings?.keepRecentTurns : undefined) ??
     settings.keepRecentTurns
-  const agentMemoryAutoPromote =
-    (workspaceOverrideActive ? effectiveChatSettings?.memoryAutoPromote : undefined) ??
-    settings.memoryAutoPromote
 
   const setActiveProvider = async (provider: ProviderId): Promise<boolean> => {
     setKeyProvider(
@@ -429,7 +425,6 @@ export function useSettingsForm({
     toolApproval,
     agentCompactionTriggerRatio,
     agentKeepRecentTurns,
-    agentMemoryAutoPromote,
     agentSubagentProvider: effectiveChatSettings?.subagentProvider,
     agentSubagentModel: effectiveChatSettings?.subagentModel,
     displaySubagentProvider: effectiveChatSettings?.subagentProvider ?? settings.subagentProvider,

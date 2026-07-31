@@ -195,6 +195,22 @@ describe('log policy (no user workspace data)', () => {
     expect(out.correlationId).toBe('abc123')
   })
 
+  it('keeps scrubbed providerMessage for HTTP diagnostics', () => {
+    const out = sanitizeLogFields({
+      scope: 'provider',
+      code: 'PROVIDER_HTTP',
+      provider: 'openrouter',
+      status: 400,
+      kind: 'http',
+      model: 'openai/gpt-5.6-luna-pro',
+      providerMessage: 'Invalid model id',
+      message: 'should be stripped'
+    }) as Record<string, unknown>
+    expect(out.providerMessage).toBe('Invalid model id')
+    expect(out.model).toBe('openai/gpt-5.6-luna-pro')
+    expect(out.message).toBeUndefined()
+  })
+
   it('sanitizes error objects to taxonomy only', () => {
     const err = new AppError('File not found: C:\\Users\\me\\payroll.xlsx', {
       code: 'TOOL_EXEC',

@@ -8,7 +8,6 @@ export type EffectiveChatSettings = Pick<
   | 'subagentModel'
   | 'compactionTriggerRatio'
   | 'keepRecentTurns'
-  | 'memoryAutoPromote'
   | 'thinkingEnabled'
   | 'thinkingEffort'
   | 'showThinking'
@@ -32,7 +31,6 @@ export function resolveEffectiveSettings(
       subagentModel: global.subagentModel,
       compactionTriggerRatio: global.compactionTriggerRatio,
       keepRecentTurns: global.keepRecentTurns,
-      memoryAutoPromote: global.memoryAutoPromote,
       thinkingEnabled: global.thinkingEnabled,
       thinkingEffort: global.thinkingEffort,
       showThinking: global.showThinking,
@@ -46,7 +44,6 @@ export function resolveEffectiveSettings(
     subagentModel: override.subagentModel ?? global.subagentModel,
     compactionTriggerRatio: override.compactionTriggerRatio ?? global.compactionTriggerRatio,
     keepRecentTurns: override.keepRecentTurns ?? global.keepRecentTurns,
-    memoryAutoPromote: override.memoryAutoPromote ?? global.memoryAutoPromote,
     thinkingEnabled: override.thinkingEnabled ?? global.thinkingEnabled,
     thinkingEffort: override.thinkingEffort ?? global.thinkingEffort,
     showThinking: override.showThinking ?? global.showThinking,
