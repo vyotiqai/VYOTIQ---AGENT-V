@@ -194,17 +194,19 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
       subagentId,
       emit: options.emit,
       onContextUsage: options.onContextUsage,
-      emitNestedEvent: (ev) => {
-        if (options.emitAgentEvent && options.runId && options.parentToolCallId) {
-          options.emitAgentEvent({
-            type: 'subagent_event',
-            runId: options.runId,
-            parentToolCallId: options.parentToolCallId,
-            subagentId,
-            event: ev
-          })
-        }
-      }
+      ...(options.emitAgentEvent && options.runId && options.parentToolCallId
+        ? {
+            emitNestedEvent: (ev: AgentEvent) => {
+              options.emitAgentEvent!({
+                type: 'subagent_event',
+                runId: options.runId!,
+                parentToolCallId: options.parentToolCallId!,
+                subagentId,
+                event: ev
+              })
+            }
+          }
+        : {})
     })
   } catch (err) {
     logger.warn('Nested agent failed', {

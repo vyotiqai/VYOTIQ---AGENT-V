@@ -110,7 +110,7 @@ describe('sub-agent transcript row', () => {
     })
     render(<MessageList items={[item]} />)
 
-    expect(screen.getByText(/agent ab12/)).toBeTruthy()
+    expect(screen.getByText(/Nested agent ab12/)).toBeTruthy()
     expect(screen.getByText('Checking auth module')).toBeTruthy()
     expect(screen.getByText('grep')).toBeTruthy()
     expect(screen.getByText('session')).toBeTruthy()

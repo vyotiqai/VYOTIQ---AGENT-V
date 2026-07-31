@@ -112,6 +112,21 @@ export function buildTranscriptRows(
         })
         return
       }
+      // Nested-agent gated tools live on leaves inside the activity row. Promote
+      // those approvals to standalone rows so turn collapse cannot hide Allow/Deny.
+      const nestedApprovals =
+        item.nestedAgent?.leaves.flatMap((leaf) =>
+          leaf.kind === 'tool' && leaf.approval ? [leaf.approval] : []
+        ) ?? []
+      for (const approval of nestedApprovals) {
+        closeGroup()
+        rows.push({
+          kind: 'approval',
+          id: `approval:${approval.requestId}`,
+          approval,
+          turnIndex: Math.max(turnIndex, 0)
+        })
+      }
       group.push(item)
     }
 

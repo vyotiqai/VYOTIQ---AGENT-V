@@ -1161,8 +1161,36 @@ export function finalizeHydratedTranscript(items: UiItem[], events: PersistedEve
       const content = finalizeInterruptedTodoContent(tool.content)
       if (content !== tool.content) tool = { ...tool, content }
     }
-    if (tool === item.tool) return item
-    return { ...item, tool }
+
+    let nestedAgent = item.nestedAgent
+    if (nestedAgent?.leaves.length) {
+      const leaves = nestedAgent.leaves.map((leaf) => {
+        if (leaf.kind === 'text' || leaf.kind === 'thinking') {
+          if (!leaf.streaming) return leaf
+          return { ...leaf, streaming: false }
+        }
+        if (leaf.kind === 'tool' && leaf.tool.status === 'running') {
+          return {
+            ...leaf,
+            approval: undefined,
+            tool: {
+              ...leaf.tool,
+              status: 'fail' as const,
+              content: leaf.tool.content ?? stub
+            }
+          }
+        }
+        return leaf
+      })
+      nestedAgent = { ...nestedAgent, leaves }
+    }
+
+    if (tool === item.tool && nestedAgent === item.nestedAgent) return item
+    return {
+      ...item,
+      tool,
+      ...(nestedAgent !== item.nestedAgent ? { nestedAgent } : {})
+    }
   })
 
   return closeOpenGroupTimingsOnHydrate(finalized, endedAt)

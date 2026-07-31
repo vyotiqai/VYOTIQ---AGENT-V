@@ -218,7 +218,8 @@ export const ToolGroup = memo(function ToolGroup({
       }
     const hasBody = toolHasBody(item.tool, {
       subagent: item.subagent,
-      subagentContextUsage: item.subagentContextUsage
+      subagentContextUsage: item.subagentContextUsage,
+      nestedAgent: item.nestedAgent
     })
     const defaultExpanded =
       live || familyDefaultExpanded(item.tool.name, item.tool.status)

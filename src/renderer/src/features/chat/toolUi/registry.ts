@@ -73,7 +73,8 @@ function subagentHasBody(tool: UiToolRow, ctx?: ToolBodyCtx): boolean {
     Boolean((tool.content ?? '').trim()) ||
     (ctx?.subagent?.length ?? 0) > 0 ||
     Boolean(ctx?.subagentContextUsage) ||
-    (ctx?.nestedAgent?.leaves.length ?? 0) > 0
+    (ctx?.nestedAgent?.leaves.length ?? 0) > 0 ||
+    Boolean(ctx?.nestedAgent?.contextUsage)
   )
 }
 
@@ -500,7 +501,9 @@ export function toolHasBody(tool: UiToolRow, ctx?: ToolBodyCtx): boolean {
   // Nameless streaming deltas must not expand FallbackBody with raw args JSON.
   if (isUnresolvedToolName(tool.name)) return false
   if (tool.status === 'running') {
-    // Expand only when there is something useful to show (args/summary/content).
+    // Prefer per-tool body logic when ctx carries nested/subagent state; fall
+    // back to args/summary/content for generic running tools.
+    if (getToolEntry(tool.name).hasBody(tool, ctx)) return true
     return Boolean(tool.argsPreview?.trim() || tool.summary?.trim() || tool.content?.trim())
   }
   return getToolEntry(tool.name).hasBody(tool, ctx)

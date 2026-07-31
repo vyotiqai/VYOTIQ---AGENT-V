@@ -131,20 +131,16 @@ function NestedLeaf({
     return (
       <div className="flex gap-2 text-[11px] text-tertiary">
         <Icon name="sparkles" size={14} className="mt-0.5 shrink-0" />
-        <span className="min-w-0 whitespace-pre-wrap break-words italic opacity-80">
-          {leaf.text}
-          {leaf.streaming ? '…' : ''}
-        </span>
+        <div className="min-w-0 flex-1 italic opacity-80">
+          <MarkdownContent content={leaf.text} streaming={leaf.streaming} />
+        </div>
       </div>
     )
   }
   if (leaf.kind === 'text') {
     return (
       <div className="text-[11px] text-fg/85">
-        <MarkdownContent content={leaf.text} />
-        {leaf.streaming ? (
-          <span className="text-tertiary">…</span>
-        ) : null}
+        <MarkdownContent content={leaf.text} streaming={leaf.streaming} />
       </div>
     )
   }
@@ -190,7 +186,7 @@ function NestedAgentPanel({
     <div className={cn(TOOL_BODY_INNER, 'flex flex-col gap-2 border-b border-border/50 pb-2')}>
       <div className="flex items-center gap-2 text-[10px] text-tertiary">
         <Icon name="bot" size={12} />
-        <span className="font-mono">agent {nested.subagentId}</span>
+        <span className="font-mono">Nested agent {nested.subagentId}</span>
       </div>
       {nested.contextUsage ? <SubagentContextBar usage={nested.contextUsage} /> : null}
       <div className="flex flex-col gap-1.5">

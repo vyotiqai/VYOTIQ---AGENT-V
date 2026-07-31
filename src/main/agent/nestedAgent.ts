@@ -30,6 +30,8 @@ import {
   compactionTriggerTokens,
   contentWindow,
   contextWindowFor,
+  estimateTextTokensAsync,
+  preserveRecentMessagesAsync,
   trimToolsToBudget
 } from './context'
 import { CONTEXT_TRIM_WATERMARK_SUMMARY, type CompactionRecord } from './context/types'
@@ -52,6 +54,8 @@ import { isStreamIdleTimeoutError } from './providers/sse'
 import {
   appendEvent,
   appendMessage,
+  flushEventAppends,
+  flushMessageAppends,
   readContractAsync,
   readPlanAsync
 } from './state'
@@ -202,6 +206,21 @@ function finalizeOutcome(
   }
 }
 
+async function flushChildTranscript(childDir: string | null): Promise<void> {
+  if (!childDir) return
+  await flushMessageAppends(childDir)
+  await flushEventAppends(childDir)
+}
+
+async function finalizeNested(
+  options: NestedAgentOptions,
+  outcome: { ok: boolean; report: string; steps: number },
+  childDir: string | null
+): Promise<SubagentOutcome> {
+  await flushChildTranscript(childDir)
+  return finalizeOutcome(options, outcome)
+}
+
 function ensureChildDir(runDir: string | undefined, id: string): string | null {
   if (!runDir || !existsSync(runDir)) return null
   const dir = join(runDir, 'subagents', id)
@@ -256,9 +275,10 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
   const emitParent = (ev: AgentEvent): void => {
     if (childDir) appendEvent(childDir, ev)
     options.emitNestedEvent?.(ev)
-    // Keep thin progress lines for older UI / trajectory.
+    // Legacy thin progress only when the rich nested-event path is absent.
+    if (options.emitNestedEvent) return
     if (ev.type === 'text_delta' && ev.text.trim()) {
-      // batched — skip spammy deltas for legacy emit
+      // skip spammy deltas for legacy emit
     } else if (ev.type === 'assistant_message' && ev.content.trim()) {
       options.emit?.({ kind: 'text', text: ev.content.trim() })
     } else if (ev.type === 'tool_start') {
@@ -521,17 +541,102 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
     if (assembled.overflow) {
       if (!overflowRetryUsed) {
         overflowRetryUsed = true
-        continue
+        logger.warn('Nested context overflow — retrying once with aggressive keep-recent', {
+          scope: 'agent',
+          code: 'NESTED_CONTEXT_OVERFLOW_RETRY',
+          correlationId: runId,
+          step,
+          estimatedTokens: assembled.estimatedTokens,
+          contentWindow: contentWin
+        })
+        const retry = await assembleContext({
+          harness,
+          messages,
+          workspacePath: options.workspace,
+          goal,
+          contract,
+          plan: plan || undefined,
+          sessionEnv: buildSessionEnvSection(agentMode, settings.terminalShell),
+          nestedRoleSection: NESTED_ROLE_SECTION,
+          model: modelInfo,
+          toolsJsonEstimate,
+          lastUsage,
+          priorCompaction: compactionState.current,
+          keepRecentTurns: 2,
+          compactionTriggerRatio: Math.min(settings.compactionTriggerRatio, 0.5),
+          skillsSection,
+          pluginRulesSection,
+          modeSection:
+            modeSectionMarkdown(agentMode, { autoModeSwitch: false }) ?? undefined,
+          loopHint: combineLoopHints(omittedMcpHint),
+          providerId,
+          provider,
+          apiKey,
+          baseUrl,
+          signal: options.signal
+        })
+        if (retry.contextShrunk) {
+          const retryDropped = Math.max(0, messages.length - retry.messages.length)
+          foldedMessages += retryDropped
+          messages = retry.messages
+          if (retry.compaction) {
+            compactionState.current = {
+              ...retry.compaction,
+              foldedMessages
+            }
+            emitParent({
+              type: 'compaction',
+              runId,
+              summary: retry.compaction.summary,
+              tokenEstimate: retry.compaction.tokenEstimate
+            })
+          }
+          lastUsage = { inputTokens: retry.estimatedTokens }
+        }
+        if (!retry.overflow) {
+          Object.assign(assembled, retry)
+          emitParent({
+            type: 'context_usage',
+            runId,
+            step,
+            estimatedTokens: retry.estimatedTokens,
+            inputTokens: retry.estimatedTokens,
+            contextWindow: window,
+            contentWindow: contentWin,
+            compactionTrigger,
+            source: 'estimate',
+            layers: retry.layers
+          })
+        } else {
+          return await finalizeNested(
+            options,
+            {
+              ok: false,
+              report: [
+                'Nested agent stopped: context still exceeds the model window after trimming.',
+                `Estimated ~${retry.estimatedTokens} tokens against a ${window}-token window.`,
+                'Narrow the task or ask the parent to summarize earlier findings.'
+              ].join(' '),
+              steps: step
+            },
+            childDir
+          )
+        }
+      } else {
+        return await finalizeNested(
+          options,
+          {
+            ok: false,
+            report: [
+              'Nested agent stopped: context still exceeds the model window after trimming.',
+              `Estimated ~${assembled.estimatedTokens} tokens against a ${window}-token window.`,
+              'Narrow the task or ask the parent to summarize earlier findings.'
+            ].join(' '),
+            steps: step
+          },
+          childDir
+        )
       }
-      return finalizeOutcome(options, {
-        ok: false,
-        report: [
-          'Nested agent stopped: context still exceeds the model window after trimming.',
-          `Estimated ~${assembled.estimatedTokens} tokens against a ${window}-token window.`,
-          'Narrow the task or ask the parent to summarize earlier findings.'
-        ].join(' '),
-        steps: step
-      })
     }
 
     let streamAttempt = 0
@@ -637,17 +742,53 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
             if (chunk.reasoningState) stepReasoningState = chunk.reasoningState
             if (chunk.stopReason) stepStopReason = chunk.stopReason
             if (chunk.usage) lastUsage = chunk.usage
+            if (chunk.compaction?.trim()) {
+              const summary = chunk.compaction.trim()
+              const keepRecent = settings.keepRecentTurns ?? DEFAULT_SETTINGS.keepRecentTurns
+              const historyBudget = allocateBudget(modelInfo).history
+              const beforeLen = messages.length
+              const kept = await preserveRecentMessagesAsync(
+                messages,
+                keepRecent,
+                historyBudget,
+                modelInfo
+              )
+              const dropped = Math.max(0, beforeLen - kept.length)
+              if (dropped > 0) {
+                foldedMessages += dropped
+                messages = kept
+              }
+              const prior = compactionState.current
+              const record: CompactionRecord = {
+                summary,
+                createdAt: new Date().toISOString(),
+                tokenEstimate: await estimateTextTokensAsync(summary),
+                ...(foldedMessages > 0
+                  ? { foldedMessages }
+                  : prior?.foldedMessages != null
+                    ? { foldedMessages: prior.foldedMessages }
+                    : {})
+              }
+              compactionState.current = { ...(prior ?? {}), ...record }
+              emitParent({
+                type: 'compaction',
+                runId,
+                summary: record.summary,
+                tokenEstimate: record.tokenEstimate
+              })
+              lastUsage = { inputTokens: assembled.estimatedTokens }
+            }
           } else if (chunk.type === 'error') {
             const message = chunk.error ?? 'Provider error'
             if (shouldRetryProviderStreamError(message, streamAttempt)) {
               retryStream = true
               break
             }
-            return finalizeOutcome(options, {
+            return await finalizeNested(options, {
               ok: false,
               report: `Nested agent failed: ${message}`,
               steps: step
-            })
+            }, childDir)
           }
         }
         for (const call of pendingToolCalls.values()) {
@@ -659,11 +800,11 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
       } catch (err) {
         if (isAbortError(err)) break
         if (isStreamIdleTimeoutError(err)) {
-          return finalizeOutcome(options, {
+          return await finalizeNested(options, {
             ok: false,
             report: `Nested agent failed: ${err.message}`,
             steps: step
-          })
+          }, childDir)
         }
         if (shouldRetryThrownStreamError(err, streamAttempt)) {
           retryStream = true
@@ -707,7 +848,7 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
 
       const report = scrubbed.trim()
       if (!report) {
-        return finalizeOutcome(options, {
+        return await finalizeNested(options, {
           ok: false,
           report: options.signal.aborted
             ? 'Nested agent was cancelled before it reported anything.'
@@ -715,7 +856,7 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
               ? 'Nested agent stopped without a final report after using tools.'
               : 'Nested agent finished without producing a report.',
           steps: step
-        })
+        }, childDir)
       }
       if (thinkingText && !thinkingDoneEmitted) {
         emitParent({ type: 'thinking_done', runId, text: thinkingText, step })
@@ -726,12 +867,14 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
         content: report,
         ...(thinkingText ? { thinking: thinkingText } : {})
       })
-      options.emit?.({
-        kind: 'done',
-        text: `Reported in ${step} ${step === 1 ? 'step' : 'steps'}`
-      })
+      if (!options.emitNestedEvent) {
+        options.emit?.({
+          kind: 'done',
+          text: `Reported in ${step} ${step === 1 ? 'step' : 'steps'}`
+        })
+      }
       emitParent({ type: 'status', runId, status: 'done' })
-      return finalizeOutcome(options, { ok: true, report, steps: step })
+      return await finalizeNested(options, { ok: true, report, steps: step }, childDir)
     }
 
     const mappedCalls = uniqueToolCalls.map((t) => ({
@@ -868,21 +1011,21 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
       void result
     } catch (err) {
       if (isAbortError(err)) break
-      return finalizeOutcome(options, {
+      return await finalizeNested(options, {
         ok: false,
         report: `Nested agent tool step failed: ${formatError(err)}`,
         steps: step
-      })
+      }, childDir)
     }
   }
 
-  return finalizeOutcome(options, {
+  return await finalizeNested(options, {
     ok: false,
     report: options.signal.aborted
       ? 'Nested agent was cancelled before it reported anything.'
       : 'Nested agent finished without producing a report.',
     steps: step
-  })
+  }, childDir)
 }
 
 /** Allocate a nested agent id (hex) for report dir + event routing. */

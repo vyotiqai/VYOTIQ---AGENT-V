@@ -144,7 +144,29 @@ describe('runSubagent', () => {
   beforeEach(() => {
     streamChat.mockReset()
     executeTool.mockReset()
-    assembleContext.mockClear()
+    assembleContext.mockReset()
+    assembleContext.mockImplementation(async (input: {
+      messages: unknown[]
+      nestedRoleSection?: string
+      sessionEnv?: string
+      modeSection?: string
+    }) => ({
+      messages: input.messages,
+      system: [
+        'system harness',
+        input.nestedRoleSection,
+        input.modeSection,
+        input.sessionEnv
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
+      estimatedTokens: 100,
+      layers: { system: 10, history: 50, tools: 20, buffer: 20 },
+      contextShrunk: false,
+      overflow: false,
+      anthropicNative: undefined,
+      compaction: null
+    }))
     getSettings.mockReset()
     getSecret.mockReset()
     getSecret.mockReturnValue('key')
@@ -270,6 +292,51 @@ describe('runSubagent', () => {
     expect(outcome.report).toMatch(/API key for openai is not set/i)
     expect(streamChat).not.toHaveBeenCalled()
     expect(resolveModelInfo).not.toHaveBeenCalled()
+  })
+
+  it('retries overflow with aggressive keepRecentTurns before failing', async () => {
+    let calls = 0
+    assembleContext.mockImplementation(async (input: {
+      messages: unknown[]
+      keepRecentTurns?: number
+      nestedRoleSection?: string
+      sessionEnv?: string
+      modeSection?: string
+    }) => {
+      calls++
+      const overflow = calls === 1
+      return {
+        messages: input.messages,
+        system: [
+          'system harness',
+          input.nestedRoleSection,
+          input.modeSection,
+          input.sessionEnv
+        ]
+          .filter(Boolean)
+          .join('\n\n'),
+        estimatedTokens: overflow ? 200_000 : 1000,
+        layers: { system: 10, history: 50, tools: 20, buffer: 20 },
+        contextShrunk: calls === 2,
+        overflow,
+        anthropicNative: undefined,
+        compaction: null
+      }
+    })
+    streamChat.mockImplementation(stream([{ type: 'text', text: 'recovered' }, { type: 'done' }]))
+
+    const outcome = await runSubagent({
+      task: 'look',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0
+    })
+
+    expect(outcome.ok).toBe(true)
+    expect(outcome.report).toContain('recovered')
+    expect(assembleContext.mock.calls.length).toBeGreaterThanOrEqual(2)
+    const retryInput = assembleContext.mock.calls[1]![0] as { keepRecentTurns?: number }
+    expect(retryInput.keepRecentTurns).toBe(2)
   })
 
   it('emits context usage each step', async () => {

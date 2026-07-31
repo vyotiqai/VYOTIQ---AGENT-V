@@ -54,4 +54,50 @@ describe('toolUi meta', () => {
       })
     ).toBe(false)
   })
+
+  it('claims a body for running subagent when nestedAgent leaves exist', () => {
+    expect(
+      toolHasBody(
+        {
+          id: 'sa-1',
+          name: 'subagent',
+          summary: '',
+          status: 'running'
+        },
+        {
+          nestedAgent: {
+            subagentId: 'ab12',
+            leaves: [{ kind: 'text', id: 't1', text: 'hello' }]
+          }
+        }
+      )
+    ).toBe(true)
+  })
+
+  it('claims a body for settled subagent with only nested contextUsage', () => {
+    expect(
+      toolHasBody(
+        {
+          id: 'sa-2',
+          name: 'subagent',
+          summary: 'done task',
+          status: 'done'
+        },
+        {
+          nestedAgent: {
+            subagentId: 'ab12',
+            leaves: [],
+            contextUsage: {
+              step: 1,
+              used: 1000,
+              window: 100_000,
+              contentWindow: 90_000,
+              model: 'm',
+              updatedAt: new Date().toISOString()
+            }
+          }
+        }
+      )
+    ).toBe(true)
+  })
 })

@@ -773,6 +773,52 @@ describe('buildTranscriptRows', () => {
     ).toBe(false)
   })
 
+  it('promotes nested leaf approvals to collapse-safe approval rows beside activity', () => {
+    const rows = buildTranscriptRows([
+      { kind: 'message', id: 'u1', role: 'user', content: 'go' },
+      {
+        kind: 'tool',
+        id: 'parent-1',
+        tool: {
+          id: 'parent-1',
+          name: 'subagent',
+          summary: 'Investigate',
+          status: 'running'
+        },
+        nestedAgent: {
+          subagentId: 'ab12',
+          leaves: [
+            {
+              kind: 'tool',
+              id: 'n-edit',
+              tool: {
+                id: 'n-edit',
+                name: 'edit',
+                summary: 'config.json',
+                status: 'running'
+              },
+              approval: {
+                requestId: 'apr-nested',
+                toolName: 'edit',
+                summary: 'config.json',
+                argsPreview: '{}',
+                mutating: true
+              }
+            }
+          ]
+        }
+      }
+    ])
+    expect(rows.some((row) => row.kind === 'approval' && row.approval.requestId === 'apr-nested')).toBe(
+      true
+    )
+    expect(rows.some((row) => row.kind === 'activity')).toBe(true)
+    const approvalRow = rows.find((row) => row.kind === 'approval')
+    if (approvalRow?.kind === 'approval') {
+      expect(isTurnWorkRow(approvalRow)).toBe(false)
+    }
+  })
+
   it('keeps question rows visible when a turn is collapsed', () => {
     expect(
       isTurnWorkRow({
