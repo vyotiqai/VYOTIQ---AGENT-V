@@ -34,9 +34,9 @@ import {
   compactionTriggerTokens,
   contentWindow,
   contextWindowFor,
-  estimateTextTokens,
+  estimateTextTokensAsync,
   promoteCompactionToMemory,
-  preserveRecentMessages,
+  preserveRecentMessagesAsync,
   trimToolsToBudget,
   type CompactionRecord
 } from './context'
@@ -75,7 +75,9 @@ import {
   drainFollowUps,
   hasPendingFollowUps,
   isCurrentInvoke,
+  markRunTurnComplete,
   registerRunAbort,
+  tryBeginRunClosing,
   resetActiveRunsForTests,
   setStreamInterrupt,
   streamSignalFor
@@ -125,21 +127,11 @@ import { buildSkillsSection, loadEnabledSkills, loadPluginRules } from './skills
 import { beginWriteCheckpoint, finalizeWriteCheckpoint } from './checkpoints'
 import { isMcpToolPermitted } from '../../shared/utils/mcpToolPolicy'
 import { filterToolDefsForMode, modeSectionMarkdown } from './tools/modePolicy'
+import { dedupeToolCalls } from './dedupeToolCalls'
 import { existsSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
 export { cancelRun, clearRunAbort, registerRunAbort, resetActiveRunsForTests }
-
-function dedupeToolCalls(calls: ToolCall[]): ToolCall[] {
-  const seen = new Map<string, ToolCall>()
-  calls.forEach((call, index) => {
-    // Without an id there is nothing that reliably identifies a call, and two
-    // genuine calls can share name+arguments — key on position so they survive.
-    const key = call.id || `@${index}:${call.name}`
-    seen.set(key, call)
-  })
-  return [...seen.values()]
-}
 
 /** True when the model wrote tool-shaped text instead of emitting real tool calls. */
 function assistantTextHadToolLeak(raw: string, scrubbed: string): boolean {
@@ -355,19 +347,26 @@ export async function* runAgent(input: {
     if (!runDir || !isCurrentInvoke(runId, invokeId)) return
     updateStatus(runDir, patch)
   }
-  const flushWriteCheckpoint = function* (): Generator<AgentEvent, void, unknown> {
+  const flushWriteCheckpoint = function* (opts?: {
+    reopen?: boolean
+  }): Generator<AgentEvent, void, unknown> {
     if (!runDir || checkpointFlushed) return
     checkpointFlushed = true
     const meta = finalizeWriteCheckpoint(runDir)
-    if (!meta) return
-    const ev: AgentEvent = {
-      type: 'writes_checkpoint',
-      runId,
-      checkpointId: meta.id,
-      files: meta.files
+    if (meta) {
+      const ev: AgentEvent = {
+        type: 'writes_checkpoint',
+        runId,
+        checkpointId: meta.id,
+        files: meta.files
+      }
+      appendEvent(runDir, ev)
+      yield ev
     }
-    appendEvent(runDir, ev)
-    yield ev
+    if (opts?.reopen) {
+      checkpointFlushed = false
+      beginWriteCheckpoint(runDir, workspace)
+    }
   }
   try {
     const lastUser = [...(input.messages ?? input.newMessages ?? [])]
@@ -401,6 +400,7 @@ export async function* runAgent(input: {
       messages = (input.messages ?? []).map((m) => ({ ...m }))
       runDir = createRun(workspace, runId, goal)
       for (const m of messages) appendMessage(runDir, m)
+      await flushMessageAppends(runDir)
     }
 
     writeStatus({ mode: agentMode, invokeId, error: undefined })
@@ -552,6 +552,8 @@ export async function* runAgent(input: {
 
     if (controller.signal.aborted) {
       yield* flushWriteCheckpoint()
+      clearFollowUps(runId)
+      markRunTurnComplete(runId, invokeId)
       yield { type: 'status', runId, invokeId, status: 'cancelled' }
       writeStatus({ status: 'cancelled' })
       appendEvent(runDir, { type: 'status', runId, invokeId, status: 'cancelled' })
@@ -871,14 +873,19 @@ export async function* runAgent(input: {
             appendEvent(runDir, overflowEv)
             yield overflowEv
             yield* flushWriteCheckpoint()
-            // Follow-ups can land during assembleContext awaits — drain before done.
-            if (hasPendingFollowUps(runId)) {
+            const closeOverflow = tryBeginRunClosing(runId, invokeId)
+            if (closeOverflow === 'has_followups') {
+              checkpointFlushed = false
+              beginWriteCheckpoint(runDir, workspace)
               yield* applyDrainedFollowUps(runId, runDir, messages)
               continue
             }
-            yield { type: 'status', runId, invokeId, status: 'done' }
-            writeStatus({ status: 'done', error: undefined })
-            appendEvent(runDir, { type: 'status', runId, invokeId, status: 'done' })
+            yield { type: 'status', runId, invokeId, status: 'error' }
+            writeStatus({
+              status: 'error',
+              error: INCOMPLETE_MESSAGES.context_overflow
+            })
+            appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
             return
           }
         } else {
@@ -900,13 +907,19 @@ export async function* runAgent(input: {
           appendEvent(runDir, overflowEv)
           yield overflowEv
           yield* flushWriteCheckpoint()
-          if (hasPendingFollowUps(runId)) {
+          const closeOverflow2 = tryBeginRunClosing(runId, invokeId)
+          if (closeOverflow2 === 'has_followups') {
+            checkpointFlushed = false
+            beginWriteCheckpoint(runDir, workspace)
             yield* applyDrainedFollowUps(runId, runDir, messages)
             continue
           }
-          yield { type: 'status', runId, invokeId, status: 'done' }
-          writeStatus({ status: 'done', error: undefined })
-          appendEvent(runDir, { type: 'status', runId, invokeId, status: 'done' })
+          yield { type: 'status', runId, invokeId, status: 'error' }
+          writeStatus({
+            status: 'error',
+            error: INCOMPLETE_MESSAGES.context_overflow
+          })
+          appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
           return
         }
       }
@@ -1075,7 +1088,7 @@ export async function* runAgent(input: {
               const keepRecent = settings.keepRecentTurns ?? DEFAULT_SETTINGS.keepRecentTurns
               const historyBudget = allocateBudget(modelInfo).history
               const beforeLen = messages.length
-              const kept = preserveRecentMessages(
+              const kept = await preserveRecentMessagesAsync(
                 messages,
                 keepRecent,
                 historyBudget,
@@ -1089,7 +1102,7 @@ export async function* runAgent(input: {
               const record: CompactionRecord = {
                 summary,
                 createdAt: new Date().toISOString(),
-                tokenEstimate: estimateTextTokens(summary),
+                tokenEstimate: await estimateTextTokensAsync(summary),
                 ...(foldedMessages > 0
                   ? { foldedMessages }
                   : compaction?.foldedMessages != null
@@ -1161,7 +1174,7 @@ export async function* runAgent(input: {
               attempt: streamAttempt,
               err
             })
-            await sleepStreamRetryBackoff()
+            await sleepStreamRetryBackoff(streamSignalFor(runId, controller.signal))
             continue
           }
           // Providers rethrow AbortError from SSE readers — treat like an in-loop cancel.
@@ -1190,7 +1203,7 @@ export async function* runAgent(input: {
         }
 
         if (retryStream) {
-          await sleepStreamRetryBackoff()
+          await sleepStreamRetryBackoff(streamSignalFor(runId, controller.signal))
           continue
         }
         streamFinished = true
@@ -1448,10 +1461,12 @@ export async function* runAgent(input: {
         }
 
         yield* flushWriteCheckpoint()
-        // Re-check after flush — follow-ups can arrive in the TOCTOU window after
-        // the earlier hasPendingFollowUps check (and markRunTurnComplete must not
-        // wipe them).
-        if (hasPendingFollowUps(runId)) {
+        // Atomically close for follow-ups (or drain and continue) — avoids the
+        // TOCTOU window between hasPendingFollowUps and markRunTurnComplete.
+        const closeTurn = tryBeginRunClosing(runId, invokeId)
+        if (closeTurn === 'has_followups') {
+          checkpointFlushed = false
+          beginWriteCheckpoint(runDir, workspace)
           yield* applyDrainedFollowUps(runId, runDir, messages)
           continue
         }
@@ -1548,8 +1563,7 @@ export async function* runAgent(input: {
       }
 
       if (callsToExecute.length === 0) {
-        consecutiveToolFailureSteps += 1
-        writeStatus({ consecutiveToolFailureSteps })
+        // All calls were policy-blocked — do not count as consecutive tool failures.
         continue
       }
 
@@ -1685,13 +1699,17 @@ export async function* runAgent(input: {
 
     if (controller.signal.aborted) {
       yield* flushWriteCheckpoint()
+      clearFollowUps(runId)
+      markRunTurnComplete(runId, invokeId)
       yield { type: 'status', runId, invokeId, status: 'cancelled' }
       writeStatus({ status: 'cancelled' })
       appendEvent(runDir, { type: 'status', runId, invokeId, status: 'cancelled' })
     }
-  } catch (err) {
+    } catch (err) {
     if (isAbortError(err)) {
       logger.warn('Agent run cancelled', { scope: 'agent', correlationId: runId })
+      clearFollowUps(runId)
+      markRunTurnComplete(runId, invokeId)
       yield* flushWriteCheckpoint()
       yield { type: 'status', runId, invokeId, status: 'cancelled' }
       if (runDir) {
@@ -1706,6 +1724,8 @@ export async function* runAgent(input: {
         correlationId: runId,
         err
       })
+      clearFollowUps(runId)
+      markRunTurnComplete(runId, invokeId)
       yield { type: 'error', runId, invokeId, message, code: 'AGENT_LOOP' }
       yield* flushWriteCheckpoint()
       yield { type: 'status', runId, invokeId, status: 'error' }

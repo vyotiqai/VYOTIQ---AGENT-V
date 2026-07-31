@@ -32,6 +32,8 @@ export type SidebarProps = {
   onCloseDrawer: () => void
   onToggleSidebar: () => void
   collapsed?: boolean
+  /** Expanded desktop width in px (drag-resized). Ignored when collapsed or drawer. */
+  widthPx?: number
   variant?: 'desktop' | 'drawer'
 }
 

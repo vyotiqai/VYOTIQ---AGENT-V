@@ -2,6 +2,7 @@ import { WebContentsView, session, type WebContents } from 'electron'
 import { mkdirSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { IPC } from '../../shared/channels'
+import { workspacePathsEqual } from '../../shared/workspacePath'
 import { assertPublicUrl, isSyncBlockedUrl } from '@main/agent/tools/webFetch'
 import { getMainWindow } from '@main/app/window'
 import { isAbortError } from '../../shared/errors'
@@ -20,11 +21,13 @@ const SNAPSHOT_JPEG_QUALITY = 55
 const PREVIEW_MAX_WIDTH = 960
 const DEFAULT_WAIT_TIMEOUT_MS = 15_000
 const MAX_WAIT_TIMEOUT_MS = 60_000
+export const MAX_BROWSER_TABS = 16
 
 type BrowserTab = {
   id: string
   view: WebContentsView
   lastRefs: Map<string, BrowserElementRef>
+  workspacePath?: string
 }
 
 type EmbedBounds = { x: number; y: number; width: number; height: number }
@@ -229,6 +232,7 @@ function emitCurrent(extra?: Partial<AgentBrowserState>): void {
 function attachAgentSecurity(wc: WebContents): void {
   wc.setWindowOpenHandler(({ url }) => {
     void withBrowserLock(async () => {
+      if (tabs.size >= MAX_BROWSER_TABS) return
       const tab = createTab()
       activeTabId = tab.id
       try {
@@ -268,7 +272,12 @@ async function enforcePublicPage(wc: WebContents): Promise<void> {
   }
 }
 
-function createTab(): BrowserTab {
+function createTab(workspacePath?: string): BrowserTab {
+  if (tabs.size >= MAX_BROWSER_TABS) {
+    throw new Error(
+      `Browser tab limit (${MAX_BROWSER_TABS}) reached. Close a tab before opening another.`
+    )
+  }
   const ses = session.fromPartition(PARTITION)
   const id = nextTabId()
   const view = new WebContentsView({
@@ -284,7 +293,7 @@ function createTab(): BrowserTab {
 
   attachAgentSecurity(view.webContents)
 
-  const tab: BrowserTab = { id, view, lastRefs: new Map() }
+  const tab: BrowserTab = { id, view, lastRefs: new Map(), workspacePath }
   tabs.set(id, tab)
 
   attachTabView(tab)
@@ -320,7 +329,7 @@ function createTab(): BrowserTab {
   return tab
 }
 
-function ensureTab(tabId?: string): BrowserTab {
+function ensureTab(tabId?: string, workspacePath?: string): BrowserTab {
   if (tabId) {
     const existing = tabs.get(tabId)
     if (!existing || isTabDestroyed(existing)) {
@@ -332,7 +341,7 @@ function ensureTab(tabId?: string): BrowserTab {
     const active = tabs.get(activeTabId)
     if (active && !isTabDestroyed(active)) return active
   }
-  const tab = createTab()
+  const tab = createTab(workspacePath)
   activeTabId = tab.id
   return tab
 }
@@ -461,7 +470,7 @@ export async function navigateUrl(
 
 async function navigateUrlUnlocked(
   rawUrl: string,
-  opts: { signal?: AbortSignal; timeoutMs?: number; tabId?: string } = {}
+  opts: { signal?: AbortSignal; timeoutMs?: number; tabId?: string; workspacePath?: string } = {}
 ): Promise<string> {
   const url = await assertPublicUrl(rawUrl)
   throwIfAborted(opts.signal)
@@ -471,7 +480,7 @@ async function navigateUrlUnlocked(
     Math.max(1_000, opts.timeoutMs ?? DEFAULT_NAV_TIMEOUT_MS)
   )
 
-  const tab = ensureTab(opts.tabId)
+  const tab = ensureTab(opts.tabId, opts.workspacePath)
   activateTab(tab)
   const wc = tabContents(tab)
   emitCurrent({ navigating: true })
@@ -1163,6 +1172,21 @@ export function closeAgentBrowser(): void {
   })
 }
 
+/** Close browser tabs owned by a workspace (e.g. when the workspace is removed). */
+export function disposeAgentBrowserForWorkspace(workspacePath: string): number {
+  let closed = 0
+  for (const tab of [...tabs.values()]) {
+    if (!tab.workspacePath || !workspacePathsEqual(tab.workspacePath, workspacePath)) continue
+    destroyTab(tab)
+    closed += 1
+  }
+  if (activeTabId && !tabs.has(activeTabId)) {
+    activeTabId = tabs.keys().next().value ?? null
+  }
+  emitCurrent({ navigating: false })
+  return closed
+}
+
 export type BrowserClearKind = 'history' | 'cookies' | 'cache' | 'all'
 
 function clearTabNavigationHistory(): void {
@@ -1298,7 +1322,7 @@ export async function manageTabs(
 
 async function manageTabsUnlocked(
   action: 'list' | 'open' | 'close' | 'select',
-  opts: { tabId?: string; url?: string; signal?: AbortSignal } = {}
+  opts: { tabId?: string; url?: string; signal?: AbortSignal; workspacePath?: string } = {}
 ): Promise<string> {
   throwIfAborted(opts.signal)
   if (action === 'list') {
@@ -1309,10 +1333,14 @@ async function manageTabsUnlocked(
       .join('\n')
   }
   if (action === 'open') {
-    const tab = createTab()
+    const tab = createTab(opts.workspacePath)
     activeTabId = tab.id
     if (opts.url?.trim()) {
-      return await navigateUrlUnlocked(opts.url.trim(), { signal: opts.signal, tabId: tab.id })
+      return await navigateUrlUnlocked(opts.url.trim(), {
+        signal: opts.signal,
+        tabId: tab.id,
+        workspacePath: opts.workspacePath
+      })
     }
     activateTab(tab)
     emitCurrent()

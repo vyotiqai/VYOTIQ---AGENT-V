@@ -1851,7 +1851,7 @@ describe('useChatStream', () => {
       await result.current.respondToApproval('req-1', 'once')
     })
 
-    expect(respondToolApproval).toHaveBeenCalledWith('req-1', 'once')
+    expect(respondToolApproval).toHaveBeenCalledWith('req-1', 'once', 'run-1')
     expect(result.current.items.some((i) => i.kind === 'tool' && i.approval)).toBe(false)
   })
 
@@ -2009,7 +2009,7 @@ describe('useChatStream', () => {
       await result.current.respondToQuestion('q-1', ['A'])
     })
 
-    expect(respondAgentQuestion).toHaveBeenCalledWith('q-1', ['A'])
+    expect(respondAgentQuestion).toHaveBeenCalledWith('q-1', ['A'], 'run-1')
     expect(result.current.items.some((i) => i.kind === 'question')).toBe(false)
   })
 

@@ -559,7 +559,7 @@
 
   li.task-list-item {
     list-style: none;
-    margin-left: -1.25rem;
+    margin-left: 0;
   }
 
   blockquote {
@@ -582,10 +582,16 @@
     display: block;
   }
 
+  .markdown-table-scroll {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
   table {
     border-collapse: collapse;
-    margin: 0.5em 0;
-    width: 100%;
+    margin: 0;
+    width: max-content;
+    min-width: 100%;
     font-size: 0.92em;
   }
 
@@ -595,6 +601,8 @@
     padding: 0.35em 0.65em;
     text-align: left;
     vertical-align: top;
+    overflow-wrap: normal;
+    word-break: normal;
   }
 
   th {

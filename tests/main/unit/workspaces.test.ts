@@ -255,7 +255,7 @@ describe('workspaces registry', () => {
     expect(added.activePath).toBe(canonicalizeWorkspacePath(workspaceA))
   })
 
-  it('interruptOrphanRunsForWorkspaces scans open and recent paths', () => {
+  it('interruptOrphanRunsForWorkspaces scans open and recent paths', async () => {
     const runId = 'recent-orphan'
     createRun(workspaceB, runId, 'orphan')
     const runsDir = join(resolveRunDir(workspaceB, runId), 'status.json')
@@ -277,7 +277,7 @@ describe('workspaces registry', () => {
       recentPaths: [workspaceB]
     })
 
-    const count = interruptOrphanRunsForWorkspaces(state)
+    const count = await interruptOrphanRunsForWorkspaces(state)
     expect(count).toBe(1)
 
     const status = JSON.parse(readFileSync(runsDir, 'utf8')) as { status: string }

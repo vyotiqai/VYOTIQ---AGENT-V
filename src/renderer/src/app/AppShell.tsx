@@ -10,10 +10,20 @@ import { Sidebar } from './sidebar'
 import { BreakpointProvider, useIsDesktop } from '@renderer/lib/context/BreakpointProvider'
 import { useOverlayPanel } from '@renderer/lib/hooks/useOverlayPanel'
 import { usePersistedBoolean } from '@renderer/lib/hooks/usePersistedBoolean'
+import { usePersistedNumber } from '@renderer/lib/hooks/usePersistedNumber'
 import { getWorkspaceHotUi } from '@renderer/lib/hooks/workspaceHotUiStore'
 import type { RunSummary } from '@shared/ipc'
 import type { WorkspaceSidebarRuns } from './sidebar/types'
-import { SIDEBAR_COLLAPSED_KEY, TITLE_BAR_HEIGHT_PX } from '@renderer/lib/utils/layout'
+import {
+  SIDEBAR_COLLAPSED_KEY,
+  SIDEBAR_WIDTH_KEY,
+  SIDEBAR_WIDTH_MAX_PX,
+  SIDEBAR_WIDTH_MIN_PX,
+  SIDEBAR_WIDTH_PX,
+  TITLE_BAR_HEIGHT_PX,
+  clampSidebarWidthPx
+} from '@renderer/lib/utils/layout'
+import { PanelResizeHandle } from '@renderer/lib/ui'
 import { TitleBar } from './TitleBar'
 
 function AppShellInner({
@@ -79,6 +89,11 @@ function AppShellInner({
   const [sidebarCollapsed, setSidebarCollapsed] = usePersistedBoolean(
     SIDEBAR_COLLAPSED_KEY,
     false
+  )
+  const [sidebarWidthPx, setSidebarWidthPx] = usePersistedNumber(
+    SIDEBAR_WIDTH_KEY,
+    SIDEBAR_WIDTH_PX,
+    clampSidebarWidthPx
   )
   const searchRef = useRef<HTMLInputElement>(null)
   const pendingSearchFocusRef = useRef(false)
@@ -269,9 +284,25 @@ function AppShellInner({
     <div className="flex h-full overflow-hidden bg-bg text-fg">
       {/* Mount only on desktop so searchRef is never bound to a hidden sibling. */}
       {isDesktop ? (
-        <div className="flex h-full min-h-0 shrink-0 flex-col overflow-hidden self-stretch">
-          <Sidebar {...sidebarProps} collapsed={sidebarCollapsed} />
-        </div>
+        <>
+          <div className="flex h-full min-h-0 shrink-0 flex-col overflow-hidden self-stretch">
+            <Sidebar
+              {...sidebarProps}
+              collapsed={sidebarCollapsed}
+              widthPx={sidebarWidthPx}
+            />
+          </div>
+          {!sidebarCollapsed ? (
+            <PanelResizeHandle
+              label="Resize sidebar"
+              value={sidebarWidthPx}
+              min={SIDEBAR_WIDTH_MIN_PX}
+              max={SIDEBAR_WIDTH_MAX_PX}
+              edge="end"
+              onChange={setSidebarWidthPx}
+            />
+          ) : null}
+        </>
       ) : null}
 
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col self-stretch">

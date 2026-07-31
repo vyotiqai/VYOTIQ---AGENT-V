@@ -10,7 +10,9 @@ export function ToolBodyView({
 }) {
   const { tool, expanded, onLoadFullContent, subagent, subagentContextUsage, mcpServerNames, inGroup } =
     context
-  const enabled = expanded && tool.contentTruncated === true
+  // Load full content whenever truncated — collapsed cards still show a clamped
+  // preview, so waiting for expand left the preview stuck on the truncated stub.
+  const enabled = tool.contentTruncated === true
   const { loading, failed } = useFullToolContent(tool, enabled, onLoadFullContent)
   return createElement(getToolBody(tool.name), {
     tool,

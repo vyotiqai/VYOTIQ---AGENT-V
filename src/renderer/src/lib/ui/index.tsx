@@ -1,6 +1,7 @@
 export { cn } from './cn'
 export { Button } from './Button'
 export { IconButton } from './IconButton'
+export { PanelResizeHandle } from './PanelResizeHandle'
 export { Input } from './Input'
 export { SearchInput } from './SearchInput'
 export { Switch } from './Switch'

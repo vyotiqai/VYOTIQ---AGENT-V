@@ -10,10 +10,13 @@ import { DOCK_PANELS } from '@renderer/lib/utils/dockPanels'
 export function ChatSideRail({
   activePanel,
   onSelectPanel,
+  onExpandPanels,
   className
 }: {
   activePanel: ChatRightPanelId | null
   onSelectPanel: (panel: ChatRightPanelId) => void
+  /** Re-enter immersive when panels remain after collapsing from Agent. */
+  onExpandPanels?: () => void
   className?: string
 }) {
   return (
@@ -45,6 +48,16 @@ export function ChatSideRail({
             />
           )
         })}
+        {onExpandPanels ? (
+          <IconButton
+            icon="maximize"
+            label="Expand panel"
+            variant="ghost"
+            size="sm"
+            className="mt-1 text-muted hover:text-fg"
+            onClick={onExpandPanels}
+          />
+        ) : null}
       </div>
     </aside>
   )

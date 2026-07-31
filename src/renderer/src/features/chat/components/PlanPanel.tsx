@@ -354,7 +354,7 @@ export function PlanPanel({
           </button>
         ))}
       </div>
-      <div className="min-h-0 min-w-0 flex-1 overflow-auto p-3 [overflow-wrap:anywhere]">
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto p-3">
         {loading ? (
           <p className="m-0 text-xs text-muted">Loading…</p>
         ) : error ? (

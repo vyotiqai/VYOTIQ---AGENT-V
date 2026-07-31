@@ -17,7 +17,7 @@ export function TruncatedBanner({
         ? 'Loading full output…'
         : failed
           ? 'Could not load full output.'
-          : 'Showing preview — full output loads on expand.'}
+          : 'Showing truncated preview…'}
     </p>
   )
 }

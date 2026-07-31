@@ -4,6 +4,22 @@ import { logger } from '../../shared/logger'
 
 /** Per-run-dir serialized append chain — ordered, non-blocking, single-writer safe. */
 const appendChains = new Map<string, Promise<void>>()
+const lastErrors = new Map<string, Error>()
+
+function recordAppendError(dir: string, err: unknown): void {
+  lastErrors.set(dir, err instanceof Error ? err : new Error(String(err)))
+}
+
+function takeAppendError(dir: string): Error | undefined {
+  const err = lastErrors.get(dir)
+  if (err) lastErrors.delete(dir)
+  return err
+}
+
+function throwIfAppendError(dir: string): void {
+  const err = takeAppendError(dir)
+  if (err) throw err
+}
 
 export function enqueueEventAppend(dir: string, event: unknown): void {
   const line = `${JSON.stringify({ at: new Date().toISOString(), event })}\n`
@@ -12,6 +28,7 @@ export function enqueueEventAppend(dir: string, event: unknown): void {
   const next = prev
     .then(() => appendFile(path, line, 'utf8'))
     .catch((err) => {
+      recordAppendError(dir, err)
       logger.warn('Failed to append events.jsonl', {
         scope: 'state',
         correlationId: basename(dir),
@@ -28,9 +45,49 @@ export function enqueueEventAppend(dir: string, event: unknown): void {
 export async function flushEventAppends(dir?: string): Promise<void> {
   if (dir) {
     await appendChains.get(dir)
+    throwIfAppendError(dir)
     return
   }
   await Promise.all([...appendChains.values()])
+  if (lastErrors.size === 0) return
+  const errors = [...lastErrors.values()]
+  lastErrors.clear()
+  throw errors[0]
+}
+
+/**
+ * Block until pending appends for a run dir settle (sync loaders only).
+ * Times out instead of hanging forever when the chain never settles.
+ */
+export function blockUntilEventAppendsFlushed(dir: string, timeoutMs = 2000): void {
+  const chain = appendChains.get(dir)
+  if (!chain) {
+    throwIfAppendError(dir)
+    return
+  }
+  const sab = new SharedArrayBuffer(4)
+  const ia = new Int32Array(sab)
+  let flushError: Error | undefined
+  void chain
+    .then(() => {
+      flushError = takeAppendError(dir)
+    })
+    .catch((err) => {
+      flushError = err instanceof Error ? err : new Error(String(err))
+    })
+    .finally(() => {
+      Atomics.store(ia, 0, 1)
+      Atomics.notify(ia, 0)
+    })
+  const result = Atomics.wait(ia, 0, 0, timeoutMs)
+  if (result === 'timed-out') {
+    logger.warn('Timed out waiting for event append flush', {
+      scope: 'state',
+      correlationId: basename(dir)
+    })
+    return
+  }
+  if (flushError) throw flushError
 }
 
 /** @internal Test helper — how many run dirs still have a pending chain. */
@@ -40,4 +97,5 @@ export function appendChainSizeForTests(): number {
 
 export function resetEventAppendQueueForTests(): void {
   appendChains.clear()
+  lastErrors.clear()
 }

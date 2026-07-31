@@ -24,6 +24,11 @@ const markRunTurnCompleteMock = vi.hoisted(() => vi.fn())
 const registerRunAbortMock = vi.hoisted(() =>
   vi.fn(() => ({ controller: new AbortController(), invokeId: 42 }))
 )
+const tryRegisterRunAbortMock = vi.hoisted(() =>
+  vi.fn(() => ({ ok: true as const, controller: new AbortController(), invokeId: 42 }))
+)
+const isRunTurnCompleteMock = vi.hoisted(() => vi.fn(() => false))
+const waitUntilRunInactiveMock = vi.hoisted(() => vi.fn(async () => true))
 const runAgentMock = vi.hoisted(() => vi.fn())
 const runExistsMock = vi.hoisted(() => vi.fn())
 const isActiveMock = vi.hoisted(() => vi.fn(() => false))
@@ -89,12 +94,17 @@ vi.mock('@main/agent/runRegistry', () => ({
   chatCancelResult: vi.fn(),
   listActiveRuns: vi.fn(() => []),
   registerRunAbort: registerRunAbortMock,
+  tryRegisterRunAbort: tryRegisterRunAbortMock,
   clearRunAbort: clearRunAbortMock,
   markRunTurnComplete: markRunTurnCompleteMock,
   isActive: isActiveMock,
+  isRunTurnComplete: isRunTurnCompleteMock,
+  waitUntilRunInactive: waitUntilRunInactiveMock,
   enqueueFollowUp: vi.fn(),
   removeFollowUp: vi.fn(),
-  getRunInvokeId: vi.fn(() => 1)
+  getRunInvokeId: vi.fn(() => 1),
+  followUpPreview: vi.fn(() => 'preview'),
+  getRunWorkspace: vi.fn(() => '/ws')
 }))
 
 vi.mock('@main/agent/state', () => ({
@@ -178,6 +188,16 @@ describe('registerIpc', () => {
     markRunTurnCompleteMock.mockReset()
     registerRunAbortMock.mockReset()
     registerRunAbortMock.mockReturnValue({ controller: new AbortController(), invokeId: 42 })
+    tryRegisterRunAbortMock.mockReset()
+    tryRegisterRunAbortMock.mockReturnValue({
+      ok: true as const,
+      controller: new AbortController(),
+      invokeId: 42
+    })
+    isRunTurnCompleteMock.mockReset()
+    isRunTurnCompleteMock.mockReturnValue(false)
+    waitUntilRunInactiveMock.mockReset()
+    waitUntilRunInactiveMock.mockResolvedValue(true)
     isActiveMock.mockReturnValue(false)
     registerIpc()
   })

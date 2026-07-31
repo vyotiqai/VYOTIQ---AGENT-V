@@ -26,7 +26,8 @@ export default defineConfig(({ mode }) => {
       build: {
         rollupOptions: {
           input: {
-            index: resolve('src/main/index.ts')
+            index: resolve('src/main/index.ts'),
+            'tokenizer.worker': resolve('src/main/agent/context/tokenizer.worker.ts')
           }
         }
       }

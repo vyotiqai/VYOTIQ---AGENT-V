@@ -590,6 +590,39 @@ describe('useWorkspaceManager', () => {
     expect(result.current.activeContext?.activeRunId).toBe('run-a')
   })
 
+  it('persists activeRunId when chatStart assigns a run id on a draft chat', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    vi.useFakeTimers()
+    updateWorkspaceUiState.mockClear()
+    chatStart.mockResolvedValueOnce({ ok: true, data: { runId: 'run-assigned', invokeId: 1 } })
+
+    await act(async () => {
+      await result.current.chatActions?.send('first')
+    })
+
+    expect(result.current.activeContext?.activeRunId).toBe('run-assigned')
+    expect(result.current.activeContext?.openRunIds).toEqual(['run-assigned'])
+
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+
+    expect(updateWorkspaceUiState).toHaveBeenCalledWith(
+      '/ws-a',
+      expect.objectContaining({
+        activeRunId: 'run-assigned',
+        openRunIds: ['run-assigned']
+      })
+    )
+
+    vi.useRealTimers()
+  })
+
   it('blocks send while transcript is loading', async () => {
     let resolveLoad: (value: {
       ok: true

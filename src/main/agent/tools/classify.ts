@@ -1,6 +1,4 @@
 /** Workspace-local reads safe to run concurrently (no file mutation). */
-import { getMcpReadOnlyHint } from '../mcp'
-
 const PARALLEL_SAFE_BUILTIN = new Set([
   'read',
   'search',
@@ -46,9 +44,8 @@ const SERIAL_APPROVAL_EXEMPT_BUILTIN = new Set(['ask_question', 'switch_mode'])
  * the hint is still untrusted for approval exemption.
  */
 export function isParallelSafeTool(name: string): boolean {
-  if (PARALLEL_SAFE_BUILTIN.has(name)) return true
-  if (name.startsWith('mcp__') && getMcpReadOnlyHint(name) === true) return true
-  return false
+  // Do not trust MCP readOnlyHint for parallelism — built-in allowlist only.
+  return PARALLEL_SAFE_BUILTIN.has(name)
 }
 
 /**

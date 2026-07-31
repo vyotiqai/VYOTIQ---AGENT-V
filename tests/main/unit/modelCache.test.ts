@@ -1,0 +1,69 @@
+import { afterEach, describe, expect, it } from 'vitest'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import {
+  getCachedModels,
+  modelCacheKey,
+  resetModelCacheForTests,
+  setCachedModels,
+  setModelCacheDiskPathForTests
+} from '@main/agent/providers/modelCache'
+import type { ModelInfo } from '@shared/ipc'
+
+const sample: ModelInfo[] = [
+  { id: 'deepseek-v4-flash', name: 'deepseek-v4-flash', provider: 'deepseek' }
+]
+
+describe('modelCache disk', () => {
+  let dir: string
+
+  afterEach(() => {
+    resetModelCacheForTests()
+    if (dir) rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('reloads catalog from disk after a process-style reset', () => {
+    dir = mkdtempSync(join(tmpdir(), 'vyotiq-model-cache-'))
+    const disk = join(dir, 'model-catalog-cache.json')
+    setModelCacheDiskPathForTests(disk)
+
+    const key = modelCacheKey('deepseek', undefined, 'sk-test')
+    setCachedModels(key, sample)
+    expect(JSON.parse(readFileSync(disk, 'utf8')).entries[key].models).toEqual(sample)
+
+    // Simulate new process: clear memory, keep disk path.
+    setModelCacheDiskPathForTests(disk)
+    expect(getCachedModels(key)).toEqual(sample)
+  })
+
+  it('does not refresh unrelated keys diskSavedAt when another catalog is written', () => {
+    dir = mkdtempSync(join(tmpdir(), 'vyotiq-model-cache-'))
+    const disk = join(dir, 'model-catalog-cache.json')
+    setModelCacheDiskPathForTests(disk)
+
+    const deepseek = modelCacheKey('deepseek', undefined, 'sk-a')
+    const openai = modelCacheKey('openai', undefined, 'sk-b')
+    setCachedModels(deepseek, sample)
+
+    const firstSavedAt = JSON.parse(readFileSync(disk, 'utf8')).entries[deepseek].savedAt as number
+    // Force an older stamp so a refresh would be observable.
+    const raw = JSON.parse(readFileSync(disk, 'utf8')) as {
+      version: 1
+      entries: Record<string, { models: ModelInfo[]; savedAt: number }>
+    }
+    raw.entries[deepseek]!.savedAt = firstSavedAt - 60_000
+    writeFileSync(disk, JSON.stringify(raw))
+    // Reload memory from the stamped disk file.
+    setModelCacheDiskPathForTests(disk)
+    expect(getCachedModels(deepseek)).toEqual(sample)
+
+    setCachedModels(openai, [
+      { id: 'gpt-test', name: 'gpt-test', provider: 'openai' }
+    ])
+
+    const after = JSON.parse(readFileSync(disk, 'utf8')) as typeof raw
+    expect(after.entries[deepseek]!.savedAt).toBe(firstSavedAt - 60_000)
+    expect(after.entries[openai]!.savedAt).toBeGreaterThan(firstSavedAt - 60_000)
+  })
+})

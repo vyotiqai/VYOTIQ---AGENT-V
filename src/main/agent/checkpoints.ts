@@ -323,6 +323,7 @@ export function undoWrites(
   const checkpointDir = join(runDir, 'checkpoints', id)
   const restored: string[] = []
   const skipped: string[] = []
+  let hadIoFailure = false
 
   for (const file of [...meta.files].reverse()) {
     if (file.resolved) {
@@ -333,12 +334,19 @@ export function undoWrites(
     if (outcome === 'restored') {
       file.resolved = 'discarded'
       restored.push(file.path)
+    } else if (file.undoable) {
+      hadIoFailure = true
+      skipped.push(file.path)
     } else {
       skipped.push(file.path)
     }
   }
 
-  markCheckpointFullyResolved(runDir, meta)
+  if (hadIoFailure) {
+    saveMeta(runDir, meta)
+  } else {
+    markCheckpointFullyResolved(runDir, meta)
+  }
   return { checkpointId: id, restored, skipped }
 }
 

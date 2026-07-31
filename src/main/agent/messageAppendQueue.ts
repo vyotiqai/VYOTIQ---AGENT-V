@@ -4,6 +4,22 @@ import { logger } from '../../shared/logger'
 
 /** Per-run-dir serialized message append chain — ordered, non-blocking. */
 const appendChains = new Map<string, Promise<void>>()
+const lastErrors = new Map<string, Error>()
+
+function recordAppendError(dir: string, err: unknown): void {
+  lastErrors.set(dir, err instanceof Error ? err : new Error(String(err)))
+}
+
+function takeAppendError(dir: string): Error | undefined {
+  const err = lastErrors.get(dir)
+  if (err) lastErrors.delete(dir)
+  return err
+}
+
+function throwIfAppendError(dir: string): void {
+  const err = takeAppendError(dir)
+  if (err) throw err
+}
 
 export function enqueueMessageAppend(dir: string, line: string): Promise<void> {
   const path = join(dir, 'messages.jsonl')
@@ -11,6 +27,7 @@ export function enqueueMessageAppend(dir: string, line: string): Promise<void> {
   const next = prev
     .then(() => appendFile(path, line, 'utf8'))
     .catch((err) => {
+      recordAppendError(dir, err)
       logger.warn('Failed to append messages.jsonl', {
         scope: 'state',
         correlationId: basename(dir),
@@ -27,9 +44,14 @@ export function enqueueMessageAppend(dir: string, line: string): Promise<void> {
 export async function flushMessageAppends(dir?: string): Promise<void> {
   if (dir) {
     await appendChains.get(dir)
+    throwIfAppendError(dir)
     return
   }
   await Promise.all([...appendChains.values()])
+  if (lastErrors.size === 0) return
+  const errors = [...lastErrors.values()]
+  lastErrors.clear()
+  throw errors[0]
 }
 
 /** @internal */
@@ -39,4 +61,5 @@ export function messageAppendChainSizeForTests(): number {
 
 export function resetMessageAppendQueueForTests(): void {
   appendChains.clear()
+  lastErrors.clear()
 }

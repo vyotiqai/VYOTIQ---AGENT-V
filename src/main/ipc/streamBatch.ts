@@ -3,8 +3,6 @@ import { workspacePathsEqual } from '../../shared/workspacePathMatch'
 
 const ACTIVE_BATCH_MS = 16
 const BACKGROUND_BATCH_MS = 80
-/** Drop intermediate background usage events when total pending segment queues exceed this. */
-const USAGE_DROP_QUEUE_DEPTH = 64
 
 type PendingSegment =
   | { kind: 'text'; text: string; invokeId?: number }
@@ -30,27 +28,66 @@ type RunSlot = {
   pendingSegments: PendingSegment[]
   /** Latest usage event held for background coalesce / pressure drop. */
   pendingUsage: AgentEvent | null
+  /** Number of ChatEventBatcher owners; detach only when this hits 0. */
+  attachCount: number
 }
 
 /** Dev/test counters for IPC send rate (Electron: measure before optimizing). */
 export type ChatEventBatchStats = {
   pushed: number
   sent: number
+  /** Pushes with no attached slot (not delivered). */
+  dropped: number
   byType: Record<string, number>
+  /** Timer flushes that prioritized an active-workspace run. */
+  activeFlushes: number
+  /** Timer flushes that only drained background runs (no active pending). */
+  backgroundFlushes: number
+  /** Background usage events that replaced a still-pending usage. */
+  usageCoalesced: number
+  /** Peak pending segment+usage depth since last reset. */
+  maxPendingDepth: number
+  attachedRuns: number
 }
 
-let stats: ChatEventBatchStats = { pushed: 0, sent: 0, byType: {} }
+let stats: ChatEventBatchStats = {
+  pushed: 0,
+  sent: 0,
+  dropped: 0,
+  byType: {},
+  activeFlushes: 0,
+  backgroundFlushes: 0,
+  usageCoalesced: 0,
+  maxPendingDepth: 0,
+  attachedRuns: 0
+}
 
 export function getChatEventBatchStats(): ChatEventBatchStats {
   return {
     pushed: stats.pushed,
     sent: stats.sent,
-    byType: { ...stats.byType }
+    dropped: stats.dropped,
+    byType: { ...stats.byType },
+    activeFlushes: stats.activeFlushes,
+    backgroundFlushes: stats.backgroundFlushes,
+    usageCoalesced: stats.usageCoalesced,
+    maxPendingDepth: stats.maxPendingDepth,
+    attachedRuns: stats.attachedRuns
   }
 }
 
 export function resetChatEventBatchStats(): void {
-  stats = { pushed: 0, sent: 0, byType: {} }
+  stats = {
+    pushed: 0,
+    sent: 0,
+    dropped: 0,
+    byType: {},
+    activeFlushes: 0,
+    backgroundFlushes: 0,
+    usageCoalesced: 0,
+    maxPendingDepth: 0,
+    attachedRuns: 0
+  }
 }
 
 function recordPush(type: string): void {
@@ -112,24 +149,41 @@ export class ChatEventDispatcher {
   private timer: ReturnType<typeof setTimeout> | null = null
   private nextDueMs = 0
 
-  attach(runId: string, workspacePath: string, send: (ev: AgentEvent) => void): void {
+  attach(
+    runId: string,
+    workspacePath: string,
+    send: (ev: AgentEvent) => void,
+    options?: { retain?: boolean }
+  ): void {
+    const retain = options?.retain !== false
     const existing = this.slots.get(runId)
     if (existing) {
       existing.workspacePath = workspacePath
       existing.send = send
+      if (retain) existing.attachCount += 1
       return
     }
     this.slots.set(runId, {
       workspacePath,
       send,
       pendingSegments: [],
-      pendingUsage: null
+      pendingUsage: null,
+      attachCount: 1
     })
+    stats.attachedRuns = this.slots.size
   }
 
   detach(runId: string): void {
+    const slot = this.slots.get(runId)
+    if (!slot) return
+    slot.attachCount = Math.max(0, slot.attachCount - 1)
+    if (slot.attachCount > 0) {
+      this.flushRun(runId)
+      return
+    }
     this.flushRun(runId)
     this.slots.delete(runId)
+    stats.attachedRuns = this.slots.size
     if (this.slots.size === 0 && this.timer) {
       clearTimeout(this.timer)
       this.timer = null
@@ -141,7 +195,7 @@ export class ChatEventDispatcher {
     const slot = this.slots.get(runId)
     if (!slot) {
       recordPush(ev.type)
-      recordSend(ev.type)
+      stats.dropped += 1
       return
     }
     recordPush(ev.type)
@@ -189,14 +243,12 @@ export class ChatEventDispatcher {
 
     if (ev.type === 'step_usage' || ev.type === 'context_usage') {
       if (!isActiveWorkspace(slot.workspacePath)) {
-        // Keep only the latest usage event; under deep queues this still caps at one.
-        if (
-          slot.pendingUsage &&
-          totalPendingDepth(this.slots) > USAGE_DROP_QUEUE_DEPTH
-        ) {
-          // Replace without growing queue depth further.
+        // Keep only the latest usage event (depth stays capped at one).
+        if (slot.pendingUsage) {
+          stats.usageCoalesced += 1
         }
         slot.pendingUsage = ev
+        this.notePendingDepth()
         this.schedule(slot.workspacePath)
         return
       }
@@ -216,6 +268,15 @@ export class ChatEventDispatcher {
       return
     }
     this.flushAllDeltas()
+  }
+
+  /** Current queue depth across attached runs. */
+  pendingDepth(): number {
+    return totalPendingDepth(this.slots)
+  }
+
+  attachedCount(): number {
+    return this.slots.size
   }
 
   private flushRun(runId: string): void {
@@ -242,7 +303,14 @@ export class ChatEventDispatcher {
       return aActive - bActive
     })
 
+    let flushedActive = false
+    let flushedBackground = false
     for (const [runId, slot] of ordered) {
+      const had =
+        slot.pendingSegments.length > 0 || slot.pendingUsage != null
+      if (!had) continue
+      if (isActiveWorkspace(slot.workspacePath)) flushedActive = true
+      else flushedBackground = true
       if (slot.pendingSegments.length) {
         this.emitSegments(slot, runId, slot.pendingSegments)
         slot.pendingSegments = []
@@ -252,9 +320,17 @@ export class ChatEventDispatcher {
         slot.pendingUsage = null
       }
     }
+    if (flushedActive) stats.activeFlushes += 1
+    else if (flushedBackground) stats.backgroundFlushes += 1
+  }
+
+  private notePendingDepth(): void {
+    const depth = totalPendingDepth(this.slots)
+    if (depth > stats.maxPendingDepth) stats.maxPendingDepth = depth
   }
 
   private schedule(workspacePath: string): void {
+    this.notePendingDepth()
     const delay = isActiveWorkspace(workspacePath) ? ACTIVE_BATCH_MS : BACKGROUND_BATCH_MS
     const due = Date.now() + delay
     if (this.timer && this.nextDueMs > 0 && this.nextDueMs <= due) return
@@ -372,6 +448,18 @@ export function getChatEventDispatcher(): ChatEventDispatcher {
   return sharedDispatcher
 }
 
+/** Live dispatcher queue depth for load snapshots. */
+export function getChatEventDispatcherSnapshot(): {
+  pendingDepth: number
+  attachedRuns: number
+} {
+  if (!sharedDispatcher) return { pendingDepth: 0, attachedRuns: 0 }
+  return {
+    pendingDepth: sharedDispatcher.pendingDepth(),
+    attachedRuns: sharedDispatcher.attachedCount()
+  }
+}
+
 /** @internal Reset singleton between tests. */
 export function resetChatEventDispatcher(): void {
   if (sharedDispatcher) {
@@ -417,7 +505,8 @@ export class ChatEventBatcher {
 
   push(ev: AgentEvent): void {
     const id = this.fixedRunId ?? ev.runId
-    this.dispatcher.attach(id, this.workspacePath, this.send)
+    // Refresh send target without taking another retain (constructor/dispose own the count).
+    this.dispatcher.attach(id, this.workspacePath, this.send, { retain: false })
     this.dispatcher.push(id, { ...ev, runId: id })
   }
 

@@ -8,7 +8,11 @@ import {
   type CompactionData
 } from '../schemas/compaction'
 import { collectStructuredResponse } from '../schemas/structured'
-import { estimateMessagesTokens, estimateTextTokens } from './estimate'
+import {
+  estimateMessagesTokens,
+  estimateMessagesTokensAsync,
+  estimateTextTokensAsync
+} from './estimate'
 import { KEEP_RECENT_TURNS, type CompactionRecord } from './types'
 
 const COMPACTION_PROMPT = `Summarize this coding-agent session for future context. Be concise and factual. Do not invent files or decisions.`
@@ -213,7 +217,7 @@ export async function compactMessages(input: {
   return {
     summary: merged,
     createdAt: new Date().toISOString(),
-    tokenEstimate: estimateTextTokens(merged)
+    tokenEstimate: await estimateTextTokensAsync(merged)
   }
 }
 
@@ -251,6 +255,55 @@ export function preserveRecentMessages(
     while (
       kept.length > 2 &&
       estimateMessagesTokens(kept, model) > historyBudgetTokens
+    ) {
+      const dropIdx = kept.findIndex((m) => m.role === 'user')
+      if (dropIdx < 0) break
+      const nextUser = kept.findIndex((m, idx) => idx > dropIdx && m.role === 'user')
+      const end = nextUser >= 0 ? nextUser : kept.length
+      kept = kept.slice(end)
+      while (kept.length > 1 && kept[0].role === 'tool') {
+        kept = kept.slice(1)
+      }
+    }
+  }
+
+  return kept
+}
+
+/** Async variant — BPE for uncached strings runs off the main thread when workers are available. */
+export async function preserveRecentMessagesAsync(
+  messages: ChatMessage[],
+  keepTurns = KEEP_RECENT_TURNS,
+  historyBudgetTokens?: number,
+  model?: ModelInfo
+): Promise<ChatMessage[]> {
+  let userTurns = 0
+  let start = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') {
+      userTurns++
+      if (userTurns >= keepTurns) {
+        start = i
+        break
+      }
+    }
+  }
+
+  if (userTurns < keepTurns) {
+    if (!historyBudgetTokens || !model) return messages
+    if ((await estimateMessagesTokensAsync(messages, model)) <= historyBudgetTokens) return messages
+    start = Math.min(start + 2, messages.length - 1)
+  }
+
+  let kept = messages.slice(start)
+  while (kept.length > 1 && kept[0].role === 'tool') {
+    kept = kept.slice(1)
+  }
+
+  if (historyBudgetTokens && model) {
+    while (
+      kept.length > 2 &&
+      (await estimateMessagesTokensAsync(kept, model)) > historyBudgetTokens
     ) {
       const dropIdx = kept.findIndex((m) => m.role === 'user')
       if (dropIdx < 0) break

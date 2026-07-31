@@ -23,13 +23,14 @@ import { AGENT_TOOLS } from './types'
 import type { ToolCall } from './providers/types'
 import { executeTool } from './tools'
 import { repairToolArgs } from './toolArgsRepair'
+import { dedupeToolCalls } from './dedupeToolCalls'
 import { registerSubagent, unregisterSubagent } from './subagentRegistry'
 import {
   contentWindow,
   contextWindowFor,
-  estimateMessagesTokens,
+  estimateMessagesTokensAsync,
   estimateSubagentOverheadTokens,
-  estimateTextTokens,
+  estimateTextTokensAsync,
   prepareSubagentMessages,
   buildSessionEnvSection
 } from './context'
@@ -38,6 +39,9 @@ import { buildWorkspaceRulesSection } from './context/rules'
 /**
  * Investigation is what a sub-agent is for; anything that changes the workspace
  * stays with the parent, where the user can see and approve it.
+ *
+ * web_fetch / web_search are omitted — nested network access must go through the
+ * parent's approval gate, not a sub-agent allowlist bypass.
  */
 export const SUBAGENT_TOOLS = [
   'read',
@@ -45,7 +49,6 @@ export const SUBAGENT_TOOLS = [
   'glob',
   'grep',
   'list_dir',
-  'web_fetch',
   'git_status',
   'git_diff',
   'diagnostics',
@@ -314,7 +317,9 @@ async function runSubagentImpl(options: SubagentOptions): Promise<SubagentOutcom
     options.signal
   )
   const tools = modelInfo.supportsTools === false ? [] : subagentToolDefs(allowedToolNames)
-  const toolsJsonEstimate = tools.length ? estimateTextTokens(JSON.stringify(tools)) : 0
+  const toolsJsonEstimate = tools.length
+    ? await estimateTextTokensAsync(JSON.stringify(tools))
+    : 0
   const workspaceRules = await buildWorkspaceRulesSection(options.workspace)
   const overheadTokens = estimateSubagentOverheadTokens(
     buildSubagentSystem(
@@ -349,7 +354,7 @@ async function runSubagentImpl(options: SubagentOptions): Promise<SubagentOutcom
 
     const preparedMessages = prepareSubagentMessages(messages, modelInfo, overheadTokens)
     const estimatedTokens =
-      estimateMessagesTokens(preparedMessages, modelInfo) + overheadTokens
+      (await estimateMessagesTokensAsync(preparedMessages, modelInfo)) + overheadTokens
     const window = contextWindowFor(modelInfo)
     const contentWin = contentWindow(modelInfo)
     options.onContextUsage?.({
@@ -362,14 +367,17 @@ async function runSubagentImpl(options: SubagentOptions): Promise<SubagentOutcom
 
     let text = ''
     const toolCalls: ToolCall[] = []
+    const pendingToolCalls = new Map<number, ToolCall>()
     let streamFailure: SubagentOutcome | null = null
 
     try {
       await runWithStreamRetry({
+        signal: options.signal,
       onAttemptStart: (attempt) => {
         if (attempt > 1) {
           text = ''
           toolCalls.length = 0
+          pendingToolCalls.clear()
         }
       },
       onRetriableFailure: (err, attempt) => {
@@ -403,8 +411,27 @@ async function runSubagentImpl(options: SubagentOptions): Promise<SubagentOutcom
           if (options.signal.aborted) break
           if (chunk.type === 'text' && chunk.text) {
             text += chunk.text
+          } else if (chunk.type === 'tool_call_delta' && chunk.toolCallDelta) {
+            const delta = chunk.toolCallDelta
+            const existing = pendingToolCalls.get(delta.index) ?? {
+              id: delta.id ?? `pending_${delta.index}`,
+              name: '',
+              arguments: ''
+            }
+            if (delta.id) existing.id = delta.id
+            if (delta.name) existing.name = delta.name
+            if (delta.arguments) existing.arguments += delta.arguments
+            pendingToolCalls.set(delta.index, existing)
           } else if (chunk.type === 'tool_call' && chunk.toolCall) {
             toolCalls.push(chunk.toolCall)
+            // Drop only the matching pending slot — clearing the whole map drops
+            // sibling tools still assembling from deltas when one final arrives.
+            for (const [index, pending] of pendingToolCalls) {
+              if (pending.id === chunk.toolCall.id) {
+                pendingToolCalls.delete(index)
+                break
+              }
+            }
           } else if (chunk.type === 'error') {
             const message = chunk.error ?? 'Provider error'
             if (shouldRetryProviderStreamError(message, attempt)) {
@@ -427,6 +454,13 @@ async function runSubagentImpl(options: SubagentOptions): Promise<SubagentOutcom
             return 'complete'
           }
         }
+        // Providers that stream deltas without a final tool_call still need execution.
+        for (const call of pendingToolCalls.values()) {
+          if (call.name && !toolCalls.some((t) => t.id === call.id)) {
+            toolCalls.push(call)
+          }
+        }
+        pendingToolCalls.clear()
         return 'complete'
       }
       })
@@ -466,9 +500,11 @@ async function runSubagentImpl(options: SubagentOptions): Promise<SubagentOutcom
       return finalizeSubagentOutcome(options, { ok: true, report, steps })
     }
 
-    messages.push({ role: 'assistant', content: text, toolCalls })
+    // Gemini re-emits tool_call on mid-stream arg updates; last-wins-by-id like the parent loop.
+    const uniqueToolCalls = dedupeToolCalls(toolCalls)
+    messages.push({ role: 'assistant', content: text, toolCalls: uniqueToolCalls })
 
-    for (const rawCall of toolCalls) {
+    for (const rawCall of uniqueToolCalls) {
       if (options.signal.aborted) break
       const call = withRepairedArguments(rawCall)
       options.emit?.({
@@ -494,7 +530,8 @@ async function runSubagentImpl(options: SubagentOptions): Promise<SubagentOutcom
           depth: options.depth + 1,
           // Allowlist is the hard gate; use agent mode so Ask does not deny remaining tools.
           // Diagnostics is already stripped from the allowlist when parentMode is ask.
-          agentMode: 'agent'
+          agentMode: 'agent',
+          runDir: options.runDir
         })
         content = result.content
         ok = result.ok

@@ -58,4 +58,12 @@ describe('streamRetry', () => {
     await done
     vi.useRealTimers()
   })
+
+  it('sleepStreamRetryBackoff throws when aborted', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    await expect(sleepStreamRetryBackoff(controller.signal)).rejects.toMatchObject({
+      name: 'AbortError'
+    })
+  })
 })

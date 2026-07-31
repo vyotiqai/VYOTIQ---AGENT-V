@@ -48,6 +48,7 @@ import {
   subagentContextUsageFromEvent,
   summarizeContextUsageFromEvents
 } from '@shared/utils/contextUsage'
+import { recordUiResume, recordUiSuspendSkip } from './chatUiPerf'
 
 /** A sub-agent's progress is a live view, not a log; keep the recent tail. */
 const CANCEL_RECOVERY_POLL_MS = 500
@@ -705,6 +706,8 @@ export function createChatStreamController(
   let uiSuspended = false
   /** True after stream events were dropped while suspended — needs disk catch-up. */
   let needsUiCatchUp = false
+  /** Bumped on suspend / new resume so in-flight catch-up cannot unsuspend stale work. */
+  let uiResumeGeneration = 0
   // A run is reused across turns, so runId alone cannot separate the live turn from a
   // prior one still draining. Events carry the invoke that produced them.
   let activeInvokeId: number | null = null
@@ -1068,6 +1071,8 @@ export function createChatStreamController(
     if (suspended) {
       discardPendingStreamPatches()
       uiSuspended = true
+      // Invalidate any in-flight resume so catch-up cannot clear a later suspend.
+      uiResumeGeneration += 1
       // needsUiCatchUp is set only when stream events are skipped while suspended.
     } else {
       uiSuspended = false
@@ -1075,14 +1080,14 @@ export function createChatStreamController(
   }
 
   /** Force-reload transcript while preserving live running state (after UI suspend). */
-  const catchUpUiFromDisk = async (id: string): Promise<void> => {
-    if (closedRuns.has(id) || disposed) return
+  const catchUpUiFromDisk = async (id: string): Promise<boolean> => {
+    if (closedRuns.has(id) || disposed) return false
     let liveInvokeId: number | null = null
     let stillActive = false
     let pendingFromMain: { id: string; preview: string }[] = []
     if (window.vyotiq?.listActiveRuns) {
       const active = await window.vyotiq.listActiveRuns()
-      if (closedRuns.has(id) || disposed) return
+      if (closedRuns.has(id) || disposed) return false
       if (active.ok) {
         const live = active.data.find((entry) => entry.runId === id)
         stillActive = Boolean(live)
@@ -1092,22 +1097,22 @@ export function createChatStreamController(
     } else {
       stillActive = state.running || state.pendingRun
     }
-    if (!window.vyotiq?.loadRun) return
+    if (!window.vyotiq?.loadRun) return false
     const res = await window.vyotiq.loadRun(workspacePath, id)
-    if (closedRuns.has(id) || disposed) return
+    if (closedRuns.has(id) || disposed) return false
     if (!res.ok) {
       logger.warn('catchUpUiFromDisk loadRun failed', {
         scope: 'chat',
         correlationId: id,
         err: toLogErr(res.error)
       })
-      return
+      return false
     }
     let events: PersistedEvent[] = []
     let eventsLoadError: string | null = null
     if (window.vyotiq.loadRunEvents) {
       const eventsRes = await window.vyotiq.loadRunEvents(workspacePath, id)
-      if (closedRuns.has(id) || disposed) return
+      if (closedRuns.has(id) || disposed) return false
       if (eventsRes.ok) events = eventsRes.data
       else eventsLoadError = eventsRes.error
     }
@@ -1140,17 +1145,35 @@ export function createChatStreamController(
       ...(eventsLoadError ? { error: eventsLoadError } : {})
     })
     if (!stillActive) onTerminal?.()
+    return true
   }
 
   const resumeUiIfNeeded = async (): Promise<void> => {
     if (disposed) return
     const hadCatchUp = needsUiCatchUp
-    setUiSuspended(false)
+    if (!hadCatchUp) {
+      setUiSuspended(false)
+      recordUiResume(false)
+      return
+    }
+    // Stay suspended until disk catch-up finishes so live events cannot apply
+    // and then be clobbered by a stale hydrateFromDisk patch. One pass only:
+    // a live stream during await would otherwise loop forever.
+    const gen = ++uiResumeGeneration
+    recordUiResume(true)
     needsUiCatchUp = false
-    if (!hadCatchUp) return
     const id = runId ?? contentRunId
-    if (!id) return
-    await catchUpUiFromDisk(id)
+    const ok = id ? await catchUpUiFromDisk(id) : true
+    if (disposed || gen !== uiResumeGeneration) return
+    if (!ok) {
+      // Keep suspended catch-up pending so a later resume can retry.
+      needsUiCatchUp = true
+      return
+    }
+    // Deltas skipped during catch-up are not on this disk snapshot; clear the
+    // flag so we unsuspend and continue from the live stream afterward.
+    needsUiCatchUp = false
+    setUiSuspended(false)
   }
 
   const handleEvent = (event: AgentEvent): void => {
@@ -1170,6 +1193,7 @@ export function createChatStreamController(
 
     if (uiSuspended && !UI_SUSPEND_ALLOWED_EVENTS.has(event.type)) {
       needsUiCatchUp = true
+      recordUiSuspendSkip()
       return
     }
 
@@ -1865,6 +1889,11 @@ export function createChatStreamController(
       // Main already marked the turn complete while the renderer still shows
       // running — convert the optimistic follow-up into an incremental chatStart.
       if (/not active/i.test(res.error)) {
+        // Mirror send() preflight so a prior terminal ignore flag cannot drop the new invoke.
+        ignoreStreamEvents = false
+        if (activeInvokeId != null) supersededInvokeIds.add(activeInvokeId)
+        activeInvokeId = null
+        turnSeq += 1
         patch({
           error: null,
           pendingRun: true,
@@ -2173,6 +2202,8 @@ export function createChatStreamController(
     if (closedRuns.has(id) || disposed) return
     runId = id
     contentRunId = id
+    // Live reattach must accept new events even if a prior terminal set ignoreStreamEvents.
+    ignoreStreamEvents = false
     if (liveInvokeId != null) activeInvokeId = liveInvokeId
     const hydratedPending: PendingFollowUpState[] =
       pendingFromMain.length > 0
@@ -2300,7 +2331,12 @@ export function createChatStreamController(
     requestId: string,
     decision: ToolApprovalDecision
   ): Promise<void> => {
-    const res = await window.vyotiq?.respondToolApproval?.(requestId, decision)
+    if (!runId) {
+      const message = 'No active run for tool approval.'
+      patch({ error: message })
+      throw new Error(message)
+    }
+    const res = await window.vyotiq?.respondToolApproval?.(requestId, decision, runId)
     if (!res) {
       const message = 'Tool approval is unavailable.'
       logger.warn('Tool approval response unavailable', { scope: 'chat' })
@@ -2356,7 +2392,12 @@ export function createChatStreamController(
   }
 
   const respondToQuestion = async (requestId: string, answers: string[]): Promise<void> => {
-    const res = await window.vyotiq?.respondAgentQuestion?.(requestId, answers)
+    if (!runId) {
+      const message = 'No active run for question response.'
+      patch({ error: message })
+      throw new Error(message)
+    }
+    const res = await window.vyotiq?.respondAgentQuestion?.(requestId, answers, runId)
     if (!res) {
       const message = 'Question response is unavailable.'
       logger.warn('Agent question response unavailable', { scope: 'chat' })

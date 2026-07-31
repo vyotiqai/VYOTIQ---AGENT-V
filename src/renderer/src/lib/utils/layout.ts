@@ -15,20 +15,32 @@ export const CHAT_SIDE_RAIL_WIDTH_PX = 40
 export const CHAT_SIDE_RAIL_WIDTH = 'w-10'
 
 /**
- * Shared shell for docked right chat panels.
- * `pr-10` clears the floating side rail so headers/body are not clipped.
+ * Shared shell for docked right chat panels (width applied via inline style).
+ * No `pr-10`: the floating side rail is hidden while the dock is open.
  * `min-w-0` lets the flex child shrink instead of overflowing the chat row.
  */
 export const CHAT_RIGHT_PANEL =
-  'flex h-full min-h-0 w-[min(42vw,480px)] min-w-0 shrink-0 flex-col overflow-hidden border-l border-border/50 bg-bg pr-10'
+  'flex h-full min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-l border-border/50 bg-bg'
 
-/** Expanded dock width — capped so a usable chat column remains at 1024px. */
+/** Minimum chat column width reserved when clamping the side dock. */
 export const CHAT_COLUMN_MIN_USABLE_PX = 360
-export const CHAT_RIGHT_PANEL_EXPANDED =
-  `flex h-full min-h-0 w-[min(70vw,720px,calc(100vw-${CHAT_SIDE_RAIL_WIDTH_PX}px-${CHAT_COLUMN_MIN_USABLE_PX}px))] min-w-0 shrink-0 flex-col overflow-hidden border-l border-border/50 bg-bg pr-10`
 
-/** localStorage key for right-dock expanded width preference. */
+/** Default / clamp bounds for the right dock (px). */
+export const DOCK_WIDTH_DEFAULT_PX = 480
+export const DOCK_WIDTH_MIN_PX = 280
+export const DOCK_WIDTH_MAX_PX = 960
+
+/**
+ * localStorage key for immersive dock mode (unified Agent + panel tabs).
+ * Legacy values meant “wide side dock”; readers treat `'1'` as immersive.
+ */
 export const DOCK_EXPANDED_KEY = 'vyotiq.dockExpanded'
+
+/** localStorage key for which immersive tab is focused (`agent` or a panel id). */
+export const IMMERSIVE_TAB_KEY = 'vyotiq.immersiveTab'
+
+/** localStorage key for right-dock width in px. */
+export const DOCK_WIDTH_KEY = 'vyotiq.dockWidth'
 
 /** Shared max width for chat column content (messages + composer). */
 export const CHAT_COLUMN_MAX = 'max-w-[840px]'
@@ -119,6 +131,8 @@ export const FLOATING_CHROME_SHADOW_BOTTOM =
 
 /** App chrome dimensions — sidebar header row aligns with title bar height. */
 export const SIDEBAR_WIDTH_PX = 220
+export const SIDEBAR_WIDTH_MIN_PX = 180
+export const SIDEBAR_WIDTH_MAX_PX = 420
 export const SIDEBAR_COLLAPSED_WIDTH_PX = 44
 /** Wider collapsed rail on macOS so the toggle clears traffic lights. */
 export const SIDEBAR_COLLAPSED_WIDTH_DARWIN_PX = 72
@@ -127,9 +141,9 @@ export const TITLE_BAR_HEIGHT_PX = 36
 /**
  * Width class names must be complete static strings so Tailwind can emit them.
  * Template-interpolated `w-[${n}px]` is invisible to the scanner and never ships.
+ * Expanded desktop width is applied via inline style so it can be drag-resized.
  */
 export const SIDEBAR_WIDTH = 'w-[min(220px,92vw)]'
-export const SIDEBAR_WIDTH_DESKTOP = 'w-[220px]'
 export const SIDEBAR_WIDTH_COLLAPSED = 'w-[44px]'
 export const SIDEBAR_WIDTH_COLLAPSED_DARWIN = 'w-[72px]'
 
@@ -143,6 +157,9 @@ export const SIDEBAR_SECTION_LABEL =
 /** localStorage key for desktop sidebar collapse preference. */
 export const SIDEBAR_COLLAPSED_KEY = 'vyotiq.sidebarCollapsed'
 
+/** localStorage key for desktop sidebar width in px. */
+export const SIDEBAR_WIDTH_KEY = 'vyotiq.sidebarWidth'
+
 /** localStorage key for chat agent-browser panel open preference. */
 export const BROWSER_PANEL_OPEN_KEY = 'vyotiq.browserPanelOpen'
 
@@ -151,6 +168,29 @@ export const RIGHT_PANEL_KEY = 'vyotiq.rightPanel'
 
 export type ChatRightPanelId = 'browser' | 'terminal' | 'changes' | 'plan' | 'pr'
 
+/** Immersive unified-tab id for the Agent (timeline + composer) view. */
+export type DockImmersiveTabId = 'agent' | ChatRightPanelId
+
 /** Shared content shell inside the right dock (parent owns CHAT_RIGHT_PANEL + tab bar). */
 export const CHAT_RIGHT_PANEL_BODY =
   'flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden'
+
+/** Clamp dock width so a usable chat column remains. */
+export function clampDockWidthPx(
+  width: number,
+  viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280
+): number {
+  const maxByViewport = Math.max(
+    DOCK_WIDTH_MIN_PX,
+    Math.min(DOCK_WIDTH_MAX_PX, viewportWidth - CHAT_COLUMN_MIN_USABLE_PX)
+  )
+  return Math.min(maxByViewport, Math.max(DOCK_WIDTH_MIN_PX, Math.round(width)))
+}
+
+/** Clamp expanded sidebar width. */
+export function clampSidebarWidthPx(width: number): number {
+  return Math.min(
+    SIDEBAR_WIDTH_MAX_PX,
+    Math.max(SIDEBAR_WIDTH_MIN_PX, Math.round(width))
+  )
+}

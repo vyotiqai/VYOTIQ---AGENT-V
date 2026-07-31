@@ -118,7 +118,9 @@ export function ensureHomeWorkspace(state: WorkspacesState): WorkspacesState {
   let next = registerWorkspaceId(repaired, root)
   const alreadyOpen = Boolean(findOpenPath(next, root))
   if (!alreadyOpen) {
-    interruptOrphanRuns([root])
+    void interruptOrphanRuns([root]).catch((err) => {
+      logger.warn('Failed to interrupt orphan runs for home workspace', { scope: 'workspace', err })
+    })
   }
   next = {
     ...touchRecent(next, root),
@@ -407,7 +409,7 @@ export function getWorkspaces(): WorkspacesState {
   return readWorkspacesState()
 }
 
-export function interruptOrphanRunsForWorkspaces(state: WorkspacesState): number {
+export async function interruptOrphanRunsForWorkspaces(state: WorkspacesState): Promise<number> {
   const paths = dedupeRecent([...state.openPaths, ...state.recentPaths])
   return interruptOrphanRuns(paths)
 }
@@ -440,7 +442,7 @@ export async function addWorkspace(
   // Only sweep crash orphans when first opening a workspace — re-activating an
   // already-open tab must not cancel in-flight runs (also guarded by isActive).
   if (!alreadyOpen) {
-    interruptOrphanRuns([root])
+    await interruptOrphanRuns([root])
   }
 
   const existingOpen = findOpenPath(state, root)

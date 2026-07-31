@@ -64,7 +64,8 @@ function Harness({
   workspacePath?: string | null
   onOpenChanges?: () => void
 }) {
-  const chrome = useGitChrome(workspacePath, 0)
+  // Non-zero revision skips the production startup defer (revision === 0).
+  const chrome = useGitChrome(workspacePath, 1)
   return (
     <>
       <GitChangePills chrome={chrome} onOpenChanges={onOpenChanges} />

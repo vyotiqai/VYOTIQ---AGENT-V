@@ -13,6 +13,9 @@ beforeEach(() => {
     localStorage.removeItem('vyotiq.rightPanel')
     localStorage.removeItem('vyotiq.browserRecents')
     localStorage.removeItem('vyotiq.dockExpanded')
+    localStorage.removeItem('vyotiq.immersiveTab')
+    localStorage.removeItem('vyotiq.dockWidth')
+    localStorage.removeItem('vyotiq.sidebarWidth')
   } catch {
     /* ignore */
   }
@@ -114,7 +117,8 @@ describe('ChatView composer placement', () => {
     fireEvent.click(screen.getByRole('button', { name: /Show browser panel/i }))
     expect(document.querySelector('[data-agent-browser-panel]')).toBeTruthy()
     expect(document.querySelector('[data-agent-browser-viewport]')).toBeTruthy()
-    expect(document.querySelector('[data-chat-side-rail]')).toBeTruthy()
+    // Dock open ? side rail hidden; dock tabs own navigation.
+    expect(document.querySelector('[data-chat-side-rail]')).toBeNull()
     expect(screen.getByText('No page loaded')).toBeTruthy()
     expect(
       screen.getByText(/Enter a URL above, or ask the agent to open a page/i)
@@ -131,17 +135,18 @@ describe('ChatView composer placement', () => {
   it('closes one dock tab without clearing the remaining tabs', () => {
     render(<ChatView {...baseProps} items={[]} />)
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
-    fireEvent.click(screen.getByRole('button', { name: /Show changes panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Open panel/i }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Changes/i }))
     expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
     expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^Terminal$/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^± Changes$/i })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Terminal$/i })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Changes$/i })).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: /Close ± Changes/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Close Changes/i }))
     expect(document.querySelector('[data-right-dock]')).toBeTruthy()
     expect(document.querySelector('[data-changes-panel]')).toBeNull()
     expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^Terminal$/i })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Terminal$/i })).toBeTruthy()
   })
 
   it('switches docked panels from the side rail', () => {
@@ -149,16 +154,19 @@ describe('ChatView composer placement', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
     expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-chat-side-rail]')).toBeNull()
     expect(screen.getByText('No terminal')).toBeTruthy()
-    // Session strip: New terminal + session-list toggle (expand lives on DockTabBar).
+    // Session strip: New terminal only until a session exists; expand lives on DockTabBar.
     expect(screen.getByRole('button', { name: /New terminal/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Show terminal list|Hide terminal list/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /terminal list/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Maximize terminal/i })).toBeNull()
     expect(screen.queryByText(/Agent commands/i)).toBeNull()
     expect(screen.queryByRole('button', { name: /Split terminal/i })).toBeNull()
     expect(screen.getByRole('button', { name: /Expand panel/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Open panel/i })).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: /Show changes panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Open panel/i }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Changes/i }))
     expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
     // Keep-alive: prior panels stay mounted but hidden.
     expect(
@@ -170,8 +178,8 @@ describe('ChatView composer placement', () => {
     expect(screen.getByText('No changes yet')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /files panel/i })).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: /^Hide changes panel$/i }))
-    // Closing Changes via the rail leaves Terminal mounted.
+    fireEvent.click(screen.getByRole('button', { name: /Close Changes/i }))
+    // Closing Changes via the tab leaves Terminal mounted.
     expect(document.querySelector('[data-changes-panel]')).toBeNull()
     expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
     expect(document.querySelector('[data-right-dock]')).toBeTruthy()
@@ -214,7 +222,9 @@ describe('ChatView composer placement', () => {
     render(<ChatView {...baseProps} items={[]} />)
 
     expect(document.querySelector('[data-plan-panel]')).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Hide plan panel/i })).toBeTruthy()
+    expect(document.querySelector('[data-chat-side-rail]')).toBeNull()
+    expect(screen.getByRole('tab', { name: /^Plan$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Close Plan/i })).toBeTruthy()
   })
 
   it('does not steal Plan when browser opens on a rising edge', () => {
@@ -303,26 +313,51 @@ describe('ChatView composer placement', () => {
     expect(document.querySelector('[data-transcript-scroll]')?.className).toMatch(/pr-10/)
   })
 
-  it('keeps open right panels clear of the floating rail', () => {
-    render(<ChatView {...baseProps} items={[]} />)
+  it('keeps open right panels without reserving side-rail padding', () => {
+    render(
+      <ChatView
+        {...baseProps}
+        items={[
+          {
+            kind: 'message',
+            id: 'm1',
+            role: 'user',
+            content: 'hello',
+            at: '2024-01-01T00:00:00.000Z'
+          }
+        ]}
+      />
+    )
     fireEvent.click(screen.getByRole('button', { name: /Show plan panel/i }))
     const dock = document.querySelector('[data-right-dock]')
-    expect(dock?.className).toMatch(/pr-10/)
+    expect(dock?.className).not.toMatch(/pr-10/)
     expect(dock?.className).toMatch(/min-w-0/)
+    expect(document.querySelector('[data-chat-side-rail]')).toBeNull()
     expect(document.querySelector('[data-dock-tab-bar]')).toBeTruthy()
     expect(document.querySelector('[data-plan-panel]')).toBeTruthy()
+    // Agent column must drop rail inset once the floating rail is hidden.
+    expect(document.querySelector('[data-composer-dock]')?.className).not.toMatch(/pr-10/)
+    expect(document.querySelector('[data-transcript-scroll]')?.className).not.toMatch(/pr-10/)
   })
 
-  it('switches panels via the side rail while keeping prior panels mounted', () => {
+  it('pads the empty hero shell for the floating side rail', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+    const hero = document.querySelector('[role="status"]')
+    expect(hero?.className).toMatch(/pr-10/)
+    expect(document.querySelector('[data-chat-side-rail]')).toBeTruthy()
+  })
+
+  it('switches panels via dock tabs while keeping prior panels mounted', () => {
     render(<ChatView {...baseProps} items={[]} />)
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
-    fireEvent.click(screen.getByRole('button', { name: /Show changes panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Open panel/i }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Changes/i }))
     expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
     expect(document.querySelector('[data-dock-tab-bar]')).toBeTruthy()
     // Multi-tab strip keeps both Terminal and Changes.
-    expect(screen.getByRole('button', { name: /^Terminal$/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^± Changes$/i })).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    expect(screen.getByRole('tab', { name: /^Terminal$/i })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Changes$/i })).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: /^Terminal$/i }))
     expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
     expect(
       document.querySelector('[data-terminal-panel]')?.parentElement?.className
@@ -338,19 +373,60 @@ describe('ChatView composer placement', () => {
     fireEvent.click(screen.getByRole('button', { name: /Open panel/i }))
     fireEvent.click(screen.getByRole('menuitem', { name: /Browser/i }))
     expect(document.querySelector('[data-agent-browser-panel]')).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^Terminal$/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^Browser$/i })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Terminal$/i })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Browser$/i })).toBeTruthy()
   })
 
-  it('expands the dock width from the Expand panel control', () => {
+  it('enters immersive unified tabs from Expand panel (not a wider side dock)', () => {
     render(<ChatView {...baseProps} items={[]} />)
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
-    const dock = document.querySelector('[data-right-dock]')
+    const dock = document.querySelector('[data-right-dock]') as HTMLElement | null
     expect(dock?.getAttribute('data-dock-expanded')).toBe('0')
+    expect(dock?.style.width).toBe('480px')
+    expect(document.querySelector('[data-dock-immersive]')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /^Expand panel$/i }))
-    expect(document.querySelector('[data-right-dock]')?.getAttribute('data-dock-expanded')).toBe(
-      '1'
-    )
+    expect(document.querySelector('[data-right-dock]')).toBeNull()
+    const immersive = document.querySelector('[data-dock-immersive]')
+    expect(immersive).toBeTruthy()
+    expect(immersive?.getAttribute('data-dock-expanded')).toBe('1')
+    expect(screen.getByRole('tab', { name: /^Agent$/i })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Terminal$/i })).toBeTruthy()
+    expect(document.querySelector('[data-dock-tab-variant="immersive"]')).toBeTruthy()
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^Collapse panel$/i }))
+    expect(document.querySelector('[data-dock-immersive]')).toBeNull()
+    const restored = document.querySelector('[data-right-dock]') as HTMLElement | null
+    expect(restored).toBeTruthy()
+    expect(restored?.getAttribute('data-dock-expanded')).toBe('0')
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    // Re-expand and switch to Agent
+    fireEvent.click(screen.getByRole('button', { name: /^Expand panel$/i }))
+    fireEvent.click(screen.getByRole('tab', { name: /^Agent$/i }))
+    expect(document.querySelector('[data-immersive-agent]')?.className).toMatch(/\bflex\b/)
+    expect(
+      document.querySelector('[data-terminal-panel]')?.parentElement?.className
+    ).toMatch(/\bhidden\b/)
+  })
+
+  it('collapsing immersive from Agent restores full chat without a side dock', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Expand panel$/i }))
+    fireEvent.click(screen.getByRole('tab', { name: /^Agent$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Collapse panel$/i }))
+    expect(document.querySelector('[data-dock-immersive]')).toBeNull()
+    expect(document.querySelector('[data-right-dock]')).toBeNull()
+    expect(document.querySelector('[data-chat-side-rail]')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Expand panel$/i })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^Expand panel$/i }))
+    expect(document.querySelector('[data-dock-immersive]')).toBeTruthy()
+    expect(document.querySelector('[data-immersive-agent]')?.className).toMatch(/\bflex\b/)
+  })
+
+  it('exposes a drag handle to resize the dock', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    expect(screen.getByRole('separator', { name: /Resize panel/i })).toBeTruthy()
   })
 
   it('opens the pull request panel from the side rail', () => {

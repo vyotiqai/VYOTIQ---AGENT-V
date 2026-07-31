@@ -57,6 +57,11 @@ function NestedToolRow({
         hasBody={hasBody}
         onToggle={() => onToolToggle?.(item.id, !isToolExpanded)}
       />
+      {!hasBody && nested.status === 'running' ? (
+        <div className="border-t border-border/40 bg-surface px-3 py-1.5 text-[11px] text-tertiary">
+          <TextShimmer>Working…</TextShimmer>
+        </div>
+      ) : null}
       {hasBody && isToolExpanded ? (
         <ToolRowOutput
           tool={item.tool}
@@ -177,6 +182,11 @@ export const ToolGroup = memo(function ToolGroup({
           interrupted={isInterrupted}
           onToggle={toggleSingle}
         />
+        {!hasBody && nested.status === 'running' ? (
+          <div className="border-t border-border/40 bg-surface px-3 py-1.5 text-[11px] text-tertiary">
+            <TextShimmer>Working…</TextShimmer>
+          </div>
+        ) : null}
         {hasBody && isToolExpanded ? (
           <ToolRowOutput
             tool={item.tool}
@@ -228,7 +238,18 @@ export const ToolGroup = memo(function ToolGroup({
         <div className="flex flex-col gap-0.5 pl-2">
           {tools.map((item) => {
             const nested = nestedById.get(item.id)
-            if (!nested) return null
+            if (!nested) {
+              return (
+                <div
+                  key={item.id}
+                  className="rounded-md px-2 py-1 text-[12px] text-muted"
+                  data-testid={`tool-group-fallback-${item.id}`}
+                >
+                  {item.tool.name}
+                  {item.tool.status === 'running' ? '…' : ''}
+                </div>
+              )
+            }
             const hasBody = toolHasBody(item.tool, {
               subagent: item.subagent,
               subagentContextUsage: item.subagentContextUsage

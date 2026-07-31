@@ -17,7 +17,8 @@ const MUTATING_GIT_TOOLS = new Set([
   'str_replace',
   'delete',
   'terminal',
-  'memory_write'
+  'memory_write',
+  'git_commit'
 ])
 
 export function useGitRevision(
@@ -28,6 +29,8 @@ export function useGitRevision(
   const [revision, setRevision] = useState(0)
   const wasRunning = useRef(running)
   const mutatingDoneCount = useRef(0)
+  /** Skip the mount bump — useGitStatus already fetches once for the initial path. */
+  const prevPathRef = useRef<string | null | undefined>(undefined)
 
   useEffect(() => {
     if (wasRunning.current && !running) setRevision((value) => value + 1)
@@ -36,6 +39,12 @@ export function useGitRevision(
   }, [running])
 
   useEffect(() => {
+    if (prevPathRef.current === undefined) {
+      prevPathRef.current = workspacePath
+      return
+    }
+    if (prevPathRef.current === workspacePath) return
+    prevPathRef.current = workspacePath
     setRevision((value) => value + 1)
   }, [workspacePath])
 

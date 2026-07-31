@@ -20,16 +20,19 @@ export const PtyListRequestSchema = z.object({
 })
 
 export const PtyIdRequestSchema = z.object({
-  id: z.string().min(1)
+  id: z.string().min(1),
+  workspacePath: z.string().min(1)
 })
 
 export const PtyWriteRequestSchema = z.object({
   id: z.string().min(1),
+  workspacePath: z.string().min(1),
   data: z.string()
 })
 
 export const PtyResizeRequestSchema = z.object({
   id: z.string().min(1),
+  workspacePath: z.string().min(1),
   cols: z.number().int().positive(),
   rows: z.number().int().positive()
 })

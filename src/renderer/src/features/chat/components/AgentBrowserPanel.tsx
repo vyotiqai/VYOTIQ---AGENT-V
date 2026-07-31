@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { cn } from '@renderer/lib/ui/cn'
-import { CHAT_RIGHT_PANEL_BODY, CHAT_SIDE_RAIL_WIDTH_PX } from '@renderer/lib/utils/layout'
+import { CHAT_RIGHT_PANEL_BODY } from '@renderer/lib/utils/layout'
 import type { AgentBrowserState } from '@shared/ipc'
 import {
   clearBrowserRecents,
@@ -31,11 +31,14 @@ export function AgentBrowserPanel({
   className,
   workspacePath,
   activeRunId,
+  visible = true,
   onClose
 }: {
   className?: string
   workspacePath?: string | null
   activeRunId?: string | null
+  /** When false (CSS-hidden dock tab), clear native WebContentsView bounds so the overlay does not paint over other panels. */
+  visible?: boolean
   onClose?: () => void
 }) {
   const [state, setState] = useState<AgentBrowserState>(EMPTY)
@@ -89,6 +92,11 @@ export function AgentBrowserPanel({
   }, [state.url, state.title])
 
   useLayoutEffect(() => {
+    if (!visible) {
+      void window.vyotiq.browserSetBounds?.(null)
+      return undefined
+    }
+
     const el = viewportRef.current
     if (!el) return undefined
 
@@ -97,17 +105,11 @@ export function AgentBrowserPanel({
       if (cancelled) return
       const r = el.getBoundingClientRect()
       if (r.width < 2 || r.height < 2) return
-      // Native WebContentsView paints above the renderer — clamp so bounds never
-      // cover the floating side-rail strip (CSS pr-10 alone is not enough if
-      // layout timing / rounding extends into that zone).
-      const x = Math.round(r.x)
-      const rightLimit = Math.round(window.innerWidth) - CHAT_SIDE_RAIL_WIDTH_PX
-      const width = Math.max(0, Math.min(Math.round(r.width), rightLimit - x))
-      if (width < 2) return
+      // Dock is open ⇒ side rail is hidden; use the viewport box as-is.
       void window.vyotiq.browserSetBounds?.({
-        x,
+        x: Math.round(r.x),
         y: Math.round(r.y),
-        width,
+        width: Math.round(r.width),
         height: Math.round(r.height)
       })
     }
@@ -124,7 +126,7 @@ export function AgentBrowserPanel({
       window.removeEventListener('resize', report)
       void window.vyotiq.browserSetBounds?.(null)
     }
-  }, [])
+  }, [visible])
 
   useEffect(() => {
     if (!menuOpen && !historyOpen) return
@@ -451,20 +453,7 @@ export function AgentBrowserPanel({
           ) : null}
         </div>
 
-        {onClose ? (
-          <button
-            type="button"
-            className="flex size-7 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface-2 hover:text-fg"
-            onClick={onClose}
-            title="Hide browser panel"
-            aria-label="Hide browser panel"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        ) : null}
+        {/* Close lives on the dock tab bar; keep onClose for the overflow menu only. */}
       </div>
 
       {bookmarkBar ? (

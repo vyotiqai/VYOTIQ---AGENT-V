@@ -18,6 +18,18 @@ import { listWorkspaceCommands, resolveWorkspaceCommand } from './workspaceComma
 import { listRuleCommands, resolveRuleCommand } from './ruleCommands'
 import { listMcpCommands, resolveMcpCommand } from './mcp'
 import { runHarnessReviewWithSettings } from '../harnessReviewRun'
+import {
+  LIST_TTL_MS,
+  clearSlashListInflight,
+  getSlashListCacheEntry,
+  getSlashListInflight,
+  invalidateSlashCommandsCache,
+  listCacheKey,
+  setSlashListCacheEntry,
+  setSlashListInflight
+} from './listCache'
+
+export { invalidateSlashCommandsCache } from './listCache'
 
 function marketplaceOverridesFor(
   workspacePath: string | null | undefined
@@ -100,14 +112,34 @@ function mergeByTrigger(groups: SlashCommandDescriptor[][]): SlashCommandDescrip
 export async function listSlashCommands(
   workspacePath?: string | null
 ): Promise<SlashCommandDescriptor[]> {
-  const overrides = marketplaceOverridesFor(workspacePath)
-  const [skills, workspace, rules] = await Promise.all([
-    listSkillCommands(overrides),
-    listWorkspaceCommands(workspacePath ?? null),
-    listRuleCommands(workspacePath ?? null)
-  ])
-  const mcp = listMcpCommands(overrides)
-  return mergeByTrigger([BUILTIN_COMMANDS, workspace, skills, rules, mcp])
+  const key = listCacheKey(workspacePath)
+  const hit = getSlashListCacheEntry(key)
+  if (hit && Date.now() <= hit.expiresAt) {
+    return hit.commands
+  }
+
+  const pending = getSlashListInflight(key)
+  if (pending) return pending
+
+  const run = (async () => {
+    const overrides = marketplaceOverridesFor(workspacePath)
+    const [skills, workspace, rules] = await Promise.all([
+      listSkillCommands(overrides),
+      listWorkspaceCommands(workspacePath ?? null),
+      listRuleCommands(workspacePath ?? null)
+    ])
+    const mcp = listMcpCommands(overrides)
+    const commands = mergeByTrigger([BUILTIN_COMMANDS, workspace, skills, rules, mcp])
+    setSlashListCacheEntry(key, { commands, expiresAt: Date.now() + LIST_TTL_MS })
+    return commands
+  })()
+
+  setSlashListInflight(key, run)
+  try {
+    return await run
+  } finally {
+    clearSlashListInflight(key, run)
+  }
 }
 
 export async function resolveSlashCommand(
@@ -208,6 +240,7 @@ export async function createWorkspaceRule(
     ''
   ].join('\n')
   writeFileSync(absolute, body, 'utf8')
+  invalidateSlashCommandsCache(workspacePath)
 
   try {
     await shell.openPath(absolute)

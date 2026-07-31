@@ -10,7 +10,7 @@ import {
   parseMcpToolName
 } from '../mcp'
 import { resolveEffectiveMcpServers } from '../../marketplace/resolve'
-import { hasMcpOAuthState, hasMcpAuthToken } from '../../settings/secrets'
+import { hasMcpAuthToken, hasMcpOAuthState } from '../../settings/secrets'
 
 function sanitizeTriggerPart(raw: string): string {
   return normalizeTrigger(raw.replace(/__/g, '-'))
@@ -36,6 +36,7 @@ export function listMcpCommands(
     let availability: SlashCommandDescriptor['availability'] = 'ready'
     if (!status?.connected) {
       const isRemote = (server.transport ?? 'stdio') !== 'stdio'
+      // Usable auth only (access token) — a mid-OAuth PKCE blob must stay needs_auth.
       const hasAuth = hasMcpAuthToken(parsed.serverId) || hasMcpOAuthState(parsed.serverId)
       availability = isRemote && !hasAuth ? 'needs_auth' : 'disconnected'
     }

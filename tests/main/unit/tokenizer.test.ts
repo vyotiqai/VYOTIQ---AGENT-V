@@ -2,16 +2,23 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { deflateSync } from 'zlib'
 import {
   countTextTokens,
+  countTextTokensAsync,
+  countTextsTokensAsync,
   encodingForModel,
   resetTokenizerCache
 } from '@main/agent/context/tokenizer'
+import { resetTokenizerPoolForTests } from '@main/agent/context/tokenizerPool'
 import {
   DEFAULT_IMAGE_TOKENS,
   estimateImageTokens,
   imageDimensionsFromDataUrl,
   imageTokensForDimensions
 } from '@main/agent/context/imageTokens'
-import { estimateMessagesTokens, estimateTextTokens } from '@main/agent/context/estimate'
+import {
+  estimateMessagesTokens,
+  estimateMessagesTokensAsync,
+  estimateTextTokens
+} from '@main/agent/context/estimate'
 import type { ModelInfo } from '@shared/ipc'
 
 function model(id: string): ModelInfo {
@@ -81,7 +88,10 @@ function jpegDataUrl(width: number, height: number): string {
 }
 
 describe('countTextTokens', () => {
-  beforeEach(() => resetTokenizerCache())
+  beforeEach(() => {
+    resetTokenizerCache()
+    resetTokenizerPoolForTests()
+  })
 
   it('counts real BPE tokens rather than dividing by four', () => {
     // 11 characters that the heuristic would call 3 tokens.
@@ -106,6 +116,34 @@ describe('countTextTokens', () => {
 
   it('handles unicode without throwing', () => {
     expect(countTextTokens('日本語のテキスト 🎉')).toBeGreaterThan(0)
+  })
+})
+
+describe('countTextTokensAsync', () => {
+  beforeEach(() => {
+    resetTokenizerCache()
+    resetTokenizerPoolForTests()
+  })
+
+  it('matches sync BPE counts (worker or sync fallback)', async () => {
+    const text = 'the quick brown fox jumps over the lazy dog'
+    await expect(countTextTokensAsync(text)).resolves.toBe(countTextTokens(text))
+  })
+
+  it('batches mixed encodings and empties', async () => {
+    const counts = await countTextsTokensAsync([
+      { text: '', encoding: 'o200k_base' },
+      { text: 'hello world', encoding: 'o200k_base' },
+      { text: 'hello world', encoding: 'cl100k_base' }
+    ])
+    expect(counts[0]).toBe(0)
+    expect(counts[1]).toBe(countTextTokens('hello world', 'o200k_base'))
+    expect(counts[2]).toBe(countTextTokens('hello world', 'cl100k_base'))
+  })
+
+  it('uses the large-text heuristic without encoding', async () => {
+    const huge = 'a'.repeat(120_000)
+    await expect(countTextTokensAsync(huge)).resolves.toBe(30_000)
   })
 })
 
@@ -203,9 +241,40 @@ describe('estimateMessagesTokens', () => {
     expect(rich).toBeGreaterThan(bare)
   })
 
+  it('counts tool message content once (not double-counted with toolName)', () => {
+    const body = 'TOOL_BODY_'.repeat(50)
+    const withTool = estimateMessagesTokens([
+      { role: 'tool', toolCallId: 'c1', toolName: 'read', content: body }
+    ])
+    const contentOnly = estimateMessagesTokens([{ role: 'user', content: body }])
+    const nameOnly = estimateMessagesTokens([
+      { role: 'tool', toolCallId: 'c1', toolName: 'read', content: '' }
+    ])
+    // content + toolName, not 2x content + toolName
+    expect(withTool).toBeLessThan(contentOnly * 2)
+    expect(withTool).toBeGreaterThan(contentOnly)
+    expect(withTool).toBeGreaterThan(nameOnly)
+  })
+
   it('selects the encoding from the model', () => {
     const text = 'tokenization differs subtly between encodings'
     expect(estimateTextTokens(text, model('gpt-4'))).toBeGreaterThan(0)
     expect(estimateTextTokens(text, model('gpt-4o'))).toBeGreaterThan(0)
+  })
+
+  it('async estimates match sync for the same messages', async () => {
+    resetTokenizerCache()
+    const messages = [
+      {
+        role: 'assistant' as const,
+        content: 'ok',
+        thinking: 'a long chain of reasoning about the problem',
+        toolCalls: [{ id: 't1', name: 'read', arguments: '{"path":"src/index.ts"}' }]
+      }
+    ]
+    const sync = estimateMessagesTokens(messages, model('gpt-4o'))
+    resetTokenizerCache()
+    const asyncCount = await estimateMessagesTokensAsync(messages, model('gpt-4o'))
+    expect(asyncCount).toBe(sync)
   })
 })

@@ -12,11 +12,13 @@ import {
   hasPendingFollowUps,
   peekFollowUps,
   setStreamInterrupt,
-  chatCancelResult
+  chatCancelResult,
+  tryBeginRunClosing,
+  cancelRun
 } from '@main/agent/runRegistry'
 
 describe('runRegistry listActiveRuns', () => {
-  it('excludes turn-complete entries from listActiveRuns', () => {
+  it('keeps the run listed until clearRunAbort (including turn-complete unwind)', () => {
     resetActiveRunsForTests()
     const runId = 'session-run'
     const first = registerRunAbort(runId, '/ws')
@@ -26,15 +28,21 @@ describe('runRegistry listActiveRuns', () => {
     expect(isActive(runId)).toBe(true)
 
     markRunTurnComplete(runId, first.invokeId)
+    expect(isActive(runId)).toBe(true)
+    expect(listActiveRuns()).toEqual([
+      { runId, workspacePath: '/ws', invokeId: first.invokeId, pendingFollowUps: [] }
+    ])
+
+    // No overlapping invoke while unwinding.
+    const again = registerRunAbort(runId, '/ws')
+    expect(again.invokeId).toBe(first.invokeId)
+
+    clearRunAbort(runId, first.invokeId)
     expect(isActive(runId)).toBe(false)
     expect(listActiveRuns()).toEqual([])
 
     const second = registerRunAbort(runId, '/ws')
-    expect(listActiveRuns()).toEqual([
-      { runId, workspacePath: '/ws', invokeId: second.invokeId, pendingFollowUps: [] }
-    ])
-
-    clearRunAbort(runId, first.invokeId)
+    expect(second.invokeId).not.toBe(first.invokeId)
     expect(listActiveRuns()).toEqual([
       { runId, workspacePath: '/ws', invokeId: second.invokeId, pendingFollowUps: [] }
     ])
@@ -83,6 +91,31 @@ describe('runRegistry follow-ups', () => {
     expect(hasPendingFollowUps(runId)).toBe(false)
   })
 
+  it('rejects enqueue after cancel abort so follow-ups are not ack-then-dropped', () => {
+    resetActiveRunsForTests()
+    const runId = 'abort-reject-follow-up'
+    registerRunAbort(runId, '/ws')
+    expect(cancelRun(runId)).toBe(true)
+    expect(enqueueFollowUp(runId, { role: 'user', content: 'too late' })).toEqual({
+      ok: false,
+      error: 'Run is not active'
+    })
+  })
+
+  it('tryBeginRunClosing drains atomically when a follow-up races the close', () => {
+    resetActiveRunsForTests()
+    const runId = 'close-race'
+    const handle = registerRunAbort(runId, '/ws')
+    expect(tryBeginRunClosing(runId, handle.invokeId)).toBe('closed')
+
+    resetActiveRunsForTests()
+    const handle2 = registerRunAbort(runId, '/ws')
+    enqueueFollowUp(runId, { role: 'user', content: 'steer' })
+    expect(tryBeginRunClosing(runId, handle2.invokeId)).toBe('has_followups')
+    expect(drainFollowUps(runId)).toHaveLength(1)
+    expect(tryBeginRunClosing(runId, handle2.invokeId)).toBe('closed')
+  })
+
   it('preserves follow-ups across markRunTurnComplete and exposes them on listActiveRuns', () => {
     resetActiveRunsForTests()
     const runId = 'preserve-follow-ups'
@@ -98,6 +131,13 @@ describe('runRegistry follow-ups', () => {
     markRunTurnComplete(runId, handle.invokeId)
     // Queue is not wiped by turn-complete (loop drains or cancel clears).
     expect(peekFollowUps(runId)).toHaveLength(1)
-    expect(listActiveRuns()).toEqual([])
+    expect(listActiveRuns()).toEqual([
+      {
+        runId,
+        workspacePath: '/ws',
+        invokeId: handle.invokeId,
+        pendingFollowUps: [{ id: queued.id, preview: 'late steer' }]
+      }
+    ])
   })
 })

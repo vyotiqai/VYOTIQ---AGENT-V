@@ -1,13 +1,42 @@
 import { createHash } from 'crypto'
+import { existsSync, readFileSync } from 'fs'
+import { join } from 'path'
 import type { ModelInfo, ProviderId } from '../../../shared/ipc'
+import { atomicWriteJson } from '../../storage/atomicWrite'
 
 type CacheEntry = {
   models: ModelInfo[]
   expiresAt: number
+  /** Disk catalog age — do not refresh when another key is persisted. */
+  diskSavedAt: number
+}
+
+type DiskFile = {
+  version: 1
+  entries: Record<string, { models: ModelInfo[]; savedAt: number }>
 }
 
 const TTL_MS = 5 * 60 * 1000
+/** Disk catalog reused across process restarts (cold models:list was ~1.5s). */
+const DISK_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
 const cache = new Map<string, CacheEntry>()
+const inflight = new Map<string, Promise<{ models: ModelInfo[]; warning?: string }>>()
+/** Bumped when a new list fetch starts so a slower older fetch cannot overwrite cache. */
+const listGeneration = new Map<string, number>()
+
+let diskPathOverride: string | null = null
+let diskLoaded = false
+
+function bumpModelListGeneration(key: string): number {
+  const next = (listGeneration.get(key) ?? 0) + 1
+  listGeneration.set(key, next)
+  return next
+}
+
+function currentModelListGeneration(key: string): number {
+  return listGeneration.get(key) ?? 0
+}
 
 export function modelCacheKey(
   provider: ProviderId,
@@ -20,7 +49,62 @@ export function modelCacheKey(
   return `${provider}|${baseUrl ?? ''}|${fingerprint}`
 }
 
+function resolveDiskPath(): string | null {
+  if (diskPathOverride) return diskPathOverride
+  try {
+    // Lazy require so unit tests without Electron still work when override is set.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { app } = require('electron') as typeof import('electron')
+    if (!app?.getPath) return null
+    return join(app.getPath('userData'), 'model-catalog-cache.json')
+  } catch {
+    return null
+  }
+}
+
+function ensureDiskLoaded(): void {
+  if (diskLoaded) return
+  diskLoaded = true
+  const path = resolveDiskPath()
+  if (!path || !existsSync(path)) return
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as DiskFile
+    if (raw?.version !== 1 || !raw.entries) return
+    const now = Date.now()
+    for (const [key, entry] of Object.entries(raw.entries)) {
+      if (!entry?.models?.length) continue
+      if (now - entry.savedAt > DISK_TTL_MS) continue
+      cache.set(key, {
+        models: entry.models,
+        expiresAt: now + TTL_MS,
+        diskSavedAt: entry.savedAt
+      })
+    }
+  } catch {
+    /* corrupt cache — ignore */
+  }
+}
+
+function persistDisk(): void {
+  const path = resolveDiskPath()
+  if (!path) return
+  const now = Date.now()
+  const entries: DiskFile['entries'] = {}
+  for (const [key, entry] of cache) {
+    if (!entry.models.length) continue
+    // Preserve each key's original diskSavedAt so writing one provider does not
+    // extend unrelated catalogs past the intended 7-day disk TTL.
+    entries[key] = { models: entry.models, savedAt: entry.diskSavedAt || now }
+  }
+  try {
+    atomicWriteJson(path, { version: 1, entries } satisfies DiskFile)
+  } catch {
+    /* best-effort */
+  }
+}
+
 export function getCachedModels(key: string): ModelInfo[] | null {
+  ensureDiskLoaded()
   const entry = cache.get(key)
   if (!entry) return null
   if (Date.now() > entry.expiresAt) {
@@ -30,14 +114,74 @@ export function getCachedModels(key: string): ModelInfo[] | null {
   return entry.models
 }
 
-export function setCachedModels(key: string, models: ModelInfo[]): void {
-  cache.set(key, { models, expiresAt: Date.now() + TTL_MS })
+export function setCachedModels(key: string, models: ModelInfo[], generation?: number): void {
+  if (generation !== undefined && generation !== currentModelListGeneration(key)) {
+    return
+  }
+  ensureDiskLoaded()
+  const now = Date.now()
+  cache.set(key, { models, expiresAt: now + TTL_MS, diskSavedAt: now })
+  persistDisk()
 }
 
 export function clearModelCache(): void {
   cache.clear()
+  inflight.clear()
+  listGeneration.clear()
+  const path = resolveDiskPath()
+  if (path && existsSync(path)) {
+    try {
+      atomicWriteJson(path, { version: 1, entries: {} } satisfies DiskFile)
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 export function clearModelCacheKey(key: string): void {
   cache.delete(key)
+  inflight.delete(key)
+  bumpModelListGeneration(key)
+  persistDisk()
+}
+
+/** Coalesce concurrent listProviderModels for the same cache key. */
+export function getModelListInflight(
+  key: string
+): Promise<{ models: ModelInfo[]; warning?: string }> | undefined {
+  return inflight.get(key)
+}
+
+export function setModelListInflight(
+  key: string,
+  promise: Promise<{ models: ModelInfo[]; warning?: string }>
+): void {
+  inflight.set(key, promise)
+}
+
+export function clearModelListInflight(key: string, promise: Promise<unknown>): void {
+  if (inflight.get(key) === promise) inflight.delete(key)
+}
+
+/** Start a new catalog fetch generation; returns the token to pass to setCachedModels. */
+export function beginModelListFetch(key: string): number {
+  return bumpModelListGeneration(key)
+}
+
+/** @internal */
+export function setModelCacheDiskPathForTests(path: string | null): void {
+  diskPathOverride = path
+  diskLoaded = false
+  cache.clear()
+  inflight.clear()
+  listGeneration.clear()
+}
+
+/** @internal */
+export function resetModelCacheForTests(): void {
+  diskPathOverride = null
+  diskLoaded = false
+  cache.clear()
+  inflight.clear()
+  listGeneration.clear()
 }

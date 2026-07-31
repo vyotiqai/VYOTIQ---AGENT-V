@@ -7,6 +7,36 @@ import { invalidateListRunsCache } from './runListCache'
 
 const STATUS_FLUSH_MS = 250
 
+type StatusWriteQueueStats = {
+  enqueued: number
+  coalesced: number
+  flushed: number
+  immediateSync: number
+  pendingDirs: number
+}
+
+let statusStats: StatusWriteQueueStats = {
+  enqueued: 0,
+  coalesced: 0,
+  flushed: 0,
+  immediateSync: 0,
+  pendingDirs: 0
+}
+
+export function getStatusWriteQueueStats(): StatusWriteQueueStats {
+  return { ...statusStats, pendingDirs: pendingByDir.size }
+}
+
+export function resetStatusWriteQueueStats(): void {
+  statusStats = {
+    enqueued: 0,
+    coalesced: 0,
+    flushed: 0,
+    immediateSync: 0,
+    pendingDirs: 0
+  }
+}
+
 type Pending = {
   patch: Partial<RunStatus>
   /** Invalidate list-runs cache on flush when true. */
@@ -29,6 +59,12 @@ function shouldInvalidateList(patch: Partial<RunStatus>): boolean {
   if (patch.goal !== undefined) return true
   if (patch.status !== undefined && patch.status !== 'running') return true
   return false
+}
+
+function mergePendingPatch(dir: string, patch: Partial<RunStatus>, invalidateList: boolean): void {
+  const entry = ensurePending(dir)
+  entry.patch = { ...entry.patch, ...patch }
+  if (invalidateList) entry.invalidateList = true
 }
 
 async function readStatusFile(path: string): Promise<RunStatus> {
@@ -67,9 +103,13 @@ async function flushDir(dir: string): Promise<void> {
   entry.patch = {}
   entry.invalidateList = false
 
+  if (Object.keys(patch).length === 0) {
+    await entry.chain
+    return
+  }
+
   const path = join(dir, 'status.json')
-  const run = entry.chain.then(async () => {
-    if (Object.keys(patch).length === 0) return
+  const flushOp = entry.chain.then(async () => {
     const current = await readStatusFile(path)
     const next: RunStatus = {
       ...current,
@@ -81,7 +121,10 @@ async function flushDir(dir: string): Promise<void> {
       const workspacePath = next.workspacePath ?? current.workspacePath
       if (workspacePath) invalidateListRunsCache(workspacePath)
     }
-  }).catch((err) => {
+  })
+
+  entry.chain = flushOp.catch((err) => {
+    mergePendingPatch(dir, patch, invalidateList)
     logger.warn('Failed to flush status.json', {
       scope: 'state',
       correlationId: basename(dir),
@@ -89,13 +132,16 @@ async function flushDir(dir: string): Promise<void> {
     })
   })
 
-  entry.chain = run
-  await run
-  if (pendingByDir.get(dir) === entry && Object.keys(entry.patch).length === 0) {
-    // Keep entry if another patch arrived; otherwise drop when chain settles.
-    if (entry.timer == null) {
-      pendingByDir.delete(dir)
+  try {
+    await flushOp
+    statusStats.flushed += 1
+    if (pendingByDir.get(dir) === entry && Object.keys(entry.patch).length === 0) {
+      if (entry.timer == null) {
+        pendingByDir.delete(dir)
+      }
     }
+  } catch (err) {
+    throw err
   }
 }
 
@@ -114,18 +160,25 @@ function ensurePending(dir: string): Pending {
  */
 export function enqueueStatusPatch(dir: string, patch: Partial<RunStatus>): void {
   const entry = ensurePending(dir)
+  const hadPendingKeys = Object.keys(entry.patch).length > 0
+  statusStats.enqueued += 1
+  if (hadPendingKeys || entry.timer) statusStats.coalesced += 1
   entry.patch = { ...entry.patch, ...patch }
   if (shouldInvalidateList(patch)) entry.invalidateList = true
 
   if (isTerminalPatch(patch)) {
-    void flushDir(dir)
+    void flushDir(dir).catch(() => {
+      // flushDir logs and re-merges pending patches
+    })
     return
   }
 
   if (entry.timer) return
   entry.timer = setTimeout(() => {
     entry.timer = null
-    void flushDir(dir)
+    void flushDir(dir).catch(() => {
+      // flushDir logs and re-merges pending patches
+    })
   }, STATUS_FLUSH_MS)
 }
 
@@ -135,40 +188,68 @@ export async function flushStatusWrites(dir?: string): Promise<void> {
     await flushDir(dir)
     return
   }
-  await Promise.all([...pendingByDir.keys()].map((d) => flushDir(d)))
+  const errors: unknown[] = []
+  await Promise.all(
+    [...pendingByDir.keys()].map((d) =>
+      flushDir(d).catch((err) => {
+        errors.push(err)
+      })
+    )
+  )
+  if (errors.length > 0) throw errors[0]
 }
 
-/** Sync immediate write — used by createRun / orphan interrupt / tests that need disk now. */
-export function writeStatusImmediateSync(
+/** Immediate write — serialized through the per-dir chain (createRun / orphan interrupt). */
+export async function writeStatusImmediate(
   dir: string,
   patch: Partial<RunStatus>,
   writeSync: (path: string, next: RunStatus) => void,
   readSync: (path: string) => RunStatus
-): void {
-  const entry = pendingByDir.get(dir)
-  if (entry?.timer) {
+): Promise<void> {
+  statusStats.immediateSync += 1
+  const entry = ensurePending(dir)
+  if (entry.timer) {
     clearTimeout(entry.timer)
     entry.timer = null
   }
-  const merged = { ...(entry?.patch ?? {}), ...patch }
-  if (entry) {
-    entry.patch = {}
-    entry.invalidateList = false
-  }
+  const mergedPatch = { ...entry.patch, ...patch }
+  const invalidateList =
+    entry.invalidateList || shouldInvalidateList(patch) || shouldInvalidateList(mergedPatch)
+  entry.patch = {}
+  entry.invalidateList = false
+
   const path = join(dir, 'status.json')
-  const current = readSync(path)
-  const next: RunStatus = {
-    ...current,
-    ...merged,
-    updatedAt: new Date().toISOString()
+  const writeOp = entry.chain.then(() => {
+    const current = readSync(path)
+    const next: RunStatus = {
+      ...current,
+      ...mergedPatch,
+      updatedAt: new Date().toISOString()
+    }
+    writeSync(path, next)
+    if (invalidateList) {
+      const workspacePath = next.workspacePath ?? current.workspacePath
+      if (workspacePath) invalidateListRunsCache(workspacePath)
+    }
+  })
+
+  entry.chain = writeOp.catch((err) => {
+    mergePendingPatch(dir, mergedPatch, invalidateList)
+    logger.warn('Failed immediate status write', {
+      scope: 'state',
+      correlationId: basename(dir),
+      err
+    })
+  })
+
+  await writeOp
+  if (pendingByDir.get(dir) === entry && Object.keys(entry.patch).length === 0 && entry.timer == null) {
+    pendingByDir.delete(dir)
   }
-  writeSync(path, next)
-  if (shouldInvalidateList(merged) || shouldInvalidateList(patch)) {
-    const workspacePath = next.workspacePath ?? current.workspacePath
-    if (workspacePath) invalidateListRunsCache(workspacePath)
-  }
-  pendingByDir.delete(dir)
 }
+
+/** @deprecated Use writeStatusImmediate — kept for tests that need the old name. */
+export const writeStatusImmediateSync = writeStatusImmediate
 
 /** @internal */
 export function resetStatusWriteQueueForTests(): void {
@@ -176,9 +257,15 @@ export function resetStatusWriteQueueForTests(): void {
     if (entry.timer) clearTimeout(entry.timer)
   }
   pendingByDir.clear()
+  resetStatusWriteQueueStats()
 }
 
 /** @internal */
 export function statusWriteQueueSizeForTests(): number {
   return pendingByDir.size
+}
+
+/** @internal */
+export function pendingPatchForTests(dir: string): Partial<RunStatus> {
+  return { ...(pendingByDir.get(dir)?.patch ?? {}) }
 }

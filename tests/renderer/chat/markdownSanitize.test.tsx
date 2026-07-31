@@ -4,7 +4,10 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { cleanup, render, waitFor } from '@testing-library/react'
 import { MarkdownContent } from '@renderer/lib/ui/MarkdownContent'
-import { markdownSanitizeSchema } from '@renderer/lib/markdown/markdownSanitize'
+import {
+  markdownSanitizeSchema,
+  sanitizeHighlightedHtml
+} from '@renderer/lib/markdown/markdownSanitize'
 
 afterEach(() => {
   cleanup()
@@ -114,6 +117,43 @@ describe('markdown sanitization — schema', () => {
   it('only allows language-* class names on code', () => {
     const codeAttributes = (markdownSanitizeSchema.attributes as Record<string, unknown[]>).code
     expect(codeAttributes.includes('className')).toBe(false)
+  })
+})
+
+describe('sanitizeHighlightedHtml', () => {
+  it('keeps class and style used by Shiki spans', () => {
+    const out = sanitizeHighlightedHtml(
+      '<pre class="shiki"><code><span class="line" style="color:#fff">x</span></code></pre>'
+    )
+    expect(out).toContain('class="shiki"')
+    expect(out).toContain('class="line"')
+    expect(out).toContain('style="color:#fff"')
+  })
+
+  it('strips event-handler attributes on allowed tags', () => {
+    const out = sanitizeHighlightedHtml(
+      '<span class="tok" onclick="alert(1)" onmouseover="alert(2)">hi</span>'
+    )
+    expect(out).toBe('<span class="tok">hi</span>')
+    expect(out).not.toContain('onclick')
+    expect(out).not.toContain('onmouseover')
+  })
+
+  it('drops javascript: hrefs on anchors', () => {
+    const out = sanitizeHighlightedHtml('<a href="javascript:alert(1)">go</a>')
+    expect(out).toBe('<a>go</a>')
+  })
+
+  it('removes disallowed tags entirely (open + close)', () => {
+    const out = sanitizeHighlightedHtml('<div>ok<iframe src="x"></iframe></div>')
+    expect(out).toBe('<div>ok</div>')
+  })
+
+  it('drops dangerous style payloads', () => {
+    const out = sanitizeHighlightedHtml(
+      '<span style="width:expression(alert(1))">x</span>'
+    )
+    expect(out).toBe('<span>x</span>')
   })
 })
 

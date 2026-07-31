@@ -16,7 +16,6 @@ vi.mock('electron', () => ({
   }
 }))
 
-import { flushEventAppends } from '@main/agent/eventAppendQueue'
 import {
   appendMessage,
   listRuns,
@@ -148,9 +147,8 @@ describe('listRuns / interruptOrphanRuns', () => {
       workspacePath: workspace
     })
 
-    const count = interruptOrphanRuns([workspace])
+    const count = await interruptOrphanRuns([workspace])
     expect(count).toBe(1)
-    await flushEventAppends(wsDir)
 
     const wsStatus = JSON.parse(readFileSync(join(wsDir, 'status.json'), 'utf8')) as {
       status: string
@@ -192,9 +190,8 @@ describe('listRuns / interruptOrphanRuns', () => {
       }
     ])
 
-    const count = interruptOrphanRuns([workspace])
+    const count = await interruptOrphanRuns([workspace])
     expect(count).toBe(1)
-    await flushEventAppends(dir)
 
     const messages = loadMessages(workspace, runId)
     expect(messages).toContainEqual({
@@ -238,9 +235,8 @@ describe('listRuns / interruptOrphanRuns', () => {
       { id: '2', content: 'Audit API routes', status: 'pending' }
     ])
 
-    const count = interruptOrphanRuns([workspace])
+    const count = await interruptOrphanRuns([workspace])
     expect(count).toBe(1)
-    await flushEventAppends(dir)
 
     const messages = loadMessages(workspace, runId)
     const todoMessage = messages.find((message) => message.role === 'tool' && message.toolName === 'todo_write')
@@ -249,7 +245,7 @@ describe('listRuns / interruptOrphanRuns', () => {
     expect(readTodos(dir).find((todo) => todo.id === '1')?.status).toBe('cancelled')
   })
 
-  it('does not interrupt runs that are still active in memory', () => {
+  it('does not interrupt runs that are still active in memory', async () => {
     const liveId = 'live-run'
     const liveDir = resolveRunDir(workspace, liveId)
     writeStatus(liveDir, {
@@ -261,7 +257,7 @@ describe('listRuns / interruptOrphanRuns', () => {
     })
     registerRunAbort(liveId, workspace)
     try {
-      const count = interruptOrphanRuns([workspace])
+      const count = await interruptOrphanRuns([workspace])
       expect(count).toBe(0)
       const status = JSON.parse(readFileSync(join(liveDir, 'status.json'), 'utf8')) as {
         status: string

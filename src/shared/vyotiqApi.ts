@@ -126,13 +126,15 @@ export interface VyotiqApi {
   onToolApprovalRequest: (handler: (request: ToolApprovalRequest) => void) => () => void
   respondToolApproval: (
     requestId: string,
-    decision: ToolApprovalDecision
+    decision: ToolApprovalDecision,
+    runId: string
   ) => Promise<IpcResult<boolean>>
   listPendingToolApprovals: (runId: string) => Promise<IpcResult<ToolApprovalRequest[]>>
   onAgentQuestionRequest: (handler: (request: AgentQuestionRequest) => void) => () => void
   respondAgentQuestion: (
     requestId: string,
-    answers: string[]
+    answers: string[],
+    runId: string
   ) => Promise<IpcResult<boolean>>
   listPendingAgentQuestions: (runId: string) => Promise<IpcResult<AgentQuestionRequest[]>>
   extractAttachment: (
@@ -204,9 +206,14 @@ export interface VyotiqApi {
     rows?: number
   }) => Promise<IpcResult<import('./ipc').PtySessionInfo>>
   ptyList: (workspacePath?: string) => Promise<IpcResult<import('./ipc').PtySessionInfo[]>>
-  ptyWrite: (id: string, data: string) => Promise<IpcResult<boolean>>
-  ptyResize: (id: string, cols: number, rows: number) => Promise<IpcResult<boolean>>
-  ptyKill: (id: string) => Promise<IpcResult<boolean>>
+  ptyWrite: (id: string, data: string, workspacePath: string) => Promise<IpcResult<boolean>>
+  ptyResize: (
+    id: string,
+    cols: number,
+    rows: number,
+    workspacePath: string
+  ) => Promise<IpcResult<boolean>>
+  ptyKill: (id: string, workspacePath: string) => Promise<IpcResult<boolean>>
   onPtyData: (handler: (event: { id: string; data: string }) => void) => () => void
   onPtyExit: (handler: (event: { id: string; exitCode: number | null }) => void) => () => void
   windowMinimize: () => Promise<IpcResult<true>>

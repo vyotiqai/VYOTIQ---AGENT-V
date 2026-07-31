@@ -91,6 +91,11 @@ const baseProps = {
 }
 
 describe('Composer slash commands', () => {
+  it('does not fetch slash commands until the user types /', async () => {
+    render(<Composer {...baseProps} />)
+    expect(window.vyotiq.slashCommandsList).not.toHaveBeenCalled()
+  })
+
   it('opens the slash menu when typing / and filters by query', async () => {
     const onDraftChange = vi.fn()
     const { rerender } = render(<Composer {...baseProps} draft="" onDraftChange={onDraftChange} />)

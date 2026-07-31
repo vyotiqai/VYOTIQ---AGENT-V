@@ -712,6 +712,41 @@ describe('runSubagent', () => {
     expect(streamChat).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps sibling delta-assembled tools when one final tool_call arrives early', async () => {
+    executeTool.mockResolvedValue({ ok: true, summary: 'ok', content: 'ok' })
+    streamChat
+      .mockImplementationOnce(
+        stream([
+          {
+            type: 'tool_call_delta',
+            toolCallDelta: { index: 0, id: 'c0', name: 'read', arguments: '{"path":"a.ts"}' }
+          },
+          {
+            type: 'tool_call_delta',
+            toolCallDelta: { index: 1, id: 'c1', name: 'grep', arguments: '{"pattern":"foo"}' }
+          },
+          {
+            type: 'tool_call',
+            toolCall: { id: 'c0', name: 'read', arguments: '{"path":"a.ts"}' }
+          },
+          { type: 'done' }
+        ])
+      )
+      .mockImplementationOnce(stream([{ type: 'text', text: 'done' }, { type: 'done' }]))
+
+    const result = await runSubagent({
+      task: 'Find foo',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0
+    })
+
+    expect(result.ok).toBe(true)
+    expect(executeTool).toHaveBeenCalledTimes(2)
+    const toolNames = executeTool.mock.calls.map((call) => call[0] as string)
+    expect(toolNames).toEqual(expect.arrayContaining(['read', 'grep']))
+  })
+
   it('persists report under runDir/subagents when runDir is set', async () => {
     const runDir = join(tmpdir(), `vyotiq-sub-report-${process.pid}-${Date.now()}`)
     mkdirSync(runDir, { recursive: true })

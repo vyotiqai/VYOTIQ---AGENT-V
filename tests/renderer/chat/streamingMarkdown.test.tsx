@@ -207,6 +207,27 @@ describe('MarkdownContent streaming', () => {
     expect(screen.getByRole('table')).toBeTruthy()
     expect(screen.getByText('A')).toBeTruthy()
     expect(screen.getByText('2')).toBeTruthy()
+    expect(document.querySelector('[data-markdown-table-scroll]')).toBeTruthy()
+  })
+
+  it('keeps wide GFM tables scrollable in a narrow container', () => {
+    const wide =
+      '| Risk | Likelihood | Impact | Mitigation |\n' +
+      '| --- | --- | --- | --- |\n' +
+      '| PowerShell execution policy blocks scripts | Medium | High | Set Bypass for the session |\n' +
+      '| Permission issues accessing process data | Low | Medium | Run elevated when required |\n'
+    const { container } = render(
+      <div style={{ width: 360 }}>
+        <MarkdownContent content={wide} streaming={false} />
+      </div>
+    )
+    const scroll = container.querySelector('[data-markdown-table-scroll]')
+    expect(scroll).toBeTruthy()
+    expect(scroll?.className).toMatch(/overflow-x-auto/)
+    expect(container.querySelector('table')).toBeTruthy()
+    expect(container.querySelector('.markdown-body')?.className).toMatch(
+      /\[&_td\]:\[overflow-wrap:normal\]/
+    )
   })
 
   it('copies fenced code from the code block button', async () => {

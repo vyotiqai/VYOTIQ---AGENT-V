@@ -37,7 +37,9 @@ let nextInvokeId = 1
 /** Register abort controller before the async loop starts so cancel works immediately. */
 export function registerRunAbort(runId: string, workspacePath: string): RunAbortHandle {
   const existing = active.get(runId)
-  if (existing && !existing.turnComplete) {
+  // Reuse the live invoke. Never replace a turnComplete entry still unwinding —
+  // overlapping runAgent finally blocks corrupt the same runDir.
+  if (existing) {
     return { controller: existing.controller, invokeId: existing.invokeId }
   }
 
@@ -54,7 +56,38 @@ export function registerRunAbort(runId: string, workspacePath: string): RunAbort
   return { controller, invokeId }
 }
 
-/** Allow the next chatStart while this invoke is still unwinding. */
+/**
+ * Atomic register for IPC chatStart — rejects if a run slot already exists.
+ * Single-threaded: check+set with no await in between.
+ */
+export function tryRegisterRunAbort(
+  runId: string,
+  workspacePath: string
+): { ok: true; controller: AbortController; invokeId: number } | { ok: false; error: string } {
+  if (active.has(runId)) {
+    return { ok: false, error: 'Run is already active' }
+  }
+  const handle = registerRunAbort(runId, workspacePath)
+  return { ok: true, controller: handle.controller, invokeId: handle.invokeId }
+}
+
+/**
+ * Close the turn for follow-up enqueue atomically.
+ * If follow-ups are already queued, leave the turn open so the loop can drain them.
+ */
+export function tryBeginRunClosing(
+  runId: string,
+  invokeId: number
+): 'closed' | 'has_followups' | 'stale' {
+  const entry = active.get(runId)
+  if (!entry || entry.invokeId !== invokeId) return 'stale'
+  if (entry.followUps.length > 0) return 'has_followups'
+  entry.turnComplete = true
+  entry.streamInterrupt = null
+  return 'closed'
+}
+
+/** Allow follow-up enqueue to close; run stays in `active` until `clearRunAbort`. */
 export function markRunTurnComplete(runId: string, invokeId: number): void {
   const entry = active.get(runId)
   if (entry && entry.invokeId === invokeId) {
@@ -70,9 +103,11 @@ export function cancelRun(runId: string): boolean {
   const entry = active.get(runId)
   if (!entry) return false
   entry.followUps = []
+  entry.turnComplete = true
   entry.streamInterrupt?.abort()
   entry.streamInterrupt = null
   entry.controller.abort()
+  void disposeSubagentsForRun(runId)
   return true
 }
 
@@ -85,9 +120,27 @@ export function getRunWorkspace(runId: string): string | undefined {
 }
 
 export function isActive(runId: string): boolean {
-  const entry = active.get(runId)
-  if (!entry) return false
-  return !entry.turnComplete
+  // True until clearRunAbort — includes the post-terminal unwind window so
+  // chatStart cannot overlap a prior invoke's finally.
+  return active.has(runId)
+}
+
+/** True after a terminal event while `finally` is still flushing/disposing. */
+export function isRunTurnComplete(runId: string): boolean {
+  return active.get(runId)?.turnComplete === true
+}
+
+/** Wait until `clearRunAbort` removes the run (bounded). Returns false on timeout. */
+export async function waitUntilRunInactive(
+  runId: string,
+  timeoutMs = 15_000
+): Promise<boolean> {
+  const started = Date.now()
+  while (isActive(runId)) {
+    if (Date.now() - started >= timeoutMs) return false
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  return true
 }
 
 /** True when this invoke still owns the run slot (no newer follow-up registered). */
@@ -115,17 +168,15 @@ export function followUpPreview(message: ChatMessage): string {
 }
 
 export function listActiveRuns(): ActiveRunInfo[] {
-  return [...active.entries()]
-    .filter(([, entry]) => !entry.turnComplete)
-    .map(([runId, entry]) => ({
-      runId,
-      workspacePath: entry.workspacePath,
-      invokeId: entry.invokeId,
-      pendingFollowUps: entry.followUps.map((item) => ({
-        id: item.id,
-        preview: followUpPreview(item.message)
-      }))
+  return [...active.entries()].map(([runId, entry]) => ({
+    runId,
+    workspacePath: entry.workspacePath,
+    invokeId: entry.invokeId,
+    pendingFollowUps: entry.followUps.map((item) => ({
+      id: item.id,
+      preview: followUpPreview(item.message)
     }))
+  }))
 }
 
 export function getRunInvokeId(runId: string): number | undefined {
@@ -142,7 +193,9 @@ export function clearRunAbort(runId: string, invokeId?: number): void {
 /** Queue a user message for mid-run injection. Soft-aborts the live stream if any. */
 export function enqueueFollowUp(runId: string, message: ChatMessage): EnqueueFollowUpResult {
   const entry = active.get(runId)
-  if (!entry || entry.turnComplete) {
+  // Reject once the turn closed or the run abort fired — otherwise IPC can ack
+  // follow_up_queued and clearRunAbort later drops the message unapplied.
+  if (!entry || entry.turnComplete || entry.controller.signal.aborted) {
     return { ok: false, error: 'Run is not active' }
   }
   if (message.role !== 'user') {
@@ -166,7 +219,7 @@ export function removeFollowUp(
   id: string
 ): { ok: true; removed: boolean; queueLength: number } | { ok: false; error: string } {
   const entry = active.get(runId)
-  if (!entry || entry.turnComplete) {
+  if (!entry || entry.turnComplete || entry.controller.signal.aborted) {
     return { ok: false, error: 'Run is not active' }
   }
   const before = entry.followUps.length
@@ -247,6 +300,7 @@ export function chatCancelResult(
     return { ok: false, error: 'Run not found' }
   }
   entry.followUps = []
+  entry.turnComplete = true
   entry.streamInterrupt?.abort()
   entry.streamInterrupt = null
   entry.controller.abort()

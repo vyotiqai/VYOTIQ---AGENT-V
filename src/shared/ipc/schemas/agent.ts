@@ -673,6 +673,7 @@ export type ToolApprovalDecision = z.infer<typeof ToolApprovalDecisionSchema>
 
 export const ToolApprovalResponseSchema = z.object({
   requestId: z.string().min(1),
+  runId: z.string().min(1),
   decision: ToolApprovalDecisionSchema
 })
 export type ToolApprovalResponse = z.infer<typeof ToolApprovalResponseSchema>
@@ -701,6 +702,7 @@ export type AgentQuestionRequest = z.infer<typeof AgentQuestionRequestSchema>
 
 export const AgentQuestionResponseSchema = z.object({
   requestId: z.string().min(1),
+  runId: z.string().min(1),
   answers: z.array(z.string())
 })
 export type AgentQuestionResponse = z.infer<typeof AgentQuestionResponseSchema>

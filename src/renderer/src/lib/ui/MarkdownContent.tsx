@@ -233,6 +233,11 @@ function buildMarkdownComponents(openFenceBody: string | null) {
         {children}
       </a>
     ),
+    table: ({ children }: { children?: React.ReactNode }) => (
+      <div className="markdown-table-scroll my-2 max-w-full overflow-x-auto" data-markdown-table-scroll>
+        <table>{children}</table>
+      </div>
+    ),
     code: ({
       className: codeClass,
       children
@@ -293,7 +298,7 @@ export function MarkdownContent({
   return (
     <div
       className={cn(
-        'markdown-body text-sm leading-relaxed text-fg [overflow-wrap:anywhere]',
+        'markdown-body text-sm leading-relaxed text-fg [overflow-wrap:anywhere] [&_table]:[overflow-wrap:normal] [&_th]:[overflow-wrap:normal] [&_td]:[overflow-wrap:normal] [&_pre]:[overflow-wrap:normal]',
         className
       )}
     >

@@ -2,9 +2,13 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, rmSync, wri
 import { readFile, readdir } from 'fs/promises'
 import { join, basename } from 'path'
 import { atomicWriteFile, atomicWriteJson } from '../storage/atomicWrite'
-import { enqueueEventAppend, flushEventAppends } from './eventAppendQueue'
+import {
+  blockUntilEventAppendsFlushed,
+  enqueueEventAppend,
+  flushEventAppends
+} from './eventAppendQueue'
 import { enqueueMessageAppend, flushMessageAppends } from './messageAppendQueue'
-import { enqueueStatusPatch, writeStatusImmediateSync } from './statusWriteQueue'
+import { enqueueStatusPatch, writeStatusImmediate } from './statusWriteQueue'
 import { getCachedListRuns, invalidateListRunsCache } from './runListCache'
 import {
   ChatMessageSchema,
@@ -154,7 +158,7 @@ export async function resumeRun(workspacePath: string, runId: string): Promise<s
   // Close any unfinished tool pairing from a previous crash before continuing.
   appendOrphanToolStubs(dir, runId)
   const prior = loadStatus(dir)
-  updateStatus(
+  await updateStatus(
     dir,
     {
       status: 'running',
@@ -238,13 +242,13 @@ export function appendEvent(dir: string, event: unknown): void {
   enqueueEventAppend(dir, event)
 }
 
-export function updateStatus(
+export async function updateStatus(
   dir: string,
   patch: Partial<RunStatus>,
   options?: { sync?: boolean }
-): void {
+): Promise<void> {
   if (options?.sync) {
-    writeStatusImmediateSync(
+    await writeStatusImmediate(
       dir,
       patch,
       (path, next) => atomicWriteJson(path, next),
@@ -435,6 +439,7 @@ export function loadEvents(
   runId?: string,
   options?: { limit?: number }
 ): PersistedEvent[] {
+  blockUntilEventAppendsFlushed(dir)
   const p = join(dir, 'events.jsonl')
   if (!existsSync(p)) return []
   const inferredRunId = runId ?? basename(dir)
@@ -451,6 +456,7 @@ export async function loadEventsAsync(
   runId?: string,
   options?: { limit?: number }
 ): Promise<PersistedEvent[]> {
+  await flushEventAppends(dir)
   const p = join(dir, 'events.jsonl')
   if (!existsSync(p)) return []
   const inferredRunId = runId ?? basename(dir)
@@ -543,6 +549,7 @@ export async function loadEventsForHydrationAsync(
   runId?: string,
   options?: { limit?: number }
 ): Promise<PersistedEvent[]> {
+  await flushEventAppends(dir)
   const p = join(dir, 'events.jsonl')
   if (!existsSync(p)) return []
   const inferredRunId = runId ?? basename(dir)
@@ -690,8 +697,9 @@ function patchInterruptedTodoMessage(dir: string): void {
  * Mark runs left as `running` after a crash/restart as cancelled.
  * Scans workspace run directories under each provided path.
  */
-export function interruptOrphanRuns(workspacePaths: string[]): number {
+export async function interruptOrphanRuns(workspacePaths: string[]): Promise<number> {
   let count = 0
+  const eventFlushDirs: string[] = []
   for (const workspacePath of workspacePaths) {
     const runs = workspaceSessionsRoot(workspacePath)
     if (!existsSync(runs)) continue
@@ -711,7 +719,7 @@ export function interruptOrphanRuns(workspacePaths: string[]): number {
         appendOrphanToolStubs(dir, name)
         finalizeInterruptedTodos(dir)
         patchInterruptedTodoMessage(dir)
-        updateStatus(
+        await updateStatus(
           dir,
           {
             status: 'cancelled',
@@ -720,11 +728,15 @@ export function interruptOrphanRuns(workspacePaths: string[]): number {
           { sync: true }
         )
         appendEvent(dir, { type: 'status', status: 'cancelled', runId: name })
+        eventFlushDirs.push(dir)
         count += 1
       } catch {
         // skip
       }
     }
+  }
+  if (eventFlushDirs.length > 0) {
+    await Promise.all(eventFlushDirs.map((dir) => flushEventAppends(dir)))
   }
   return count
 }

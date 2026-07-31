@@ -150,13 +150,13 @@ afterEach(() => {
 
 describe('ChangesPanel', () => {
   it('renders git dirty files from gitStatus', async () => {
-    render(<ChangesPanel items={[]} workspacePath="/ws" />)
+    render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
     expect(await screen.findByText('a.ts')).toBeTruthy()
     expect(screen.getByText(/Commit & Push/)).toBeTruthy()
   })
 
   it('includes deleted files in Staged scope and excludes untracked', async () => {
-    render(<ChangesPanel items={[]} workspacePath="/ws" />)
+    render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
     await screen.findByText('a.ts')
     fireEvent.click(screen.getByRole('button', { name: /Uncommitted/i }))
     fireEvent.click(screen.getByRole('button', { name: /^Staged/i }))
@@ -165,7 +165,7 @@ describe('ChangesPanel', () => {
   })
 
   it('passes staged:true to gitDiff when expanded under Staged scope', async () => {
-    render(<ChangesPanel items={[]} workspacePath="/ws" />)
+    render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
     await screen.findByText('a.ts')
     fireEvent.click(screen.getByRole('button', { name: /Uncommitted/i }))
     fireEvent.click(screen.getByRole('button', { name: /^Staged/i }))
@@ -183,7 +183,7 @@ describe('ChangesPanel', () => {
   })
 
   it('exposes Layout, Ignore Whitespace, and Find in the more menu', async () => {
-    render(<ChangesPanel items={[]} workspacePath="/ws" />)
+    render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
     await screen.findByText('a.ts')
     fireEvent.click(screen.getByRole('button', { name: /More changes actions/i }))
     expect(screen.getByText(/Layout/i)).toBeTruthy()
@@ -194,7 +194,7 @@ describe('ChangesPanel', () => {
   })
 
   it('lists commits from gitLog under Commits scope', async () => {
-    render(<ChangesPanel items={[]} workspacePath="/ws" />)
+    render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
     await screen.findByText('a.ts')
     fireEvent.click(screen.getByRole('button', { name: /Uncommitted/i }))
     fireEvent.click(screen.getByRole('button', { name: /^Commits/i }))
@@ -204,7 +204,7 @@ describe('ChangesPanel', () => {
   })
 
   it('primary Commit & Push sends push:true after composing', async () => {
-    render(<ChangesPanel items={[]} workspacePath="/ws" />)
+    render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
     await screen.findByText('a.ts')
     fireEvent.click(screen.getByRole('button', { name: /Commit & Push/i }))
     const input = await screen.findByRole('textbox', { name: /Commit message/i })
@@ -216,7 +216,7 @@ describe('ChangesPanel', () => {
   })
 
   it('Staged scope commits without staging all', async () => {
-    render(<ChangesPanel items={[]} workspacePath="/ws" />)
+    render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
     await screen.findByText('a.ts')
     fireEvent.click(screen.getByRole('button', { name: /Uncommitted/i }))
     fireEvent.click(screen.getByRole('button', { name: /^Staged/i }))
@@ -230,7 +230,7 @@ describe('ChangesPanel', () => {
   })
 
   it('Unstaged scope exposes Stage All', async () => {
-    render(<ChangesPanel items={[]} workspacePath="/ws" />)
+    render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
     await screen.findByText('a.ts')
     fireEvent.click(screen.getByRole('button', { name: /Uncommitted/i }))
     fireEvent.click(screen.getByRole('button', { name: /^Unstaged/i }))
@@ -258,12 +258,12 @@ describe('DockTabBar', () => {
         onToggleExpanded={onToggleExpanded}
       />
     )
-    fireEvent.click(screen.getByRole('button', { name: /^Terminal$/i }))
+    fireEvent.click(screen.getByRole('tab', { name: /^Terminal$/i }))
     expect(onSelect).toHaveBeenCalledWith('terminal')
     fireEvent.click(screen.getByRole('button', { name: /Open panel/i }))
     fireEvent.click(screen.getByRole('menuitem', { name: /Browser/i }))
     expect(onOpenPanel).toHaveBeenCalledWith('browser')
-    fireEvent.click(screen.getByRole('button', { name: /Close ± Changes/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Close Changes/i }))
     expect(onCloseTab).toHaveBeenCalledWith('changes')
     fireEvent.click(screen.getByRole('button', { name: /Expand panel/i }))
     expect(onToggleExpanded).toHaveBeenCalled()

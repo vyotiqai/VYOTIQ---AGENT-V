@@ -4,7 +4,13 @@ import { buildUserContent } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { triggerKey } from '@shared/slashCommands'
 import { Alert, cn } from '@renderer/lib/ui'
-import { CHAT_COLUMN, CHAT_STAGE_INSET, FLOATING_CHROME, FLOATING_CHROME_SHADOW_BOTTOM } from '@renderer/lib/utils/layout'
+import {
+  CHAT_COLUMN,
+  CHAT_GUTTER,
+  CHAT_STAGE_INSET,
+  FLOATING_CHROME,
+  FLOATING_CHROME_SHADOW_BOTTOM
+} from '@renderer/lib/utils/layout'
 import { ComposerMentionInput, type ComposerMentionInputHandle } from './ComposerMentionInput'
 import { ComposerToolbar, type ComposerVariant } from './ComposerToolbar'
 import { ComposerAttachments } from './ComposerAttachments'
@@ -67,6 +73,7 @@ export function Composer({
   leading,
   trailing,
   variant = 'dock',
+  sideRailPad = true,
   className,
   slashHandlers
 }: {
@@ -117,6 +124,8 @@ export function Composer({
   /** Docked chrome below the composer, e.g. the repository line. */
   trailing?: React.ReactNode
   variant?: ComposerVariant
+  /** When false, use symmetric gutter (immersive Agent — no floating side rail). */
+  sideRailPad?: boolean
   className?: string
   slashHandlers?: SlashClientHandlers
 }) {
@@ -446,7 +455,7 @@ export function Composer({
             // fade + chrome shadow keep it floating over the transcript.
             'pointer-events-none absolute inset-x-0 bottom-0 z-sticky overflow-y-hidden pb-3 [scrollbar-gutter:stable] before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-6 before:bg-gradient-to-t before:from-bg before:via-bg/70 before:to-transparent'
           : 'shrink-0 w-full pb-0 pt-0',
-        isDock ? CHAT_STAGE_INSET : '',
+        isDock ? (sideRailPad ? CHAT_STAGE_INSET : CHAT_GUTTER) : '',
         className
       )}
       data-composer-dock={isDock ? true : undefined}

@@ -45,32 +45,36 @@ describe('cancel registry', () => {
     clearRunAbort(runId, second.invokeId)
   })
 
-  it('marks turn complete so follow-ups can start before cleanup finishes', () => {
+  it('blocks a second invoke until the prior unwind clears', () => {
     resetActiveRunsForTests()
     const runId = 'session-run'
     const first = registerRunAbort(runId, '/ws')
     expect(isActive(runId)).toBe(true)
 
     markRunTurnComplete(runId, first.invokeId)
-    expect(isActive(runId)).toBe(false)
+    // Still active while finally runs — chatStart must not overlap.
+    expect(isActive(runId)).toBe(true)
 
     const second = registerRunAbort(runId, '/ws')
-    expect(second.invokeId).not.toBe(first.invokeId)
-    expect(isActive(runId)).toBe(true)
+    expect(second.invokeId).toBe(first.invokeId)
 
     clearRunAbort(runId, first.invokeId)
-    expect(isActive(runId)).toBe(true)
-
-    clearRunAbort(runId, second.invokeId)
     expect(isActive(runId)).toBe(false)
+
+    const third = registerRunAbort(runId, '/ws')
+    expect(third.invokeId).not.toBe(first.invokeId)
+    clearRunAbort(runId, third.invokeId)
   })
 
-  it('listActiveRuns excludes turn-complete runs', () => {
+  it('listActiveRuns includes turn-complete runs until clear', () => {
     resetActiveRunsForTests()
     const runId = 'session-run'
     const first = registerRunAbort(runId, '/ws')
     markRunTurnComplete(runId, first.invokeId)
-    expect(listActiveRuns()).toEqual([])
+    expect(listActiveRuns()).toEqual([
+      { runId, workspacePath: '/ws', invokeId: first.invokeId, pendingFollowUps: [] }
+    ])
     clearRunAbort(runId, first.invokeId)
+    expect(listActiveRuns()).toEqual([])
   })
 })

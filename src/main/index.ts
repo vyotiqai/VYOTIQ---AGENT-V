@@ -15,6 +15,12 @@ import { migrateLegacySessions } from '@main/storage/migrations/migrateSessions'
 import { migrateWorkspaceRuns } from './storage/migrateWorkspaceRuns'
 import { purgeLegacyProjectHarness } from '@main/agent/harness'
 import {
+  flushEventAppends,
+  flushMessageAppends,
+  flushStatusWrites
+} from '@main/agent/state'
+import { shutdownTokenizerPool } from '@main/agent/context/tokenizerPool'
+import {
   getWorkspaces,
   interruptOrphanRunsForWorkspaces
 } from '@main/workspace/workspaces'
@@ -22,6 +28,7 @@ import { initMainLogging } from './logging/init'
 import { initCrashReporter } from './logging/crashReporter'
 import { logger } from '../shared/logger'
 import { IPC } from '../shared/channels'
+import { startLoadPerfMonitor } from './perf/loadSnapshot'
 
 // Keep Chromium caches under userData so concurrent/dev instances do not
 // fight over the default Windows profile cache (Access denied / Gpu Cache).
@@ -43,6 +50,9 @@ if (process.platform === 'win32') {
   app.disableHardwareAcceleration()
 }
 
+const QUIT_FLUSH_MS = 500
+
+let quitting = false
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
@@ -55,7 +65,7 @@ if (!gotLock) {
     }
   })
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     // After userData path switches; before IPC / windows (Sentry + electron-log).
     initMainLogging()
 
@@ -81,7 +91,7 @@ if (!gotLock) {
         seen.add(key)
         purgeLegacyProjectHarness(root)
       }
-      const n = interruptOrphanRunsForWorkspaces(workspaces)
+      const n = await interruptOrphanRunsForWorkspaces(workspaces)
       if (n > 0) {
         logger.info(`Interrupted ${n} orphan run(s)`, { scope: 'main' })
       }
@@ -89,6 +99,7 @@ if (!gotLock) {
       logger.warn('Failed startup workspace maintenance', { scope: 'main', err })
     }
     registerIpc()
+    startLoadPerfMonitor()
     try {
       void ensureDefaultSemanticMcp().then(() => {
         void syncMcpServers(resolveEffectiveMcpServers()).catch((err) => {
@@ -134,10 +145,27 @@ if (!gotLock) {
     if (process.platform !== 'darwin') app.quit()
   })
 
-  app.on('before-quit', () => {
+  app.on('before-quit', (event) => {
+    if (quitting) return
+    event.preventDefault()
+    quitting = true
+
     closeAgentBrowser()
     disposeAllTerminalSessions()
     disposeAllPtySessions()
     void shutdownMcpServers()
+    shutdownTokenizerPool()
+
+    void (async () => {
+      try {
+        await Promise.race([
+          Promise.all([flushMessageAppends(), flushEventAppends(), flushStatusWrites()]),
+          new Promise<void>((resolve) => setTimeout(resolve, QUIT_FLUSH_MS))
+        ])
+      } catch (err) {
+        logger.warn('Failed to flush pending writes before quit', { scope: 'main', err })
+      }
+      app.quit()
+    })()
   })
 }

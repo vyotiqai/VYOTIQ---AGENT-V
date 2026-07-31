@@ -4,6 +4,9 @@ import { logger } from '../../shared/logger'
 
 export type QuestionSender = (request: AgentQuestionRequest) => void
 
+/** Default wait for user answers before auto-denying (15 minutes). */
+export const AGENT_QUESTION_TIMEOUT_MS = 900_000
+
 /** One sender per run: question prompts belong to the window that started it. */
 const senders = new Map<string, QuestionSender>()
 const pending = new Map<
@@ -46,10 +49,11 @@ export function listPendingAgentQuestions(runId: string): AgentQuestionRequest[]
   return out
 }
 
-/** Returns false when the request is unknown, e.g. the run was already cancelled. */
+/** Returns false when the request is unknown or runId does not match. */
 export function resolveAgentQuestion(response: AgentQuestionResponse): boolean {
   const entry = pending.get(response.requestId)
   if (!entry) return false
+  if (entry.runId !== response.runId) return false
   pending.delete(response.requestId)
   entry.resolve(response.answers)
   return true
@@ -88,15 +92,25 @@ export function askQuestionThroughRenderer(
   }
 
   return new Promise<string[]>((resolve, reject) => {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    const clearWaiters = (): void => {
+      if (timeoutId !== undefined) clearTimeout(timeoutId)
+      signal.removeEventListener('abort', onAbort)
+    }
     const settle = (answers: string[]): void => {
       pending.delete(request.requestId)
-      signal.removeEventListener('abort', onAbort)
+      clearWaiters()
       resolve(answers)
     }
     function onAbort(): void {
       pending.delete(request.requestId)
-      signal.removeEventListener('abort', onAbort)
+      clearWaiters()
       reject(abortQuestionError())
+    }
+    function onTimeout(): void {
+      pending.delete(request.requestId)
+      clearWaiters()
+      reject(new Error('Question timed out without a response'))
     }
     if (signal.aborted) {
       reject(abortQuestionError())
@@ -110,6 +124,7 @@ export function askQuestionThroughRenderer(
       request
     })
     signal.addEventListener('abort', onAbort, { once: true })
+    timeoutId = setTimeout(onTimeout, AGENT_QUESTION_TIMEOUT_MS)
     sender(request)
   })
 }

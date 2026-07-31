@@ -6,6 +6,7 @@ import type { UiItem } from '@shared/transcript'
 import type { ToolApprovalDecision } from '@shared/ipc'
 import {
   CHAT_COLUMN,
+  CHAT_GUTTER,
   CHAT_STAGE_INSET,
   TOOL_BODY_CLAMP_PX,
   TRANSCRIPT_ROW_GAP,
@@ -317,12 +318,29 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   }
 
   if (row.kind === 'changes') {
+    // Last changes row gets Keep/Discard + diffs when a write checkpoint is active;
+    // older rows stay a compact "Open Changes" link.
+    if (canUndoWrites) {
+      return (
+        <ChangeSummary
+          files={row.files}
+          fileDiffs={fileDiffs}
+          fileResolutions={writeFileResolutions}
+          resolvablePaths={writeResolvablePaths}
+          canResolve
+          resolveBusy={undoBusy}
+          resolveBlockedReason={resolveBlockedReason}
+          onKeepFile={onKeepWriteFile}
+          onDiscardFile={onDiscardWriteFile}
+          onKeepAll={onKeepAllWrites}
+          onDiscardAll={onUndoWrites}
+          onDiffExpandChange={onDiffExpandChange}
+          onOpenChanges={onOpenChanges}
+        />
+      )
+    }
     return (
-      <ChangeSummary
-        files={row.files}
-        compact
-        onOpenChanges={onOpenChanges}
-      />
+      <ChangeSummary files={row.files} compact onOpenChanges={onOpenChanges} />
     )
   }
 
@@ -400,7 +418,8 @@ export function MessageList({
   onDiscardWriteFile,
   onKeepAllWrites,
   resolveBlockedReason = null,
-  onOpenChanges
+  onOpenChanges,
+  sideRailPad = true
 }: {
   items: UiItem[]
   reserveComposerSpace?: boolean
@@ -434,6 +453,8 @@ export function MessageList({
   onKeepAllWrites?: () => void | Promise<unknown>
   resolveBlockedReason?: string | null
   onOpenChanges?: () => void
+  /** When false, use symmetric gutter (immersive Agent — no floating side rail). */
+  sideRailPad?: boolean
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const appliedRestoreRef = useRef<number | null>(null)
@@ -832,7 +853,7 @@ export function MessageList({
         data-transcript-scroll
         className={cn(
           'relative min-h-0 flex-1 overflow-auto pt-4 [scrollbar-gutter:stable]',
-          CHAT_STAGE_INSET
+          sideRailPad ? CHAT_STAGE_INSET : CHAT_GUTTER
         )}
         style={dockReserveStyle}
         onScroll={(e) => handleScroll(e.currentTarget.scrollTop)}

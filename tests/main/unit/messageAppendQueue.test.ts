@@ -1,7 +1,21 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+
+const { appendFileMock } = vi.hoisted(() => ({
+  appendFileMock: vi.fn<typeof import('fs/promises').appendFile>()
+}))
+
+vi.mock('fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs/promises')>()
+  appendFileMock.mockImplementation(actual.appendFile)
+  return {
+    ...actual,
+    appendFile: appendFileMock
+  }
+})
+
 import {
   enqueueMessageAppend,
   flushMessageAppends,
@@ -16,6 +30,7 @@ describe('messageAppendQueue', () => {
     dir = mkdtempSync(join(tmpdir(), 'vyotiq-msg-append-'))
     mkdirSync(dir, { recursive: true })
     resetMessageAppendQueueForTests()
+    appendFileMock.mockClear()
   })
 
   afterEach(() => {
@@ -35,5 +50,12 @@ describe('messageAppendQueue', () => {
     expect(JSON.parse(lines[0]!).content).toBe('a')
     expect(JSON.parse(lines[1]!).content).toBe('b')
     expect(messageAppendChainSizeForTests()).toBe(0)
+  })
+
+  it('flushMessageAppends surfaces append failures', async () => {
+    appendFileMock.mockRejectedValueOnce(new Error('append failed'))
+
+    enqueueMessageAppend(dir, `${JSON.stringify({ role: 'user', content: 'x' })}\n`)
+    await expect(flushMessageAppends(dir)).rejects.toThrow('append failed')
   })
 })

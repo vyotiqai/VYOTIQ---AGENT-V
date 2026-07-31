@@ -1,5 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  mkdirSync
+} from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
@@ -7,6 +14,7 @@ import {
   discardWriteCheckpoint,
   finalizeWriteCheckpoint,
   getWriteCheckpoint,
+  getWriteCheckpointMeta,
   resetWriteCheckpointsForTests,
   undoWrites,
   resolveWrites
@@ -173,5 +181,28 @@ describe('write checkpoints', () => {
     })
     expect(discarded.discarded).toEqual(['b.txt'])
     expect(readFileSync(join(workspace, 'b.txt'), 'utf8')).toBe('seed\n')
+  })
+
+  it('leaves checkpoint unresolved when undo hits I/O failures', () => {
+    writeFileSync(join(workspace, 'b.txt'), 'beta\n', 'utf8')
+    const cp = beginWriteCheckpoint(runDir, workspace)
+    cp.recordPrior('a.txt', 'write')
+    cp.recordPrior('b.txt', 'write')
+    writeFileSync(join(workspace, 'a.txt'), 'A\n', 'utf8')
+    writeFileSync(join(workspace, 'b.txt'), 'B\n', 'utf8')
+    const meta = finalizeWriteCheckpoint(runDir)
+    expect(meta).not.toBeNull()
+
+    rmSync(join(runDir, 'checkpoints', meta!.id, 'files', 'a.txt'), { force: true })
+
+    const result = undoWrites(runDir, workspace, meta!.id)
+    expect(result.restored).toEqual(['b.txt'])
+    expect(result.skipped).toContain('a.txt')
+
+    const persisted = getWriteCheckpointMeta(runDir, meta!.id)
+    expect(persisted?.resolved).not.toBe(true)
+    expect(persisted?.undone).not.toBe(true)
+    expect(persisted?.files.find((f) => f.path === 'a.txt')?.resolved).toBeUndefined()
+    expect(persisted?.files.find((f) => f.path === 'b.txt')?.resolved).toBe('discarded')
   })
 })

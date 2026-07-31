@@ -12,6 +12,9 @@ import { isApprovalExemptTool } from './tools/classify'
 
 export type ApprovalSender = (request: ToolApprovalRequest) => void
 
+/** Default wait for user approval before auto-denying (15 minutes). */
+export const TOOL_APPROVAL_TIMEOUT_MS = 900_000
+
 /** One sender per run: approval prompts belong to the window that started it. */
 const senders = new Map<string, ApprovalSender>()
 const pending = new Map<
@@ -54,10 +57,11 @@ export function listPendingToolApprovals(runId: string): ToolApprovalRequest[] {
   return out
 }
 
-/** Returns false when the request is unknown, e.g. the run was already cancelled. */
+/** Returns false when the request is unknown or runId does not match. */
 export function resolveToolApproval(response: ToolApprovalResponse): boolean {
   const entry = pending.get(response.requestId)
   if (!entry) return false
+  if (entry.runId !== response.runId) return false
   pending.delete(response.requestId)
   entry.resolve(response.decision)
   return true
@@ -130,14 +134,19 @@ function askThroughRenderer(
   }
 
   return new Promise<ToolApprovalDecision>((resolve, reject) => {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    const clearWaiters = (): void => {
+      if (timeoutId !== undefined) clearTimeout(timeoutId)
+      signal.removeEventListener('abort', onAbort)
+    }
     const settle = (decision: ToolApprovalDecision): void => {
       pending.delete(request.requestId)
-      signal.removeEventListener('abort', onAbort)
+      clearWaiters()
       resolve(decision)
     }
     function onAbort(): void {
       pending.delete(request.requestId)
-      signal.removeEventListener('abort', onAbort)
+      clearWaiters()
       reject(abortApprovalError())
     }
     if (signal.aborted) {
@@ -152,6 +161,10 @@ function askThroughRenderer(
       request
     })
     signal.addEventListener('abort', onAbort, { once: true })
+    timeoutId = setTimeout(() => {
+      if (!pending.has(request.requestId)) return
+      settle('deny')
+    }, TOOL_APPROVAL_TIMEOUT_MS)
     sender(request)
   })
 }

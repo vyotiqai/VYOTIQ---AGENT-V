@@ -26,6 +26,7 @@ import {
   headersWithoutAuthorization,
   withBearerToken
 } from '../../../shared/utils/mcpAuth'
+import { invalidateSlashCommandsCache } from '../slashCommands/listCache'
 import {
   beginMcpOAuthCallback,
   cancelMcpOAuthCallback,
@@ -559,6 +560,15 @@ export async function connectMcpServer(server: McpServer): Promise<void> {
       }
     })
     const { resources, prompts } = await probeResourcesAndPrompts(client)
+    const desired = resolveEffectiveMcpServers().find((s) => s.id === server.id)
+    if (!desired?.enabled || mcpServerConfigKey(desired) !== mcpServerConfigKey(server)) {
+      try {
+        await client.close()
+      } catch {
+        // ignore
+      }
+      return
+    }
     sessions.set(server.id, { client, transport, tools, resources, prompts })
     rebuildToolsByNameIndex()
     sessionConfigKeys.set(server.id, mcpServerConfigKey(server))
@@ -705,6 +715,8 @@ async function syncMcpServersUnlocked(servers: McpServer[]): Promise<void> {
       }
     }
   }
+  // MCP tools/status feed /mcp slash availability — bust the 5s list cache.
+  invalidateSlashCommandsCache()
 }
 
 export function listMcpToolDefinitions(): ToolDefinition[] {

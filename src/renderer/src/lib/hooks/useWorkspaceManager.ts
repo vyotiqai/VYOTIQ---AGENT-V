@@ -18,6 +18,7 @@ import {
   createChatStreamController,
   type ChatStreamController
 } from './createChatStreamController'
+import { ensureChatUiPerfDump } from './chatUiPerf'
 import {
   clearWorkspaceHotUi,
   getWorkspaceHotUi,
@@ -231,6 +232,10 @@ export function useWorkspaceManager() {
   useEffect(() => {
     registryRef.current = registry
   }, [registry])
+
+  useEffect(() => {
+    ensureChatUiPerfDump()
+  }, [])
 
   /** True when this run's transcript is the mounted chat surface. */
   const isRunUiVisible = useCallback((runId: string): boolean => {
@@ -497,37 +502,44 @@ export function useWorkspaceManager() {
           }
         }
         registerRunId(assignedId, workspacePath)
-        setContexts((prev) => {
-          const ctx = prev[workspacePath]
-          if (!ctx) return prev
-          if (ctx.activeRunId === assignedId) return prev
+        const ctx = contextsRef.current[workspacePath]
+        if (!ctx) {
+          void refreshRunsRef.current(workspacePath)
+          return
+        }
+        if (ctx.activeRunId === assignedId) {
+          void refreshRunsRef.current(workspacePath)
+          return
+        }
 
-          let openRunIds: string[]
-          if (
-            ctx.activeRunId &&
-            ctx.activeRunId !== assignedId &&
-            ctx.openRunIds.includes(ctx.activeRunId)
-          ) {
-            openRunIds = ctx.openRunIds.map((id) => (id === ctx.activeRunId ? assignedId : id))
-            if (!openRunIds.includes(assignedId)) {
-              openRunIds = [...openRunIds, assignedId]
-            }
-          } else if (ctx.openRunIds.includes(assignedId)) {
-            openRunIds = ctx.openRunIds
-          } else {
-            openRunIds = [...ctx.openRunIds, assignedId]
+        let openRunIds: string[]
+        if (
+          ctx.activeRunId &&
+          ctx.activeRunId !== assignedId &&
+          ctx.openRunIds.includes(ctx.activeRunId)
+        ) {
+          openRunIds = ctx.openRunIds.map((id) => (id === ctx.activeRunId ? assignedId : id))
+          if (!openRunIds.includes(assignedId)) {
+            openRunIds = [...openRunIds, assignedId]
           }
+        } else if (ctx.openRunIds.includes(assignedId)) {
+          openRunIds = ctx.openRunIds
+        } else {
+          openRunIds = [...ctx.openRunIds, assignedId]
+        }
 
-          maybeEvictControllers(workspacePath, openRunIds, assignedId)
-          return {
-            ...prev,
-            [workspacePath]: {
-              ...ctx,
-              activeRunId: assignedId,
-              openRunIds
-            }
-          }
-        })
+        maybeEvictControllers(workspacePath, openRunIds, assignedId)
+        const nextCtx: WorkspaceContext = {
+          ...ctx,
+          activeRunId: assignedId,
+          openRunIds
+        }
+        contextsRef.current = { ...contextsRef.current, [workspacePath]: nextCtx }
+        setContexts((prev) => ({
+          ...prev,
+          [workspacePath]: nextCtx
+        }))
+        schedulePersistUiState(workspacePath, nextCtx)
         void refreshRunsRef.current(workspacePath)
       }
 

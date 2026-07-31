@@ -21,7 +21,13 @@ function readCssColor(varName: string, fallback: string): string {
 }
 
 /** One xterm host bound to a PTY session id. */
-function PtySessionView({ sessionId }: { sessionId: string }) {
+function PtySessionView({
+  sessionId,
+  workspacePath
+}: {
+  sessionId: string
+  workspacePath: string
+}) {
   const hostRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -55,7 +61,7 @@ function PtySessionView({ sessionId }: { sessionId: string }) {
       try {
         fit.fit()
         if (term.cols >= 2 && term.rows >= 2) {
-          void window.vyotiq?.ptyResize?.(sessionId, term.cols, term.rows)
+          void window.vyotiq?.ptyResize?.(sessionId, term.cols, term.rows, workspacePath)
         }
       } catch {
         /* ignore */
@@ -63,7 +69,7 @@ function PtySessionView({ sessionId }: { sessionId: string }) {
     }
 
     const onData = term.onData((data) => {
-      void window.vyotiq?.ptyWrite?.(sessionId, data)
+      void window.vyotiq?.ptyWrite?.(sessionId, data, workspacePath)
     })
 
     const unsubData = window.vyotiq?.onPtyData?.(({ id, data }) => {
@@ -87,7 +93,7 @@ function PtySessionView({ sessionId }: { sessionId: string }) {
       ro?.disconnect()
       term.dispose()
     }
-  }, [sessionId])
+  }, [sessionId, workspacePath])
 
   return <div ref={hostRef} className="h-full w-full bg-bg" data-pty-host />
 }
@@ -111,8 +117,6 @@ export function TerminalPanel({
   const [activeId, setActiveId] = useState<string | null>(null)
   /** Second pane session id for side-by-side split; null = single pane. */
   const [splitId, setSplitId] = useState<string | null>(null)
-  /** Right-hand session list — screenshot 1 panel toggle. */
-  const [listOpen, setListOpen] = useState(true)
   const [error, setError] = useState<string | null>(null)
   /** Gate auto-create until ptyList has returned (avoids duplicate sessions on remount). */
   const [listReady, setListReady] = useState(false)
@@ -192,13 +196,14 @@ export function TerminalPanel({
       if (sessions.length <= 1) {
         suppressAutoCreateRef.current = true
       }
-      const res = await window.vyotiq?.ptyKill?.(id)
+      if (!workspacePath) return
+      const res = await window.vyotiq?.ptyKill?.(id, workspacePath)
       if (res && !res.ok) setError(res.error)
       getPtyOutputBuffers().delete(id)
       if (splitId === id) setSplitId(null)
       await refreshList()
     },
-    [refreshList, sessions.length, splitId]
+    [refreshList, sessions.length, splitId, workspacePath]
   )
 
   const toggleSplit = useCallback(async () => {
@@ -263,9 +268,6 @@ export function TerminalPanel({
     }
   }, [refreshList])
 
-  const sessionCountLabel =
-    sessions.length === 1 ? '1 Terminal' : `${sessions.length} Terminals`
-
   return (
     <div
       className={cn(CHAT_RIGHT_PANEL_BODY, className)}
@@ -305,6 +307,8 @@ export function TerminalPanel({
                 </button>
               </div>
             ))}
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5">
             <IconButton
               icon="plus"
               label="New terminal"
@@ -313,33 +317,18 @@ export function TerminalPanel({
               className="text-muted"
               onClick={() => void createSession()}
             />
-          </div>
-          <div className="flex shrink-0 items-center">
-            <IconButton
-              icon="sidebar"
-              label={listOpen ? 'Hide terminal list' : 'Show terminal list'}
-              variant="bare"
-              size="sm"
-              className={cn('text-muted', listOpen && 'text-fg')}
-              onClick={() => setListOpen((v) => !v)}
-            />
+            {activeSession ? (
+              <IconButton
+                icon="columns"
+                label={splitId ? 'Unsplit terminals' : 'Split terminal'}
+                variant="bare"
+                size="sm"
+                className={cn('text-muted', splitId && 'text-fg')}
+                onClick={() => void toggleSplit()}
+              />
+            ) : null}
           </div>
         </div>
-        {activeSession ? (
-          <div className="flex shrink-0 items-center gap-1 border-b border-border/30 px-2.5 py-0.5">
-            <p className="m-0 min-w-0 flex-1 truncate text-[11px] text-muted">
-              {activeSession.title}
-            </p>
-            <IconButton
-              icon="columns"
-              label={splitId ? 'Unsplit terminals' : 'Split terminal'}
-              variant="bare"
-              size="sm"
-              className="text-muted"
-              onClick={() => void toggleSplit()}
-            />
-          </div>
-        ) : null}
         {error ? (
           <p className="m-0 shrink-0 border-b border-border/40 px-3 py-1 text-[11px] text-danger">
             {error}
@@ -350,67 +339,32 @@ export function TerminalPanel({
             Pipe shell fallback — rebuild node-pty for Electron for a full interactive PTY.
           </p>
         ) : null}
-        <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
-          <div className="relative min-h-0 min-w-0 flex-1 bg-bg p-1">
-            {activeId ? (
-              splitId && splitId !== activeId ? (
-                <div className="flex h-full min-h-0 w-full gap-1">
-                  <div className="min-h-0 min-w-0 flex-1">
-                    <PtySessionView sessionId={activeId} />
-                  </div>
-                  <div className="w-px shrink-0 bg-border/50" />
-                  <div className="min-h-0 min-w-0 flex-1">
-                    <PtySessionView sessionId={splitId} />
-                  </div>
+        <div className="relative min-h-0 min-w-0 flex-1 bg-bg p-1">
+          {activeId && workspacePath ? (
+            splitId && splitId !== activeId ? (
+              <div className="flex h-full min-h-0 w-full gap-1">
+                <div className="min-h-0 min-w-0 flex-1">
+                  <PtySessionView sessionId={activeId} workspacePath={workspacePath} />
                 </div>
-              ) : (
-                <PtySessionView sessionId={activeId} />
-              )
+                <div className="w-px shrink-0 bg-border/50" />
+                <div className="min-h-0 min-w-0 flex-1">
+                  <PtySessionView sessionId={splitId} workspacePath={workspacePath} />
+                </div>
+              </div>
             ) : (
-              <EmptyPanel
-                icon="terminal"
-                title="No terminal"
-                body={
-                  workspacePath
-                    ? 'Use New terminal above to start an interactive shell.'
-                    : 'Open a workspace to start an interactive shell.'
-                }
-              />
-            )}
-          </div>
-          {listOpen && sessions.length > 0 ? (
-            <aside
-              className="flex w-[7.5rem] shrink-0 flex-col overflow-hidden border-l border-border/40 bg-bg"
-              data-terminal-session-list
-            >
-              <p className="m-0 shrink-0 truncate px-2 py-1.5 text-[11px] text-muted">
-                {sessionCountLabel}
-              </p>
-              <ul className="m-0 min-h-0 flex-1 list-none overflow-y-auto p-0">
-                {sessions.map((s) => (
-                  <li key={s.id}>
-                    <button
-                      type="button"
-                      className={cn(
-                        'flex w-full items-center gap-1 truncate px-2 py-1 text-left text-[11px]',
-                        s.id === activeId
-                          ? 'bg-surface text-fg'
-                          : 'text-muted hover:bg-surface/60 hover:text-fg'
-                      )}
-                      aria-pressed={s.id === activeId}
-                      onClick={() => setActiveId(s.id)}
-                      title={s.title}
-                    >
-                      <span className="min-w-0 truncate">
-                        &gt;_ {s.title}
-                        {!s.running ? ' (exited)' : ''}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </aside>
-          ) : null}
+              <PtySessionView sessionId={activeId} workspacePath={workspacePath} />
+            )
+          ) : (
+            <EmptyPanel
+              icon="terminal"
+              title="No terminal"
+              body={
+                workspacePath
+                  ? 'Use New terminal above to start an interactive shell.'
+                  : 'Open a workspace to start an interactive shell.'
+              }
+            />
+          )}
         </div>
       </div>
     </div>

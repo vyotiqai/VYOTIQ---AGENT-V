@@ -5,10 +5,14 @@ import { providerLabel, providerNeedsKey, seedModelsFor } from '../../../shared/
 import { anthropicProvider } from './anthropic'
 import { geminiProvider } from './gemini'
 import {
+  beginModelListFetch,
   clearModelCacheKey,
+  clearModelListInflight,
   getCachedModels,
+  getModelListInflight,
   modelCacheKey,
-  setCachedModels
+  setCachedModels,
+  setModelListInflight
 } from './modelCache'
 import {
   deepseekProvider,
@@ -80,8 +84,34 @@ export async function listProviderModels(input: {
   if (!input.forceRefresh) {
     const cached = getCachedModels(key)
     if (cached) return { models: enrichCatalogModels(input.provider, cached) }
+    const pending = getModelListInflight(key)
+    if (pending) return pending
+  } else {
+    // Drop memory/inflight so Refresh cannot join a stale in-flight catalog fetch.
+    clearModelCacheKey(key)
   }
 
+  const generation = beginModelListFetch(key)
+  const run = listProviderModelsUncached(input, key, generation)
+  setModelListInflight(key, run)
+  try {
+    return await run
+  } finally {
+    clearModelListInflight(key, run)
+  }
+}
+
+async function listProviderModelsUncached(
+  input: {
+    provider: ProviderId
+    apiKey?: string | null
+    baseUrl?: string
+    signal?: AbortSignal
+    forceRefresh?: boolean
+  },
+  key: string,
+  generation: number
+): Promise<{ models: ModelInfo[]; warning?: string }> {
   if (providerNeedsKey(input.provider) && !input.apiKey?.trim()) {
     const seeds = seedModelsFor(input.provider)
     return {
@@ -116,7 +146,7 @@ export async function listProviderModels(input: {
       }
     }
     const enriched = enrichCatalogModels(input.provider, models)
-    setCachedModels(key, enriched)
+    setCachedModels(key, enriched, generation)
     return { models: enriched }
   } catch (err) {
     if (input.forceRefresh) clearModelCacheKey(key)

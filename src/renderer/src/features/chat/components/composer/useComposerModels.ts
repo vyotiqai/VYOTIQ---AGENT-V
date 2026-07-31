@@ -27,7 +27,6 @@ export function useComposerModels({
   modelsRefreshKey?: string | number
   hasWorkspace?: boolean
   hasImages: boolean
-  running?: boolean
   browsedProvider?: ProviderId
 }) {
   const value = modelSelectionKey(provider, model)
@@ -44,7 +43,28 @@ export function useComposerModels({
   )
 
   useEffect(() => {
-    void loadProvider(provider)
+    let cancelled = false
+    let idleId: number | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const start = (): void => {
+      if (!cancelled) void loadProvider(provider)
+    }
+
+    // Defer catalog network behind first paint — cold models:list was ~1.5s in the startup stampede.
+    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+      idleId = window.requestIdleCallback(start, { timeout: 1500 })
+    } else {
+      timer = setTimeout(start, 0)
+    }
+
+    return () => {
+      cancelled = true
+      if (idleId != null && typeof window !== 'undefined' && 'cancelIdleCallback' in window) {
+        window.cancelIdleCallback(idleId)
+      }
+      if (timer != null) clearTimeout(timer)
+    }
   }, [provider, modelsRefreshKey, loadProvider])
 
   useEffect(() => {

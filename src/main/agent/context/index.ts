@@ -1,13 +1,25 @@
 export { assembleContext, estimateToolsJson } from './assemble'
 export { allocateBudget, contextWindowFor, effectiveWindow, compactionTriggerTokens, contentWindow } from './budget'
-export { compactMessages, preserveRecentMessages } from './compact'
+export { compactMessages, preserveRecentMessages, preserveRecentMessagesAsync } from './compact'
 export {
   estimateContentTokens,
+  estimateContentTokensAsync,
   estimateMessagesTokens,
+  estimateMessagesTokensAsync,
   estimateTextTokens,
+  estimateTextTokensAsync,
   effectiveInputTokens
 } from './estimate'
-export { encodingForModel, resetTokenizerCache } from './tokenizer'
+export {
+  countTextTokens,
+  countTextTokensAsync,
+  countTextsTokensAsync,
+  encodingForModel,
+  getTokenizerPerfStats,
+  resetTokenizerCache,
+  resetTokenizerPerfStats
+} from './tokenizer'
+export { resetTokenizerPoolForTests } from './tokenizerPool'
 export { estimateImageTokens, imageDimensionsFromDataUrl, imageTokensForDimensions } from './imageTokens'
 export {
   ensureMemoryLayout,
@@ -23,7 +35,7 @@ export {
 export { trimToolsToBudget } from './toolsBudget'
 export { trimToolResults } from './toolTrim'
 export { estimateSubagentOverheadTokens, prepareSubagentMessages } from './subagentContext'
-export { dropOldestTurn, trimHistoryToBudget } from './historyTrim'
+export { dropOldestTurn, trimHistoryToBudget, trimHistoryToBudgetAsync } from './historyTrim'
 export { stripImagesFromMessages } from './stripImages'
 export { buildWorkspaceSnapshot, buildWorkspaceSnapshotAsync, clearWorkspaceSnapshotCache } from './workspaceSnapshot'
 export {

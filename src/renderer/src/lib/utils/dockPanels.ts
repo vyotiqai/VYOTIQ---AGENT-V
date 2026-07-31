@@ -29,7 +29,7 @@ export const DOCK_PANELS: readonly DockPanelDef[] = [
   {
     id: 'changes',
     icon: 'branch',
-    label: '± Changes',
+    label: 'Changes',
     showLabel: 'Show changes panel',
     hideLabel: 'Hide changes panel'
   },

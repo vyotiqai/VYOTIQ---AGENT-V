@@ -357,8 +357,9 @@ async function runParallelBatch(
     }
   })
   await Promise.all(workers)
-  for (const call of calls) {
-    if (!results.has(call.id) && ctx.signal.aborted) {
+  // After abort, discard late successes so the step does not report ok for cancelled work.
+  if (ctx.signal.aborted) {
+    for (const call of calls) {
       results.set(call.id, cancelledToolResult(call, ctx))
     }
   }

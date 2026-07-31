@@ -102,6 +102,32 @@ describe('executeStepToolCalls', () => {
     expect(outcome.messages.map((m) => m.toolCallId)).toEqual(['c1', 'c2', 'c3'])
   })
 
+  it('discards late parallel successes after abort', async () => {
+    const ac = new AbortController()
+    let started = 0
+    executeTool.mockImplementation(async () => {
+      started += 1
+      if (started === 1) {
+        ac.abort()
+        await new Promise((r) => setTimeout(r, 30))
+        return { ok: true, summary: 'late', content: 'should-not-persist' }
+      }
+      return { ok: true, summary: 'file', content: 'ok' }
+    })
+
+    const { ctx } = makeCtx(ac.signal)
+    const outcome = await executeStepToolCalls(
+      [
+        { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' },
+        { id: 'c2', name: 'read', arguments: '{"path":"b.ts"}' }
+      ],
+      ctx
+    )
+
+    expect(outcome.messages.every((m) => m.content === 'Cancelled')).toBe(true)
+    expect(outcome.stepToolsOk).toBe(false)
+  })
+
   it('prepends repeat hint when the same path fails twice in one run', async () => {
     executeTool.mockResolvedValue({
       ok: false,

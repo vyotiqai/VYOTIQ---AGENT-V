@@ -82,14 +82,16 @@ export function useSlashCommands({
     }
   }, [workspacePath])
 
-  useEffect(() => {
-    void reload()
-  }, [reload])
-
   const token = useMemo(() => {
     if (!enabled) return null
     return findActiveSlashToken(text, cursor)
   }, [enabled, text, cursor])
+
+  // Defer list IPC until the user types `/` — cold list was ~720ms on every Composer mount.
+  useEffect(() => {
+    if (!enabled || !token) return
+    void reload()
+  }, [enabled, token?.start, reload])
 
   useEffect(() => {
     setDismissed(false)

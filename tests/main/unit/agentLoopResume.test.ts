@@ -96,6 +96,7 @@ import {
   appendMessage,
   createRun,
   flushMessageAppends,
+  flushStatusWrites,
   loadCompaction,
   loadMessages,
   loadStatus,
@@ -155,7 +156,8 @@ describe('runAgent session continuation', () => {
     expect(isActive(runId)).toBe(false)
     const runDir = resolveRunDir(workspace, runId)
     const priorStep = loadStatus(runDir)?.step ?? 0
-    updateStatus(runDir, { status: 'error', error: 'stale failure' })
+    await flushStatusWrites(runDir)
+    await updateStatus(runDir, { status: 'error', error: 'stale failure' }, { sync: true })
 
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
       yield { type: 'text', text: 'file list' }

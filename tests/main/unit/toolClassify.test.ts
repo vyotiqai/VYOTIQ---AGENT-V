@@ -83,12 +83,12 @@ describe('tool classify', () => {
     }
   })
 
-  it('allows parallel for MCP tools with readOnlyHint; still requires approval', () => {
+  it('never treats MCP readOnlyHint as parallel-safe', () => {
     expect(isParallelSafeTool('mcp__fs__read_file')).toBe(false)
     expect(isApprovalExemptTool('mcp__fs__read_file')).toBe(false)
     expect(isParallelSafeTool('mcp__gh__create_issue')).toBe(false)
     setMcpReadOnlyHintsForTests({ 'mcp__fs__read_file': true })
-    expect(isParallelSafeTool('mcp__fs__read_file')).toBe(true)
+    expect(isParallelSafeTool('mcp__fs__read_file')).toBe(false)
     expect(isApprovalExemptTool('mcp__fs__read_file')).toBe(false)
     expect(isToolGated('mcp__fs__read_file', 'mutating', new Set(), [])).toBe(true)
   })

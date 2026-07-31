@@ -1,6 +1,6 @@
 import type { ChatMessage } from '../../../shared/ipc'
 import type { ModelInfo } from '../../../shared/ipc/schemas/providers'
-import { estimateMessagesTokens } from './estimate'
+import { estimateMessagesTokens, estimateMessagesTokensAsync } from './estimate'
 
 /**
  * Drop a complete prefix turn so we never orphan tool results
@@ -66,6 +66,24 @@ export function trimHistoryToBudget(
 ): ChatMessage[] {
   let msgs = messages
   while (msgs.length > 2 && estimateMessagesTokens(msgs, model) > historyBudget) {
+    const trimmed = dropOldestTurn(msgs)
+    if (trimmed.length >= msgs.length) break
+    msgs = trimmed
+  }
+  while (msgs.length > 2 && msgs[0].role === 'tool') {
+    msgs = msgs.slice(1)
+  }
+  return msgs
+}
+
+/** Async variant — BPE for uncached strings runs off the main thread when workers are available. */
+export async function trimHistoryToBudgetAsync(
+  messages: ChatMessage[],
+  historyBudget: number,
+  model?: ModelInfo
+): Promise<ChatMessage[]> {
+  let msgs = messages
+  while (msgs.length > 2 && (await estimateMessagesTokensAsync(msgs, model)) > historyBudget) {
     const trimmed = dropOldestTurn(msgs)
     if (trimmed.length >= msgs.length) break
     msgs = trimmed

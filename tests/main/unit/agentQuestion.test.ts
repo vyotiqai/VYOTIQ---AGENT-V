@@ -1,6 +1,7 @@
-import { describe, expect, it, beforeEach } from 'vitest'
+import { describe, expect, it, beforeEach, vi } from 'vitest'
 import {
   askQuestionThroughRenderer,
+  AGENT_QUESTION_TIMEOUT_MS,
   cancelPendingQuestions,
   listPendingAgentQuestions,
   registerQuestionSender,
@@ -38,7 +39,7 @@ describe('agentQuestion', () => {
     expect(seen).toHaveLength(1)
     expect(seen[0]!.question).toBe('Which approach?')
 
-    expect(resolveAgentQuestion({ requestId: 'req-1', answers: ['Option A'] })).toBe(true)
+    expect(resolveAgentQuestion({ requestId: 'req-1', runId: 'run-1', answers: ['Option A'] })).toBe(true)
     await expect(answers).resolves.toEqual(['Option A'])
   })
 
@@ -75,8 +76,33 @@ describe('agentQuestion', () => {
     })
     expect(seen).toHaveLength(2)
 
-    expect(resolveAgentQuestion({ requestId: 'req-1', answers: ['yes'] })).toBe(true)
+    expect(resolveAgentQuestion({ requestId: 'req-1', runId: 'run-1', answers: ['yes'] })).toBe(true)
     await expect(pending).resolves.toEqual(['yes'])
     expect(listPendingAgentQuestions('run-1')).toEqual([])
+  })
+
+  it('rejects resolve when runId does not match pending entry', async () => {
+    registerQuestionSender('run-1', () => {})
+    const pending = askQuestionThroughRenderer(REQUEST, new AbortController().signal)
+    await Promise.resolve()
+    expect(
+      resolveAgentQuestion({ requestId: 'req-1', runId: 'other-run', answers: ['no'] })
+    ).toBe(false)
+    expect(resolveAgentQuestion({ requestId: 'req-1', runId: 'run-1', answers: ['yes'] })).toBe(true)
+    await expect(pending).resolves.toEqual(['yes'])
+  })
+
+  it('rejects after the question timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      registerQuestionSender('run-1', () => {})
+      const pending = askQuestionThroughRenderer(REQUEST, new AbortController().signal)
+      const expectReject = expect(pending).rejects.toThrow(/timed out/i)
+      await vi.advanceTimersByTimeAsync(AGENT_QUESTION_TIMEOUT_MS)
+      await expectReject
+    } finally {
+      vi.useRealTimers()
+      resetAgentQuestionForTests()
+    }
   })
 })

@@ -235,7 +235,12 @@ export function ChangesPanel({
   /** When false (hidden mounted dock), do not intercept Ctrl/Cmd+F/R. */
   active?: boolean
 }) {
-  const chrome = useGitChrome(workspacePath ?? null, gitRevision, Boolean(workspacePath))
+  // ChatView chrome already fetches when this panel is hidden; avoid a second shell-out.
+  const chrome = useGitChrome(
+    workspacePath ?? null,
+    gitRevision,
+    Boolean(workspacePath) && active
+  )
   const agentFiles = useMemo(() => collectSessionChangedFiles(items), [items])
   const agentDiffs = useMemo(() => collectSessionFileDiffs(items), [items])
 
@@ -312,8 +317,9 @@ export function ChangesPanel({
   }, [workspacePath])
 
   useEffect(() => {
+    if (!active) return
     void refreshCommits()
-  }, [refreshCommits, gitRevision])
+  }, [active, refreshCommits, gitRevision])
 
   useEffect(() => {
     if (scope !== 'commits' || !selectedCommit || !workspacePath) {

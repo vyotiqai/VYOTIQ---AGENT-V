@@ -72,8 +72,8 @@ const api: VyotiqApi = {
       ipcRenderer.removeListener(IPC.toolApprovalRequest, listener)
     }
   },
-  respondToolApproval: (requestId, decision) =>
-    ipcRenderer.invoke(IPC.toolApprovalResponse, { requestId, decision }),
+  respondToolApproval: (requestId, decision, runId) =>
+    ipcRenderer.invoke(IPC.toolApprovalResponse, { requestId, decision, runId }),
   listPendingToolApprovals: (runId) =>
     ipcRenderer.invoke(IPC.toolApprovalListPending, { runId }),
   onAgentQuestionRequest: (handler) => {
@@ -90,8 +90,8 @@ const api: VyotiqApi = {
       ipcRenderer.removeListener(IPC.agentQuestionRequest, listener)
     }
   },
-  respondAgentQuestion: (requestId, answers) =>
-    ipcRenderer.invoke(IPC.agentQuestionResponse, { requestId, answers }),
+  respondAgentQuestion: (requestId, answers, runId) =>
+    ipcRenderer.invoke(IPC.agentQuestionResponse, { requestId, answers, runId }),
   listPendingAgentQuestions: (runId) =>
     ipcRenderer.invoke(IPC.agentQuestionListPending, { runId }),
   extractAttachment: (payload) => ipcRenderer.invoke(IPC.attachmentExtract, payload),
@@ -129,9 +129,11 @@ const api: VyotiqApi = {
   ptyCreate: (payload) => ipcRenderer.invoke(IPC.ptyCreate, payload),
   ptyList: (workspacePath) =>
     ipcRenderer.invoke(IPC.ptyList, workspacePath ? { workspacePath } : {}),
-  ptyWrite: (id, data) => ipcRenderer.invoke(IPC.ptyWrite, { id, data }),
-  ptyResize: (id, cols, rows) => ipcRenderer.invoke(IPC.ptyResize, { id, cols, rows }),
-  ptyKill: (id) => ipcRenderer.invoke(IPC.ptyKill, { id }),
+  ptyWrite: (id, data, workspacePath) =>
+    ipcRenderer.invoke(IPC.ptyWrite, { id, data, workspacePath }),
+  ptyResize: (id, cols, rows, workspacePath) =>
+    ipcRenderer.invoke(IPC.ptyResize, { id, cols, rows, workspacePath }),
+  ptyKill: (id, workspacePath) => ipcRenderer.invoke(IPC.ptyKill, { id, workspacePath }),
   onPtyData: (handler) => {
     const listener = (_: IpcRendererEvent, raw: unknown): void => {
       if (!raw || typeof raw !== 'object') return

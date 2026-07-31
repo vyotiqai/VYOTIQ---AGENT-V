@@ -221,13 +221,21 @@ function workspaceFingerprint(workspacePath: string): string {
   return parts.join('|')
 }
 
+const GIT_ENV = {
+  ...process.env,
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_OPTIONAL_LOCKS: '0',
+  GCM_INTERACTIVE: 'never'
+}
+
 async function runGit(args: string[], cwd: string, timeout: number): Promise<string> {
   const { stdout } = await execFile('git', args, {
     cwd,
     encoding: 'utf8',
     timeout,
     maxBuffer: GIT_MAX_BUFFER,
-    windowsHide: true
+    windowsHide: true,
+    env: GIT_ENV
   })
   return stdout
 }

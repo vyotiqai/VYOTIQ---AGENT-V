@@ -58,6 +58,8 @@ function splitNul(out: string): string[] {
 
 function countFileLines(cwd: string, relPath: string): number {
   try {
+    // Directory placeholders from `git status -unormal` (e.g. `node_modules/`).
+    if (relPath.endsWith('/') || relPath.endsWith('\\')) return 0
     const full = join(cwd, relPath)
     const stat = statSync(full)
     if (!stat.isFile() || stat.size > UNTRACKED_LINE_COUNT_MAX_BYTES) return 0
@@ -69,6 +71,33 @@ function countFileLines(cwd: string, relPath: string): number {
   } catch {
     return 0
   }
+}
+
+/** Skip sync reads for dependency trees and other junk that blows up chrome status. */
+function shouldCountUntrackedLines(relPath: string): boolean {
+  if (relPath.endsWith('/') || relPath.endsWith('\\')) return false
+  return !isNoisePath(relPath)
+}
+
+/** Paths we never surface in status chrome (untracked dependency / build trees). */
+function isNoisePath(relPath: string): boolean {
+  const normalized = relPath.replace(/\\/g, '/').toLowerCase()
+  const parts = normalized.split('/')
+  for (const part of parts) {
+    if (
+      part === 'node_modules' ||
+      part === '.git' ||
+      part === 'dist' ||
+      part === 'build' ||
+      part === 'coverage' ||
+      part === '.next' ||
+      part === 'target' ||
+      part === '__pycache__'
+    ) {
+      return true
+    }
+  }
+  return false
 }
 
 /**
@@ -180,20 +209,31 @@ export async function readGitStatus(cwd: string): Promise<GitStatus | null> {
     file.binary = file.binary || delta.binary
   }
 
+  // Prefer `-uall` so real project files under new dirs stay visible (e.g. `sub/new.txt`).
+  // Skip dependency trees — home workspace had 637× `node_modules/**` untracked with no
+  // .gitignore; sync line-counting them made git:status multi-second under startup load.
+  // `--no-renames`: porcelain -z rename/copy records are two NUL fields
+  // (`R new\0old\0`); without this, the old path is parsed as `XY + path`
+  // and invents ghosts like `.txt` from `old.txt`.
   const porcelain = await gitQuiet(
-    ['status', '--porcelain=v1', '-z', '-uall'],
+    ['status', '--porcelain=v1', '-z', '-uall', '--no-renames'],
     cwd,
     READ_TIMEOUT_MS
   )
   if (porcelain != null) {
+    let untrackedCounted = 0
     for (const record of splitNul(porcelain)) {
       const code = record.slice(0, 2)
       const path = record.slice(3)
       if (!path) continue
+      if (isNoisePath(path)) continue
       const flags = flagsFromPorcelain(code)
 
       if (code === '??') {
-        const added = countFileLines(cwd, path)
+        const canCount =
+          shouldCountUntrackedLines(path) && untrackedCounted < MAX_FILES
+        const added = canCount ? countFileLines(cwd, path) : 0
+        if (canCount) untrackedCounted += 1
         tracked.set(path, {
           ...emptyFile(path, 'untracked'),
           added,
@@ -218,7 +258,11 @@ export async function readGitStatus(cwd: string): Promise<GitStatus | null> {
     file.removed = file.removedStaged + file.removedUnstaged
   }
 
-  const all = [...tracked.values()].sort((a, b) => a.path.localeCompare(b.path))
+  // Numstat can still list noise paths if they were already tracked/staged;
+  // keep chrome aligned with the porcelain filter.
+  const all = [...tracked.values()]
+    .filter((file) => !isNoisePath(file.path))
+    .sort((a, b) => a.path.localeCompare(b.path))
   const files = all.slice(0, MAX_FILES)
 
   let added = 0
@@ -382,6 +426,33 @@ export async function readGitCommitFiles(cwd: string, sha: string): Promise<GitC
 export type CommitOutcome = { committed: boolean; pushed: boolean; detail: string }
 export type CommitMode = 'all' | 'staged'
 
+/** Dirty paths from porcelain, excluding chrome noise trees (node_modules, etc.). */
+async function listNonNoiseDirtyPaths(cwd: string): Promise<string[]> {
+  const porcelain = await gitQuiet(
+    ['status', '--porcelain=v1', '-z', '-uall', '--no-renames'],
+    cwd,
+    READ_TIMEOUT_MS
+  )
+  if (!porcelain?.trim()) return []
+  const paths: string[] = []
+  for (const record of splitNul(porcelain)) {
+    const path = record.slice(3)
+    if (!path || isNoisePath(path)) continue
+    paths.push(path)
+  }
+  return paths
+}
+
+const STAGE_PATH_BATCH = 64
+
+async function stageNonNoisePaths(cwd: string, paths: string[]): Promise<void> {
+  for (let i = 0; i < paths.length; i += STAGE_PATH_BATCH) {
+    const chunk = paths.slice(i, i + STAGE_PATH_BATCH)
+    // `-A` with pathspecs stages adds, mods, and deletions for those paths only.
+    await git(['add', '-A', '--', ...chunk], cwd, WRITE_TIMEOUT_MS)
+  }
+}
+
 export async function commitAll(
   cwd: string,
   message: string,
@@ -391,7 +462,9 @@ export async function commitAll(
   if (!isGitRepo(cwd)) throw new Error('Not a git repository')
 
   if (mode === 'all') {
-    await git(['add', '-A'], cwd, WRITE_TIMEOUT_MS)
+    // Never `git add -A`: that stages hidden noise the Changes UI filters out.
+    const paths = await listNonNoiseDirtyPaths(cwd)
+    await stageNonNoisePaths(cwd, paths)
   }
 
   const staged = await gitQuiet(['diff', '--cached', '--name-only'], cwd, READ_TIMEOUT_MS)
@@ -415,13 +488,13 @@ export async function commitAll(
   return { committed: true, pushed: true, detail: 'Committed and pushed' }
 }
 
-/** Stage every unstaged / untracked path (`git add -A`). */
+/** Stage every visible unstaged / untracked path (excludes chrome noise trees). */
 export async function stageAll(cwd: string): Promise<{ staged: boolean; detail: string }> {
   if (!isGitRepo(cwd)) throw new Error('Not a git repository')
-  const before = await gitQuiet(['status', '--porcelain=v1', '-z', '-uall'], cwd, READ_TIMEOUT_MS)
-  if (!before?.trim()) {
+  const paths = await listNonNoiseDirtyPaths(cwd)
+  if (paths.length === 0) {
     return { staged: false, detail: 'Nothing to stage' }
   }
-  await git(['add', '-A'], cwd, WRITE_TIMEOUT_MS)
+  await stageNonNoisePaths(cwd, paths)
   return { staged: true, detail: 'Staged all changes' }
 }

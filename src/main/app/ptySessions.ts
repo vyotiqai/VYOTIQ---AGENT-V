@@ -16,6 +16,7 @@ type PtyHandle = {
   id: string
   title: string
   cwd: string
+  workspacePath: string
   running: boolean
   backend: SessionBackend
   /** Ring buffer for macOS window recreate / late subscriber recovery. */
@@ -66,15 +67,17 @@ function tryLoadPty(): typeof import('node-pty') | null {
 }
 
 export function listPtySessions(workspacePath?: string): PtySessionInfo[] {
-  const all = [...sessions.values()].map((s) => ({
+  let entries = [...sessions.values()]
+  if (workspacePath) {
+    entries = entries.filter((s) => workspacePathsEqual(s.workspacePath, workspacePath))
+  }
+  return entries.map((s) => ({
     id: s.id,
     title: s.title,
     cwd: s.cwd,
     running: s.running,
     backend: s.backend.kind
   }))
-  if (!workspacePath) return all
-  return all.filter((s) => workspacePathsEqual(s.cwd, workspacePath))
 }
 
 export function createPtySession(opts: {
@@ -92,6 +95,7 @@ export function createPtySession(opts: {
     id,
     title,
     cwd: opts.cwd,
+    workspacePath: opts.cwd,
     running: true,
     backend: { kind: 'pipe', child: null as unknown as ChildProcessWithoutNullStreams },
     scrollback: ''
@@ -202,9 +206,15 @@ export function seedPtyScrollbackForTests(id: string, data: string): void {
   if (handle) appendScrollback(handle, data)
 }
 
-export function writePty(id: string, data: string): boolean {
+export function ptySessionMatchesWorkspace(id: string, workspacePath: string): boolean {
+  const s = sessions.get(id)
+  return s != null && workspacePathsEqual(s.workspacePath, workspacePath)
+}
+
+export function writePty(id: string, data: string, workspacePath?: string): boolean {
   const s = sessions.get(id)
   if (!s?.running) return false
+  if (workspacePath && !workspacePathsEqual(s.workspacePath, workspacePath)) return false
   if (s.backend.kind === 'pty') {
     s.backend.pty.write(data)
     return true
@@ -217,9 +227,10 @@ export function writePty(id: string, data: string): boolean {
   }
 }
 
-export function resizePty(id: string, cols: number, rows: number): boolean {
+export function resizePty(id: string, cols: number, rows: number, workspacePath?: string): boolean {
   const s = sessions.get(id)
   if (!s || s.backend.kind !== 'pty') return false
+  if (workspacePath && !workspacePathsEqual(s.workspacePath, workspacePath)) return false
   if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols < 2 || rows < 2) return false
   try {
     s.backend.pty.resize(cols, rows)
@@ -229,9 +240,10 @@ export function resizePty(id: string, cols: number, rows: number): boolean {
   }
 }
 
-export function killPty(id: string): boolean {
+export function killPty(id: string, workspacePath?: string): boolean {
   const s = sessions.get(id)
   if (!s) return false
+  if (workspacePath && !workspacePathsEqual(s.workspacePath, workspacePath)) return false
   try {
     if (s.backend.kind === 'pty') s.backend.pty.kill()
     else s.backend.child.kill()
@@ -245,7 +257,7 @@ export function killPty(id: string): boolean {
 export function disposePtySessionsForWorkspace(workspacePath: string): number {
   let n = 0
   for (const s of [...sessions.values()]) {
-    if (!workspacePathsEqual(s.cwd, workspacePath)) continue
+    if (!workspacePathsEqual(s.workspacePath, workspacePath)) continue
     if (killPty(s.id)) n += 1
   }
   return n

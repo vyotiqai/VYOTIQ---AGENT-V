@@ -3,15 +3,15 @@ import { flattenFileParts } from '../../../shared/ipc'
 import type { LlmProvider } from '../providers/types'
 import { anthropicNativeOptions } from './anthropicContext'
 import { allocateBudget, compactionTriggerTokens, contentWindow } from './budget'
-import { compactMessages, preserveRecentMessages } from './compact'
+import { compactMessages, preserveRecentMessagesAsync } from './compact'
 import {
   blendInputTokens,
-  effectiveInputTokens,
-  estimateMessagesTokens,
-  estimateTextTokens
+  estimateMessagesTokensAsync,
+  estimateTextTokens,
+  estimateTextTokensAsync
 } from './estimate'
 import { readMemoryIndexAsync, readMemoryStateAsync } from './memory'
-import { trimHistoryToBudget } from './historyTrim'
+import { trimHistoryToBudgetAsync } from './historyTrim'
 import { trimToolResults } from './toolTrim'
 import {
   KEEP_RECENT_TURNS,
@@ -238,16 +238,20 @@ function buildSystem(parts: {
   return system
 }
 
-function computeLayers(
+async function computeLayers(
   system: string,
   messages: ChatMessage[],
   toolsJsonEstimate: number,
   model: ModelInfo,
   budgets: ReturnType<typeof allocateBudget>
-): ContextLayerBreakdown {
+): Promise<ContextLayerBreakdown> {
+  const [systemTokens, history] = await Promise.all([
+    estimateTextTokensAsync(system, model),
+    estimateMessagesTokensAsync(messages, model)
+  ])
   return {
-    system: estimateTextTokens(system, model),
-    history: estimateMessagesTokens(messages, model),
+    system: systemTokens,
+    history,
     tools: toolsJsonEstimate,
     buffer: budgets.buffer
   }
@@ -265,12 +269,12 @@ function stripThinkingForCompaction(messages: ChatMessage[]): ChatMessage[] {
   })
 }
 
-function shouldCompactHistory(
+async function shouldCompactHistory(
   toSummarize: ChatMessage[],
   model: ModelInfo
-): boolean {
+): Promise<boolean> {
   if (toSummarize.length > COMPACTION_MIN_MESSAGES) return true
-  return estimateMessagesTokens(toSummarize, model) >= COMPACTION_MIN_TOKENS
+  return (await estimateMessagesTokensAsync(toSummarize, model)) >= COMPACTION_MIN_TOKENS
 }
 
 function resolveUsedTokens(
@@ -356,7 +360,7 @@ export async function assembleContext(
     compaction
   })
 
-  let layers = computeLayers(systemDraft, messages, input.toolsJsonEstimate, input.model, budgets)
+  let layers = await computeLayers(systemDraft, messages, input.toolsJsonEstimate, input.model, budgets)
   let estimated = totalFromLayers(layers)
   perfLog('estimateMessagesTokens', estimateStarted, {
     messages: messages.length,
@@ -367,14 +371,14 @@ export async function assembleContext(
   let used = resolveUsedTokens(estimated, input.lastUsage, trigger)
 
   if (used >= trigger || estimated >= trigger) {
-    const keptForBoundary = preserveRecentMessages(
+    const keptForBoundary = await preserveRecentMessagesAsync(
       messages,
       keepRecent,
       budgets.history,
       input.model
     )
     const toSummarize = messages.slice(0, Math.max(0, messages.length - keptForBoundary.length))
-    if (shouldCompactHistory(toSummarize, input.model)) {
+    if (await shouldCompactHistory(toSummarize, input.model)) {
       const record = await compactMessages({
         provider: input.provider,
         model: input.model.id,
@@ -396,31 +400,37 @@ export async function assembleContext(
     }
   }
 
-  messages = trimHistoryToBudget(messages, budgets.history, input.model)
+  messages = await trimHistoryToBudgetAsync(messages, budgets.history, input.model)
 
   let system = buildSystem({
     ...systemParts,
     compaction
   })
 
-  layers = computeLayers(system, messages, input.toolsJsonEstimate, input.model, budgets)
+  layers = await computeLayers(system, messages, input.toolsJsonEstimate, input.model, budgets)
   estimated = totalFromLayers(layers)
   used = contextShrunk ? estimated : resolveUsedTokens(estimated, input.lastUsage, trigger)
 
   if (estimated > window) {
     const priorLen = messages.length
-    messages = trimHistoryToBudget(messages, Math.floor(budgets.history * 0.5), input.model)
+    messages = await trimHistoryToBudgetAsync(messages, Math.floor(budgets.history * 0.5), input.model)
     if (messages.length < priorLen) contextShrunk = true
     system = buildSystem({
       ...systemParts,
       compaction
     })
-    layers = computeLayers(system, messages, input.toolsJsonEstimate, input.model, budgets)
+    layers = await computeLayers(system, messages, input.toolsJsonEstimate, input.model, budgets)
     estimated = totalFromLayers(layers)
 
     if (estimated > window) {
-      const toSummarize = messages.slice(0, Math.max(0, messages.length - Math.max(2, keepRecent)))
-      if (shouldCompactHistory(toSummarize, input.model)) {
+      const keptForOverflow = await preserveRecentMessagesAsync(
+        messages,
+        Math.max(2, keepRecent),
+        budgets.history,
+        input.model
+      )
+      const toSummarize = messages.slice(0, Math.max(0, messages.length - keptForOverflow.length))
+      if (await shouldCompactHistory(toSummarize, input.model)) {
         const record = await compactMessages({
           provider: input.provider,
           model: input.model.id,
@@ -438,14 +448,19 @@ export async function assembleContext(
                 : input.priorCompaction?.summary))
         })
         if (record) {
-          messages = preserveRecentMessages(messages, Math.max(2, Math.floor(keepRecent / 2)), budgets.history, input.model)
+          messages = await preserveRecentMessagesAsync(
+            messages,
+            Math.max(2, Math.floor(keepRecent / 2)),
+            budgets.history,
+            input.model
+          )
           compaction = record
           contextShrunk = true
           system = buildSystem({
             ...systemParts,
             compaction
           })
-          layers = computeLayers(system, messages, input.toolsJsonEstimate, input.model, budgets)
+          layers = await computeLayers(system, messages, input.toolsJsonEstimate, input.model, budgets)
           estimated = totalFromLayers(layers)
         }
       }
@@ -461,7 +476,7 @@ export async function assembleContext(
         ...systemParts,
         compaction
       })
-      layers = computeLayers(system, messages, input.toolsJsonEstimate, input.model, budgets)
+      layers = await computeLayers(system, messages, input.toolsJsonEstimate, input.model, budgets)
       estimated = totalFromLayers(layers)
     }
 

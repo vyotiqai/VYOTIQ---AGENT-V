@@ -7,8 +7,8 @@ import { getSecret, hasStoredSecretBlob, secretStatus } from '@main/settings/sec
 import { getSettings } from '@main/settings/settings'
 import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/workspace/workspaces'
 import { allocateBudget, contentWindow, contextWindowFor } from './context/budget'
-import { compactMessages, preserveRecentMessages } from './context/compact'
-import { estimateMessagesTokens } from './context/estimate'
+import { compactMessages, preserveRecentMessagesAsync } from './context/compact'
+import { estimateMessagesTokensAsync } from './context/estimate'
 import { promoteCompactionToMemory } from './context/memoryPromote'
 import { isTrimWatermarkCompaction, KEEP_RECENT_TURNS } from './context/types'
 import { resolveModelInfo } from './modelResolve'
@@ -74,7 +74,7 @@ export async function compactRunNow(input: {
   const baseUrl = providerId === 'ollama' ? ollamaOpenAiBaseUrl(settings.ollamaBaseUrl) : undefined
   const model = await resolveModelInfo(providerId, settings.model, apiKey, baseUrl, signal)
 
-  const kept = preserveRecentMessages(
+  const kept = await preserveRecentMessagesAsync(
     working,
     keepRecent,
     allocateBudget(model).history,
@@ -125,7 +125,7 @@ export async function compactRunNow(input: {
   })
 
   const remainingEstimate =
-    estimateMessagesTokens(kept, model) + (record.tokenEstimate ?? 0)
+    (await estimateMessagesTokensAsync(kept, model)) + (record.tokenEstimate ?? 0)
 
   return {
     summary: record.summary,

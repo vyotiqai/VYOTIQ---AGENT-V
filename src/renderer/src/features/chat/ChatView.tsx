@@ -6,7 +6,7 @@ import { ChangesPanel } from './components/ChangesPanel'
 import { PlanPanel } from './components/PlanPanel'
 import { PrPanel } from './components/PrPanel'
 import { ChatSideRail } from './components/ChatSideRail'
-import { DockTabBar, defaultDockTab } from './components/DockTabBar'
+import { DockTabBar, AGENT_DOCK_TAB, defaultDockTab } from './components/DockTabBar'
 import { TerminalPanel } from './components/TerminalPanel'
 import { isPlanDraftReady } from './components/composer/PlanHandoff'
 import { Composer } from './components/composer'
@@ -14,26 +14,36 @@ import { RunSessionProvider } from './RunSessionContext'
 import {
   ChatGitLeading,
   ChatGitTrailing,
-  useChatGitChrome,
   useChatLiveItems,
+  useGitRevision,
   useHasChatItems
 } from './components/ChatStreamLeaves'
+import { useGitChrome } from './components/GitChrome'
 import type { UiItem } from '@shared/transcript'
 import type { AgentInteractionMode, ProviderId, ToolApprovalDecision } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
-import { Alert } from '@renderer/lib/ui'
+import { Alert, PanelResizeHandle } from '@renderer/lib/ui'
+import { usePersistedBoolean } from '@renderer/lib/hooks/usePersistedBoolean'
+import { usePersistedNumber } from '@renderer/lib/hooks/usePersistedNumber'
 import {
   BROWSER_PANEL_OPEN_KEY,
   CHAT_COLUMN_MAX,
   CHAT_GUTTER,
   CHAT_RIGHT_PANEL,
-  CHAT_RIGHT_PANEL_EXPANDED,
+  CHAT_STAGE_INSET,
   COMPOSER_DOCK_CLEARANCE_PX,
   COMPOSER_DOCK_FADE_PX,
   COMPOSER_DOCK_FALLBACK_PX,
   DOCK_EXPANDED_KEY,
+  DOCK_WIDTH_DEFAULT_PX,
+  DOCK_WIDTH_KEY,
+  DOCK_WIDTH_MAX_PX,
+  DOCK_WIDTH_MIN_PX,
+  IMMERSIVE_TAB_KEY,
   RIGHT_PANEL_KEY,
-  type ChatRightPanelId
+  clampDockWidthPx,
+  type ChatRightPanelId,
+  type DockImmersiveTabId
 } from '@renderer/lib/utils/layout'
 import { cn } from '@renderer/lib/ui/cn'
 import type { ChatItemsStore, ChatMetaStore } from './chatStores'
@@ -74,7 +84,8 @@ function TranscriptPane({
   onDiscardWriteFile,
   onKeepAllWrites,
   resolveBlockedReason,
-  onOpenChanges
+  onOpenChanges,
+  sideRailPad = true
 }: {
   items: UiItem[]
   pendingRun?: boolean
@@ -108,6 +119,7 @@ function TranscriptPane({
   onKeepAllWrites?: () => void | Promise<unknown>
   resolveBlockedReason?: string | null
   onOpenChanges?: () => void
+  sideRailPad?: boolean
 }) {
   const runSession = useMemo(
     () => ({
@@ -150,6 +162,7 @@ function TranscriptPane({
         onKeepAllWrites={onKeepAllWrites}
         resolveBlockedReason={resolveBlockedReason}
         onOpenChanges={onOpenChanges}
+        sideRailPad={sideRailPad}
       />
     </RunSessionProvider>
   )
@@ -324,7 +337,6 @@ export function ChatView({
     return null
   })
   const [prNumber, setPrNumber] = useState<number | null>(null)
-  const [terminalTabTitle, setTerminalTabTitle] = useState<string | null>(null)
   /** Accumulated dock title tabs (multi-panel strip). */
   const [dockTabs, setDockTabs] = useState<ChatRightPanelId[]>(() =>
     activeRightPanel ? [activeRightPanel] : []
@@ -333,26 +345,52 @@ export function ChatView({
   const [mountedPanels, setMountedPanels] = useState<ChatRightPanelId[]>(() =>
     activeRightPanel ? [activeRightPanel] : []
   )
-  const [dockExpanded, setDockExpanded] = useState(() => {
+  const [dockWidthPx, setDockWidthPx] = usePersistedNumber(
+    DOCK_WIDTH_KEY,
+    DOCK_WIDTH_DEFAULT_PX,
+    clampDockWidthPx
+  )
+  /** Immersive unified tabs (Expand panel) — not a wider side dock. */
+  const [dockExpanded, setDockExpanded] = usePersistedBoolean(DOCK_EXPANDED_KEY, false)
+  const [immersiveTab, setImmersiveTabState] = useState<DockImmersiveTabId>(() => {
     try {
-      return localStorage.getItem(DOCK_EXPANDED_KEY) === '1'
+      const raw = localStorage.getItem(IMMERSIVE_TAB_KEY)
+      if (
+        raw === 'agent' ||
+        raw === 'browser' ||
+        raw === 'terminal' ||
+        raw === 'changes' ||
+        raw === 'plan' ||
+        raw === 'pr'
+      ) {
+        return raw
+      }
     } catch {
-      return false
+      /* ignore */
     }
+    return activeRightPanel ?? 'agent'
   })
+  const setImmersiveTab = useCallback((next: DockImmersiveTabId | ((prev: DockImmersiveTabId) => DockImmersiveTabId)) => {
+    setImmersiveTabState((prev) => {
+      const resolved = typeof next === 'function' ? next(prev) : next
+      try {
+        localStorage.setItem(IMMERSIVE_TAB_KEY, resolved)
+      } catch {
+        /* ignore */
+      }
+      return resolved
+    })
+  }, [])
+  const dockMaxPx = clampDockWidthPx(DOCK_WIDTH_MAX_PX)
+  const dockImmersive = dockExpanded && dockTabs.length > 0
   /** Session-scoped: skip auto-open after the user closes a panel until they open it again. */
   const dismissedPanelsRef = useRef<Set<ChatRightPanelId>>(new Set())
   const wasChangesActiveRef = useRef(false)
   const liveItems = useChatLiveItems(itemsStore, items)
-  const gitChrome = useChatGitChrome(itemsStore, items, workspacePath, running, Boolean(workspacePath))
-  const gitRevision = useMemo(() => {
-    // Keep a cheap bump for panels that still take a revision prop; prefer chrome status for auto-open.
-    let n = 0
-    for (const item of liveItems) {
-      if (item.kind === 'tool' && item.tool.status === 'done') n += 1
-    }
-    return n + (running ? 0 : 1) + (gitChrome.status?.fileCount ?? 0)
-  }, [liveItems, running, gitChrome.status?.fileCount])
+  const gitRevision = useGitRevision(workspacePath, running, liveItems)
+  const gitChrome = useGitChrome(workspacePath, gitRevision, Boolean(workspacePath))
+  // Prefer the shared mutating-tool revision (same clock as composer chrome), not
+  // a per-done-tool + fileCount formula that over-fetches and races the status cache.
 
   const agentTerminalRunning = useMemo(
     () =>
@@ -380,10 +418,12 @@ export function ChatView({
       if (current) dismissedPanelsRef.current.add(current)
       return null
     })
+    setDockExpanded(false)
+    setImmersiveTab('agent')
     // Keep mountedPanels/dockTabs so PTY/browser/plan state survives hide; clear
     // only when the last tab is closed via closeDockTab.
     persistRightPanel(null)
-  }, [persistRightPanel])
+  }, [persistRightPanel, setDockExpanded])
 
   const setRightPanel = useCallback(
     (next: ChatRightPanelId | null) => {
@@ -395,44 +435,49 @@ export function ChatView({
       setActiveRightPanel(next)
       setDockTabs((prev) => (prev.includes(next) ? prev : [...prev, next]))
       setMountedPanels((prev) => (prev.includes(next) ? prev : [...prev, next]))
+      setImmersiveTab(next)
       persistRightPanel(next)
     },
     [closeDock, persistRightPanel]
   )
+
+  const activeRightPanelRef = useRef(activeRightPanel)
+  activeRightPanelRef.current = activeRightPanel
 
   const tryAutoOpenPanel = useCallback(
     (panel: ChatRightPanelId) => {
       if (dismissedPanelsRef.current.has(panel)) return
       setDockTabs((prev) => (prev.includes(panel) ? prev : [...prev, panel]))
       setMountedPanels((prev) => (prev.includes(panel) ? prev : [...prev, panel]))
-      setActiveRightPanel((current) => {
-        if (current === panel) return current
-        if (
-          current === 'browser' ||
-          current === 'terminal' ||
-          current === 'changes' ||
-          current === 'plan' ||
-          current === 'pr'
-        ) {
-          // Another panel is focused — add the tab but do not steal focus.
-          return current
-        }
-        persistRightPanel(panel)
-        return panel
-      })
+      const current = activeRightPanelRef.current
+      if (
+        current === panel ||
+        current === 'browser' ||
+        current === 'terminal' ||
+        current === 'changes' ||
+        current === 'plan' ||
+        current === 'pr'
+      ) {
+        // Already open or another panel focused — add the tab but do not steal focus.
+        return
+      }
+      setActiveRightPanel(panel)
+      setImmersiveTab(panel)
+      persistRightPanel(panel)
     },
-    [persistRightPanel]
+    [persistRightPanel, setImmersiveTab]
   )
 
   const closeDockTab = useCallback(
     (id: ChatRightPanelId) => {
       dismissedPanelsRef.current.add(id)
-      if (id === 'terminal') setTerminalTabTitle(null)
       setDockTabs((prev) => {
         const next = prev.filter((t) => t !== id)
         setMountedPanels((mounted) => mounted.filter((t) => t !== id))
         if (next.length === 0) {
           setActiveRightPanel(null)
+          setDockExpanded(false)
+          setImmersiveTab('agent')
           persistRightPanel(null)
           return []
         }
@@ -442,10 +487,14 @@ export function ChatView({
           persistRightPanel(fallback)
           return fallback
         })
+        setImmersiveTab((tab) => {
+          if (tab !== id) return tab
+          return next[next.length - 1] ?? 'agent'
+        })
         return next
       })
     },
-    [persistRightPanel]
+    [persistRightPanel, setDockExpanded]
   )
 
   const toggleRightPanel = useCallback(
@@ -460,20 +509,60 @@ export function ChatView({
   )
 
   const toggleDockExpanded = useCallback(() => {
-    setDockExpanded((prev) => {
-      const next = !prev
-      try {
-        localStorage.setItem(DOCK_EXPANDED_KEY, next ? '1' : '0')
-      } catch {
-        /* ignore */
+    if (dockExpanded) {
+      // Collapse: if Agent is focused, return to full chat (no side dock); else side dock.
+      if (immersiveTab === 'agent') {
+        setActiveRightPanel(null)
+        persistRightPanel(null)
       }
-      return next
-    })
-  }, [])
+      setDockExpanded(false)
+      return
+    }
+    if (activeRightPanel) {
+      setImmersiveTab(activeRightPanel)
+      setDockExpanded(true)
+      return
+    }
+    // Re-expand after collapsing from Agent while dock tabs remain mounted in state.
+    if (dockTabs.length > 0) {
+      setImmersiveTab((tab) => (tab === 'agent' ? 'agent' : tab))
+      setDockExpanded(true)
+    }
+  }, [
+    activeRightPanel,
+    dockExpanded,
+    dockTabs.length,
+    immersiveTab,
+    persistRightPanel,
+    setDockExpanded,
+    setImmersiveTab
+  ])
+
+  const selectImmersiveTab = useCallback(
+    (id: DockImmersiveTabId) => {
+      setImmersiveTab(id)
+      if (id !== 'agent') {
+        setRightPanel(id)
+      }
+    },
+    [setImmersiveTab, setRightPanel]
+  )
+
+  useEffect(() => {
+    const onResize = (): void => {
+      setDockWidthPx((w) => clampDockWidthPx(w))
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [setDockWidthPx])
+
+  // Drop immersive only when the dock has no panels left (not merely Agent-focused).
+  useEffect(() => {
+    if (!activeRightPanel && dockTabs.length === 0) setDockExpanded(false)
+  }, [activeRightPanel, dockTabs.length, setDockExpanded])
 
   useEffect(() => {
     setPrNumber(null)
-    setTerminalTabTitle(null)
     wasChangesActiveRef.current = false
     dismissedPanelsRef.current.clear()
   }, [workspacePath])
@@ -524,29 +613,24 @@ export function ChatView({
     setPrNumber(meta?.number ?? null)
   }, [])
 
-  // Auto-open plan panel when plan.md is ready in plan mode
+  // Auto-open plan panel when plan.md is ready in plan mode (single check;
+  // PlanPanel owns polling while the tab is mounted).
   useEffect(() => {
-    if (!workspacePath || !activeRunId) {
+    if (!workspacePath || !activeRunId || agentMode !== 'plan') {
       return
     }
     let cancelled = false
-    const tick = (): void => {
-      void window.vyotiq.readRunArtifact?.({ workspacePath, runId: activeRunId, name: 'plan.md' }).then(
-        (res) => {
-          if (cancelled) return
-          const ready = Boolean(res.ok && isPlanDraftReady(res.data?.content))
-          if (ready && agentMode === 'plan') {
-            tryAutoOpenPanel('plan')
-          }
+    void window.vyotiq.readRunArtifact?.({ workspacePath, runId: activeRunId, name: 'plan.md' }).then(
+      (res) => {
+        if (cancelled) return
+        const ready = Boolean(res.ok && isPlanDraftReady(res.data?.content))
+        if (ready) {
+          tryAutoOpenPanel('plan')
         }
-      )
-    }
-    tick()
-    if (!running) return undefined
-    const id = window.setInterval(tick, 2000)
+      }
+    )
     return () => {
       cancelled = true
-      window.clearInterval(id)
     }
   }, [workspacePath, activeRunId, running, agentMode, tryAutoOpenPanel])
 
@@ -557,16 +641,18 @@ export function ChatView({
   }, [agentTerminalRunning, tryAutoOpenPanel])
 
   const tabItems = useMemo(
-    () =>
-      dockTabs.map((id) => {
-        const tab = defaultDockTab(id, id === 'pr' ? prNumber : null)
-        if (id === 'terminal' && terminalTabTitle) {
-          return { ...tab, label: `>_ ${terminalTabTitle}` }
-        }
-        return tab
-      }),
-    [dockTabs, prNumber, terminalTabTitle]
+    () => dockTabs.map((id) => defaultDockTab(id, id === 'pr' ? prNumber : null)),
+    [dockTabs, prNumber]
   )
+  const immersiveTabItems = useMemo(() => [AGENT_DOCK_TAB, ...tabItems], [tabItems])
+  const visiblePanelId: ChatRightPanelId | null = dockImmersive
+    ? immersiveTab === 'agent'
+      ? null
+      : immersiveTab
+    : activeRightPanel
+  // Pad only while the floating side rail is mounted (hidden when a side dock
+  // is open or in immersive unified-tabs mode).
+  const agentSideRailPad = !dockImmersive && activeRightPanel == null
 
   // Transcript scrolls behind the floating composer, so it has to reserve the
   // dock height plus the fade painted above it (not included in offsetHeight).
@@ -590,7 +676,7 @@ export function ChatView({
     const shell = dock.querySelector('[data-composer-shell]')
     if (shell) ro.observe(shell)
     return () => ro.disconnect()
-  }, [showHero, surfaceKey])
+  }, [showHero, surfaceKey, dockImmersive, immersiveTab])
 
   const composerProps = {
     provider,
@@ -626,210 +712,277 @@ export function ChatView({
     contextUsage: metaStore ? undefined : contextUsage,
     metaStore,
     onCompactContext,
-    slashHandlers
+    slashHandlers,
+    sideRailPad: agentSideRailPad
   }
+
+  const agentColumn = (
+    <>
+      <h1 ref={headingRef} tabIndex={-1} className="sr-only">
+        Vyotiq chat
+      </h1>
+
+      {showHero ? (
+        <div
+          className={cn(
+            'flex min-h-0 flex-1 flex-col items-center justify-center',
+            agentSideRailPad ? CHAT_STAGE_INSET : CHAT_GUTTER
+          )}
+          role="status"
+        >
+          {bannerError ? (
+            <Alert
+              className={cn('mb-4 w-full', CHAT_COLUMN_MAX)}
+              onDismiss={onDismissError}
+            >
+              {bannerError}
+            </Alert>
+          ) : null}
+          <div
+            className={cn(
+              'flex w-full flex-col items-center gap-3 animate-fade-in',
+              CHAT_COLUMN_MAX
+            )}
+            data-composer-hero
+          >
+            <MemoComposer
+              key={`composer:${surfaceKey}`}
+              {...composerProps}
+              variant="hero"
+              className="w-full"
+            />
+          </div>
+        </div>
+      ) : (
+        <div ref={stageRef} className="relative flex min-h-0 flex-1 flex-col" data-chat-stage>
+          <TranscriptPane
+            items={liveItems}
+            pendingRun={pendingRun}
+            running={running}
+            transcriptLoading={transcriptLoading}
+            dockReservePx={dockReservePx}
+            restoreScrollTop={restoreScrollTop}
+            scrollRestoreToken={scrollRestoreToken}
+            onScrollTopChange={onScrollTopChange}
+            onLoadToolContent={onLoadToolContent}
+            onThinkingToggle={onThinkingToggle}
+            onToolToggle={onToolToggle}
+            onGroupToggle={onGroupToggle}
+            onTurnToggle={onTurnToggle}
+            onApprovalDecision={onApprovalDecision}
+            onQuestionSubmit={onQuestionSubmit}
+            collapsedTurns={collapsedTurns}
+            showThinking={showThinking}
+            mcpServerNames={mcpServerNames}
+            surfaceKey={surfaceKey}
+            workspacePath={workspacePath}
+            activeRunId={activeRunId}
+            agentMode={agentMode}
+            canUndoWrites={canUndoWrites}
+            undoBusy={undoBusy}
+            onUndoWrites={onUndoWrites}
+            writeFileResolutions={writeFileResolutions}
+            writeResolvablePaths={writeResolvablePaths}
+            onKeepWriteFile={onKeepWriteFile}
+            onDiscardWriteFile={onDiscardWriteFile}
+            onKeepAllWrites={onKeepAllWrites}
+            resolveBlockedReason={resolveBlockedReason}
+            onOpenChanges={() => setRightPanel('changes')}
+            sideRailPad={agentSideRailPad}
+          />
+
+          <MemoComposer
+            key={`composer:${surfaceKey}`}
+            {...composerProps}
+            variant="dock"
+            bannerError={bannerError}
+            onDismissError={onDismissError}
+            leading={
+              <ChatGitLeading chrome={gitChrome} onOpenChanges={() => setRightPanel('changes')} />
+            }
+            trailing={
+              <ChatGitTrailing chrome={gitChrome} />
+            }
+          />
+        </div>
+      )}
+    </>
+  )
+
+  const panelBodies = (
+    <>
+      {mountedPanels.includes('browser') ? (
+        <div
+          className={cn(
+            'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+            visiblePanelId === 'browser' ? 'flex' : 'hidden'
+          )}
+          aria-hidden={visiblePanelId !== 'browser'}
+          inert={visiblePanelId !== 'browser' ? true : undefined}
+        >
+          <AgentBrowserPanel
+            workspacePath={workspacePath}
+            activeRunId={activeRunId}
+            visible={visiblePanelId === 'browser'}
+            onClose={() => closeDockTab('browser')}
+          />
+        </div>
+      ) : null}
+      {mountedPanels.includes('terminal') ? (
+        <div
+          className={cn(
+            'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+            visiblePanelId === 'terminal' ? 'flex' : 'hidden'
+          )}
+          aria-hidden={visiblePanelId !== 'terminal'}
+          inert={visiblePanelId !== 'terminal' ? true : undefined}
+        >
+          <TerminalPanel workspacePath={workspacePath} />
+        </div>
+      ) : null}
+      {mountedPanels.includes('changes') ? (
+        <div
+          className={cn(
+            'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+            visiblePanelId === 'changes' ? 'flex' : 'hidden'
+          )}
+          aria-hidden={visiblePanelId !== 'changes'}
+          inert={visiblePanelId !== 'changes' ? true : undefined}
+        >
+          <ChangesPanel
+            items={liveItems}
+            workspacePath={workspacePath}
+            gitRevision={gitRevision}
+            onGitMutated={gitChrome.refresh}
+            onViewPr={() => setRightPanel('pr')}
+            writeFileResolutions={writeFileResolutions}
+            resolvablePaths={writeResolvablePaths}
+            canResolve={canUndoWrites}
+            resolveBusy={undoBusy}
+            resolveBlockedReason={resolveBlockedReason}
+            onKeepWriteFile={onKeepWriteFile}
+            onDiscardWriteFile={onDiscardWriteFile}
+            onKeepAllWrites={onKeepAllWrites}
+            onDiscardAllWrites={onUndoWrites}
+            active={visiblePanelId === 'changes'}
+          />
+        </div>
+      ) : null}
+      {mountedPanels.includes('pr') ? (
+        <div
+          className={cn(
+            'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+            visiblePanelId === 'pr' ? 'flex' : 'hidden'
+          )}
+          aria-hidden={visiblePanelId !== 'pr'}
+          inert={visiblePanelId !== 'pr' ? true : undefined}
+        >
+          <PrPanel
+            workspacePath={workspacePath}
+            onPrMeta={handlePrMeta}
+            onUnlink={() => closeDockTab('pr')}
+            active={visiblePanelId === 'pr'}
+          />
+        </div>
+      ) : null}
+      {mountedPanels.includes('plan') ? (
+        <div
+          className={cn(
+            'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+            visiblePanelId === 'plan' ? 'flex' : 'hidden'
+          )}
+          aria-hidden={visiblePanelId !== 'plan'}
+          inert={visiblePanelId !== 'plan' ? true : undefined}
+        >
+          <PlanPanel
+            workspacePath={workspacePath}
+            runId={activeRunId}
+            running={running}
+          />
+        </div>
+      ) : null}
+    </>
+  )
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="relative flex min-h-0 min-w-0 flex-1">
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <h1 ref={headingRef} tabIndex={-1} className="sr-only">
-            Vyotiq chat
-          </h1>
-
-          {showHero ? (
-            <div
-              className={cn(
-                'flex min-h-0 flex-1 flex-col items-center justify-center',
-                CHAT_GUTTER
-              )}
-              role="status"
-            >
-              {bannerError ? (
-                <Alert
-                  className={cn('mb-4 w-full', CHAT_COLUMN_MAX)}
-                  onDismiss={onDismissError}
-                >
-                  {bannerError}
-                </Alert>
-              ) : null}
-              <div
-                className={cn(
-                  'flex w-full flex-col items-center gap-3 animate-fade-in',
-                  CHAT_COLUMN_MAX
-                )}
-                data-composer-hero
-              >
-                <MemoComposer
-                  key={`composer:${surfaceKey}`}
-                  {...composerProps}
-                  variant="hero"
-                  className="w-full"
-                />
-              </div>
-            </div>
-          ) : (
-            <div ref={stageRef} className="relative flex min-h-0 flex-1 flex-col" data-chat-stage>
-              <TranscriptPane
-                items={liveItems}
-                pendingRun={pendingRun}
-                running={running}
-                transcriptLoading={transcriptLoading}
-                dockReservePx={dockReservePx}
-                restoreScrollTop={restoreScrollTop}
-                scrollRestoreToken={scrollRestoreToken}
-                onScrollTopChange={onScrollTopChange}
-                onLoadToolContent={onLoadToolContent}
-                onThinkingToggle={onThinkingToggle}
-                onToolToggle={onToolToggle}
-                onGroupToggle={onGroupToggle}
-                onTurnToggle={onTurnToggle}
-                onApprovalDecision={onApprovalDecision}
-                onQuestionSubmit={onQuestionSubmit}
-                collapsedTurns={collapsedTurns}
-                showThinking={showThinking}
-                mcpServerNames={mcpServerNames}
-                surfaceKey={surfaceKey}
-                workspacePath={workspacePath}
-                activeRunId={activeRunId}
-                agentMode={agentMode}
-                canUndoWrites={canUndoWrites}
-                undoBusy={undoBusy}
-                onUndoWrites={onUndoWrites}
-                writeFileResolutions={writeFileResolutions}
-                writeResolvablePaths={writeResolvablePaths}
-                onKeepWriteFile={onKeepWriteFile}
-                onDiscardWriteFile={onDiscardWriteFile}
-                onKeepAllWrites={onKeepAllWrites}
-                resolveBlockedReason={resolveBlockedReason}
-                onOpenChanges={() => setRightPanel('changes')}
-              />
-
-              <MemoComposer
-                key={`composer:${surfaceKey}`}
-                {...composerProps}
-                variant="dock"
-                bannerError={bannerError}
-                onDismissError={onDismissError}
-                leading={
-                  <ChatGitLeading chrome={gitChrome} onOpenChanges={() => setRightPanel('changes')} />
-                }
-                trailing={
-                  <ChatGitTrailing chrome={gitChrome} />
-                }
-              />
-            </div>
-          )}
-        </div>
-        {activeRightPanel ? (
-          <aside
-            className={dockExpanded ? CHAT_RIGHT_PANEL_EXPANDED : CHAT_RIGHT_PANEL}
-            data-right-dock
-            data-dock-expanded={dockExpanded ? '1' : '0'}
+        {dockImmersive ? (
+          <div
+            className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-bg"
+            data-dock-immersive
+            data-dock-expanded="1"
           >
             <DockTabBar
-              active={activeRightPanel}
-              tabs={tabItems}
-              onSelect={(id) => setRightPanel(id)}
+              variant="immersive"
+              active={immersiveTab}
+              tabs={immersiveTabItems}
+              onSelect={selectImmersiveTab}
               onCloseTab={closeDockTab}
               onOpenPanel={(id) => setRightPanel(id)}
-              expanded={dockExpanded}
+              expanded
               onToggleExpanded={toggleDockExpanded}
             />
-            {mountedPanels.includes('browser') ? (
-              <div
-                className={cn(
-                  'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
-                  activeRightPanel === 'browser' ? 'flex' : 'hidden'
-                )}
-                aria-hidden={activeRightPanel !== 'browser'}
-              >
-                <AgentBrowserPanel
-                  workspacePath={workspacePath}
-                  activeRunId={activeRunId}
-                />
-              </div>
-            ) : null}
-            {mountedPanels.includes('terminal') ? (
-              <div
-                className={cn(
-                  'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
-                  activeRightPanel === 'terminal' ? 'flex' : 'hidden'
-                )}
-                aria-hidden={activeRightPanel !== 'terminal'}
-              >
-                <TerminalPanel
-                  workspacePath={workspacePath}
-                  onActiveSessionChange={(session) => {
-                    setTerminalTabTitle(session?.title ?? null)
+            <div
+              className={cn(
+                'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+                immersiveTab === 'agent' ? 'flex' : 'hidden'
+              )}
+              aria-hidden={immersiveTab !== 'agent'}
+              inert={immersiveTab !== 'agent' ? true : undefined}
+              data-immersive-agent
+            >
+              {agentColumn}
+            </div>
+            {panelBodies}
+          </div>
+        ) : (
+          <>
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">{agentColumn}</div>
+            {activeRightPanel ? (
+              <>
+                <PanelResizeHandle
+                  label="Resize panel"
+                  value={dockWidthPx}
+                  min={DOCK_WIDTH_MIN_PX}
+                  max={dockMaxPx}
+                  edge="start"
+                  onChange={(next) => {
+                    setDockWidthPx(next)
                   }}
                 />
-              </div>
+                <aside
+                  className={CHAT_RIGHT_PANEL}
+                  style={{ width: dockWidthPx }}
+                  data-right-dock
+                  data-dock-expanded="0"
+                >
+                  <DockTabBar
+                    active={activeRightPanel}
+                    tabs={tabItems}
+                    onSelect={(id) => {
+                      if (id !== 'agent') setRightPanel(id)
+                    }}
+                    onCloseTab={closeDockTab}
+                    onOpenPanel={(id) => setRightPanel(id)}
+                    expanded={false}
+                    onToggleExpanded={toggleDockExpanded}
+                  />
+                  {panelBodies}
+                </aside>
+              </>
             ) : null}
-            {mountedPanels.includes('changes') ? (
-              <div
-                className={cn(
-                  'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
-                  activeRightPanel === 'changes' ? 'flex' : 'hidden'
-                )}
-                aria-hidden={activeRightPanel !== 'changes'}
-              >
-                <ChangesPanel
-                  items={liveItems}
-                  workspacePath={workspacePath}
-                  gitRevision={gitRevision}
-                  onGitMutated={gitChrome.refresh}
-                  onViewPr={() => setRightPanel('pr')}
-                  writeFileResolutions={writeFileResolutions}
-                  resolvablePaths={writeResolvablePaths}
-                  canResolve={canUndoWrites}
-                  resolveBusy={undoBusy}
-                  resolveBlockedReason={resolveBlockedReason}
-                  onKeepWriteFile={onKeepWriteFile}
-                  onDiscardWriteFile={onDiscardWriteFile}
-                  onKeepAllWrites={onKeepAllWrites}
-                  onDiscardAllWrites={onUndoWrites}
-                  active={activeRightPanel === 'changes'}
-                />
-              </div>
+            {activeRightPanel === null ? (
+              <ChatSideRail
+                activePanel={null}
+                onSelectPanel={toggleRightPanel}
+                onExpandPanels={
+                  dockTabs.length > 0 ? () => toggleDockExpanded() : undefined
+                }
+              />
             ) : null}
-            {mountedPanels.includes('pr') ? (
-              <div
-                className={cn(
-                  'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
-                  activeRightPanel === 'pr' ? 'flex' : 'hidden'
-                )}
-                aria-hidden={activeRightPanel !== 'pr'}
-              >
-                <PrPanel
-                  workspacePath={workspacePath}
-                  onPrMeta={handlePrMeta}
-                  onUnlink={() => closeDockTab('pr')}
-                  active={activeRightPanel === 'pr'}
-                />
-              </div>
-            ) : null}
-            {mountedPanels.includes('plan') ? (
-              <div
-                className={cn(
-                  'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
-                  activeRightPanel === 'plan' ? 'flex' : 'hidden'
-                )}
-                aria-hidden={activeRightPanel !== 'plan'}
-              >
-                <PlanPanel
-                  workspacePath={workspacePath}
-                  runId={activeRunId}
-                  running={running}
-                />
-              </div>
-            ) : null}
-          </aside>
-        ) : null}
-        <ChatSideRail
-          activePanel={activeRightPanel}
-          onSelectPanel={toggleRightPanel}
-        />
+          </>
+        )}
       </div>
     </div>
   )

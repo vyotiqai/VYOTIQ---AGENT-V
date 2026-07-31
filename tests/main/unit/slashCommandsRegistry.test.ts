@@ -43,7 +43,8 @@ vi.mock('../../../src/main/marketplace/resolve', () => ({
 
 vi.mock('../../../src/main/settings/secrets', () => ({
   hasMcpAuthToken: () => false,
-  hasMcpOAuthState: () => false
+  hasMcpOAuthState: () => false,
+  hasStoredMcpOAuthBlob: () => false
 }))
 
 describe('builtin slash commands', () => {

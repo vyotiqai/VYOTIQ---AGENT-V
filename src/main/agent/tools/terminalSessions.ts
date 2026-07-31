@@ -11,6 +11,7 @@ import {
   type ResolvedTerminalShell,
   TERMINAL_MAX_OUTPUT
 } from './terminal'
+import { workspacePathsEqual } from '../../../shared/workspacePath'
 import type { TerminalShell } from '../../../shared/ipc'
 
 export type TerminalSessionStatus = 'running' | 'done' | 'timeout' | 'pattern_matched' | 'aborted'
@@ -96,7 +97,7 @@ export function disposeTerminalSessionsForInvoke(runId: string, invokeId: number
 export function disposeTerminalSessionsForWorkspace(workspacePath: string): number {
   let disposed = 0
   for (const session of [...sessions.values()]) {
-    if (session.workspaceRoot !== workspacePath) continue
+    if (!workspacePathsEqual(session.workspaceRoot, workspacePath)) continue
     disposeTerminalSession(session.id)
     disposed++
   }

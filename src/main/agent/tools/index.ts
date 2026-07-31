@@ -26,6 +26,7 @@ import { getSettings } from '@main/settings/settings'
 import { getWriteCheckpoint } from '../checkpoints'
 import { resolveInsideWorkspace } from '@main/workspace/safePath'
 import { commitAll } from '@main/git/git'
+import { invalidateGitStatusCache } from '@main/git/gitStatusCache'
 import {
   assertToolAllowedInMode,
   isPlanArtifactPath,
@@ -244,7 +245,6 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const contents = typeof args.contents === 'string' ? args.contents : undefined
     const diff = typeof args.diff === 'string' ? args.diff : undefined
     const content = toolEdit(workspace, path, contents, diff)
-    throwIfAborted(signal)
     return toolOk('edit', path, content)
   },
   search: async (workspace, args, signal) => {
@@ -316,7 +316,6 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       typeof args.new_string === 'string' ? args.new_string : '',
       args.replace_all === true
     )
-    throwIfAborted(signal)
     return toolOk('str_replace', path, content)
   },
   delete: (workspace, args, signal, context) => {
@@ -839,7 +838,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const push = args.push === true
     try {
       const outcome = await commitAll(workspace, message, push)
-      throwIfAborted(signal)
+      invalidateGitStatusCache(workspace)
       const summary = push ? 'git commit + push' : 'git commit'
       const content = [
         outcome.detail,

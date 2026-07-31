@@ -22,8 +22,26 @@ export function shouldRetryThrownStreamError(err: unknown, attempt: number): boo
   return !isAbortError(err) && attempt < MAX_STREAM_ATTEMPTS && isRetriableStreamFailure(err)
 }
 
-export async function sleepStreamRetryBackoff(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, STREAM_RETRY_BACKOFF_MS))
+export async function sleepStreamRetryBackoff(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    const err = new Error('Aborted')
+    err.name = 'AbortError'
+    throw err
+  }
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, STREAM_RETRY_BACKOFF_MS)
+    function onAbort(): void {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      const err = new Error('Aborted')
+      err.name = 'AbortError'
+      reject(err)
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 export type StreamAttemptOutcome = 'complete' | 'retry'
@@ -34,6 +52,7 @@ export type StreamAttemptOutcome = 'complete' | 'retry'
  * retriable failures are retried automatically. AbortError is rethrown.
  */
 export async function runWithStreamRetry(options: {
+  signal?: AbortSignal
   onAttemptStart: (attempt: number) => void
   onRetriableFailure?: (err: unknown, attempt: number) => void
   runAttempt: (attempt: number) => Promise<StreamAttemptOutcome>
@@ -55,7 +74,7 @@ export async function runWithStreamRetry(options: {
       }
     }
     if (retry && attempt < MAX_STREAM_ATTEMPTS) {
-      await sleepStreamRetryBackoff()
+      await sleepStreamRetryBackoff(options.signal)
       continue
     }
     return
