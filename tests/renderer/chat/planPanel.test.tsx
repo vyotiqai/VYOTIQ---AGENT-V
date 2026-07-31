@@ -195,4 +195,33 @@ describe('PlanPanel', () => {
       expect(screen.getByText('Invalid receipt.json')).toBeTruthy()
     })
   })
+
+  it('does not poll while inactive even when the agent is running', async () => {
+    const setIntervalSpy = vi.spyOn(window, 'setInterval')
+    window.vyotiq.readRunArtifact = vi.fn().mockResolvedValue({
+      ok: true,
+      data: {
+        name: 'plan.md',
+        exists: true,
+        content: '# Comprehensive plan\n\n## Goal\n\nShip it\n'
+      }
+    })
+
+    const pollCalls = (): number =>
+      setIntervalSpy.mock.calls.filter((args) => args[1] === 2000).length
+
+    const { rerender } = render(
+      <PlanPanel workspacePath="/ws" runId="run-poll" running active={false} />
+    )
+
+    await waitFor(() => {
+      expect(window.vyotiq.readRunArtifact).toHaveBeenCalled()
+    })
+    expect(pollCalls()).toBe(0)
+
+    rerender(<PlanPanel workspacePath="/ws" runId="run-poll" running active />)
+    await waitFor(() => {
+      expect(pollCalls()).toBeGreaterThan(0)
+    })
+  })
 })

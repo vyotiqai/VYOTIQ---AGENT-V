@@ -191,11 +191,14 @@ export function PlanPanel({
   workspacePath,
   runId,
   running = false,
+  active = true,
   className
 }: {
   workspacePath: string | null
   runId: string | null
   running?: boolean
+  /** False while the plan dock tab is CSS-hidden — skip mid-run polling. */
+  active?: boolean
   className?: string
 }) {
   const [tab, setTab] = useState<ArtifactTab>('plan')
@@ -295,12 +298,12 @@ export function PlanPanel({
 
   // Light poll while the agent is running so mid-run edits show up.
   useEffect(() => {
-    if (!running || !workspacePath || !runId) return
+    if (!active || !running || !workspacePath || !runId) return
     const id = window.setInterval(() => {
       void load({ quiet: true })
     }, POLL_MS_WHILE_RUNNING)
     return () => window.clearInterval(id)
-  }, [running, workspacePath, runId, load])
+  }, [active, running, workspacePath, runId, load])
 
   const panelTitle = TAB_TITLE[tab]
   const emptyTitle =

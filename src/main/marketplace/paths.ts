@@ -1,6 +1,11 @@
 import { app } from 'electron'
 import { join } from 'path'
 import { userDataRoot } from '../storage/paths'
+import {
+  assertSafePackagePath,
+  resolveInsideBundledMarketplace,
+  resolveInsideMarketplacePackages
+} from './safePath'
 
 export function marketplaceRoot(): string {
   return join(userDataRoot(), 'marketplace')
@@ -19,7 +24,7 @@ export function marketplacePackagesRoot(): string {
 }
 
 export function marketplacePackageDir(id: string, version: string): string {
-  return join(marketplacePackagesRoot(), id, version)
+  return resolveInsideMarketplacePackages(id, version)
 }
 
 /** Bundled catalog + packages (dev vs packaged). */
@@ -35,10 +40,17 @@ export function bundledCatalogPath(): string {
 }
 
 export function bundledPackagePath(relativePath: string): string {
-  return join(bundledMarketplaceRoot(), 'packages', relativePath)
+  const safe = relativePath.trim().replace(/\\/g, '/')
+  return resolveInsideBundledMarketplace(`packages/${safe}`)
 }
 
 /** Resolve a path under resources/marketplace/ (icons, etc.). */
 export function bundledMarketplaceAssetPath(relativePath: string): string {
-  return join(bundledMarketplaceRoot(), relativePath)
+  return resolveInsideBundledMarketplace(relativePath)
+}
+
+export function resolveInstalledPackageRoot(packagePath: string): string {
+  const safe = assertSafePackagePath(packagePath)
+  const [id, version] = safe.split('/')
+  return resolveInsideMarketplacePackages(id!, version!)
 }

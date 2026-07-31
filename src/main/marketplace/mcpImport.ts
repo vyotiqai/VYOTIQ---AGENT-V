@@ -32,7 +32,7 @@ import { remoteMcpIdFromUrl } from '../../shared/utils/mcpAuth'
 import { getSettings, setSettings } from '../settings/settings'
 import { getWorkspaces } from '../workspace/workspaces'
 import { getInstalledItem, readMarketplaceIndex } from './indexStore'
-import { marketplacePackagesRoot } from './paths'
+import { resolveInstalledPackageRoot } from './paths'
 
 const execFileAsync = promisify(execFile)
 
@@ -97,7 +97,7 @@ function listDedupeCandidates(): Array<
   > = [...(settings.mcpServers ?? [])]
   for (const item of readMarketplaceIndex().items) {
     if (item.kind !== 'plugin' || !item.enabled) continue
-    const root = join(marketplacePackagesRoot(), item.packagePath)
+    const root = resolveInstalledPackageRoot(item.packagePath)
     const manifestPath = join(root, 'vyotiq.plugin.json')
     if (!existsSync(manifestPath)) continue
     try {

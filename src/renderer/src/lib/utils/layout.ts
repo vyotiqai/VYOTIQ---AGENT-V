@@ -187,10 +187,14 @@ export function clampDockWidthPx(
   return Math.min(maxByViewport, Math.max(DOCK_WIDTH_MIN_PX, Math.round(width)))
 }
 
-/** Clamp expanded sidebar width. */
-export function clampSidebarWidthPx(width: number): number {
-  return Math.min(
-    SIDEBAR_WIDTH_MAX_PX,
-    Math.max(SIDEBAR_WIDTH_MIN_PX, Math.round(width))
+/** Clamp expanded sidebar width so a usable chat column remains. */
+export function clampSidebarWidthPx(
+  width: number,
+  viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280
+): number {
+  const maxByViewport = Math.max(
+    SIDEBAR_WIDTH_MIN_PX,
+    Math.min(SIDEBAR_WIDTH_MAX_PX, viewportWidth - CHAT_COLUMN_MIN_USABLE_PX)
   )
+  return Math.min(maxByViewport, Math.max(SIDEBAR_WIDTH_MIN_PX, Math.round(width)))
 }

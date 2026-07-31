@@ -13,7 +13,10 @@ export type ToolStepContext = {
   runId: string
   runDir: string
   workspace: string
+  /** Combined run cancel + soft stream / follow-up interrupt. */
   signal: AbortSignal
+  /** Run-level cancel only — distinguishes Interrupted vs Cancelled. */
+  runSignal?: AbortSignal
   appendMessage: (msg: ChatMessage) => Promise<void>
   appendEvent: (ev: AgentEvent) => void
   /** Per-run failed tool keys (`tool:summary`) for repeat-failure hints. */
@@ -113,6 +116,17 @@ type ToolOutcome = {
   message: ChatMessage
   /** `name:summary` when this was an expected failure eligible for a repeat hint. */
   failureKey?: string
+}
+
+function abortToolContent(ctx: ToolStepContext): string {
+  const runAborted = ctx.runSignal?.aborted ?? ctx.signal.aborted
+  if (runAborted) return 'Cancelled'
+  if (ctx.signal.aborted) return 'Interrupted'
+  return 'Cancelled'
+}
+
+function abortToolSummary(ctx: ToolStepContext): string {
+  return abortToolContent(ctx).toLowerCase()
 }
 
 function emitToolStart(ctx: ToolStepContext, event: AgentEvent): void {
@@ -282,11 +296,13 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
     }
   } catch (err) {
     if (isAbortError(err)) {
+      const content = abortToolContent(ctx)
+      const summary = abortToolSummary(ctx)
       const toolMsg: ChatMessage = {
         role: 'tool',
         toolCallId: call.id,
         toolName: call.name,
-        content: 'Cancelled',
+        content,
         ok: false
       }
       events.push({
@@ -294,9 +310,9 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
         runId: ctx.runId,
         toolCallId: call.id,
         name: call.name,
-        summary: 'cancelled',
+        summary,
         ok: false,
-        content: 'Cancelled'
+        content
       })
       return { ok: false, events, message: toolMsg }
     }
@@ -311,12 +327,14 @@ function persistToolResult(ctx: ToolStepContext, outcome: ToolOutcome): void {
   }
 }
 
-function cancelledToolResult(call: ToolCall, ctx: ToolStepContext): ToolOutcome {
+function abortedToolResult(call: ToolCall, ctx: ToolStepContext): ToolOutcome {
+  const content = abortToolContent(ctx)
+  const summary = abortToolSummary(ctx)
   const toolMsg: ChatMessage = {
     role: 'tool',
     toolCallId: call.id,
     toolName: call.name,
-    content: 'Cancelled',
+    content,
     ok: false
   }
   const startEv: AgentEvent = {
@@ -331,9 +349,9 @@ function cancelledToolResult(call: ToolCall, ctx: ToolStepContext): ToolOutcome 
     runId: ctx.runId,
     toolCallId: call.id,
     name: call.name,
-    summary: 'cancelled',
+    summary,
     ok: false,
-    content: 'Cancelled'
+    content
   }
   emitToolStart(ctx, startEv)
   return { ok: false, events: [startEv, ev], message: toolMsg }
@@ -360,7 +378,7 @@ async function runParallelBatch(
   // After abort, discard late successes so the step does not report ok for cancelled work.
   if (ctx.signal.aborted) {
     for (const call of calls) {
-      results.set(call.id, cancelledToolResult(call, ctx))
+      results.set(call.id, abortedToolResult(call, ctx))
     }
   }
   return results
@@ -418,7 +436,7 @@ export async function executeStepToolCalls(
 
   for (const group of groups) {
     if (ctx.signal.aborted) {
-      for (const call of group) await collect(cancelledToolResult(call, ctx))
+      for (const call of group) await collect(abortedToolResult(call, ctx))
       continue
     }
 
@@ -428,12 +446,12 @@ export async function executeStepToolCalls(
       const batchLimit = batchLimitFor(group[0]!.name)
       const batch = await runParallelBatch(group, ctx, batchLimit)
       for (const call of group) {
-        await collect(batch.get(call.id) ?? cancelledToolResult(call, ctx))
+        await collect(batch.get(call.id) ?? abortedToolResult(call, ctx))
       }
     } else {
       for (const call of group) {
         if (ctx.signal.aborted) {
-          await collect(cancelledToolResult(call, ctx))
+          await collect(abortedToolResult(call, ctx))
           continue
         }
         await collect(await runSingleTool(call, ctx))

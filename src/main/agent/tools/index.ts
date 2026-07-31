@@ -300,7 +300,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
         }
       }
     }
-    const content = toolMultiEdit(workspace, edits)
+    const content = toolMultiEdit(workspace, edits, signal)
     return toolOk('multi_edit', `${edits.length} files`, content)
   },
   str_replace: (workspace, args, signal, context) => {

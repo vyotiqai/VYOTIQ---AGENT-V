@@ -11,7 +11,11 @@ import { executeStepToolCalls } from '@main/agent/executeStepTools'
 
 type TestCtx = Parameters<typeof executeStepToolCalls>[1]
 
-function makeCtx(signal: AbortSignal, failedToolKeys = new Map<string, number>()) {
+function makeCtx(
+  signal: AbortSignal,
+  failedToolKeys = new Map<string, number>(),
+  runSignal?: AbortSignal
+) {
   const events: AgentEvent[] = []
   const messages: unknown[] = []
   return {
@@ -20,6 +24,7 @@ function makeCtx(signal: AbortSignal, failedToolKeys = new Map<string, number>()
       runDir: '/tmp/run',
       workspace: '/tmp/ws',
       signal,
+      runSignal,
       failedToolKeys,
       appendMessage: (msg: unknown) => messages.push(msg),
       appendEvent: (ev: AgentEvent) => events.push(ev)
@@ -27,6 +32,13 @@ function makeCtx(signal: AbortSignal, failedToolKeys = new Map<string, number>()
     events,
     messages
   }
+}
+
+function combinedSignal(runSignal: AbortSignal, softSignal: AbortSignal): AbortSignal {
+  if (typeof AbortSignal.any === 'function') {
+    return AbortSignal.any([runSignal, softSignal])
+  }
+  return runSignal
 }
 
 describe('executeStepToolCalls', () => {
@@ -72,6 +84,55 @@ describe('executeStepToolCalls', () => {
     )
 
     expect(order).toEqual(['read', 'edit', 'read'])
+  })
+
+  it('marks soft-aborted in-flight tools Interrupted while run cancel stays Cancelled', async () => {
+    const runAc = new AbortController()
+    const softAc = new AbortController()
+    const signal = combinedSignal(runAc.signal, softAc.signal)
+
+    executeTool.mockImplementation(async (_name, _args, _ws, toolSignal) => {
+      while (!toolSignal.aborted) {
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      throw new DOMException('Aborted', 'AbortError')
+    })
+
+    const { ctx } = makeCtx(signal, undefined, runAc.signal)
+    const work = executeStepToolCalls(
+      [{ id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }],
+      ctx
+    )
+    softAc.abort()
+    const outcome = await work
+
+    expect(outcome.stepToolsOk).toBe(false)
+    expect(outcome.messages[0]?.content).toBe('Interrupted')
+    expect(outcome.messages[0]?.toolCallId).toBe('c1')
+  })
+
+  it('marks run-cancelled tools as Cancelled when runSignal aborts', async () => {
+    const runAc = new AbortController()
+    const softAc = new AbortController()
+    const signal = combinedSignal(runAc.signal, softAc.signal)
+
+    executeTool.mockImplementation(async (_name, _args, _ws, toolSignal) => {
+      while (!toolSignal.aborted) {
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      throw new DOMException('Aborted', 'AbortError')
+    })
+
+    const { ctx } = makeCtx(signal, undefined, runAc.signal)
+    const work = executeStepToolCalls(
+      [{ id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }],
+      ctx
+    )
+    runAc.abort()
+    const outcome = await work
+
+    expect(outcome.stepToolsOk).toBe(false)
+    expect(outcome.messages[0]?.content).toBe('Cancelled')
   })
 
   it('marks pending parallel read tools cancelled when aborted mid-batch', async () => {

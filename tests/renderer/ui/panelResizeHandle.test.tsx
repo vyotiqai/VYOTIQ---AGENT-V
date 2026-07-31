@@ -66,4 +66,25 @@ describe('PanelResizeHandle', () => {
     fireEvent.keyDown(handle, { key: 'Home' })
     expect(onChange).toHaveBeenCalledWith(180)
   })
+
+  it('locks body selection and cursor while dragging', () => {
+    const onChange = vi.fn()
+    render(
+      <PanelResizeHandle
+        label="Resize sidebar"
+        value={220}
+        min={180}
+        max={420}
+        edge="end"
+        onChange={onChange}
+      />
+    )
+    const handle = screen.getByRole('separator', { name: /Resize sidebar/i })
+    fireEvent.mouseDown(handle, { clientX: 100, button: 0 })
+    expect(document.body.style.userSelect).toBe('none')
+    expect(document.body.style.cursor).toBe('col-resize')
+    fireEvent.mouseUp(window)
+    expect(document.body.style.userSelect).toBe('')
+    expect(document.body.style.cursor).toBe('')
+  })
 })

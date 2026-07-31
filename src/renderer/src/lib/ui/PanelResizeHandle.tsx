@@ -64,6 +64,11 @@ export function PanelResizeHandle({
     const startValue = valueRef.current
     setDragging(true)
 
+    const prevUserSelect = document.body.style.userSelect
+    const prevCursor = document.body.style.cursor
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'col-resize'
+
     const onMove = (ev: globalThis.MouseEvent): void => {
       const dx = ev.clientX - startX
       const delta = edgeRef.current === 'end' ? dx : -dx
@@ -72,6 +77,8 @@ export function PanelResizeHandle({
 
     const onUp = (): void => {
       setDragging(false)
+      document.body.style.userSelect = prevUserSelect
+      document.body.style.cursor = prevCursor
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }

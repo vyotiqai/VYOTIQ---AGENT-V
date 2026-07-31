@@ -837,7 +837,10 @@ export function ChatView({
           aria-hidden={visiblePanelId !== 'terminal'}
           inert={visiblePanelId !== 'terminal' ? true : undefined}
         >
-          <TerminalPanel workspacePath={workspacePath} />
+          <TerminalPanel
+            workspacePath={workspacePath}
+            visible={visiblePanelId === 'terminal'}
+          />
         </div>
       ) : null}
       {mountedPanels.includes('changes') ? (
@@ -898,6 +901,7 @@ export function ChatView({
             workspacePath={workspacePath}
             runId={activeRunId}
             running={running}
+            active={visiblePanelId === 'plan'}
           />
         </div>
       ) : null}

@@ -10,7 +10,8 @@ import {
 import { parseSkillFrontmatter } from '../agent/skills/parse'
 import { loadBundledCatalog, loadCachedRemoteCatalog, mergeCatalogs } from './catalog'
 import { getInstalledItem } from './indexStore'
-import { bundledPackagePath, marketplacePackagesRoot } from './paths'
+import { bundledPackagePath, resolveInstalledPackageRoot } from './paths'
+import { resolveInsidePackageRoot } from './safePath'
 
 export type { PackageContents }
 
@@ -18,7 +19,7 @@ export type { PackageContents }
 export function getInstalledPackageContents(id: string): PackageContents | null {
   const item = getInstalledItem(id)
   if (!item) return null
-  return describePackageAt(join(marketplacePackagesRoot(), item.packagePath), item)
+  return describePackageAt(resolveInstalledPackageRoot(item.packagePath), item)
 }
 
 /**
@@ -109,7 +110,12 @@ export function describePackageAt(
   if (!existsSync(pluginPath)) return out
   const plugin = VyotiqPluginManifestSchema.parse(JSON.parse(readFileSync(pluginPath, 'utf8')))
   for (const rel of plugin.mcp) {
-    const mcpManifest = join(root, rel, 'vyotiq.mcp.json')
+    let mcpManifest: string
+    try {
+      mcpManifest = join(resolveInsidePackageRoot(root, rel), 'vyotiq.mcp.json')
+    } catch {
+      continue
+    }
     if (!existsSync(mcpManifest)) continue
     try {
       const m = VyotiqMcpManifestSchema.parse(JSON.parse(readFileSync(mcpManifest, 'utf8')))
@@ -126,7 +132,12 @@ export function describePackageAt(
     }
   }
   for (const rel of plugin.skills) {
-    const skillPath = join(root, rel, 'skill.md')
+    let skillPath: string
+    try {
+      skillPath = join(resolveInsidePackageRoot(root, rel), 'skill.md')
+    } catch {
+      continue
+    }
     if (!existsSync(skillPath)) continue
     try {
       const skill = parseSkillFrontmatter(readFileSync(skillPath, 'utf8'))
@@ -136,7 +147,11 @@ export function describePackageAt(
     }
   }
   for (const rel of plugin.rules) {
-    if (existsSync(join(root, rel))) out.rules.push({ path: rel })
+    try {
+      if (existsSync(resolveInsidePackageRoot(root, rel))) out.rules.push({ path: rel })
+    } catch {
+      // skip
+    }
   }
   return out
 }

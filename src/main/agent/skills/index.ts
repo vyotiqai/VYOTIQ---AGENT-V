@@ -5,7 +5,8 @@ import { VyotiqPluginManifestSchema } from '../../../shared/ipc'
 import { effectiveMarketplaceEnabled } from '../../../shared/domain/marketplaceEnablement'
 import { parseSkillFrontmatter } from './parse'
 import { readMarketplaceIndex } from '../../marketplace/indexStore'
-import { marketplacePackagesRoot } from '../../marketplace/paths'
+import { resolveInstalledPackageRoot } from '../../marketplace/paths'
+import { resolveInsidePackageRoot } from '../../marketplace/safePath'
 
 export type LoadedSkill = {
   id: string
@@ -32,7 +33,7 @@ export function loadEnabledSkills(
     if (!effectiveMarketplaceEnabled(item.id, item.enabled, marketplaceOverrides, 'skills')) {
       continue
     }
-    const skillPath = join(marketplacePackagesRoot(), item.packagePath, 'skill.md')
+    const skillPath = join(resolveInstalledPackageRoot(item.packagePath), 'skill.md')
     if (!existsSync(skillPath)) continue
     try {
       const loaded = loadSkillMd(skillPath)
@@ -53,7 +54,7 @@ export function loadEnabledSkills(
     if (!effectiveMarketplaceEnabled(item.id, item.enabled, marketplaceOverrides, 'plugins')) {
       continue
     }
-    const root = join(marketplacePackagesRoot(), item.packagePath)
+    const root = resolveInstalledPackageRoot(item.packagePath)
     const manifestPath = join(root, 'vyotiq.plugin.json')
     if (!existsSync(manifestPath)) continue
     try {
@@ -61,14 +62,22 @@ export function loadEnabledSkills(
         JSON.parse(readFileSync(manifestPath, 'utf8'))
       )
       for (const rel of plugin.skills) {
-        const skillPath = join(root, rel, 'skill.md')
-        const alt = join(root, rel)
+        let skillPath: string
+        let alt: string
+        let mdAlt: string
+        try {
+          skillPath = join(resolveInsidePackageRoot(root, rel), 'skill.md')
+          alt = resolveInsidePackageRoot(root, rel)
+          mdAlt = resolveInsidePackageRoot(root, `${rel}.md`)
+        } catch {
+          continue
+        }
         const path = existsSync(skillPath)
           ? skillPath
           : existsSync(alt) && alt.endsWith('skill.md')
             ? alt
-            : existsSync(join(root, `${rel}.md`))
-              ? join(root, `${rel}.md`)
+            : existsSync(mdAlt)
+              ? mdAlt
               : skillPath
         if (!existsSync(path)) continue
         const loaded = loadSkillMd(path)
@@ -122,7 +131,7 @@ export function loadPluginRules(
     if (!effectiveMarketplaceEnabled(item.id, item.enabled, marketplaceOverrides, 'plugins')) {
       continue
     }
-    const root = join(marketplacePackagesRoot(), item.packagePath)
+    const root = resolveInstalledPackageRoot(item.packagePath)
     const manifestPath = join(root, 'vyotiq.plugin.json')
     if (!existsSync(manifestPath)) continue
     try {
@@ -130,7 +139,12 @@ export function loadPluginRules(
         JSON.parse(readFileSync(manifestPath, 'utf8'))
       )
       for (const rel of plugin.rules) {
-        const rulePath = join(root, rel)
+        let rulePath: string
+        try {
+          rulePath = resolveInsidePackageRoot(root, rel)
+        } catch {
+          continue
+        }
         if (!existsSync(rulePath)) continue
         const text = readFileSync(rulePath, 'utf8').trim()
         if (!text) continue

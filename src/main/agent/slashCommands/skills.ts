@@ -11,7 +11,8 @@ import { parseSkillFrontmatter } from '../skills/parse'
 import { browseCatalog } from '../../marketplace/catalog'
 import { readMarketplaceIndex } from '../../marketplace/indexStore'
 import { findCatalogEntry, getPackageContents } from '../../marketplace/packageContents'
-import { marketplacePackagesRoot, bundledPackagePath } from '../../marketplace/paths'
+import { bundledPackagePath, resolveInstalledPackageRoot } from '../../marketplace/paths'
+import { resolveInsidePackageRoot } from '../../marketplace/safePath'
 
 type SkillCandidate = {
   id: string
@@ -25,12 +26,21 @@ type SkillCandidate = {
 }
 
 function skillPathForInstalled(packagePath: string, nestedRel?: string): string | undefined {
-  const root = join(marketplacePackagesRoot(), packagePath)
+  let root: string
+  try {
+    root = resolveInstalledPackageRoot(packagePath)
+  } catch {
+    return undefined
+  }
   if (nestedRel) {
-    const nested = join(root, nestedRel, 'skill.md')
-    if (existsSync(nested)) return nested
-    const alt = join(root, nestedRel)
-    if (existsSync(alt) && alt.endsWith('skill.md')) return alt
+    try {
+      const nested = join(resolveInsidePackageRoot(root, nestedRel), 'skill.md')
+      if (existsSync(nested)) return nested
+      const alt = resolveInsidePackageRoot(root, nestedRel)
+      if (existsSync(alt) && alt.endsWith('skill.md')) return alt
+    } catch {
+      return undefined
+    }
     return undefined
   }
   const p = join(root, 'skill.md')

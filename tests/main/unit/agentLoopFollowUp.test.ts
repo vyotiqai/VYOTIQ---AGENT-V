@@ -94,6 +94,7 @@ vi.mock('@main/agent/tools', () => ({
 import { runAgent } from '@main/agent/loop'
 import { enqueueFollowUp, resetActiveRunsForTests } from '@main/agent/runRegistry'
 import { loadMessages } from '@main/agent/state'
+import { executeTool } from '@main/agent/tools'
 
 describe('runAgent mid-run follow-ups', () => {
   let workspace: string
@@ -150,6 +151,75 @@ describe('runAgent mid-run follow-ups', () => {
 
     const messages = loadMessages(workspace, runId)
     expect(messages.some((m) => m.role === 'user' && m.content === 'change course')).toBe(true)
+  })
+
+  it('soft-interrupts in-flight tools, applies follow-ups, then continues to done', async () => {
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      if (call === 1) {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 't1', name: 'read', arguments: '{"path":"README.md"}' }
+        }
+        yield { type: 'done', stopReason: 'tool_calls' }
+        return
+      }
+      yield { type: 'text', text: 'steered after tool interrupt' }
+      yield { type: 'done', stopReason: 'stop' }
+    })
+
+    vi.mocked(executeTool).mockImplementation(
+      async (_name: string, _args: string, _workspace: string, signal: AbortSignal) => {
+        while (!signal.aborted) {
+          await new Promise((r) => setTimeout(r, 5))
+        }
+        throw new DOMException('Aborted', 'AbortError')
+      }
+    )
+
+    const runId = 'follow-up-during-tool'
+    const events: Array<{
+      type: string
+      status?: string
+      content?: string
+      toolCallId?: string
+    }> = []
+    let toolStarted = false
+
+    for await (const ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'start' }],
+      workspacePath: workspace
+    })) {
+      events.push(ev)
+      if (ev.type === 'tool_start' && ev.toolCallId === 't1') {
+        toolStarted = true
+        enqueueFollowUp(runId, { role: 'user', content: 'change during tool' })
+      }
+    }
+
+    expect(toolStarted).toBe(true)
+    expect(events.some((e) => e.type === 'follow_up_applied')).toBe(true)
+    expect(
+      events.some(
+        (e) =>
+          e.type === 'tool_result' &&
+          e.toolCallId === 't1' &&
+          e.content === 'Interrupted'
+      )
+    ).toBe(true)
+    expect(
+      events.some((e) => e.type === 'assistant_message' && e.content === 'steered after tool interrupt')
+    ).toBe(true)
+    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
+    expect(call).toBeGreaterThanOrEqual(2)
+
+    const messages = loadMessages(workspace, runId)
+    expect(messages.some((m) => m.role === 'user' && m.content === 'change during tool')).toBe(true)
+    expect(
+      messages.some((m) => m.role === 'tool' && m.toolCallId === 't1' && m.content === 'Interrupted')
+    ).toBe(true)
   })
 
   it('drains a follow-up enqueued during the final flush window before done', async () => {

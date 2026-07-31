@@ -23,12 +23,19 @@ function readCssColor(varName: string, fallback: string): string {
 /** One xterm host bound to a PTY session id. */
 function PtySessionView({
   sessionId,
-  workspacePath
+  workspacePath,
+  visible
 }: {
   sessionId: string
   workspacePath: string
+  /** When false (CSS-hidden dock tab), do not steal composer focus. */
+  visible: boolean
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
+  const termRef = useRef<Terminal | null>(null)
+  const fitRef = useRef<FitAddon | null>(null)
+  const visibleRef = useRef(visible)
+  visibleRef.current = visible
 
   useEffect(() => {
     const el = hostRef.current
@@ -51,12 +58,17 @@ function PtySessionView({
     term.loadAddon(fit)
     term.loadAddon(new WebLinksAddon())
     term.open(el)
+    termRef.current = term
+    fitRef.current = fit
     const buffers = getPtyOutputBuffers()
     const buffered = buffers.get(sessionId)
     if (buffered) term.write(buffered)
-    term.focus()
+    // Only focus when this dock tab is the visible one — mounting while
+    // CSS-hidden (auto-open + another panel active) must not steal composer focus.
+    if (visibleRef.current) term.focus()
 
     const applyFit = (): void => {
+      if (!visibleRef.current) return
       if (el.clientWidth < 2 || el.clientHeight < 2) return
       try {
         fit.fit()
@@ -91,9 +103,30 @@ function PtySessionView({
       unsubData?.()
       unsubExit?.()
       ro?.disconnect()
+      termRef.current = null
+      fitRef.current = null
       term.dispose()
     }
   }, [sessionId, workspacePath])
+
+  useEffect(() => {
+    if (!visible) return
+    const term = termRef.current
+    const fit = fitRef.current
+    const el = hostRef.current
+    if (!term || !fit || !el) return
+    try {
+      if (el.clientWidth >= 2 && el.clientHeight >= 2) {
+        fit.fit()
+        if (term.cols >= 2 && term.rows >= 2) {
+          void window.vyotiq?.ptyResize?.(sessionId, term.cols, term.rows, workspacePath)
+        }
+      }
+      term.focus()
+    } catch {
+      /* ignore */
+    }
+  }, [visible, sessionId, workspacePath])
 
   return <div ref={hostRef} className="h-full w-full bg-bg" data-pty-host />
 }
@@ -104,11 +137,14 @@ function PtySessionView({
 export function TerminalPanel({
   className,
   workspacePath,
+  visible = true,
   onSessionsChange,
   onActiveSessionChange
 }: {
   className?: string
   workspacePath?: string | null
+  /** False while the terminal dock tab is CSS-hidden. */
+  visible?: boolean
   onSessionsChange?: (sessions: PtySessionInfo[]) => void
   onActiveSessionChange?: (session: PtySessionInfo | null) => void
 }) {
@@ -344,15 +380,27 @@ export function TerminalPanel({
             splitId && splitId !== activeId ? (
               <div className="flex h-full min-h-0 w-full gap-1">
                 <div className="min-h-0 min-w-0 flex-1">
-                  <PtySessionView sessionId={activeId} workspacePath={workspacePath} />
+                  <PtySessionView
+                    sessionId={activeId}
+                    workspacePath={workspacePath}
+                    visible={visible}
+                  />
                 </div>
                 <div className="w-px shrink-0 bg-border/50" />
                 <div className="min-h-0 min-w-0 flex-1">
-                  <PtySessionView sessionId={splitId} workspacePath={workspacePath} />
+                  <PtySessionView
+                    sessionId={splitId}
+                    workspacePath={workspacePath}
+                    visible={visible}
+                  />
                 </div>
               </div>
             ) : (
-              <PtySessionView sessionId={activeId} workspacePath={workspacePath} />
+              <PtySessionView
+                sessionId={activeId}
+                workspacePath={workspacePath}
+                visible={visible}
+              />
             )
           ) : (
             <EmptyPanel

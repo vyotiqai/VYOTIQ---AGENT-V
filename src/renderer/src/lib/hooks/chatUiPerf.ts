@@ -45,8 +45,12 @@ function perfDumpEnabled(): boolean {
 /** Start optional 5s console dumps when sessionStorage vyotiq-perf=1. */
 export function ensureChatUiPerfDump(): void {
   if (dumpTimer) return
+  if (!perfDumpEnabled()) return
   dumpTimer = setInterval(() => {
-    if (!perfDumpEnabled()) return
+    if (!perfDumpEnabled()) {
+      stopChatUiPerfDumpForTests()
+      return
+    }
     console.info('[vyotiq-perf] chatUi', JSON.stringify(getChatUiPerfStats()))
   }, 5_000)
 }

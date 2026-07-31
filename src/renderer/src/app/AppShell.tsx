@@ -158,6 +158,14 @@ function AppShellInner({
   }, [isDesktop])
 
   useEffect(() => {
+    const onResize = (): void => {
+      setSidebarWidthPx((w) => clampSidebarWidthPx(w))
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [setSidebarWidthPx])
+
+  useEffect(() => {
     if (!hasWorkspace) onSessionQuery('')
   }, [hasWorkspace, onSessionQuery])
 

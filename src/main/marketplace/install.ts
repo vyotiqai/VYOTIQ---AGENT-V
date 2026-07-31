@@ -35,7 +35,8 @@ import { getInstalledItem, readMarketplaceIndex, upsertInstalledItem } from './i
 import {
   bundledPackagePath,
   marketplacePackageDir,
-  marketplacePackagesRoot
+  marketplacePackagesRoot,
+  resolveInstalledPackageRoot
 } from './paths'
 import { remoteMcpIdFromUrl, headersWithoutAuthorization } from '../../shared/utils/mcpAuth'
 import { setMcpAuthToken } from '../settings/secrets'
@@ -211,7 +212,7 @@ export function syncMarketplaceMcpIntoSettings(): void {
   const fromMarketplace: McpServer[] = []
   for (const item of index.items) {
     if (item.kind !== 'mcp') continue
-    const root = join(marketplacePackagesRoot(), item.packagePath)
+    const root = resolveInstalledPackageRoot(item.packagePath)
     if (!existsSync(join(root, 'vyotiq.mcp.json'))) continue
     try {
       const server = mcpServerFromManifest(root)
@@ -260,7 +261,7 @@ function repairBundledMcpManifestsFromResources(): void {
     if (item.kind !== 'mcp' || item.installSource !== 'bundled') continue
     const bundledRoot = bundledPackagePath(item.id)
     const src = join(bundledRoot, 'vyotiq.mcp.json')
-    const dest = join(marketplacePackagesRoot(), item.packagePath, 'vyotiq.mcp.json')
+    const dest = join(resolveInstalledPackageRoot(item.packagePath), 'vyotiq.mcp.json')
     if (!existsSync(src) || !existsSync(dest)) continue
     try {
       const next = readFileSync(src, 'utf8')
@@ -316,6 +317,7 @@ async function materializeToTemp(req: MarketplaceInstallRequest): Promise<{
 
   if (source === 'path') {
     if (!existsSync(target)) throw new Error(`Path not found: ${target}`)
+    assertExtractContained(target)
     return { root: target, cleanup: () => {}, source }
   }
 
@@ -387,6 +389,12 @@ async function materializeToTemp(req: MarketplaceInstallRequest): Promise<{
     await execFileAsync('git', ['clone', '--depth', '1', target, cloneDir], {
       timeout: 120_000
     })
+    try {
+      assertExtractContained(cloneDir)
+    } catch (err) {
+      cleanup()
+      throw err
+    }
     return { root: findPackageRoot(cloneDir), cleanup, source }
   }
 
@@ -495,7 +503,7 @@ export async function installMarketplacePackage(
       // Reject remote URL installs that would overwrite a different remote package id collision.
       const prior = getInstalledItem(detected.id)
       if (prior && prior.kind === 'mcp' && req.source === 'remote') {
-        const priorRoot = join(marketplacePackagesRoot(), prior.packagePath)
+        const priorRoot = resolveInstalledPackageRoot(prior.packagePath)
         const priorManifest = join(priorRoot, 'vyotiq.mcp.json')
         if (existsSync(priorManifest)) {
           try {

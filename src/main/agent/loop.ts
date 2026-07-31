@@ -647,6 +647,9 @@ export async function* runAgent(input: {
       // Inject any queued user follow-ups before the next model call.
       yield* applyDrainedFollowUps(runId, runDir, messages)
       step++
+      const stepSoftAbort = new AbortController()
+      setStreamInterrupt(runId, stepSoftAbort)
+      try {
       writeStatus({ step, status: 'running' })
       // Steps after the first pick up MCP servers enabled/reconnected mid-run.
       if (step > 1) await refreshMcpToolsForStep()
@@ -946,8 +949,6 @@ export async function* runAgent(input: {
         streamSteered = false
 
         let retryStream = false
-        const streamAbort = new AbortController()
-        setStreamInterrupt(runId, streamAbort)
         try {
           for await (const chunk of provider.streamChat({
           model: settings.model,
@@ -976,7 +977,7 @@ export async function* runAgent(input: {
         })) {
           if (controller.signal.aborted) break
           // Soft-steer: break so we can flush partial output and inject follow-ups.
-          if (hasPendingFollowUps(runId) || streamAbort.signal.aborted) {
+          if (hasPendingFollowUps(runId) || stepSoftAbort.signal.aborted) {
             streamSteered = true
             break
           }
@@ -1193,13 +1194,14 @@ export async function* runAgent(input: {
             )
             throw err
           }
-          // Soft follow-up interrupt (streamAbort) vs full run cancel.
-          if (!controller.signal.aborted && hasPendingFollowUps(runId)) {
+          // Soft follow-up interrupt (stepSoftAbort) vs full run cancel.
+          if (
+            !controller.signal.aborted &&
+            (hasPendingFollowUps(runId) || stepSoftAbort.signal.aborted)
+          ) {
             streamSteered = true
           }
           break
-        } finally {
-          setStreamInterrupt(runId, null)
         }
 
         if (retryStream) {
@@ -1571,7 +1573,8 @@ export async function* runAgent(input: {
         runId,
         runDir: runDir!,
         workspace,
-        signal: controller.signal,
+        signal: streamSignalFor(runId, controller.signal),
+        runSignal: controller.signal,
         invokeId,
         failedToolKeys,
         maxParallelReadTools: maxParallelReadToolsForFailureStreak(
@@ -1605,6 +1608,7 @@ export async function* runAgent(input: {
         }
       }
       const toolWork = executeStepToolCalls(callsToExecute, toolCtx)
+      let toolsSteered = false
       let toolsSettled = false
       const settledWork = toolWork.then(
         (result) => {
@@ -1633,6 +1637,12 @@ export async function* runAgent(input: {
           yield ev.type === 'tool_result' ? toolResultEventForIpc(ev) : ev
         }
         if (toolsSettled) break
+        if (
+          !controller.signal.aborted &&
+          (hasPendingFollowUps(runId) || stepSoftAbort.signal.aborted)
+        ) {
+          toolsSteered = true
+        }
         await Promise.race([
           settledWork.catch(() => undefined),
           new Promise<void>((resolve) => {
@@ -1651,6 +1661,15 @@ export async function* runAgent(input: {
       for (const toolMsg of toolOutcome.messages) {
         messages.push(toolMsg)
       }
+
+      if (
+        !controller.signal.aborted &&
+        (toolsSteered || hasPendingFollowUps(runId))
+      ) {
+        yield* applyDrainedFollowUps(runId, runDir, messages)
+        continue
+      }
+
       stepToolsOk = stepToolsOk && toolOutcome.stepToolsOk
 
       const okByCallId = new Map<string, boolean>()
@@ -1695,6 +1714,9 @@ export async function* runAgent(input: {
       }
 
       if (controller.signal.aborted) break
+      } finally {
+        setStreamInterrupt(runId, null)
+      }
     }
 
     if (controller.signal.aborted) {

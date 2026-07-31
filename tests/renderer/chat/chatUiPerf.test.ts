@@ -43,4 +43,19 @@ describe('chatUiPerf', () => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
   })
+
+  it('does not arm a dump interval when vyotiq-perf is unset', () => {
+    vi.stubGlobal('sessionStorage', {
+      getItem: () => null
+    })
+    vi.useFakeTimers()
+    const spy = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    ensureChatUiPerfDump()
+    recordUiSuspendSkip()
+    vi.advanceTimersByTime(15_000)
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
 })

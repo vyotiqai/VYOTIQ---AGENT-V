@@ -12,11 +12,12 @@ import { logger } from '../../shared/logger'
 import { getSettings } from '../settings/settings'
 import { findWorkspaceSettingsOverride, readWorkspacesState } from '../workspace/workspaces'
 import { readMarketplaceIndex } from './indexStore'
-import { marketplacePackagesRoot } from './paths'
+import { resolveInstalledPackageRoot } from './paths'
+import { resolveInsidePackageRoot } from './safePath'
 import { mcpServerFromManifest } from './install'
 
 function packageRoot(item: MarketplaceInstalledItem): string {
-  return join(marketplacePackagesRoot(), item.packagePath)
+  return resolveInstalledPackageRoot(item.packagePath)
 }
 
 type ResolveCacheEntry = {
@@ -207,7 +208,12 @@ export function resolveEffectiveMcpServers(
         JSON.parse(readFileSync(manifestPath, 'utf8'))
       )
       for (const rel of plugin.mcp) {
-        const mcpRoot = join(root, rel)
+        let mcpRoot: string
+        try {
+          mcpRoot = resolveInsidePackageRoot(root, rel)
+        } catch {
+          continue
+        }
         const mcpManifestPath = join(mcpRoot, 'vyotiq.mcp.json')
         if (!existsSync(mcpManifestPath)) continue
         const nested = VyotiqMcpManifestSchema.parse(
