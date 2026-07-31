@@ -85,11 +85,17 @@ export type RunStatus = z.infer<typeof RunStatusSchema>
 export function IpcResultSchema<T extends z.ZodTypeAny>(data: T) {
   return z.discriminatedUnion('ok', [
     z.object({ ok: z.literal(true), data }),
-    z.object({ ok: z.literal(false), error: z.string() })
+    z.object({
+      ok: z.literal(false),
+      error: z.string(),
+      code: z.string().optional()
+    })
   ])
 }
 
-export type IpcResult<T> = { ok: true; data: T } | { ok: false; error: string }
+export type IpcResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; error: string; code?: string }
 
 /**
  * Why a turn ended without finishing its work. Drives the Continue affordance:
@@ -771,8 +777,8 @@ export function ok<T>(data: T): IpcResult<T> {
   return { ok: true, data }
 }
 
-export function fail(error: string): IpcResult<never> {
-  return { ok: false, error }
+export function fail(error: string, code?: string): IpcResult<never> {
+  return code ? { ok: false, error, code } : { ok: false, error }
 }
 
 export function contentDisplayText(content: MessageContent): string {

@@ -293,7 +293,7 @@ function failFrom(err: unknown, channel: string, correlationId?: string): IpcRes
       err
     })
   }
-  return fail(message)
+  return fail(message, code)
 }
 
 /** Persist Keep/Discard/Undo into events.jsonl so reload hydrates resolution state. */

@@ -437,6 +437,11 @@ describe('ipc schemas', () => {
   it('wraps ipc ok/fail helpers', () => {
     expect(ok({ runId: 'x' })).toEqual({ ok: true, data: { runId: 'x' } })
     expect(fail('nope')).toEqual({ ok: false, error: 'nope' })
+    expect(fail('nope', 'IPC_HANDLER')).toEqual({
+      ok: false,
+      error: 'nope',
+      code: 'IPC_HANDLER'
+    })
   })
 
   it('seeds deepseek without legacy chat ids', () => {

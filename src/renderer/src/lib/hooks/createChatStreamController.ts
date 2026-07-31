@@ -1853,7 +1853,15 @@ export function createChatStreamController(
   ): Promise<boolean> => {
     const trimmed = text.trim()
     const id = runId
-    if ((!trimmed && !images?.length && !files?.length) || !id || !state.running) return false
+    if ((!trimmed && !images?.length && !files?.length) || !state.running) return false
+    if (!id) {
+      patch({
+        error: state.pendingRun
+          ? 'Wait for the run to start before sending a follow-up.'
+          : 'No active run to follow up on.'
+      })
+      return false
+    }
     if (!workspacePath) {
       patch({ error: 'Pick a workspace before sending a follow-up.' })
       return false
@@ -2108,6 +2116,9 @@ export function createChatStreamController(
     const id = runId
     if (!id) {
       pendingCancel = true
+      if (state.pendingRun || state.running || awaitingRun) {
+        patch({ runNotice: 'Stopping…' })
+      }
       return
     }
     clearPendingFollowUps(true)

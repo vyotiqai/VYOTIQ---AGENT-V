@@ -150,6 +150,70 @@ describe('isContainmentOrSymlinkError', () => {
   })
 })
 
+describe('clearNestedPluginMcpSecrets', () => {
+  const userData = join(tmpdir(), 'vyotiq-userdata-mkt')
+
+  beforeEach(() => {
+    mkdirSync(join(userData, 'marketplace', 'packages'), { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(userData, { recursive: true, force: true })
+  })
+
+  it('does not throw or read outside the package for traversal mcp paths', async () => {
+    const { clearNestedPluginMcpSecrets, writeMarketplaceIndex } = await import(
+      '@main/marketplace/indexStore'
+    )
+    const { marketplacePackageDir } = await import('@main/marketplace/paths')
+    const { mkdirSync: mkdir, writeFileSync: write, existsSync } = await import('fs')
+
+    writeMarketplaceIndex({ schemaVersion: 1, items: [] })
+    const root = marketplacePackageDir('plug-escape', '1.0.0')
+    mkdir(root, { recursive: true })
+    const outside = join(userData, 'marketplace', 'packages', 'escape-target')
+    mkdir(outside, { recursive: true })
+    write(
+      join(outside, 'vyotiq.mcp.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        kind: 'mcp',
+        id: 'leaked',
+        name: 'Leaked',
+        version: '1.0.0',
+        transport: 'stdio',
+        command: 'echo'
+      })
+    )
+    write(
+      join(root, 'vyotiq.plugin.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        kind: 'plugin',
+        id: 'plug-escape',
+        name: 'Plug',
+        version: '1.0.0',
+        mcp: ['../escape-target']
+      })
+    )
+
+    expect(() =>
+      clearNestedPluginMcpSecrets({
+        id: 'plug-escape',
+        kind: 'plugin',
+        name: 'Plug',
+        version: '1.0.0',
+        description: '',
+        enabled: true,
+        installSource: 'path',
+        installedAt: new Date().toISOString(),
+        packagePath: 'plug-escape/1.0.0'
+      })
+    ).not.toThrow()
+    expect(existsSync(join(outside, 'vyotiq.mcp.json'))).toBe(true)
+  })
+})
+
 describe('removeInstalledItem path consistency', () => {
   it('deletes via packagePath under packages root', async () => {
     const { upsertInstalledItem, removeInstalledItem, readMarketplaceIndex } = await import(

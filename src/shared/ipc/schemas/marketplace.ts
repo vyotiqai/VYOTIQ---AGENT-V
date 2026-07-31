@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { isSafeWorkspaceRelPath } from '../../utils/workspacePath'
+import { isAllowedMarketplaceIconUrl } from '../../utils/marketplaceIconUrl'
 
 export const MarketplaceKindSchema = z.enum(['mcp', 'skill', 'plugin'])
 export type MarketplaceKind = z.infer<typeof MarketplaceKindSchema>
@@ -151,7 +152,14 @@ export const MarketplaceCatalogEntrySchema = z.object({
   featuredRank: z.number().int().optional(),
   /** Relative path under resources/marketplace/ (e.g. icons/filesystem.svg). */
   iconPath: MarketplaceRelPathSchema.optional(),
-  iconUrl: z.string().optional(),
+  /** Image data URL only; invalid/remote schemes are dropped (not a catalog parse failure). */
+  iconUrl: z
+    .string()
+    .optional()
+    .transform((v) => {
+      if (v == null || v.trim() === '') return undefined
+      return isAllowedMarketplaceIconUrl(v) ? v.trim() : undefined
+    }),
   /** When false, UI shows Coming soon instead of Install. Default true. */
   installable: z.boolean().optional(),
   contentsPreview: MarketplaceContentsPreviewSchema.optional()
