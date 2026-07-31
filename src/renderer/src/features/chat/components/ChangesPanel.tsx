@@ -214,7 +214,9 @@ export function ChangesPanel({
   onDiscardWriteFile,
   onKeepAllWrites,
   onDiscardAllWrites,
-  active = true
+  active = true,
+  preferredScope = 'uncommitted',
+  preferredScopeToken = 0
 }: {
   items: UiItem[]
   className?: string
@@ -234,17 +236,22 @@ export function ChangesPanel({
   onDiscardAllWrites?: () => void | Promise<unknown>
   /** When false (hidden mounted dock), do not intercept Ctrl/Cmd+F/R. */
   active?: boolean
+  /** Scope requested by the parent (e.g. transcript Open Changes → agent). */
+  preferredScope?: ChangeScope
+  /** Bump to re-apply preferredScope even if the scope value is unchanged. */
+  preferredScopeToken?: number
 }) {
   // ChatView chrome already fetches when this panel is hidden; avoid a second shell-out.
   const chrome = useGitChrome(
     workspacePath ?? null,
     gitRevision,
-    Boolean(workspacePath) && active
+    Boolean(workspacePath) && active,
+    0
   )
   const agentFiles = useMemo(() => collectSessionChangedFiles(items), [items])
   const agentDiffs = useMemo(() => collectSessionFileDiffs(items), [items])
 
-  const [scope, setScope] = useState<ChangeScope>('uncommitted')
+  const [scope, setScope] = useState<ChangeScope>(preferredScope)
   const [scopeOpen, setScopeOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [layoutOpen, setLayoutOpen] = useState(false)
@@ -284,6 +291,13 @@ export function ChangesPanel({
     setFindQuery('')
     closeMenus()
   }, [workspacePath, closeMenus])
+
+  useEffect(() => {
+    if (preferredScopeToken <= 0) return
+    setScope(preferredScope)
+    if (preferredScope !== 'commits') setSelectedCommit(null)
+    setExpanded(new Set())
+  }, [preferredScope, preferredScopeToken])
 
   useEffect(() => {
     if (!scopeOpen && !menuOpen && !pushOpen) return undefined
@@ -487,6 +501,40 @@ export function ChangesPanel({
       : scope === 'commits' && !selectedCommit
         ? commits.length === 0 && !commitsBusy
         : filteredFiles.length === 0 && !chrome.busy
+
+  const emptyTitle = !workspacePath
+    ? 'No workspace'
+    : chrome.error
+      ? 'Git status unavailable'
+      : chrome.result?.kind === 'unavailable'
+        ? 'Git not found'
+        : chrome.result?.kind === 'not_repo'
+          ? 'Not a git repository'
+          : 'No changes yet'
+
+  const emptyBody = !workspacePath
+    ? 'Open a workspace to view git changes and resolve agent edits.'
+    : chrome.error
+      ? chrome.error
+      : chrome.result?.kind === 'unavailable'
+        ? chrome.result.detail
+        : chrome.result?.kind === 'not_repo'
+          ? 'This workspace has no .git directory. Git working-tree changes cannot be listed.'
+          : scope === 'agent'
+            ? 'Agent edits will appear here with Keep / Discard when available.'
+            : scope === 'commits'
+              ? 'No commits found in this repository.'
+              : 'Working tree changes will appear here when files differ from HEAD.'
+
+  const showGitEmpty =
+    empty &&
+    (scope === 'agent' ||
+      scope === 'commits' ||
+      !workspacePath ||
+      chrome.error != null ||
+      chrome.result?.kind === 'unavailable' ||
+      chrome.result?.kind === 'not_repo' ||
+      chrome.result?.kind === 'ok')
 
   const commitPrimaryPushes = Boolean(status?.hasRemote)
   const commitSha = scope === 'commits' ? selectedCommit?.sha ?? null : null
@@ -796,23 +844,9 @@ export function ChangesPanel({
 
       <div className="min-h-0 min-w-0 flex-1 overflow-auto p-2">
         {!workspacePath ? (
-          <EmptyPanel
-            icon="branch"
-            title="No workspace"
-            body="Open a workspace to view git changes and resolve agent edits."
-          />
-        ) : empty ? (
-          <EmptyPanel
-            icon="branch"
-            title="No changes yet"
-            body={
-              scope === 'agent'
-                ? 'Agent edits will appear here with Keep / Discard when available.'
-                : scope === 'commits'
-                  ? 'No commits found in this repository.'
-                  : 'Working tree changes will appear here when files differ from HEAD.'
-            }
-          />
+          <EmptyPanel icon="branch" title={emptyTitle} body={emptyBody} />
+        ) : showGitEmpty ? (
+          <EmptyPanel icon="branch" title={emptyTitle} body={emptyBody} />
         ) : scope === 'agent' ? (
           <ChangeSummary
             files={agentFiles}
@@ -905,7 +939,7 @@ export function ChangesPanel({
           </ul>
         )}
 
-        {workspacePath && scope !== 'agent' && agentFiles.length > 0 && canResolve ? (
+        {workspacePath && scope !== 'agent' && agentFiles.length > 0 ? (
           <div className="mt-3">
             <p className="m-0 mb-1.5 px-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
               Agent edits

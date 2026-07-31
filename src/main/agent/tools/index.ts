@@ -245,6 +245,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const contents = typeof args.contents === 'string' ? args.contents : undefined
     const diff = typeof args.diff === 'string' ? args.diff : undefined
     const content = toolEdit(workspace, path, contents, diff)
+    invalidateGitStatusCache(workspace)
     return toolOk('edit', path, content)
   },
   search: async (workspace, args, signal) => {
@@ -301,6 +302,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       }
     }
     const content = toolMultiEdit(workspace, edits, signal)
+    invalidateGitStatusCache(workspace)
     return toolOk('multi_edit', `${edits.length} files`, content)
   },
   str_replace: (workspace, args, signal, context) => {
@@ -316,6 +318,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       typeof args.new_string === 'string' ? args.new_string : '',
       args.replace_all === true
     )
+    invalidateGitStatusCache(workspace)
     return toolOk('str_replace', path, content)
   },
   delete: (workspace, args, signal, context) => {
@@ -324,6 +327,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const recursive = args.recursive === true
     getWriteCheckpoint(context.runDir)?.recordPrior(path, 'delete', { recursiveDir: recursive })
     const content = toolDelete(workspace, path, recursive)
+    invalidateGitStatusCache(workspace)
     return toolOk('delete', path, content)
   },
   todo_write: (_workspace, args, signal, context) => {

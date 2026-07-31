@@ -2,20 +2,20 @@
  * Coalesce overlapping `readGitStatus` calls and briefly reuse results.
  * Startup often fires 2× git:status for the same workspace within the same second.
  */
-import type { GitStatus } from '../../shared/ipc'
+import type { GitStatusResult } from '../../shared/ipc'
 import { canonicalizeWorkspacePath } from '../../shared/workspacePath'
 import { readGitStatus as readGitStatusUncached } from './git'
 
 const TTL_MS = 750
 
 type CacheEntry = {
-  status: GitStatus | null
+  status: GitStatusResult
   expiresAt: number
   generation: number
 }
 
 const cache = new Map<string, CacheEntry>()
-const inflight = new Map<string, Promise<GitStatus | null>>()
+const inflight = new Map<string, Promise<GitStatusResult>>()
 /** Bumped on invalidate so in-flight reads cannot re-cache stale status. */
 const generationByKey = new Map<string, number>()
 
@@ -43,7 +43,7 @@ export function invalidateGitStatusCache(cwd?: string): void {
 }
 
 /** Status read with in-flight coalesce + short TTL. */
-export async function readGitStatusCached(cwd: string): Promise<GitStatus | null> {
+export async function readGitStatusCached(cwd: string): Promise<GitStatusResult> {
   const key = cacheKey(cwd)
   const hit = cache.get(key)
   if (hit && Date.now() <= hit.expiresAt && hit.generation === currentGeneration(key)) {

@@ -2,7 +2,7 @@ import { execFile as execFileCb } from 'child_process'
 import { existsSync, statSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { promisify } from 'util'
-import type { GitChangedFile, GitStatus } from '../../shared/ipc'
+import type { GitChangedFile, GitStatus, GitStatusResult } from '../../shared/ipc'
 
 const execFile = promisify(execFileCb)
 
@@ -10,6 +10,35 @@ const READ_TIMEOUT_MS = 5000
 const WRITE_TIMEOUT_MS = 20_000
 const PUSH_TIMEOUT_MS = 120_000
 const MAX_BUFFER = 4 * 1024 * 1024
+const GIT_PROBE_TTL_MS = 60_000
+
+let gitBinaryCache: { ok: boolean; checkedAt: number } | null = null
+
+/** Whether `git` is on PATH. Cached briefly so chrome does not spam `--version`. */
+export async function gitAvailable(): Promise<boolean> {
+  const now = Date.now()
+  if (gitBinaryCache && now - gitBinaryCache.checkedAt < GIT_PROBE_TTL_MS) {
+    return gitBinaryCache.ok
+  }
+  try {
+    await execFile('git', ['--version'], {
+      encoding: 'utf8',
+      timeout: 5_000,
+      windowsHide: true,
+      env: GIT_ENV
+    })
+    gitBinaryCache = { ok: true, checkedAt: now }
+    return true
+  } catch {
+    gitBinaryCache = { ok: false, checkedAt: now }
+    return false
+  }
+}
+
+/** @internal */
+export function resetGitAvailableCacheForTests(): void {
+  gitBinaryCache = null
+}
 
 /** Beyond this the list stops being a summary and starts being a file tree. */
 const MAX_FILES = 200
@@ -170,8 +199,11 @@ function emptyFile(path: string, status: GitChangedFile['status']): GitChangedFi
   }
 }
 
-export async function readGitStatus(cwd: string): Promise<GitStatus | null> {
-  if (!isGitRepo(cwd)) return null
+export async function readGitStatus(cwd: string): Promise<GitStatusResult> {
+  if (!(await gitAvailable())) {
+    return { kind: 'unavailable', detail: 'Git is not installed or not on PATH' }
+  }
+  if (!isGitRepo(cwd)) return { kind: 'not_repo' }
 
   const branchRaw = await gitQuiet(['rev-parse', '--abbrev-ref', 'HEAD'], cwd, READ_TIMEOUT_MS)
   const branch = branchRaw?.trim() || null
@@ -274,7 +306,7 @@ export async function readGitStatus(cwd: string): Promise<GitStatus | null> {
 
   const remote = await gitQuiet(['remote'], cwd, READ_TIMEOUT_MS)
 
-  return {
+  const status: GitStatus = {
     branch,
     files,
     truncated: all.length > files.length,
@@ -284,6 +316,7 @@ export async function readGitStatus(cwd: string): Promise<GitStatus | null> {
     hasRemote: Boolean(remote?.trim()),
     hasCommits
   }
+  return { kind: 'ok', status }
 }
 
 const DIFF_CAP_CHARS = 100_000

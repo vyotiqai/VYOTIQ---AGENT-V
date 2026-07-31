@@ -39,8 +39,26 @@ export const GitStatusRequestSchema = z.object({
   workspacePath: z.string().min(1)
 })
 
-/** Null means the workspace simply is not a git repository. */
-export const GitStatusResultSchema = GitStatusSchema.nullable()
+/**
+ * Discriminated git status for the UI:
+ * - `ok` — real working-tree snapshot
+ * - `not_repo` — no `.git` at the workspace root
+ * - `unavailable` — git binary missing / not on PATH
+ */
+export const GitStatusResultSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('ok'),
+    status: GitStatusSchema
+  }),
+  z.object({
+    kind: z.literal('not_repo')
+  }),
+  z.object({
+    kind: z.literal('unavailable'),
+    detail: z.string().min(1)
+  })
+])
+export type GitStatusResult = z.infer<typeof GitStatusResultSchema>
 
 export const GitCommitRequestSchema = z.object({
   workspacePath: z.string().min(1),

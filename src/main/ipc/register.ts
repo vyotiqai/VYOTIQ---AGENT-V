@@ -96,7 +96,7 @@ import {
   type McpStatusResult,
   type WorkspacesState,
   type ActiveRunsResult,
-  type GitStatus,
+  type GitStatusResult,
   type GitCommitResult,
   type AgentBrowserState
 } from '../../shared/ipc'
@@ -1070,7 +1070,7 @@ export function registerIpc(): void {
     }
   })
 
-  ipcMain.handle(IPC.gitStatus, async (event, raw): Promise<IpcResult<GitStatus | null>> => {
+  ipcMain.handle(IPC.gitStatus, async (event, raw): Promise<IpcResult<GitStatusResult>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
       const req = GitStatusRequestSchema.parse(raw)

@@ -27,7 +27,7 @@ beforeEach(() => {
     configurable: true,
     writable: true,
     value: {
-      gitStatus: vi.fn().mockResolvedValue({ ok: true, data: null }),
+      gitStatus: vi.fn().mockResolvedValue({ ok: true, data: { kind: 'not_repo' } }),
       gitDiff: vi.fn().mockResolvedValue({ ok: true, data: { path: '', hunks: [] } }),
       gitCommit: vi.fn().mockResolvedValue({ ok: true, data: { pushed: false, detail: 'ok' } }),
       gitLog: vi.fn().mockResolvedValue({ ok: true, data: [] }),
@@ -151,7 +151,7 @@ describe('ChatView composer placement', () => {
     expect(screen.getByRole('tab', { name: /^Terminal$/i })).toBeTruthy()
   })
 
-  it('switches docked panels from the side rail', () => {
+  it('switches docked panels from the side rail', async () => {
     render(<ChatView {...baseProps} items={[]} />)
 
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
@@ -177,7 +177,7 @@ describe('ChatView composer placement', () => {
     expect(
       document.querySelector('[data-changes-panel]')?.parentElement?.className
     ).toMatch(/\bflex\b/)
-    expect(screen.getByText('No changes yet')).toBeTruthy()
+    expect(await screen.findByText('Not a git repository')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /files panel/i })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: /Close Changes/i }))

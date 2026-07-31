@@ -15,6 +15,8 @@ beforeEach(() => {
       gitStatus: vi.fn().mockResolvedValue({
         ok: true,
         data: {
+          kind: 'ok',
+          status: {
           branch: 'main',
           files: [
             {
@@ -63,6 +65,7 @@ beforeEach(() => {
           removed: 5,
           hasRemote: true,
           hasCommits: true
+          }
         }
       }),
       gitCommit: vi.fn().mockResolvedValue({
@@ -239,6 +242,49 @@ describe('ChangesPanel', () => {
       expect(window.vyotiq.gitStageAll).toHaveBeenCalledWith('/ws')
     })
   })
+
+  it('shows not-a-repo empty state when gitStatus is not_repo', async () => {
+    ;(window.vyotiq.gitStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      data: { kind: 'not_repo' }
+    })
+    render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
+    expect(await screen.findByText('Not a git repository')).toBeTruthy()
+  })
+
+  it('shows git-not-found empty state when git is unavailable', async () => {
+    ;(window.vyotiq.gitStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      data: { kind: 'unavailable', detail: 'Git is not installed or not on PATH' }
+    })
+    render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
+    expect(await screen.findByText('Git not found')).toBeTruthy()
+    expect(screen.getByText(/not on PATH/i)).toBeTruthy()
+  })
+
+  it('applies preferredScope agent when preferredScopeToken bumps', async () => {
+    const { rerender } = render(
+      <ChangesPanel
+        items={[]}
+        workspacePath="/ws"
+        gitRevision={1}
+        preferredScope="uncommitted"
+        preferredScopeToken={0}
+      />
+    )
+    await screen.findByText('a.ts')
+    expect(screen.getByRole('button', { name: /Uncommitted/i })).toBeTruthy()
+    rerender(
+      <ChangesPanel
+        items={[]}
+        workspacePath="/ws"
+        gitRevision={1}
+        preferredScope="agent"
+        preferredScopeToken={1}
+      />
+    )
+    expect(await screen.findByRole('button', { name: /Last Agent Turn/i })).toBeTruthy()
+  })
 })
 
 describe('DockTabBar', () => {
@@ -315,6 +361,27 @@ describe('PrPanel', () => {
     await waitFor(() => {
       expect((window.vyotiq.prView as ReturnType<typeof vi.fn>).mock.calls.length).toBe(calls)
     })
+  })
+
+  it('reloads when gitRevision bumps', async () => {
+    const { rerender } = render(<PrPanel workspacePath="/ws" gitRevision={0} />)
+    await screen.findByText(/feat: panels/)
+    const calls = (window.vyotiq.prView as ReturnType<typeof vi.fn>).mock.calls.length
+    rerender(<PrPanel workspacePath="/ws" gitRevision={1} />)
+    await waitFor(() => {
+      expect((window.vyotiq.prView as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(
+        calls
+      )
+    })
+  })
+
+  it('titles empty state for missing GitHub CLI', async () => {
+    ;(window.vyotiq.prView as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: false,
+      error: 'GitHub CLI (gh) is not installed or not on PATH'
+    })
+    render(<PrPanel workspacePath="/ws" />)
+    expect(await screen.findByText('GitHub CLI not found')).toBeTruthy()
   })
 
   it('calls prMerge for Squash & Merge after confirmation', async () => {

@@ -35,11 +35,14 @@ describe('readGitStatus noise filtering', () => {
 
   it('omits node_modules from status while keeping real untracked files', async () => {
     const t0 = performance.now()
-    const status = await readGitStatus(repo)
+    const result = await readGitStatus(repo)
+    expect(result.kind).toBe('ok')
+    if (result.kind !== 'ok') return
+    const status = result.status
     const ms = performance.now() - t0
-    expect(status?.files.some((f) => f.path === 'app.js')).toBe(true)
-    expect(status?.files.some((f) => f.path.includes('node_modules'))).toBe(false)
-    expect(status?.fileCount).toBe(1)
+    expect(status.files.some((f) => f.path === 'app.js')).toBe(true)
+    expect(status.files.some((f) => f.path.includes('node_modules'))).toBe(false)
+    expect(status.fileCount).toBe(1)
     expect(ms).toBeLessThan(2_000)
   })
 
@@ -66,8 +69,10 @@ describe('readGitStatus noise filtering', () => {
     git(repo, 'add', 'rename-me.txt')
     git(repo, 'commit', '-m', 'add rename-me')
     git(repo, 'mv', 'rename-me.txt', 'renamed.txt')
-    const status = await readGitStatus(repo)
-    const paths = (status?.files ?? []).map((f) => f.path)
+    const result = await readGitStatus(repo)
+    expect(result.kind).toBe('ok')
+    if (result.kind !== 'ok') return
+    const paths = result.status.files.map((f) => f.path)
     expect(paths).not.toContain('.txt')
     expect(paths.some((p) => p === 'renamed.txt' || p === 'rename-me.txt')).toBe(true)
   })

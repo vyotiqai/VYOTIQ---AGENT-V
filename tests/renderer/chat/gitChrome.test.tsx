@@ -76,7 +76,7 @@ function Harness({
 
 function mockApi(overrides: Record<string, unknown> = {}): Record<string, ReturnType<typeof vi.fn>> {
   const api = {
-    gitStatus: vi.fn().mockResolvedValue({ ok: true, data: dirty }),
+    gitStatus: vi.fn().mockResolvedValue({ ok: true, data: { kind: 'ok', status: dirty } }),
     gitCommit: vi.fn().mockResolvedValue({
       ok: true,
       data: { committed: true, pushed: false, detail: 'Committed' }
@@ -118,14 +118,14 @@ describe('git chrome', () => {
   })
 
   it('renders nothing when the workspace is not a repository', async () => {
-    mockApi({ gitStatus: vi.fn().mockResolvedValue({ ok: true, data: null }) })
+    mockApi({ gitStatus: vi.fn().mockResolvedValue({ ok: true, data: { kind: 'not_repo' } }) })
     const { container } = render(<Harness />)
 
     await waitFor(() => expect(container.textContent).toBe(''))
   })
 
   it('keeps the branch but drops the change pills on a clean tree', async () => {
-    mockApi({ gitStatus: vi.fn().mockResolvedValue({ ok: true, data: clean }) })
+    mockApi({ gitStatus: vi.fn().mockResolvedValue({ ok: true, data: { kind: 'ok', status: clean } }) })
     render(<Harness />)
 
     expect(await screen.findByText('main')).toBeTruthy()

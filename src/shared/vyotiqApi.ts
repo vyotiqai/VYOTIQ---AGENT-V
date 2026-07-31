@@ -16,7 +16,7 @@ import type {
   HarnessPreviewApplyResult,
   HarnessApplyResult,
   GitCommitResult,
-  GitStatus,
+  GitStatusResult,
   IpcResult,
   ListModelsResult,
   ListRunsResult,
@@ -161,8 +161,8 @@ export interface VyotiqApi {
     goal: string
   ) => Promise<IpcResult<RunSummary>>
   listActiveRuns: () => Promise<IpcResult<ActiveRunsResult>>
-  /** Resolves to null when the workspace is not a git repository. */
-  gitStatus: (workspacePath: string) => Promise<IpcResult<GitStatus | null>>
+  /** Discriminated: ok | not_repo | unavailable (git missing from PATH). */
+  gitStatus: (workspacePath: string) => Promise<IpcResult<GitStatusResult>>
   gitCommit: (
     workspacePath: string,
     message: string,

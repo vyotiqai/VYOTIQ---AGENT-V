@@ -4,9 +4,16 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { commitAll, isGitRepo, readGitStatus, stageAll } from '@main/git/git'
+import type { GitStatus, GitStatusResult } from '@shared/ipc'
 
 function git(cwd: string, ...args: string[]): void {
   execFileSync('git', args, { cwd, stdio: 'ignore' })
+}
+
+function expectOk(result: GitStatusResult): GitStatus {
+  expect(result.kind).toBe('ok')
+  if (result.kind !== 'ok') throw new Error('expected ok')
+  return result.status
 }
 
 describe('git status', () => {
@@ -31,23 +38,23 @@ describe('git status', () => {
     rmSync(plain, { recursive: true, force: true })
   })
 
-  it('reports nothing for a directory that is not a repository', async () => {
+  it('reports not_repo for a directory that is not a repository', async () => {
     expect(isGitRepo(plain)).toBe(false)
-    expect(await readGitStatus(plain)).toBeNull()
+    expect(await readGitStatus(plain)).toEqual({ kind: 'not_repo' })
   })
 
   it('reports a clean repository with its branch', async () => {
-    const status = await readGitStatus(repo)
-    expect(status?.branch).toBe('main')
-    expect(status?.files).toEqual([])
-    expect(status?.added).toBe(0)
-    expect(status?.hasCommits).toBe(true)
+    const status = expectOk(await readGitStatus(repo))
+    expect(status.branch).toBe('main')
+    expect(status.files).toEqual([])
+    expect(status.added).toBe(0)
+    expect(status.hasCommits).toBe(true)
   })
 
   it('counts added and removed lines for a tracked edit', async () => {
     writeFileSync(join(repo, 'kept.txt'), 'one\ntwo\nthree\nfour\n', 'utf8')
-    const status = await readGitStatus(repo)
-    const file = status?.files.find((entry) => entry.path === 'kept.txt')
+    const status = expectOk(await readGitStatus(repo))
+    const file = status.files.find((entry) => entry.path === 'kept.txt')
     expect(file).toMatchObject({
       status: 'modified',
       added: 1,
@@ -59,14 +66,14 @@ describe('git status', () => {
       staged: false,
       unstaged: true
     })
-    expect(status?.added).toBe(1)
+    expect(status.added).toBe(1)
   })
 
   it('counts an untracked file as wholly added', async () => {
     mkdirSync(join(repo, 'sub'), { recursive: true })
     writeFileSync(join(repo, 'sub', 'new.txt'), 'a\nb\n', 'utf8')
-    const status = await readGitStatus(repo)
-    const file = status?.files.find((entry) => entry.path === 'sub/new.txt')
+    const status = expectOk(await readGitStatus(repo))
+    const file = status.files.find((entry) => entry.path === 'sub/new.txt')
     expect(file).toMatchObject({
       status: 'untracked',
       added: 2,
@@ -81,8 +88,8 @@ describe('git status', () => {
     writeFileSync(join(repo, 'kept.txt'), 'staged-line\nworktree-line\n', 'utf8')
     git(repo, 'add', 'kept.txt')
     writeFileSync(join(repo, 'kept.txt'), 'staged-line\nworktree-line\nextra\n', 'utf8')
-    const status = await readGitStatus(repo)
-    const file = status?.files.find((entry) => entry.path === 'kept.txt')
+    const status = expectOk(await readGitStatus(repo))
+    const file = status.files.find((entry) => entry.path === 'kept.txt')
     expect(file).toMatchObject({
       staged: true,
       unstaged: true
@@ -94,8 +101,8 @@ describe('git status', () => {
   it('marks staged-only index changes via porcelain XY', async () => {
     writeFileSync(join(repo, 'kept.txt'), 'staged-only\n', 'utf8')
     git(repo, 'add', 'kept.txt')
-    const status = await readGitStatus(repo)
-    const file = status?.files.find((entry) => entry.path === 'kept.txt')
+    const status = expectOk(await readGitStatus(repo))
+    const file = status.files.find((entry) => entry.path === 'kept.txt')
     expect(file).toMatchObject({ staged: true, unstaged: false })
   })
 
@@ -104,8 +111,8 @@ describe('git status', () => {
     writeFileSync(join(repo, 'extra.txt'), 'x\n', 'utf8')
     const staged = await stageAll(repo)
     expect(staged.staged).toBe(true)
-    const status = await readGitStatus(repo)
-    expect(status?.files.every((f) => f.staged && !f.unstaged)).toBe(true)
+    const status = expectOk(await readGitStatus(repo))
+    expect(status.files.every((f) => f.staged && !f.unstaged)).toBe(true)
   })
 
   it('commits staged content only when mode is staged', async () => {
@@ -114,8 +121,8 @@ describe('git status', () => {
     writeFileSync(join(repo, 'kept.txt'), 'index-version\nworktree-extra\n', 'utf8')
     const result = await commitAll(repo, 'staged-only', false, 'staged')
     expect(result.committed).toBe(true)
-    const status = await readGitStatus(repo)
-    const file = status?.files.find((entry) => entry.path === 'kept.txt')
+    const status = expectOk(await readGitStatus(repo))
+    const file = status.files.find((entry) => entry.path === 'kept.txt')
     expect(file).toMatchObject({ staged: false, unstaged: true })
   })
 
@@ -123,8 +130,8 @@ describe('git status', () => {
     const result = await commitAll(repo, 'second', false, 'all')
     expect(result).toMatchObject({ committed: true, pushed: false })
 
-    const status = await readGitStatus(repo)
-    expect(status?.files).toEqual([])
+    const status = expectOk(await readGitStatus(repo))
+    expect(status.files).toEqual([])
   })
 
   it('refuses to invent a commit when nothing changed', async () => {
@@ -145,8 +152,8 @@ describe('git status', () => {
     git(repo, 'add', 'doomed.txt')
     git(repo, 'commit', '-m', 'add doomed')
     rmSync(join(repo, 'doomed.txt'))
-    const status = await readGitStatus(repo)
-    const file = status?.files.find((entry) => entry.path === 'doomed.txt')
+    const status = expectOk(await readGitStatus(repo))
+    const file = status.files.find((entry) => entry.path === 'doomed.txt')
     expect(file).toMatchObject({ status: 'deleted', unstaged: true })
   })
 })

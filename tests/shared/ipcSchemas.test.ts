@@ -39,6 +39,7 @@ import {
   ToolApprovalRequestSchema,
   ToolApprovalResponseSchema,
   ActiveRunSchema,
+  GitStatusResultSchema,
   GitStatusSchema
 } from '@shared/ipc'
 import { IPC } from '@shared/channels'
@@ -565,6 +566,13 @@ describe('ipc schemas', () => {
         ]
       }).branch
     ).toBe('main')
+    expect(GitStatusResultSchema.parse({ kind: 'not_repo' })).toEqual({ kind: 'not_repo' })
+    expect(
+      GitStatusResultSchema.parse({
+        kind: 'unavailable',
+        detail: 'Git is not installed or not on PATH'
+      }).kind
+    ).toBe('unavailable')
   })
 
   it('parses pty list/create request schemas', async () => {

@@ -11,7 +11,7 @@ beforeEach(() => {
     configurable: true,
     writable: true,
     value: {
-      gitStatus: vi.fn().mockResolvedValue({ ok: true, data: null }),
+      gitStatus: vi.fn().mockResolvedValue({ ok: true, data: { kind: 'not_repo' } }),
       browserGetState: vi.fn().mockResolvedValue({
         ok: true,
         data: { open: false, url: '', title: '' }

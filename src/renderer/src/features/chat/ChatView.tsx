@@ -400,6 +400,10 @@ export function ChatView({
   const gitChrome = useGitChrome(workspacePath, gitRevision, Boolean(workspacePath))
   // Prefer the shared mutating-tool revision (same clock as composer chrome), not
   // a per-done-tool + fileCount formula that over-fetches and races the status cache.
+  const [changesPreferredScope, setChangesPreferredScope] = useState<'agent' | 'uncommitted'>(
+    'uncommitted'
+  )
+  const [changesScopeToken, setChangesScopeToken] = useState(0)
 
   const agentTerminalRunning = useMemo(
     () =>
@@ -448,6 +452,15 @@ export function ChatView({
       persistRightPanel(next)
     },
     [closeDock, persistRightPanel]
+  )
+
+  const openChangesPanel = useCallback(
+    (scope: 'agent' | 'uncommitted' = 'uncommitted') => {
+      setChangesPreferredScope(scope)
+      setChangesScopeToken((n) => n + 1)
+      setRightPanel('changes')
+    },
+    [setRightPanel]
   )
 
   const activeRightPanelRef = useRef(activeRightPanel)
@@ -796,7 +809,7 @@ export function ChatView({
             onDiscardWriteFile={onDiscardWriteFile}
             onKeepAllWrites={onKeepAllWrites}
             resolveBlockedReason={resolveBlockedReason}
-            onOpenChanges={() => setRightPanel('changes')}
+            onOpenChanges={() => openChangesPanel('agent')}
             sideRailPad={agentSideRailPad}
           />
 
@@ -807,7 +820,7 @@ export function ChatView({
             bannerError={bannerError}
             onDismissError={onDismissError}
             leading={
-              <ChatGitLeading chrome={gitChrome} onOpenChanges={() => setRightPanel('changes')} />
+              <ChatGitLeading chrome={gitChrome} onOpenChanges={() => openChangesPanel('uncommitted')} />
             }
             trailing={
               <ChatGitTrailing chrome={gitChrome} />
@@ -877,6 +890,8 @@ export function ChatView({
             onKeepAllWrites={onKeepAllWrites}
             onDiscardAllWrites={onUndoWrites}
             active={visiblePanelId === 'changes'}
+            preferredScope={changesPreferredScope}
+            preferredScopeToken={changesScopeToken}
           />
         </div>
       ) : null}
@@ -891,6 +906,7 @@ export function ChatView({
         >
           <PrPanel
             workspacePath={workspacePath}
+            gitRevision={gitRevision}
             onPrMeta={handlePrMeta}
             onUnlink={() => closeDockTab('pr')}
             active={visiblePanelId === 'pr'}

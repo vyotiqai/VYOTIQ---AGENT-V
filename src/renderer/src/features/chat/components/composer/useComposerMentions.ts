@@ -205,7 +205,7 @@ export function useComposerMentions({
     let cancelled = false
     void window.vyotiq.gitStatus(workspacePath).then((res) => {
       if (cancelled) return
-      if (res.ok && res.data) setBranchName(res.data.branch)
+      if (res.ok && res.data.kind === 'ok') setBranchName(res.data.status.branch)
       else setBranchName(null)
     })
     return () => {

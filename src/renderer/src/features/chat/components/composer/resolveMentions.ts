@@ -53,8 +53,8 @@ async function resolveBranchBlock(workspacePath: string): Promise<string> {
   const parts: string[] = ['## Referenced branch diff']
   try {
     const statusRes = await window.vyotiq.gitStatus(workspacePath)
-    if (statusRes.ok && statusRes.data) {
-      const s = statusRes.data
+    if (statusRes.ok && statusRes.data.kind === 'ok') {
+      const s = statusRes.data.status
       parts.push(
         `Branch: ${s.branch ?? '(detached)'}`,
         `Changed files: ${s.fileCount}${s.truncated ? ' (truncated)' : ''}`,
@@ -66,8 +66,14 @@ async function resolveBranchBlock(workspacePath: string): Promise<string> {
           ...s.files.slice(0, 40).map((f) => `- ${f.status} ${f.path}`)
         )
       }
-    } else if (statusRes.ok && statusRes.data === null) {
+    } else if (statusRes.ok && statusRes.data.kind === 'not_repo') {
       parts.push('Not a git repository.')
+      return parts.join('\n')
+    } else if (statusRes.ok && statusRes.data.kind === 'unavailable') {
+      parts.push(statusRes.data.detail)
+      return parts.join('\n')
+    } else if (!statusRes.ok) {
+      parts.push(statusRes.error)
       return parts.join('\n')
     }
   } catch {

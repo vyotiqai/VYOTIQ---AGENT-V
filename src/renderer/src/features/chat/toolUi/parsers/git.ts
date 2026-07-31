@@ -41,7 +41,7 @@ export function parseGitStatusData(tool: UiToolRow): GitStatusParsed {
   if (!content) {
     return { branch: '', clean: true, message: '', files: [], added: 0, removed: 0 }
   }
-  if (content === 'Not a git repository') {
+  if (content === 'Not a git repository' || /Git is not installed/i.test(content)) {
     return {
       branch: '',
       clean: true,

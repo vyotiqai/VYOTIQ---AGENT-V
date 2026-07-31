@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { GitStatus } from '@shared/ipc'
+import type { GitStatus, GitStatusResult } from '@shared/ipc'
 
 export type GitStatusState = {
   status: GitStatus | null
+  /** Discriminated probe result (ok / not_repo / unavailable), or null while loading. */
+  result: GitStatusResult | null
+  /** IPC / unexpected failure message when the invoke itself failed. */
+  error: string | null
   /** True until the first answer arrives, so the bar can stay out of the way. */
   loading: boolean
   refresh: () => void
@@ -25,9 +29,13 @@ const STARTUP_DEFER_MS = 2_500
 export function useGitStatus(
   workspacePath: string | null,
   revision: number,
-  enabled = true
+  enabled = true,
+  /** Skip the cold-start idle defer (Changes panel should fetch as soon as it opens). */
+  deferStartupMs: number = STARTUP_DEFER_MS
 ): GitStatusState {
   const [status, setStatus] = useState<GitStatus | null>(null)
+  const [result, setResult] = useState<GitStatusResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [manualRevision, setManualRevision] = useState(0)
   const requestRef = useRef(0)
@@ -35,6 +43,8 @@ export function useGitStatus(
   useEffect(() => {
     if (!workspacePath || !enabled) {
       setStatus(null)
+      setResult(null)
+      setError(null)
       setLoading(false)
       return undefined
     }
@@ -49,12 +59,23 @@ export function useGitStatus(
       setLoading(true)
       void window.vyotiq
         .gitStatus(workspacePath)
-        .then((result) => {
+        .then((ipcResult) => {
           if (cancelled || request !== requestRef.current) return
-          setStatus(result.ok ? result.data : null)
+          if (!ipcResult.ok) {
+            setStatus(null)
+            setResult(null)
+            setError(ipcResult.error)
+            return
+          }
+          setError(null)
+          setResult(ipcResult.data)
+          setStatus(ipcResult.data.kind === 'ok' ? ipcResult.data.status : null)
         })
-        .catch(() => {
-          if (!cancelled) setStatus(null)
+        .catch((err) => {
+          if (cancelled) return
+          setStatus(null)
+          setResult(null)
+          setError(err instanceof Error ? err.message : String(err))
         })
         .finally(() => {
           if (!cancelled && request === requestRef.current) setLoading(false)
@@ -71,10 +92,10 @@ export function useGitStatus(
     }
 
     // Manual refresh / revision bumps should not wait for startup deferral.
-    const deferStartup = manualRevision === 0 && revision === 0
+    const deferStartup = deferStartupMs > 0 && manualRevision === 0 && revision === 0
     if (deferStartup) {
       setLoading(false)
-      timer = setTimeout(scheduleIdle, STARTUP_DEFER_MS)
+      timer = setTimeout(scheduleIdle, deferStartupMs)
     } else {
       start()
     }
@@ -86,9 +107,9 @@ export function useGitStatus(
       }
       if (timer != null) clearTimeout(timer)
     }
-  }, [workspacePath, revision, manualRevision, enabled])
+  }, [workspacePath, revision, manualRevision, enabled, deferStartupMs])
 
   const refresh = useCallback(() => setManualRevision((value) => value + 1), [])
 
-  return { status, loading, refresh }
+  return { status, result, error, loading, refresh }
 }

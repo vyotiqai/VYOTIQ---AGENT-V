@@ -17,6 +17,17 @@ function formatPrState(state: string): string {
   return lower.charAt(0).toUpperCase() + lower.slice(1)
 }
 
+function prEmptyTitle(error: string | null): string {
+  if (!error) return 'No pull request'
+  if (/GitHub CLI \(gh\) is not installed|gh is not installed|not on PATH/i.test(error)) {
+    return 'GitHub CLI not found'
+  }
+  if (/not a git repository/i.test(error)) return 'Not a git repository'
+  if (/auth|login|HTTP 401|HTTP 403/i.test(error)) return 'GitHub authentication required'
+  if (/no pull request|no open pull request/i.test(error)) return 'No pull request'
+  return 'Pull request unavailable'
+}
+
 function viewedStorageKey(workspacePath: string, prNumber: number): string {
   return `vyotiq.prViewed:${workspacePath}:${prNumber}`
 }
@@ -254,7 +265,8 @@ export function PrPanel({
   className,
   onPrMeta,
   onUnlink,
-  active = true
+  active = true,
+  gitRevision = 0
 }: {
   workspacePath?: string | null
   className?: string
@@ -262,6 +274,8 @@ export function PrPanel({
   onUnlink?: () => void
   /** When false (hidden mounted dock), do not intercept Ctrl/Cmd+F/R. */
   active?: boolean
+  /** Same clock as Changes — reloads PR metadata after git-mutating activity. */
+  gitRevision?: number
 }) {
   const [pr, setPr] = useState<PrView | null>(null)
   const [loading, setLoading] = useState(false)
@@ -349,7 +363,7 @@ export function PrPanel({
 
   useEffect(() => {
     void load()
-  }, [load])
+  }, [load, gitRevision])
 
   useEffect(() => {
     setExpanded(new Set())
@@ -843,7 +857,7 @@ export function PrPanel({
         ) : !pr ? (
           <EmptyPanel
             icon="pullRequest"
-            title="No pull request"
+            title={prEmptyTitle(error)}
             body={error ?? 'Connect GitHub CLI (`gh auth login`) to view PRs for this branch.'}
           />
         ) : tab === 'description' ? (

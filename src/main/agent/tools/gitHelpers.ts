@@ -1,8 +1,10 @@
 import { readGitDiff, readGitStatus } from '../../git/git'
 
 export async function toolGitStatusAsync(workspace: string): Promise<string> {
-  const status = await readGitStatus(workspace)
-  if (!status) return 'Not a git repository'
+  const result = await readGitStatus(workspace)
+  if (result.kind === 'unavailable') return result.detail
+  if (result.kind === 'not_repo') return 'Not a git repository'
+  const status = result.status
   const lines = [
     `branch: ${status.branch ?? '(detached)'}`,
     `commits: ${status.hasCommits ? 'yes' : 'no'}`,

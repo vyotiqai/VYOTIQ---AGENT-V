@@ -21,6 +21,8 @@ describe('resolveComposerMentions', () => {
       gitStatus: vi.fn(async () => ({
         ok: true as const,
         data: {
+          kind: 'ok' as const,
+          status: {
           branch: 'main',
           files: [],
           truncated: false,
@@ -29,6 +31,7 @@ describe('resolveComposerMentions', () => {
           removed: 0,
           hasRemote: false,
           hasCommits: true
+          }
         }
       })),
       gitDiff: vi.fn(async () => ({

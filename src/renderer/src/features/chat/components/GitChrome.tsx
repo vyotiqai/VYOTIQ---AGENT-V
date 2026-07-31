@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
-import type { GitStatus } from '@shared/ipc'
+import type { GitStatus, GitStatusResult } from '@shared/ipc'
 import { useGitStatus } from './useGitStatus'
 import { defaultCommitMessageFromStatus } from './CommitComposer'
 
@@ -10,6 +10,8 @@ const PILL =
 
 export type GitChrome = {
   status: GitStatus | null
+  result: GitStatusResult | null
+  error: string | null
   ready: boolean
   busy: boolean
   notice: string | null
@@ -25,9 +27,15 @@ export type GitChrome = {
 export function useGitChrome(
   workspacePath: string | null,
   revision: number,
-  enabled = true
+  enabled = true,
+  deferStartupMs?: number
 ): GitChrome {
-  const { status, loading, refresh } = useGitStatus(workspacePath, revision, enabled)
+  const { status, result, error, loading, refresh } = useGitStatus(
+    workspacePath,
+    revision,
+    enabled,
+    deferStartupMs
+  )
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [noticeFailed, setNoticeFailed] = useState(false)
@@ -39,15 +47,15 @@ export function useGitChrome(
       setNotice(null)
       setNoticeFailed(false)
       try {
-        const result = await window.vyotiq.gitCommit(
+        const commitResult = await window.vyotiq.gitCommit(
           workspacePath,
           message.trim(),
           push,
           mode
         )
-        setNotice(result.ok ? result.data.detail : result.error)
-        setNoticeFailed(!result.ok)
-        return result.ok
+        setNotice(commitResult.ok ? commitResult.data.detail : commitResult.error)
+        setNoticeFailed(!commitResult.ok)
+        return commitResult.ok
       } finally {
         setBusy(false)
         refresh()
@@ -62,10 +70,10 @@ export function useGitChrome(
     setNotice(null)
     setNoticeFailed(false)
     try {
-      const result = await window.vyotiq.gitStageAll(workspacePath)
-      setNotice(result.ok ? result.data.detail : result.error)
-      setNoticeFailed(!result.ok)
-      return result.ok
+      const stageResult = await window.vyotiq.gitStageAll(workspacePath)
+      setNotice(stageResult.ok ? stageResult.data.detail : stageResult.error)
+      setNoticeFailed(!stageResult.ok)
+      return stageResult.ok
     } finally {
       setBusy(false)
       refresh()
@@ -74,7 +82,9 @@ export function useGitChrome(
 
   return {
     status,
-    ready: !loading && Boolean(status),
+    result,
+    error,
+    ready: !loading && result != null,
     busy,
     notice,
     noticeFailed,

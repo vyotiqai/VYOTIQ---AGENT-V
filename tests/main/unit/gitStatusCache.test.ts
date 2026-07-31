@@ -1,16 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { GitStatus } from '@shared/ipc'
+import type { GitStatusResult } from '@shared/ipc'
 
 const readGitStatus = vi.hoisted(() =>
-  vi.fn(async (_cwd: string): Promise<GitStatus | null> => ({
-    branch: 'main',
-    files: [],
-    truncated: false,
-    fileCount: 0,
-    added: 0,
-    removed: 0,
-    hasRemote: false,
-    hasCommits: true
+  vi.fn(async (_cwd: string): Promise<GitStatusResult> => ({
+    kind: 'ok',
+    status: {
+      branch: 'main',
+      files: [],
+      truncated: false,
+      fileCount: 0,
+      added: 0,
+      removed: 0,
+      hasRemote: false,
+      hasCommits: true
+    }
   }))
 )
 
@@ -39,8 +42,8 @@ describe('gitStatusCache', () => {
       readGitStatusCached('C:/repo'),
       readGitStatusCached('C:/repo')
     ])
-    expect(a?.branch).toBe('main')
-    expect(b?.branch).toBe('main')
+    expect(a.kind === 'ok' && a.status.branch).toBe('main')
+    expect(b.kind === 'ok' && b.status.branch).toBe('main')
     expect(readGitStatus).toHaveBeenCalledTimes(1)
   })
 
@@ -58,41 +61,50 @@ describe('gitStatusCache', () => {
   })
 
   it('does not re-cache a pre-invalidate inflight result', async () => {
-    let resolveFirst!: (value: GitStatus | null) => void
+    let resolveFirst!: (value: GitStatusResult) => void
     readGitStatus.mockImplementationOnce(
       () =>
-        new Promise<GitStatus | null>((resolve) => {
+        new Promise<GitStatusResult>((resolve) => {
           resolveFirst = resolve
         })
     )
     readGitStatus.mockResolvedValue({
-      branch: 'fresh',
-      files: [],
-      truncated: false,
-      fileCount: 0,
-      added: 0,
-      removed: 0,
-      hasRemote: false,
-      hasCommits: true
+      kind: 'ok',
+      status: {
+        branch: 'fresh',
+        files: [],
+        truncated: false,
+        fileCount: 0,
+        added: 0,
+        removed: 0,
+        hasRemote: false,
+        hasCommits: true
+      }
     })
 
     const first = readGitStatusCached('C:/repo')
     invalidateGitStatusCache('C:/repo')
     const second = readGitStatusCached('C:/repo')
     resolveFirst({
-      branch: 'stale',
-      files: [],
-      truncated: false,
-      fileCount: 0,
-      added: 0,
-      removed: 0,
-      hasRemote: false,
-      hasCommits: true
+      kind: 'ok',
+      status: {
+        branch: 'stale',
+        files: [],
+        truncated: false,
+        fileCount: 0,
+        added: 0,
+        removed: 0,
+        hasRemote: false,
+        hasCommits: true
+      }
     })
-    await expect(first).resolves.toMatchObject({ branch: 'stale' })
-    await expect(second).resolves.toMatchObject({ branch: 'fresh' })
-    // TTL hit must serve the post-invalidate result, not the stale inflight write.
-    await expect(readGitStatusCached('C:/repo')).resolves.toMatchObject({ branch: 'fresh' })
+    await first
+    const fresh = await second
+    expect(fresh.kind === 'ok' && fresh.status.branch).toBe('fresh')
+    await expect(readGitStatusCached('C:/repo')).resolves.toMatchObject({
+      kind: 'ok',
+      status: { branch: 'fresh' }
+    })
     expect(readGitStatus).toHaveBeenCalledTimes(2)
   })
 })
