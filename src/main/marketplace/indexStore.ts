@@ -10,6 +10,7 @@ import {
 } from '../../shared/ipc'
 import { clearMcpAuthToken, clearMcpOAuthState } from '../settings/secrets'
 import { marketplaceIndexPath, marketplacePackageDir, marketplaceRoot, resolveInstalledPackageRoot } from './paths'
+import { resolveInsidePackageRoot } from './safePath'
 import { logger } from '../../shared/logger'
 
 const EMPTY_INDEX: MarketplaceIndex = { schemaVersion: 1, items: [] }
@@ -89,8 +90,9 @@ function clearMcpSecrets(serverId: string): void {
 /**
  * Nested plugin MCP ids match resolve.ts: `plugin-{pluginId}-{nestedId}`.
  * Must run before the package directory is removed.
+ * Exported for unit tests (path containment).
  */
-function clearNestedPluginMcpSecrets(item: MarketplaceInstalledItem): void {
+export function clearNestedPluginMcpSecrets(item: MarketplaceInstalledItem): void {
   if (item.kind !== 'plugin') return
   const root = marketplacePackageDir(item.id, item.version)
   const manifestPath = join(root, 'vyotiq.plugin.json')
@@ -100,7 +102,19 @@ function clearNestedPluginMcpSecrets(item: MarketplaceInstalledItem): void {
       JSON.parse(readFileSync(manifestPath, 'utf8'))
     )
     for (const rel of plugin.mcp) {
-      const mcpManifestPath = join(root, rel, 'vyotiq.mcp.json')
+      let mcpRoot: string
+      try {
+        mcpRoot = resolveInsidePackageRoot(root, rel)
+      } catch (err) {
+        logger.warn('Skipping nested MCP secret cleanup outside package root', {
+          scope: 'marketplace',
+          id: item.id,
+          rel,
+          err
+        })
+        continue
+      }
+      const mcpManifestPath = join(mcpRoot, 'vyotiq.mcp.json')
       if (!existsSync(mcpManifestPath)) continue
       try {
         const nested = VyotiqMcpManifestSchema.parse(
