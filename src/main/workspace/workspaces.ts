@@ -181,10 +181,24 @@ function writeWorkspacesAtomic(state: WorkspacesState): void {
 }
 
 let workspacesCache: WorkspacesState | null = null
+/** Last accepted UI writeGeneration per workspace path (stale IPC guard). */
+const lastUiWriteGenerationByPath = new Map<string, number>()
+/** Serializes async workspace mutations that may await between read and write. */
+let workspacesMutationChain: Promise<unknown> = Promise.resolve()
+
+export function enqueueWorkspaceMutation<T>(fn: () => T | Promise<T>): Promise<T> {
+  const run = workspacesMutationChain.then(() => fn())
+  workspacesMutationChain = run.then(
+    () => undefined,
+    () => undefined
+  )
+  return run
+}
 
 /** Drop in-memory workspaces cache (tests / external file edits). */
 export function clearWorkspacesCacheForTests(): void {
   workspacesCache = null
+  lastUiWriteGenerationByPath.clear()
 }
 
 function registerWorkspaceId(
@@ -505,6 +519,14 @@ export function updateWorkspaceUiState(path: string, ui: WorkspaceUiState): true
   const parsed = WorkspaceUiStateSchema.parse(ui)
   const state = readWorkspacesState()
   const key = findOpenPath(state, path) ?? canonicalizeWorkspacePath(path)
+  const incomingGen = parsed.writeGeneration
+  if (incomingGen !== undefined) {
+    const last = lastUiWriteGenerationByPath.get(key) ?? -1
+    if (incomingGen < last) {
+      return true
+    }
+    lastUiWriteGenerationByPath.set(key, incomingGen)
+  }
   saveWorkspacesState({
     ...state,
     uiStateByPath: {

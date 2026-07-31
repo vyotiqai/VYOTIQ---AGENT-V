@@ -31,7 +31,8 @@ export function runHasDiagnosticsEvidence(messages: readonly ChatMessage[]): boo
 /**
  * Soft verify gate before accepting a no-tool finish.
  * - `notice`: at most one nudge (`alreadyNudged` blocks repeats)
- * - `require`: keep nudging until clean diagnostics evidence exists (loop re-checks typecheck)
+ * - `require`: keep nudging until clean diagnostics evidence exists; the loop
+ *   applies a circuit breaker (`MAX_REQUIRE_FINISH_NUDGES`) so this cannot spin forever
  */
 export function shouldNudgeVerifyBeforeDone(opts: {
   verifyMode: VerifyBeforeDoneMode

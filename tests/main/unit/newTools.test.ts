@@ -140,6 +140,48 @@ describe('multi_edit schema', () => {
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error).toMatch(/contents or diff/)
   })
+
+  it('rejects duplicate paths in edits', () => {
+    const result = validateToolArgs(
+      'multi_edit',
+      JSON.stringify({
+        edits: [
+          { path: 'a.ts', contents: 'one' },
+          { path: 'a.ts', contents: 'two' }
+        ]
+      })
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toMatch(/duplicate path/i)
+  })
+})
+
+describe('browser_select_option schema', () => {
+  it('requires value or label', () => {
+    const missing = validateToolArgs(
+      'browser_select_option',
+      JSON.stringify({ selector: '#sel' })
+    )
+    expect(missing.ok).toBe(false)
+    if (!missing.ok) expect(missing.error).toMatch(/value or label/i)
+
+    expect(
+      validateToolArgs(
+        'browser_select_option',
+        JSON.stringify({ selector: '#sel', value: 'a' })
+      ).ok
+    ).toBe(true)
+  })
+})
+
+describe('terminal / grep pattern bounds', () => {
+  it('rejects oversized terminal patterns', () => {
+    const result = validateToolArgs(
+      'terminal',
+      JSON.stringify({ command: 'echo hi', pattern: 'a'.repeat(201) })
+    )
+    expect(result.ok).toBe(false)
+  })
 })
 
 describe('tool arg bounds', () => {

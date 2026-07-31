@@ -1166,8 +1166,10 @@ export function createChatStreamController(
     const ok = id ? await catchUpUiFromDisk(id) : true
     if (disposed || gen !== uiResumeGeneration) return
     if (!ok) {
-      // Keep suspended catch-up pending so a later resume can retry.
+      // Stay catch-up pending, but re-enable live events so the transcript is
+      // not frozen forever if disk sync failed. A later resumeUiIfNeeded retries.
       needsUiCatchUp = true
+      setUiSuspended(false)
       return
     }
     // Deltas skipped during catch-up are not on this disk snapshot; clear the
@@ -2091,7 +2093,15 @@ export function createChatStreamController(
       }
       await sleep(CANCEL_RECOVERY_POLL_MS)
     }
-    patch({ error: cancelError })
+    patch({
+      error: cancelError,
+      running: false,
+      pendingRun: false,
+      runStartedAt: null,
+      runTerminalTick: state.runTerminalTick + 1
+    })
+    clearPendingFollowUps(true)
+    onTerminal?.()
   }
 
   const stop = async (): Promise<void> => {

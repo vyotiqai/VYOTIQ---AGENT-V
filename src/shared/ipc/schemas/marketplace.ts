@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { isSafeWorkspaceRelPath } from '../../utils/workspacePath'
 
 export const MarketplaceKindSchema = z.enum(['mcp', 'skill', 'plugin'])
 export type MarketplaceKind = z.infer<typeof MarketplaceKindSchema>
@@ -12,19 +13,13 @@ export const MarketplaceSegmentSchema = z
   })
   .refine((id) => !id.includes('__'), { message: 'must not contain "__"' })
 
-/** Relative path under a package root — no absolute / .. escapes. */
+/** Relative path under a package root — aligned with isSafeWorkspaceRelPath. */
 export const MarketplaceRelPathSchema = z
   .string()
   .min(1)
-  .refine(
-    (p) => {
-      const t = p.trim().replace(/\\/g, '/')
-      if (!t || t.startsWith('/') || t.includes('..')) return false
-      const parts = t.split('/')
-      return parts.every((seg) => seg.length > 0 && seg !== '.' && seg !== '..')
-    },
-    { message: 'must be a relative path without ..' }
-  )
+  .refine((p) => isSafeWorkspaceRelPath(p), {
+    message: 'must be a relative path without ..'
+  })
 
 export const MarketplaceInstallSourceSchema = z.enum([
   'registry',
@@ -146,7 +141,7 @@ export const MarketplaceCatalogEntrySchema = z.object({
   description: z.string().default(''),
   kind: MarketplaceKindSchema,
   downloadUrl: z.string().optional(),
-  bundledPath: z.string().optional(),
+  bundledPath: MarketplaceRelPathSchema.optional(),
   source: z.enum(['bundled', 'remote']).default('remote'),
   publisher: z.string().optional(),
   verified: z.boolean().optional(),
@@ -155,7 +150,7 @@ export const MarketplaceCatalogEntrySchema = z.object({
   category: z.string().optional(),
   featuredRank: z.number().int().optional(),
   /** Relative path under resources/marketplace/ (e.g. icons/filesystem.svg). */
-  iconPath: z.string().optional(),
+  iconPath: MarketplaceRelPathSchema.optional(),
   iconUrl: z.string().optional(),
   /** When false, UI shows Coming soon instead of Install. Default true. */
   installable: z.boolean().optional(),

@@ -9,6 +9,7 @@ import { isAbortError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
 import { summarizeToolArgs } from '../../shared/toolSummary'
 import { isApprovalExemptTool } from './tools/classify'
+import { streamSignalFor } from './runRegistry'
 
 export type ApprovalSender = (request: ToolApprovalRequest) => void
 
@@ -21,7 +22,8 @@ const pending = new Map<
   string,
   {
     resolve: (decision: ToolApprovalDecision) => void
-    reject: (err: Error) => void
+    /** Clears timeout/abort listeners then rejects — used by cancelPendingApprovals. */
+    cancel: (err: Error) => void
     runId: string
     invokeId?: number
     request: ToolApprovalRequest
@@ -62,7 +64,6 @@ export function resolveToolApproval(response: ToolApprovalResponse): boolean {
   const entry = pending.get(response.requestId)
   if (!entry) return false
   if (entry.runId !== response.runId) return false
-  pending.delete(response.requestId)
   entry.resolve(response.decision)
   return true
 }
@@ -76,8 +77,7 @@ export function cancelPendingApprovals(runId: string, invokeId?: number): void {
   for (const [requestId, entry] of pending) {
     if (entry.runId !== runId) continue
     if (invokeId !== undefined && entry.invokeId !== invokeId) continue
-    pending.delete(requestId)
-    entry.reject(abortApprovalError())
+    entry.cancel(abortApprovalError())
   }
 }
 
@@ -135,19 +135,30 @@ function askThroughRenderer(
 
   return new Promise<ToolApprovalDecision>((resolve, reject) => {
     let timeoutId: ReturnType<typeof setTimeout> | undefined
+    let settled = false
     const clearWaiters = (): void => {
-      if (timeoutId !== undefined) clearTimeout(timeoutId)
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId)
+        timeoutId = undefined
+      }
       signal.removeEventListener('abort', onAbort)
     }
     const settle = (decision: ToolApprovalDecision): void => {
+      if (settled || !pending.has(request.requestId)) return
+      settled = true
       pending.delete(request.requestId)
       clearWaiters()
       resolve(decision)
     }
-    function onAbort(): void {
+    const cancel = (err: Error): void => {
+      if (settled || !pending.has(request.requestId)) return
+      settled = true
       pending.delete(request.requestId)
       clearWaiters()
-      reject(abortApprovalError())
+      reject(err)
+    }
+    function onAbort(): void {
+      cancel(abortApprovalError())
     }
     if (signal.aborted) {
       reject(abortApprovalError())
@@ -155,7 +166,7 @@ function askThroughRenderer(
     }
     pending.set(request.requestId, {
       resolve: settle,
-      reject,
+      cancel,
       runId: request.runId,
       invokeId,
       request
@@ -180,7 +191,12 @@ export function createApprovalGate(options: ApprovalGateOptions): ToolApprovalGa
   const workspaceAllowlist = [...options.workspaceAllowlist]
   const ask =
     options.ask ??
-    ((request) => askThroughRenderer(request, options.signal, options.invokeId))
+    ((request) =>
+      askThroughRenderer(
+        request,
+        streamSignalFor(options.runId, options.signal),
+        options.invokeId
+      ))
 
   return {
     async authorize(call): Promise<AuthorizeResult> {

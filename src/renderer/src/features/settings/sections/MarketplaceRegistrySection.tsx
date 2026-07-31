@@ -93,7 +93,7 @@ export function MarketplaceRegistrySection({
             className="mt-0.5 size-3.5 shrink-0 accent-fg"
             checked={remoteAcked}
             disabled={form.formLocked || busy}
-            aria-label="Acknowledge remote install risk"
+            aria-label="Acknowledge marketplace install risk"
             onChange={(e) => {
               void form.runUpdate({
                 marketplace: {
@@ -104,8 +104,9 @@ export function MarketplaceRegistrySection({
             }}
           />
           <span>
-            I understand remote marketplace packages and MCP endpoints are unsigned. Required once
-            before installing non-bundled packages (or confirm when prompted).
+            I understand marketplace packages (remote catalogs, git/npm/zip, local path folders) and
+            MCP endpoints are unsigned. Required once before installing non-bundled packages (or
+            confirm when prompted).
           </span>
         </label>
 

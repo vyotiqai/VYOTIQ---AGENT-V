@@ -439,7 +439,13 @@ export function loadEvents(
   runId?: string,
   options?: { limit?: number }
 ): PersistedEvent[] {
-  blockUntilEventAppendsFlushed(dir)
+  const flushed = blockUntilEventAppendsFlushed(dir)
+  if (!flushed) {
+    logger.warn('Loading events.jsonl after flush timeout; recent events may be missing', {
+      scope: 'state',
+      correlationId: basename(dir)
+    })
+  }
   const p = join(dir, 'events.jsonl')
   if (!existsSync(p)) return []
   const inferredRunId = runId ?? basename(dir)

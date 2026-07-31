@@ -558,24 +558,24 @@ export function MarketplaceManage({
       }
       return
     }
-    const id = crypto.randomUUID()
-    const next: McpServer = {
-      id,
-      name: stdioName.trim() || 'New MCP server',
-      transport: 'stdio',
-      command,
-      args: args.length > 0 ? args : undefined,
-      enabled: true,
-      source: 'manual'
-    }
-    const ok = await runUpdate({ mcpServers: [...settings.mcpServers, next] })
-    if (ok) {
-      setFeedback({ kind: 'success', text: `Added MCP server "${next.name}"` })
+    // No auto-detect — still require ack, then apply as a manual stdio server.
+    const applied = await applyDetectedMcp({
+      server: {
+        id: crypto.randomUUID(),
+        name: stdioName.trim() || 'New MCP server',
+        transport: 'stdio',
+        command,
+        args: args.length > 0 ? args : undefined,
+        enabled: true,
+        source: 'manual'
+      },
+      overwrite: false
+    })
+    if (applied) {
       setTab('installed')
       setStdioName('')
       setStdioCommand('')
       setStdioArgs('')
-      await loadMcpStatus(true)
     }
   }
 

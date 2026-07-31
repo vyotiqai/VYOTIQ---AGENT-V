@@ -33,7 +33,7 @@ describe('ToolRowOutput lazy load', () => {
     })
   })
 
-  it('does not fetch truncated content while collapsed', async () => {
+  it('fetches truncated content even while collapsed (clamped preview needs full text)', async () => {
     const preview = `${'x'.repeat(TOOL_RESULT_IPC_PREVIEW_CHARS)}\n…`
     const load = vi.fn().mockResolvedValue('full')
 
@@ -54,8 +54,9 @@ describe('ToolRowOutput lazy load', () => {
       />
     )
 
-    await new Promise((r) => setTimeout(r, 30))
-    expect(load).not.toHaveBeenCalled()
+    await waitFor(() => {
+      expect(load).toHaveBeenCalledWith('call-collapsed')
+    })
   })
 
   it('does not fetch when content is not truncated', () => {

@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { TERMINAL_MAX_TIMEOUT_MS } from '../tools/terminal'
+import { USER_REGEX_MAX_LENGTH } from '../tools/safeUserRegex'
 import type { ToolDefinition } from '../providers/types'
 import { zodToJsonSchema } from './zodToJsonSchema'
 
@@ -100,7 +101,10 @@ const terminalArgs = z
       .optional(),
     pattern: z
       .string()
-      .describe('Optional regex matched against combined stdout+stderr; return early when matched')
+      .max(USER_REGEX_MAX_LENGTH)
+      .describe(
+        `Optional regex matched against combined stdout+stderr; return early when matched (max ${USER_REGEX_MAX_LENGTH} chars)`
+      )
       .optional(),
     timeoutMs: z
       .number()
@@ -137,7 +141,10 @@ const globArgs = z.object({
 })
 
 const grepArgs = z.object({
-  pattern: z.string().describe('Regular expression matched against each line'),
+  pattern: z
+    .string()
+    .max(USER_REGEX_MAX_LENGTH)
+    .describe(`Regular expression matched against each line (max ${USER_REGEX_MAX_LENGTH} chars)`),
   include: z
     .string()
     .describe('Glob limiting which files are searched, e.g. src/**/*.ts')
@@ -188,6 +195,22 @@ const multiEditArgs = z.object({
         )
     )
     .min(1)
+    .superRefine((edits, ctx) => {
+      const seen = new Set<string>()
+      for (let i = 0; i < edits.length; i++) {
+        const path = edits[i]?.path?.trim()
+        if (!path) continue
+        const key = path.replace(/\\/g, '/').toLowerCase()
+        if (seen.has(key)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `duplicate path "${edits[i]!.path}" — combine into one edit`,
+            path: [i, 'path']
+          })
+        }
+        seen.add(key)
+      }
+    })
     .describe(
       'Edits applied together atomically; if any fails, none are written. Do not list the same path twice.'
     )
@@ -378,14 +401,18 @@ const browserPressKeyArgs = z.object({
   settleMs: browserSettleMsArg
 })
 
-const browserSelectOptionArgs = z.object({
-  selector: z.string().min(1).describe('CSS selector or @eN ref of a <select>'),
-  value: z.string().describe('Option value to select').optional(),
-  label: z.string().describe('Option visible label to select').optional(),
-  pressEnter: z.boolean().describe('Press Enter after selecting (default false)').optional(),
-  tab_id: browserTabIdArg,
-  settleMs: browserSettleMsArg
-})
+const browserSelectOptionArgs = z
+  .object({
+    selector: z.string().min(1).describe('CSS selector or @eN ref of a <select>'),
+    value: z.string().describe('Option value to select').optional(),
+    label: z.string().describe('Option visible label to select').optional(),
+    pressEnter: z.boolean().describe('Press Enter after selecting (default false)').optional(),
+    tab_id: browserTabIdArg,
+    settleMs: browserSettleMsArg
+  })
+  .refine((v) => Boolean(v.value?.trim()) || Boolean(v.label?.trim()), {
+    message: 'Provide value or label for browser_select_option'
+  })
 
 const mcpListToolsArgs = z.object({
   serverId: z

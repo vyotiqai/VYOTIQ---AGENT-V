@@ -1,6 +1,6 @@
 import { basename, normalize } from 'path'
 import type { AgentInteractionMode } from '../../../shared/ipc'
-import { getMcpReadOnlyHint, parseMcpToolName } from '../mcp'
+import { parseMcpToolName } from '../mcp'
 import { isParallelSafeTool } from './classify'
 
 /** Built-in tools allowed in Ask mode (read-only / parallel-safe). */
@@ -92,17 +92,18 @@ export function modeSectionMarkdown(mode: AgentInteractionMode): string | null {
       return [
         '## Mode: Ask',
         '',
-        'You are in Ask mode. Use read-only tools liberally to investigate and answer',
-        '(built-ins plus MCP tools that declare readOnlyHint). Only avoid mutating tools.',
-        'Do not edit files, delete paths, run the `terminal` tool, run `diagnostics`,',
-        'or write memory. `subagent` is allowed for broad read-only research.',
+        'You are in Ask mode. Use read-only built-in tools liberally to investigate and answer.',
+        'MCP tools are not available in Ask mode (server-reported readOnlyHint is untrusted).',
+        'Only avoid mutating tools. Do not edit files, delete paths, run the `terminal` tool,',
+        'run `diagnostics`, or write memory. `subagent` is allowed for broad read-only research.',
         'If the user needs changes, explain what you would do and suggest switching to Agent mode.'
       ].join('\n')
     case 'plan':
       return [
         '## Mode: Plan',
         '',
-        'You are in Plan mode. Explore with read-only tools (and read-only MCP),',
+        'You are in Plan mode. Explore with read-only built-in tools',
+        '(MCP tools are not available — readOnlyHint is untrusted as a security gate),',
         'update `plan.md` and `contract.md` incrementally (run plan artifacts — not product source),',
         'and keep todos via `todo_write`. Prefer updating the injected `## Plan` rather than',
         're-deriving it from scratch each turn.',
@@ -127,13 +128,11 @@ export function isBuiltinAllowedInMode(mode: AgentInteractionMode, name: string)
 }
 
 /**
- * MCP tools in Ask/Plan: only when the server declared `readOnlyHint: true`.
- * MCP tools with an explicit `readOnlyHint: true` may also run in parallel;
- * the hint is still untrusted for approval exemption (see classify.ts).
+ * MCP tools are Agent-mode only. Server-reported `readOnlyHint` is untrusted
+ * as a security gate (see classify.ts) — never use it to allow Ask/Plan.
  */
-export function isMcpAllowedInMode(mode: AgentInteractionMode, fullName: string): boolean {
-  if (mode === 'agent') return true
-  return getMcpReadOnlyHint(fullName) === true
+export function isMcpAllowedInMode(mode: AgentInteractionMode, _fullName: string): boolean {
+  return mode === 'agent'
 }
 
 export function filterToolDefsForMode<T extends { name: string }>(
@@ -164,7 +163,7 @@ export function assertToolAllowedInMode(
     if (!isMcpAllowedInMode(mode, name)) {
       return {
         ok: false,
-        error: `${mode === 'ask' ? 'Ask' : 'Plan'} mode only allows MCP tools with readOnlyHint. "${name}" is not read-only (or hint unknown). Switch to Agent mode.`
+        error: `${mode === 'ask' ? 'Ask' : 'Plan'} mode does not allow MCP tools. "${name}" requires Agent mode.`
       }
     }
     return { ok: true }

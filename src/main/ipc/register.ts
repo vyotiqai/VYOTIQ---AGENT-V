@@ -106,7 +106,7 @@ import { formatError, AppError, isAbortError } from '../../shared/errors'
 import { logger, logErrorSummary } from '../../shared/logger'
 import { pickWorkspace } from '@main/workspace/workspace'
 import { resolveInsideWorkspace } from '@main/workspace/safePath'
-import { getSettings, setSettings } from '@main/settings/settings'
+import { getSettings, setSettings, redactSettingsForIpc, enqueueSettingsMutation } from '@main/settings/settings'
 import { syncMcpServers, getMcpServerStatus, refreshMcpServers, startMcpOAuth } from '@main/agent/mcp'
 import { headersWithoutAuthorization } from '../../shared/utils/mcpAuth'
 import {
@@ -202,7 +202,8 @@ import {
   setActiveWorkspace,
   updateWorkspaceUiState,
   setWorkspaceSettingsOverride,
-  findWorkspaceSettingsOverride
+  findWorkspaceSettingsOverride,
+  enqueueWorkspaceMutation
 } from '@main/workspace/workspaces'
 import { canonicalizeWorkspacePath, isCuratedDocPath, isSafeWorkspaceRelPath, workspacePathsEqual } from '../../shared/workspacePath'
 import { relative, isAbsolute, join } from 'path'
@@ -400,7 +401,7 @@ export function registerIpc(): void {
       if (!senderOk(event)) return fail('Invalid sender')
       try {
         const { path, ui } = WorkspacesUpdateUiStateRequestSchema.parse(raw)
-        return ok(updateWorkspaceUiState(path, ui))
+        return ok(await enqueueWorkspaceMutation(() => updateWorkspaceUiState(path, ui)))
       } catch (err) {
         return failFrom(err, IPC.workspacesUpdateUiState)
       }
@@ -430,7 +431,10 @@ export function registerIpc(): void {
       try {
         const { path, override } = WorkspacesSetSettingsOverrideRequestSchema.parse(raw)
         if (!isOpenWorkspace(path)) return fail('Workspace is not open')
-        const next = setWorkspaceSettingsOverride(path, override)
+        const next = await enqueueWorkspaceMutation(() =>
+          setWorkspaceSettingsOverride(path, override)
+        )
+        invalidateMcpResolveCache()
         // Force-off / Force-on may change which MCP processes should stay alive.
         await syncMcpServers(resolveMcpServersForSessionMap())
         return ok(next)
@@ -443,7 +447,7 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.getSettings, async (event): Promise<IpcResult<Settings>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
-      return ok(getSettings())
+      return ok(redactSettingsForIpc(getSettings()))
     } catch (err) {
       return failFrom(err, IPC.getSettings)
     }
@@ -453,7 +457,7 @@ export function registerIpc(): void {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
       const partial = SetSettingsRequestSchema.parse(raw)
-      const next = setSettings(partial)
+      const next = await enqueueSettingsMutation(() => setSettings(partial))
       if (partial.theme !== undefined) applyTitleBarTheme(partial.theme)
       if (partial.telemetryEnabled !== undefined) {
         applySentryTelemetry(next.telemetryEnabled)
@@ -462,7 +466,7 @@ export function registerIpc(): void {
         invalidateMcpResolveCache()
         await syncMcpServers(resolveMcpServersForSessionMap())
       }
-      return ok(next)
+      return ok(redactSettingsForIpc(next))
     } catch (err) {
       return failFrom(err, IPC.setSettings)
     }
@@ -1356,14 +1360,16 @@ export function registerIpc(): void {
         .object({ serverId: z.string().min(1), token: z.string().min(1) })
         .parse(raw)
       setMcpAuthToken(serverId, token)
-      invalidateMcpResolveCache()
-      const settings = getSettings()
-      const nextServers = (settings.mcpServers ?? []).map((s) =>
-        s.id === serverId
-          ? { ...s, headers: headersWithoutAuthorization(s.headers) }
-          : s
-      )
-      setSettings({ mcpServers: nextServers })
+      await enqueueSettingsMutation(() => {
+        invalidateMcpResolveCache()
+        const settings = getSettings()
+        const nextServers = (settings.mcpServers ?? []).map((s) =>
+          s.id === serverId
+            ? { ...s, headers: headersWithoutAuthorization(s.headers) }
+            : s
+        )
+        setSettings({ mcpServers: nextServers })
+      })
       await syncMcpServers(resolveMcpServersForSessionMap())
       return ok(true)
     } catch (err) {
@@ -1377,14 +1383,16 @@ export function registerIpc(): void {
       const { serverId } = z.object({ serverId: z.string().min(1) }).parse(raw)
       clearMcpAuthToken(serverId)
       clearMcpOAuthState(serverId)
-      invalidateMcpResolveCache()
-      const settings = getSettings()
-      const nextServers = (settings.mcpServers ?? []).map((s) =>
-        s.id === serverId
-          ? { ...s, headers: headersWithoutAuthorization(s.headers) }
-          : s
-      )
-      setSettings({ mcpServers: nextServers })
+      await enqueueSettingsMutation(() => {
+        invalidateMcpResolveCache()
+        const settings = getSettings()
+        const nextServers = (settings.mcpServers ?? []).map((s) =>
+          s.id === serverId
+            ? { ...s, headers: headersWithoutAuthorization(s.headers) }
+            : s
+        )
+        setSettings({ mcpServers: nextServers })
+      })
       await syncMcpServers(resolveMcpServersForSessionMap())
       return ok(true)
     } catch (err) {
@@ -1466,6 +1474,7 @@ export function registerIpc(): void {
       const req = McpApplyDetectedRequestSchema.parse(raw)
       if (req.install) {
         const result = await installMarketplacePackage(req.install)
+        invalidateMcpResolveCache()
         await syncMcpServers(resolveMcpServersForSessionMap())
         return ok({
           applied: 'marketplace' as const,
@@ -1474,6 +1483,7 @@ export function registerIpc(): void {
         })
       }
       const applied = applyDetectedManualMcp(req)
+      invalidateMcpResolveCache()
       await syncMcpServers(resolveMcpServersForSessionMap())
       return ok(applied)
     } catch (err) {
@@ -1496,6 +1506,7 @@ export function registerIpc(): void {
     try {
       const req = McpImportExternalRequestSchema.parse(raw)
       const result = importExternalMcpServers(req)
+      invalidateMcpResolveCache()
       await syncMcpServers(resolveMcpServersForSessionMap())
       return ok(result)
     } catch (err) {

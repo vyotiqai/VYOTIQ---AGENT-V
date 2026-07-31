@@ -9,7 +9,7 @@ import {
   type MarketplaceInstalledItem
 } from '../../shared/ipc'
 import { clearMcpAuthToken, clearMcpOAuthState } from '../settings/secrets'
-import { marketplaceIndexPath, marketplacePackageDir, marketplaceRoot } from './paths'
+import { marketplaceIndexPath, marketplacePackageDir, marketplaceRoot, resolveInstalledPackageRoot } from './paths'
 import { logger } from '../../shared/logger'
 
 const EMPTY_INDEX: MarketplaceIndex = { schemaVersion: 1, items: [] }
@@ -123,8 +123,22 @@ export function removeInstalledItem(id: string): MarketplaceIndex {
   if (item) {
     clearNestedPluginMcpSecrets(item)
     clearMcpSecrets(item.id)
-    const dir = marketplacePackageDir(item.id, item.version)
-    if (existsSync(dir)) {
+    let dir: string | null = null
+    try {
+      dir = resolveInstalledPackageRoot(item.packagePath)
+    } catch (err) {
+      logger.warn('Marketplace uninstall: invalid packagePath; falling back to id/version', {
+        scope: 'marketplace',
+        correlationId: id,
+        err
+      })
+      try {
+        dir = marketplacePackageDir(item.id, item.version)
+      } catch {
+        dir = null
+      }
+    }
+    if (dir && existsSync(dir)) {
       try {
         rmSync(dir, { recursive: true, force: true })
       } catch {

@@ -72,6 +72,22 @@ describe('MCP stdio integration', () => {
     }
   })
 
+  it('blocks process-control keys from server.env overlay', () => {
+    const env = buildMcpChildEnv(
+      {
+        PATH: '/evil',
+        NODE_OPTIONS: '--require evil',
+        PYTHONPATH: '/evil',
+        SAFE_TOKEN: 'ok'
+      },
+      { PATH: '/usr/bin' }
+    )
+    expect(env.PATH).toBe('/usr/bin')
+    expect(env.NODE_OPTIONS).toBeUndefined()
+    expect(env.PYTHONPATH).toBeUndefined()
+    expect(env.SAFE_TOKEN).toBe('ok')
+  })
+
   it('connects, lists tools, invokes echo, and disconnects', async () => {
     await connectMcpServer(echoServer)
 

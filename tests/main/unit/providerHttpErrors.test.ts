@@ -26,6 +26,33 @@ describe('formatProviderHttpError', () => {
     expect(formatProviderHttpError(400, body, 'openrouter')).toBe('Invalid model id')
   })
 
+  it('unwraps OpenRouter nested metadata.raw under Provider returned error', () => {
+    const body = JSON.stringify({
+      error: {
+        message: 'Provider returned error',
+        code: 400,
+        metadata: {
+          raw: JSON.stringify({
+            error: {
+              message: 'The encrypted content for item rs_abc could not be verified.',
+              type: 'invalid_request_error'
+            }
+          })
+        }
+      }
+    })
+    expect(formatProviderHttpError(400, body, 'openrouter')).toMatch(/encrypted content/i)
+  })
+
+  it('scrubs API key-shaped secrets from provider messages', () => {
+    const body = JSON.stringify({
+      error: { message: 'Invalid key sk-abcdefghijklmnopqrstuvwxyz012345' }
+    })
+    const msg = formatProviderHttpError(400, body, 'openai')
+    expect(msg).toContain('[redacted]')
+    expect(msg).not.toMatch(/sk-abcdefghijklmnopqrstuvwxyz/)
+  })
+
   it('maps auth failures to a settings hint', () => {
     expect(formatProviderHttpError(401, '', 'openai')).toMatch(/API key/i)
   })

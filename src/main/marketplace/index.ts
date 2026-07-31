@@ -29,6 +29,7 @@ export {
   scanExternalMcpConfigs,
   importExternalMcpServers,
   defaultExternalConfigPaths,
+  isAllowedExternalMcpConfigPath,
   synthesizeVyotiqMcpManifest
 } from './mcpImport'
 export { parseSkillFrontmatter } from '../agent/skills/parse'

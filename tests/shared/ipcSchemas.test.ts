@@ -285,6 +285,7 @@ describe('ipc schemas', () => {
     expect(
       AgentQuestionResponseSchema.parse({
         requestId: 'q1',
+        runId: 'r1',
         answers: ['yes']
       }).answers
     ).toEqual(['yes'])
@@ -529,9 +530,10 @@ describe('ipc schemas', () => {
     expect(
       ToolApprovalResponseSchema.parse({
         requestId: 'req-1',
+        runId: 'r1',
         decision: 'once'
       })
-    ).toEqual({ requestId: 'req-1', decision: 'once' })
+    ).toEqual({ requestId: 'req-1', runId: 'r1', decision: 'once' })
     expect(
       GitStatusSchema.parse({
         branch: 'main',

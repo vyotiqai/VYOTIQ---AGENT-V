@@ -517,7 +517,7 @@ describe('settings', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /^Registry$/i }))
     expect(await screen.findByLabelText(/Registry URL/i)).toBeTruthy()
-    expect(screen.getByLabelText(/Acknowledge remote install risk/i)).toBeTruthy()
+    expect(screen.getByLabelText(/Acknowledge marketplace install risk/i)).toBeTruthy()
     expect(screen.queryByRole('button', { name: /^Browse$/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /^Installed$/i })).toBeNull()
   })

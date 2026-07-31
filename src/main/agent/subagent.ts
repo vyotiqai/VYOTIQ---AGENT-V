@@ -365,6 +365,25 @@ async function runSubagentImpl(options: SubagentOptions): Promise<SubagentOutcom
       model: modelId
     })
 
+    if (estimatedTokens > window) {
+      logger.warn('Sub-agent context still exceeds model window after trim', {
+        scope: 'agent',
+        code: 'SUBAGENT_OVERFLOW',
+        step: steps,
+        estimatedTokens,
+        window
+      })
+      return finalizeSubagentOutcome(options, {
+        ok: false,
+        report: [
+          'Sub-agent stopped: context still exceeds the model window after trimming.',
+          `Estimated ~${estimatedTokens} tokens against a ${window}-token window.`,
+          'Narrow the task or ask the parent to summarize earlier findings.'
+        ].join(' '),
+        steps
+      })
+    }
+
     let text = ''
     const toolCalls: ToolCall[] = []
     const pendingToolCalls = new Map<number, ToolCall>()

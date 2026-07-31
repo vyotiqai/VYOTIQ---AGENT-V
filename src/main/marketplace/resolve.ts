@@ -15,6 +15,7 @@ import { readMarketplaceIndex } from './indexStore'
 import { resolveInstalledPackageRoot } from './paths'
 import { resolveInsidePackageRoot } from './safePath'
 import { mcpServerFromManifest } from './install'
+import { sanitizeMcpManifestEnv } from './sanitizeMcpEnv'
 
 function packageRoot(item: MarketplaceInstalledItem): string {
   return resolveInstalledPackageRoot(item.packagePath)
@@ -42,11 +43,13 @@ function settingsMcpFingerprint(): string {
   const settings = getSettings()
   return (settings.mcpServers ?? [])
     .map((s) => {
-      const envKeys = Object.keys(s.env ?? {})
-        .sort()
+      const envFp = Object.entries(s.env ?? {})
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, v]) => `${k}=${v}`)
         .join(',')
-      const headerKeys = Object.keys(s.headers ?? {})
-        .sort()
+      const headerFp = Object.entries(s.headers ?? {})
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, v]) => `${k}=${v}`)
         .join(',')
       const allowed = (s.allowedTools ?? []).join(',')
       const denied = (s.deniedTools ?? []).join(',')
@@ -58,8 +61,8 @@ function settingsMcpFingerprint(): string {
         s.command ?? '',
         (s.args ?? []).join(','),
         s.url ?? '',
-        envKeys,
-        headerKeys,
+        envFp,
+        headerFp,
         allowed,
         denied
       ].join(':')
@@ -169,7 +172,9 @@ export function resolveEffectiveMcpServers(
                 ? { command: settingsOverlay.command }
                 : {}),
               ...(settingsOverlay.args ? { args: settingsOverlay.args } : {}),
-              ...(settingsOverlay.env ? { env: settingsOverlay.env } : {}),
+              ...(settingsOverlay.env
+                ? { env: sanitizeMcpManifestEnv(settingsOverlay.env) }
+                : {}),
               ...(settingsOverlay.url !== undefined ? { url: settingsOverlay.url } : {}),
               ...(settingsOverlay.headers ? { headers: settingsOverlay.headers } : {}),
               ...(settingsOverlay.allowedTools?.length
@@ -229,7 +234,7 @@ export function resolveEffectiveMcpServers(
           transport: nested.transport,
           command: nested.command,
           args: nested.args,
-          env: nested.env,
+          env: sanitizeMcpManifestEnv(nested.env),
           url: nested.url,
           headers: nested.headers,
           ...(nested.allowedTools?.length ? { allowedTools: nested.allowedTools } : {}),

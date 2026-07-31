@@ -3,7 +3,12 @@ import { allocateBudget, contentWindow, contextWindowFor, effectiveWindow } from
 import { estimateTextTokens, estimateMessagesTokens } from '@main/agent/context/estimate'
 import { trimToolResults } from '@main/agent/context/toolTrim'
 import { preserveRecentMessages } from '@main/agent/context/compact'
-import { dropOldestTurn, trimHistoryToBudget } from '@main/agent/context/historyTrim'
+import {
+  applyFoldedMessagesWatermark,
+  dropOldestTurn,
+  stripLeadingOrphanToolMessages,
+  trimHistoryToBudget
+} from '@main/agent/context/historyTrim'
 import { anthropicNativeOptions } from '@main/agent/context/anthropicContext'
 import type { ChatMessage } from '@shared/ipc'
 
@@ -140,6 +145,44 @@ describe('context budget + trim', () => {
     const dropped = dropOldestTurn(msgs)
     expect(dropped[0]).toMatchObject({ role: 'user', content: 'new' })
     expect(dropped.some((m) => m.role === 'tool')).toBe(false)
+  })
+
+  it('stripLeadingOrphanToolMessages removes a sole orphan tool (foldedMessages=2 case)', () => {
+    const msgs: ChatMessage[] = [
+      { role: 'user', content: 'u' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'read', arguments: '{}' }]
+      },
+      { role: 'tool', toolCallId: 'c1', toolName: 'read', content: 'file' }
+    ]
+    const applied = applyFoldedMessagesWatermark(msgs, 2)
+    expect(applied.messages[0].role).not.toBe('tool')
+    expect(applied.messages.some((m) => m.role === 'assistant')).toBe(true)
+  })
+
+  it('preserveRecentMessages never returns a leading orphan tool', () => {
+    const msgs: ChatMessage[] = [
+      { role: 'user', content: 'u0' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'read', arguments: '{}' }]
+      },
+      { role: 'tool', toolCallId: 'c1', toolName: 'read', content: 'x'.repeat(8000) }
+    ]
+    const model = {
+      id: 'x',
+      inputModalities: ['text'] as const,
+      outputModalities: ['text'] as const,
+      supportsTools: true,
+      supportsVision: false,
+      contextWindow: 1000
+    }
+    const kept = preserveRecentMessages(msgs, 5, 200, model)
+    expect(kept.length).toBeGreaterThan(0)
+    expect(kept[0].role).not.toBe('tool')
   })
 
   it('trims history to budget without starting on a tool message', () => {

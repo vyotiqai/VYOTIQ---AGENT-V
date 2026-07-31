@@ -14,7 +14,12 @@ export const WorkspaceUiStateSchema = z.object({
   scrollTopByRunId: z.record(z.string(), z.number()).default({}),
   composerDraft: z.string(),
   /** Per-workspace composer Ask / Plan / Agent mode. */
-  agentMode: AgentInteractionModeSchema.default('agent')
+  agentMode: AgentInteractionModeSchema.default('agent'),
+  /**
+   * Monotonic client write generation. Main ignores updates with a lower
+   * generation than the last accepted write for that path (out-of-order IPC).
+   */
+  writeGeneration: z.number().int().nonnegative().optional()
 })
 export type WorkspaceUiState = z.infer<typeof WorkspaceUiStateSchema>
 

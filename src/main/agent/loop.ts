@@ -37,6 +37,7 @@ import {
   estimateTextTokensAsync,
   promoteCompactionToMemory,
   preserveRecentMessagesAsync,
+  applyFoldedMessagesWatermark,
   trimToolsToBudget,
   type CompactionRecord
 } from './context'
@@ -153,7 +154,9 @@ const INCOMPLETE_MESSAGES: Record<Exclude<IncompleteReason, never>, string> = {
   empty_response: 'The model returned an empty response.',
   filtered: 'The provider stopped the response because of a content filter.',
   context_overflow:
-    'Context still exceeds the model window after compaction. Start a new chat or compact manually.'
+    'Context still exceeds the model window after compaction. Start a new chat or compact manually.',
+  finish_gate:
+    'Verify-before-done or contract done-when criteria were still unmet after repeated nudges.'
 }
 
 /** True when two messages are the same role + normalized text (resume dedupe). */
@@ -419,14 +422,9 @@ export async function* runAgent(input: {
     // for transcript replay and lazy tool-output loads.
     let foldedMessages = compaction?.foldedMessages ?? 0
     if (foldedMessages > 0 && messages.length > 0) {
-      // Corrupt/stale watermarks must not drop the latest turn — keep at least
-      // the final message in the working set.
-      foldedMessages = Math.min(foldedMessages, messages.length - 1)
-      messages = messages.slice(foldedMessages)
-      while (messages.length > 1 && messages[0].role === 'tool') {
-        messages = messages.slice(1)
-        foldedMessages++
-      }
+      const applied = applyFoldedMessagesWatermark(messages, foldedMessages)
+      messages = applied.messages
+      foldedMessages = applied.foldedMessages
     } else {
       foldedMessages = 0
     }
@@ -497,7 +495,8 @@ export async function* runAgent(input: {
             invokeId,
             mode: approvalSettings.mode,
             workspaceAllowlist: approvalSettings.allowlist,
-            signal: controller.signal,
+            // Soft follow-up interrupt must cancel parked approvals, not only hard cancel.
+            signal: streamSignalFor(runId, controller.signal),
             persistAlways: (toolName) => persistAlwaysAllow(workspace, toolName)
           })
 
@@ -635,6 +634,8 @@ export async function* runAgent(input: {
     let verifyContinues = 0
     let contractDoneWhenContinues = 0
     const MAX_TRUNCATION_CONTINUES = 2
+    /** Circuit breaker for require-mode finish gates (not a max-steps ceiling). */
+    const MAX_REQUIRE_FINISH_NUDGES = 5
     const verifyBeforeDoneMode = settings.verifyBeforeDone ?? 'notice'
     const contractDoneWhenMode = settings.contractDoneWhen ?? 'require'
     const readBeforeEditMode = settings.readBeforeEdit ?? 'notice'
@@ -861,6 +862,7 @@ export async function* runAgent(input: {
             const overflowEv: AgentEvent = {
               type: 'incomplete',
               runId,
+              invokeId,
               reason: 'context_overflow',
               step,
               message: INCOMPLETE_MESSAGES.context_overflow
@@ -895,6 +897,7 @@ export async function* runAgent(input: {
           const overflowEv: AgentEvent = {
             type: 'incomplete',
             runId,
+            invokeId,
             reason: 'context_overflow',
             step,
             message: INCOMPLETE_MESSAGES.context_overflow
@@ -1120,10 +1123,14 @@ export async function* runAgent(input: {
             }
           } else if (chunk.type === 'error') {
             const message = chunk.error ?? 'Provider error'
+            const errorCode =
+              chunk.errorCode === 'PROVIDER_HTTP' || chunk.errorCode === 'PROVIDER_NETWORK'
+                ? chunk.errorCode
+                : 'PROVIDER_STREAM'
             if (shouldRetryProviderStreamError(message, streamAttempt)) {
               logger.warn('Provider stream error (retrying)', {
                 scope: 'agent',
-                code: 'PROVIDER_STREAM',
+                code: errorCode,
                 correlationId: runId,
                 provider: providerId,
                 step,
@@ -1134,10 +1141,11 @@ export async function* runAgent(input: {
             }
             logger.error('Provider stream error', {
               scope: 'agent',
-              code: 'PROVIDER_STREAM',
+              code: errorCode,
               correlationId: runId,
               provider: providerId,
-              step
+              step,
+              message: message.slice(0, 280)
             })
             yield* flushPartialAssistant(
               runId,
@@ -1149,7 +1157,7 @@ export async function* runAgent(input: {
               dedupeToolCalls(toolCalls),
               'interrupted'
             )
-            yield { type: 'error', runId, invokeId, message, code: 'PROVIDER_STREAM' }
+            yield { type: 'error', runId, invokeId, message, code: errorCode }
             yield* flushWriteCheckpoint()
             yield { type: 'status', runId, invokeId, status: 'error' }
             writeStatus({ status: 'error', error: message })
@@ -1158,7 +1166,7 @@ export async function* runAgent(input: {
               runId,
               invokeId,
               message,
-              code: 'PROVIDER_STREAM'
+              code: errorCode
             })
             appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
             return
@@ -1290,6 +1298,7 @@ export async function* runAgent(input: {
           const continueEv: AgentEvent = {
             type: 'incomplete',
             runId,
+            invokeId,
             reason: 'truncated',
             step,
             message: `Output was truncated; continuing automatically (${truncationContinues}/${MAX_TRUNCATION_CONTINUES})…`
@@ -1394,6 +1403,38 @@ export async function* runAgent(input: {
           if (controller.signal.aborted) break
 
           if (verifyNeedsNudge || contractNeedsNudge) {
+            const requireVerifyBlocked =
+              verifyNeedsNudge &&
+              verifyBeforeDoneMode === 'require' &&
+              verifyContinues >= MAX_REQUIRE_FINISH_NUDGES
+            const requireContractBlocked =
+              contractNeedsNudge &&
+              contractDoneWhenMode === 'require' &&
+              contractDoneWhenContinues >= MAX_REQUIRE_FINISH_NUDGES
+            if (requireVerifyBlocked || requireContractBlocked) {
+              const incompleteEv: AgentEvent = {
+                type: 'incomplete',
+                runId,
+                invokeId,
+                reason: 'finish_gate',
+                step,
+                message: INCOMPLETE_MESSAGES.finish_gate
+              }
+              logger.warn('Stopping run: finish gate still unmet after nudge cap', {
+                scope: 'agent',
+                correlationId: runId,
+                step,
+                verifyContinues,
+                contractDoneWhenContinues
+              })
+              appendEvent(runDir, incompleteEv)
+              yield incompleteEv
+              yield* flushWriteCheckpoint()
+              yield { type: 'status', runId, invokeId, status: 'done' }
+              writeStatus({ status: 'done', error: undefined })
+              appendEvent(runDir, { type: 'status', runId, invokeId, status: 'done' })
+              return
+            }
             const parts: string[] = []
             if (verifyNeedsNudge) {
               verifyContinues += 1
@@ -1471,6 +1512,26 @@ export async function* runAgent(input: {
           beginWriteCheckpoint(runDir, workspace)
           yield* applyDrainedFollowUps(runId, runDir, messages)
           continue
+        }
+        // Surface disk append failures before claiming done — otherwise the UI
+        // shows success while messages.jsonl silently lost the last turns.
+        try {
+          await flushMessageAppends(runDir)
+          await flushEventAppends(runDir)
+        } catch (persistErr) {
+          const message = `Failed to persist run transcript: ${formatError(persistErr)}`
+          logger.error(message, {
+            scope: 'agent',
+            code: 'PERSIST',
+            correlationId: runId,
+            err: persistErr
+          })
+          yield { type: 'error', runId, invokeId, message, code: 'PERSIST' }
+          yield { type: 'status', runId, invokeId, status: 'error' }
+          writeStatus({ status: 'error', error: message })
+          appendEvent(runDir, { type: 'error', runId, invokeId, message, code: 'PERSIST' })
+          appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+          return
         }
         yield { type: 'status', runId, invokeId, status: 'done' }
         writeStatus({ status: 'done', error: undefined })
@@ -1758,48 +1819,82 @@ export async function* runAgent(input: {
       }
     }
   } finally {
-    // Always drain the per-run append chain so a superseded invoke cannot leave
-    // events buffered when a follow-up turn starts immediately.
-    if (runDir) {
-      if (!checkpointFlushed) {
-        const meta = finalizeWriteCheckpoint(runDir)
-        checkpointFlushed = true
-        if (meta) {
+    // Persistence flush/receipt must not skip slot teardown — a rethrown append
+    // error would otherwise leave isActive(runId) true forever.
+    try {
+      // Always drain the per-run append chain so a superseded invoke cannot leave
+      // events buffered when a follow-up turn starts immediately.
+      if (runDir) {
+        if (!checkpointFlushed) {
+          const meta = finalizeWriteCheckpoint(runDir)
+          checkpointFlushed = true
+          if (meta) {
+            appendEvent(runDir, {
+              type: 'writes_checkpoint',
+              runId,
+              checkpointId: meta.id,
+              files: meta.files
+            })
+          }
+        }
+        await flushMessageAppends(runDir)
+        await flushEventAppends(runDir)
+        await flushStatusWrites(runDir)
+        const receipt = writeRunReceiptBestEffort({
+          runDir,
+          runId,
+          loadStatus,
+          loadMessages: () => loadMessages(workspace, runId),
+          loadEvents,
+          readContract,
+          verifyMode: settings.verifyBeforeDone ?? 'notice',
+          verifyNudged,
+          contractDoneWhenMode: settings.contractDoneWhen ?? 'require',
+          contractDoneWhenNudged,
+          contractCheckableCriteria: lastContractCheckableCount,
+          contractUnmetCriteria: lastContractUnmet
+        })
+        // Observational AHE sidecars — best-effort; must not block receipt success.
+        writeTrajectoryArtifactsBestEffort({
+          runDir,
+          runId,
+          loadEvents,
+          receipt
+        })
+      }
+    } catch (flushErr) {
+      logger.warn('Agent run finally persistence failed', {
+        scope: 'agent',
+        code: 'AGENT_FINALLY_FLUSH',
+        correlationId: runId,
+        err: flushErr
+      })
+      if (runDir) {
+        try {
           appendEvent(runDir, {
-            type: 'writes_checkpoint',
+            type: 'error',
             runId,
-            checkpointId: meta.id,
-            files: meta.files
+            invokeId,
+            message: `Persistence flush failed after run ended: ${formatError(flushErr)}`,
+            code: 'PERSISTENCE'
           })
+        } catch {
+          // best-effort warning only
         }
       }
-      await flushMessageAppends(runDir)
-      await flushEventAppends(runDir)
-      await flushStatusWrites(runDir)
-      const receipt = writeRunReceiptBestEffort({
-        runDir,
-        runId,
-        loadStatus,
-        loadMessages: () => loadMessages(workspace, runId),
-        loadEvents,
-        readContract,
-        verifyMode: settings.verifyBeforeDone ?? 'notice',
-        verifyNudged,
-        contractDoneWhenMode: settings.contractDoneWhen ?? 'require',
-        contractDoneWhenNudged,
-        contractCheckableCriteria: lastContractCheckableCount,
-        contractUnmetCriteria: lastContractUnmet
-      })
-      // Observational AHE sidecars — best-effort; must not block receipt success.
-      writeTrajectoryArtifactsBestEffort({
-        runDir,
-        runId,
-        loadEvents,
-        receipt
-      })
     }
-    disposeTerminalSessionsForInvoke(runId, invokeId)
-    await disposeSubagentsForInvoke(runId, invokeId)
-    clearRunAbort(runId, invokeId)
+    try {
+      disposeTerminalSessionsForInvoke(runId, invokeId)
+      await disposeSubagentsForInvoke(runId, invokeId)
+    } catch (disposeErr) {
+      logger.warn('Agent run finally dispose failed', {
+        scope: 'agent',
+        code: 'AGENT_FINALLY_DISPOSE',
+        correlationId: runId,
+        err: disposeErr
+      })
+    } finally {
+      clearRunAbort(runId, invokeId)
+    }
   }
 }

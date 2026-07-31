@@ -68,6 +68,7 @@ function toAnthropicMessages(messages: ChatMessage[]): {
       continue
     }
     if (m.role === 'tool') {
+      if (!m.toolCallId) continue
       out.push({
         role: 'user',
         content: [

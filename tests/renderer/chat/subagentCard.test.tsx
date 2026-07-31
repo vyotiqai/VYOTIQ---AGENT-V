@@ -111,7 +111,7 @@ describe('sub-agent transcript row', () => {
     render(<MessageList items={[item]} />)
 
     expect(screen.getByText('.vyotiq/runs/r1/subagents/s1.md')).toBeTruthy()
-    expect(screen.getByText(/Showing preview/)).toBeTruthy()
+    expect(screen.getByText(/Showing truncated preview/)).toBeTruthy()
     expect(screen.getByText('Auth lives in src/auth.ts:12.')).toBeTruthy()
     expect(screen.queryByText(/Diagnostics is unavailable/)).toBeNull()
   })

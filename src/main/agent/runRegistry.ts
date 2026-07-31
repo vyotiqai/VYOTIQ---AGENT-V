@@ -205,6 +205,21 @@ export function enqueueFollowUp(runId: string, message: ChatMessage): EnqueueFol
   entry.followUps.push({ id, message })
   // Interrupt the current provider stream so the loop can drain promptly.
   entry.streamInterrupt?.abort()
+  // Soft-abort must also unblock parked approval/question waits (streamInterrupt
+  // may already be null during tool execution after the provider stream ended).
+  try {
+    // Lazy require avoids a cycle: toolApproval/agentQuestion → runRegistry.
+    const { cancelPendingApprovals } = require('./toolApproval') as {
+      cancelPendingApprovals: (runId: string, invokeId?: number) => void
+    }
+    const { cancelPendingQuestions } = require('./agentQuestion') as {
+      cancelPendingQuestions: (runId: string, invokeId?: number) => void
+    }
+    cancelPendingApprovals(runId)
+    cancelPendingQuestions(runId)
+  } catch {
+    // ignore if modules unavailable in early boot / tests
+  }
   return {
     ok: true,
     id,

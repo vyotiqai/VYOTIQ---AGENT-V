@@ -87,7 +87,7 @@ describe('modePolicy', () => {
     expect(isSubagentReportPath('contract.md')).toBe(false)
   })
 
-  it('filterToolDefsForMode keeps readOnlyHint MCP in Ask and drops mutating tools', () => {
+  it('filterToolDefsForMode drops all MCP tools in Ask/Plan', () => {
     const defs = [
       { name: 'read' },
       { name: 'edit' },
@@ -98,9 +98,10 @@ describe('modePolicy', () => {
     ]
     setMcpReadOnlyHintsForTests({ 'mcp__srv__tool': true, 'mcp__srv__write': false })
     const ask = filterToolDefsForMode('ask', defs)
-    expect(ask.map((d) => d.name)).toEqual(['read', 'mcp__srv__tool', 'browser_navigate'])
-    expect(assertToolAllowedInMode('ask', 'mcp__srv__tool', {}).ok).toBe(true)
+    expect(ask.map((d) => d.name)).toEqual(['read', 'browser_navigate'])
+    expect(assertToolAllowedInMode('ask', 'mcp__srv__tool', {}).ok).toBe(false)
     expect(assertToolAllowedInMode('ask', 'mcp__srv__write', {}).ok).toBe(false)
+    expect(assertToolAllowedInMode('agent', 'mcp__srv__tool', {}).ok).toBe(true)
   })
 
   it('Ask mode denies browser_click and browser_type', () => {

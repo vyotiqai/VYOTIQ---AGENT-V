@@ -33,6 +33,7 @@ import {
   createMcpOAuthProvider
 } from './oauth'
 import { resolveEffectiveMcpServers } from '../../marketplace/resolve'
+import { sanitizeMcpManifestEnv } from '../../marketplace/sanitizeMcpEnv'
 import { withCompatibleUvxArgs } from './uvxCompat'
 
 export { withCompatibleUvxArgs, hasUvxMcpWithConstraint } from './uvxCompat'
@@ -47,7 +48,8 @@ export function buildMcpChildEnv(
   if (process.platform === 'win32' && !env.PYTHONIOENCODING) {
     env.PYTHONIOENCODING = 'utf-8'
   }
-  for (const [key, value] of Object.entries(serverEnv ?? {})) {
+  const safeOverlay = sanitizeMcpManifestEnv(serverEnv)
+  for (const [key, value] of Object.entries(safeOverlay ?? {})) {
     if (typeof value === 'string') env[key] = value
   }
   return env
@@ -560,8 +562,14 @@ export async function connectMcpServer(server: McpServer): Promise<void> {
       }
     })
     const { resources, prompts } = await probeResourcesAndPrompts(client)
+    // If the server is still in the effective settings map, drop the session when
+    // it was disabled or reconfigured mid-connect. Servers not in the map (explicit
+    // connectMcpServer / unit fixtures) keep the just-established session.
     const desired = resolveEffectiveMcpServers().find((s) => s.id === server.id)
-    if (!desired?.enabled || mcpServerConfigKey(desired) !== mcpServerConfigKey(server)) {
+    if (
+      desired &&
+      (!desired.enabled || mcpServerConfigKey(desired) !== mcpServerConfigKey(server))
+    ) {
       try {
         await client.close()
       } catch {
@@ -920,6 +928,8 @@ export function resetMcpSessionsForTests(): void {
   connectFailures.clear()
   connecting.clear()
   syncChain = Promise.resolve()
+  lastSyncedServersFp = null
+  lastSyncInflight = null
 }
 
 /** Test helper — register MCP readOnlyHint values without a live server. */

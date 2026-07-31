@@ -99,7 +99,8 @@ export const IncompleteReasonSchema = z.enum([
   'truncated',
   'empty_response',
   'filtered',
-  'context_overflow'
+  'context_overflow',
+  'finish_gate'
 ])
 export type IncompleteReason = z.infer<typeof IncompleteReasonSchema>
 

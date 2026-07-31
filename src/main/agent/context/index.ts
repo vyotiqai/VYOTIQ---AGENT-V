@@ -35,7 +35,13 @@ export {
 export { trimToolsToBudget } from './toolsBudget'
 export { trimToolResults } from './toolTrim'
 export { estimateSubagentOverheadTokens, prepareSubagentMessages } from './subagentContext'
-export { dropOldestTurn, trimHistoryToBudget, trimHistoryToBudgetAsync } from './historyTrim'
+export {
+  applyFoldedMessagesWatermark,
+  dropOldestTurn,
+  stripLeadingOrphanToolMessages,
+  trimHistoryToBudget,
+  trimHistoryToBudgetAsync
+} from './historyTrim'
 export { stripImagesFromMessages } from './stripImages'
 export { buildWorkspaceSnapshot, buildWorkspaceSnapshotAsync, clearWorkspaceSnapshotCache } from './workspaceSnapshot'
 export {

@@ -26,7 +26,8 @@ import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
 import {
   formatProviderHttpError,
-  parseOpenRouterAffordableOutputTokens
+  parseOpenRouterAffordableOutputTokens,
+  scrubProviderErrorSnippet
 } from './httpErrors'
 
 export function openAiCompatMessageReasoningDelta(
@@ -94,39 +95,45 @@ function toOpenAiContent(
     : parts
 }
 
-function openAiCompatReasoningFromMessage(message: ChatMessage): {
+function openAiCompatReasoningFromMessage(
+  message: ChatMessage,
+  opts: { stripReasoningReplay?: boolean }
+): {
   reasoningContent?: string
   reasoningDetails?: unknown
 } {
+  if (opts.stripReasoningReplay) return {}
   const state = parseProviderReasoningState(message.reasoningState)
   if (state?.kind !== 'openai_compat') return {}
   return {
     reasoningContent: state.reasoningContent,
-    reasoningDetails: state.reasoningDetails
+    // Encrypted reasoning_details must not be replayed via OpenRouter — upstream
+    // providers reject unverifiable rs_* blocks with HTTP 400 "Provider returned error".
+    reasoningDetails: undefined
   }
 }
 
 function toOpenAiMessages(
   messages: ChatMessage[],
   system: string | undefined,
-  opts: { ollamaVision?: boolean }
+  opts: { ollamaVision?: boolean; stripReasoningReplay?: boolean }
 ) {
   const out: Array<Record<string, unknown>> = []
   if (system) out.push({ role: 'system', content: system })
   for (const m of messages) {
     if (m.role === 'tool') {
+      if (!m.toolCallId) continue
       out.push({
         role: 'tool',
         tool_call_id: m.toolCallId,
         content: typeof m.content === 'string' ? m.content : contentToText(m.content)
       })
     } else if (m.role === 'assistant' && m.toolCalls?.length) {
-      const { reasoningContent, reasoningDetails } = openAiCompatReasoningFromMessage(m)
+      const { reasoningContent } = openAiCompatReasoningFromMessage(m, opts)
       out.push({
         role: 'assistant',
         content: typeof m.content === 'string' ? m.content || null : contentToText(m.content) || null,
         ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
-        ...(reasoningDetails !== undefined ? { reasoning_details: reasoningDetails } : {}),
         tool_calls: m.toolCalls.map((t) => ({
           id: t.id,
           type: 'function',
@@ -134,12 +141,11 @@ function toOpenAiMessages(
         }))
       })
     } else if (m.role === 'assistant') {
-      const { reasoningContent, reasoningDetails } = openAiCompatReasoningFromMessage(m)
+      const { reasoningContent } = openAiCompatReasoningFromMessage(m, opts)
       out.push({
         role: 'assistant',
         content: typeof m.content === 'string' ? m.content : contentToText(m.content),
-        ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
-        ...(reasoningDetails !== undefined ? { reasoning_details: reasoningDetails } : {})
+        ...(reasoningContent ? { reasoning_content: reasoningContent } : {})
       })
     } else {
       out.push({
@@ -382,10 +388,13 @@ async function listOpenAiCompatModels(
 export function buildOpenAiCompatBody(
   req: ProviderChatRequest,
   opts: OpenAiCompatOptions,
-  providerId?: ProviderId
+  providerId?: ProviderId,
+  overrides?: { strictTools?: boolean; omitReasoning?: boolean }
 ): Record<string, unknown> {
   const strictTools =
-    req.strictTools !== false && req.tools.length > 0 && !opts.ollamaVision
+    overrides?.strictTools !== undefined
+      ? overrides.strictTools
+      : req.strictTools !== false && req.tools.length > 0 && !opts.ollamaVision
   const tools = req.tools.map((t) => ({
     type: 'function',
     function: {
@@ -395,9 +404,13 @@ export function buildOpenAiCompatBody(
       ...(strictTools ? { strict: true } : {})
     }
   }))
+  const stripReasoningReplay = opts.openRouterReasoning || providerId === 'openrouter'
   const body: Record<string, unknown> = {
     model: req.model,
-    messages: toOpenAiMessages(req.messages, req.system, { ollamaVision: opts.ollamaVision }),
+    messages: toOpenAiMessages(req.messages, req.system, {
+      ollamaVision: opts.ollamaVision,
+      stripReasoningReplay
+    }),
     tools: tools.length ? tools : undefined,
     ...(tools.length
       ? {
@@ -427,7 +440,7 @@ export function buildOpenAiCompatBody(
     ...compatStreamOptions(opts)
   }
 
-  if (req.thinking?.enabled) {
+  if (req.thinking?.enabled && !overrides?.omitReasoning) {
     if (opts.deepseekThinking || providerId === 'deepseek') {
       body.thinking = { type: 'enabled' }
       if (req.thinking.effort) body.reasoning_effort = req.thinking.effort
@@ -496,9 +509,16 @@ export function createOpenAiCompatibleProvider(
 
       let maxOutputTokens = req.maxOutputTokens
       let res: Response | undefined
+      let bodyOverrides: { strictTools?: boolean; omitReasoning?: boolean } | undefined
+      let lastHttpErrorText = ''
 
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const body = buildOpenAiCompatBody({ ...req, maxOutputTokens }, opts, id)
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const body = buildOpenAiCompatBody(
+          { ...req, maxOutputTokens },
+          opts,
+          id,
+          bodyOverrides
+        )
         try {
           res = await fetchWithRetry(url, {
             method: 'POST',
@@ -509,13 +529,14 @@ export function createOpenAiCompatibleProvider(
         } catch (err) {
           if (req.signal.aborted) throw err
           logProviderFailure(id, 'network', {})
-          yield { type: 'error', error: formatError(err) }
+          yield { type: 'error', error: formatError(err), errorCode: 'PROVIDER_NETWORK' }
           return
         }
 
         if (res.ok) break
 
         const text = await res.text().catch(() => '')
+        lastHttpErrorText = text
         const affordable =
           id === 'openrouter' && res.status === 402
             ? parseOpenRouterAffordableOutputTokens(text)
@@ -529,12 +550,41 @@ export function createOpenAiCompatibleProvider(
           continue
         }
 
-        logProviderFailure(id, 'http', { status: res.status })
-        yield { type: 'error', error: formatProviderHttpError(res.status, text, id) }
+        // OpenRouter/OpenAI-compat 400: one fallback without strict tools, then
+        // without reasoning — mirrors Anthropic's 400 field-stripping retries.
+        if (
+          res.status === 400 &&
+          (id === 'openrouter' || opts.openRouterReasoning)
+        ) {
+          if (bodyOverrides?.strictTools !== false && req.tools.length > 0 && !bodyOverrides) {
+            bodyOverrides = { strictTools: false }
+            continue
+          }
+          if (!bodyOverrides?.omitReasoning && req.thinking?.enabled) {
+            bodyOverrides = { strictTools: false, omitReasoning: true }
+            continue
+          }
+        }
+
+        const message = formatProviderHttpError(res.status, text, id)
+        logProviderFailure(id, 'http', {
+          status: res.status,
+          message: scrubProviderErrorSnippet(text) || message
+        })
+        yield { type: 'error', error: message, errorCode: 'PROVIDER_HTTP' }
         return
       }
 
-      if (!res?.ok) return
+      if (!res?.ok) {
+        const status = res?.status ?? 0
+        const message = formatProviderHttpError(status, lastHttpErrorText, id)
+        logProviderFailure(id, 'http', {
+          status,
+          message: scrubProviderErrorSnippet(lastHttpErrorText) || message
+        })
+        yield { type: 'error', error: message, errorCode: 'PROVIDER_HTTP' }
+        return
+      }
 
       const pending = new Map<number, ToolCall>()
       let lastUsage: TokenUsage | undefined

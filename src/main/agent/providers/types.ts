@@ -43,6 +43,8 @@ export interface StreamChunk {
   toolCall?: ToolCall
   toolCallDelta?: { index: number; id?: string; name?: string; arguments?: string }
   error?: string
+  /** Structured failure code for `error` chunks (e.g. PROVIDER_HTTP vs PROVIDER_STREAM). */
+  errorCode?: string
   usage?: TokenUsage
   /** Anthropic server-side compaction summary (not user-visible assistant text). */
   compaction?: string

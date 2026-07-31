@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { dirname, join, relative, resolve, sep } from 'path'
 import { MEMORY_INDEX_CAP, MEMORY_STATE_CAP } from './types'
@@ -22,21 +22,30 @@ export function ensureMemoryLayout(workspacePath: string): void {
 }
 
 function assertUnderMemory(workspacePath: string, targetPath: string): string {
-  const root = resolve(memoryRoot(workspacePath))
-  const resolved = resolve(root, targetPath)
-  const prefix = root.endsWith(sep) ? root : root + sep
-  const equal =
-    process.platform === 'win32'
-      ? resolved.toLowerCase() === root.toLowerCase()
-      : resolved === root
-  const inside =
-    process.platform === 'win32'
-      ? resolved.toLowerCase().startsWith(prefix.toLowerCase())
-      : resolved.startsWith(prefix)
-  if (!equal && !inside) {
-    throw new Error(`Path escapes memory dir: ${targetPath}`)
+  const rootResolved = resolve(memoryRoot(workspacePath))
+  const realRoot = existsSync(rootResolved) ? realpathSync(rootResolved) : rootResolved
+  const candidate = resolve(realRoot, targetPath)
+  const checkContained = (resolved: string): void => {
+    const prefix = realRoot.endsWith(sep) ? realRoot : realRoot + sep
+    const equal =
+      process.platform === 'win32'
+        ? resolved.toLowerCase() === realRoot.toLowerCase()
+        : resolved === realRoot
+    const inside =
+      process.platform === 'win32'
+        ? resolved.toLowerCase().startsWith(prefix.toLowerCase())
+        : resolved.startsWith(prefix)
+    if (!equal && !inside) {
+      throw new Error(`Path escapes memory dir: ${targetPath}`)
+    }
   }
-  return resolved
+  checkContained(candidate)
+  if (existsSync(candidate)) {
+    const real = realpathSync(candidate)
+    checkContained(real)
+    return real
+  }
+  return candidate
 }
 
 function readMemoryFileExcerpt(

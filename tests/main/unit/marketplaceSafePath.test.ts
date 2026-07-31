@@ -52,4 +52,138 @@ describe('marketplace safePath', () => {
     expect(() => assertSafePackagePath('../x')).toThrow()
     expect(() => assertSafePackagePath('only-one')).toThrow()
   })
+
+  it('rejects catalog bundledPath/iconPath traversal at schema parse', async () => {
+    const { MarketplaceCatalogEntrySchema } = await import('@shared/ipc/schemas/marketplace')
+    const base = {
+      id: 'demo',
+      name: 'Demo',
+      version: '1.0.0',
+      kind: 'mcp' as const
+    }
+    expect(MarketplaceCatalogEntrySchema.safeParse({ ...base, bundledPath: 'ok/pkg' }).success).toBe(
+      true
+    )
+    expect(
+      MarketplaceCatalogEntrySchema.safeParse({ ...base, bundledPath: '../escape' }).success
+    ).toBe(false)
+    expect(
+      MarketplaceCatalogEntrySchema.safeParse({ ...base, iconPath: 'icons/x.svg' }).success
+    ).toBe(true)
+    expect(
+      MarketplaceCatalogEntrySchema.safeParse({ ...base, iconPath: '../../secret.svg' }).success
+    ).toBe(false)
+    expect(
+      MarketplaceCatalogEntrySchema.safeParse({ ...base, bundledPath: 'C:/Windows/system32' }).success
+    ).toBe(false)
+    expect(
+      MarketplaceCatalogEntrySchema.safeParse({ ...base, bundledPath: 'foo/C:/bar' }).success
+    ).toBe(false)
+    expect(
+      MarketplaceCatalogEntrySchema.safeParse({ ...base, iconPath: '//server/share/x.svg' }).success
+    ).toBe(false)
+  })
+})
+
+describe('sanitizeMcpManifestEnv', () => {
+  it('drops PATH and other process-control keys case-insensitively', async () => {
+    const { sanitizeMcpManifestEnv } = await import('@main/marketplace/sanitizeMcpEnv')
+    expect(
+      sanitizeMcpManifestEnv({
+        PATH: '/evil',
+        Path: '/evil2',
+        path: '/evil3',
+        LD_PRELOAD: 'x.so',
+        DYLD_INSERT_LIBRARIES: 'y.dylib',
+        NODE_OPTIONS: '--require evil',
+        PYTHONPATH: '/evil-py',
+        NODE_PATH: '/evil-node',
+        DOTNET_STARTUP_HOOKS: 'evil.dll',
+        JAVA_TOOL_OPTIONS: '-javaagent:evil',
+        BASH_ENV: '/evil.sh',
+        OPENSSL_CONF: '/evil.conf',
+        FOO: 'bar'
+      })
+    ).toEqual({ FOO: 'bar' })
+    expect(sanitizeMcpManifestEnv(undefined)).toBeUndefined()
+    expect(sanitizeMcpManifestEnv({ PATH: 'x' })).toBeUndefined()
+  })
+
+  it('treats mixed-case loader keys as blocked', async () => {
+    const { sanitizeMcpManifestEnv, isBlockedMcpEnvKey } = await import(
+      '@main/marketplace/sanitizeMcpEnv'
+    )
+    expect(isBlockedMcpEnvKey('pythonpath')).toBe(true)
+    expect(isBlockedMcpEnvKey('Node_Options')).toBe(true)
+    expect(isBlockedMcpEnvKey('MY_API_KEY')).toBe(false)
+    expect(sanitizeMcpManifestEnv({ pythonpath: 'x', Api_Key: 'secret' })).toEqual({
+      Api_Key: 'secret'
+    })
+  })
+})
+
+describe('isAllowedExternalMcpConfigPath', () => {
+  it('allows default basenames under home and rejects arbitrary paths', async () => {
+    const { isAllowedExternalMcpConfigPath, defaultExternalConfigPaths } = await import(
+      '@main/marketplace/mcpImport'
+    )
+    const { join } = await import('path')
+    const { homedir } = await import('os')
+
+    for (const p of defaultExternalConfigPaths()) {
+      expect(isAllowedExternalMcpConfigPath(p)).toBe(true)
+    }
+    expect(isAllowedExternalMcpConfigPath(join(homedir(), '.cursor', 'mcp.json'))).toBe(true)
+    expect(isAllowedExternalMcpConfigPath(join(homedir(), 'secrets.txt'))).toBe(false)
+    expect(isAllowedExternalMcpConfigPath('C:\\Windows\\System32\\config\\SAM')).toBe(false)
+  })
+})
+
+describe('isContainmentOrSymlinkError', () => {
+  it('classifies extract security failures', async () => {
+    const { isContainmentOrSymlinkError } = await import('@main/marketplace/install')
+    expect(isContainmentOrSymlinkError(new Error('Archive extract rejected symlink: x'))).toBe(true)
+    expect(isContainmentOrSymlinkError(new Error('Archive extract escaped destination: y'))).toBe(
+      true
+    )
+    expect(isContainmentOrSymlinkError(new Error('tar: Error opening archive'))).toBe(false)
+  })
+})
+
+describe('removeInstalledItem path consistency', () => {
+  it('deletes via packagePath under packages root', async () => {
+    const { upsertInstalledItem, removeInstalledItem, readMarketplaceIndex } = await import(
+      '@main/marketplace/indexStore'
+    )
+    const { resolveInstalledPackageRoot } = await import('@main/marketplace/paths')
+    const { existsSync, mkdirSync, writeFileSync, rmSync } = await import('fs')
+
+    // Reset index cache by writing empty via upsert then filter — clear via write
+    const { writeMarketplaceIndex } = await import('@main/marketplace/indexStore')
+    writeMarketplaceIndex({ schemaVersion: 1, items: [] })
+
+    const packagePath = 'demo-pkg/1.0.0'
+    const dir = resolveInstalledPackageRoot(packagePath)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'marker.txt'), 'x')
+
+    upsertInstalledItem({
+      id: 'demo-pkg',
+      kind: 'skill',
+      name: 'Demo',
+      version: '1.0.0',
+      description: '',
+      enabled: true,
+      installSource: 'path',
+      installedAt: new Date().toISOString(),
+      packagePath
+    })
+    expect(existsSync(join(dir, 'marker.txt'))).toBe(true)
+
+    removeInstalledItem('demo-pkg')
+    expect(existsSync(dir)).toBe(false)
+    expect(readMarketplaceIndex().items.find((i) => i.id === 'demo-pkg')).toBeUndefined()
+
+    rmSync(join(tmpdir(), 'vyotiq-userdata-mkt', 'marketplace'), { recursive: true, force: true })
+  })
 })

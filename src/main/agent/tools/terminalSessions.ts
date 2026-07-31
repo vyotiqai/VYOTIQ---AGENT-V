@@ -11,6 +11,7 @@ import {
   type ResolvedTerminalShell,
   TERMINAL_MAX_OUTPUT
 } from './terminal'
+import { compileUserRegex } from './safeUserRegex'
 import { workspacePathsEqual } from '../../../shared/workspacePath'
 import type { TerminalShell } from '../../../shared/ipc'
 
@@ -173,9 +174,11 @@ export async function startBackgroundTerminal(
   let pattern: RegExp | undefined
   if (opts.pattern?.trim()) {
     try {
-      pattern = new RegExp(opts.pattern)
-    } catch {
-      throw new Error(`Invalid terminal pattern regex: ${opts.pattern}`)
+      pattern = compileUserRegex(opts.pattern)
+    } catch (err) {
+      throw new Error(
+        err instanceof Error ? `Invalid terminal pattern regex: ${err.message}` : `Invalid terminal pattern regex: ${opts.pattern}`
+      )
     }
   }
 
@@ -274,9 +277,13 @@ export async function pollTerminalSession(opts: PollTerminalSessionOpts): Promis
   if (opts.onOutput) session.onOutput = opts.onOutput
   if (opts.pattern?.trim()) {
     try {
-      session.pattern = new RegExp(opts.pattern)
-    } catch {
-      throw new Error(`Invalid terminal pattern regex: ${opts.pattern}`)
+      session.pattern = compileUserRegex(opts.pattern)
+    } catch (err) {
+      throw new Error(
+        err instanceof Error
+          ? `Invalid terminal pattern regex: ${err.message}`
+          : `Invalid terminal pattern regex: ${opts.pattern}`
+      )
     }
   }
 

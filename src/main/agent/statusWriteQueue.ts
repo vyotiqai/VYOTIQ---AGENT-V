@@ -98,33 +98,38 @@ async function flushDir(dir: string): Promise<void> {
     clearTimeout(entry.timer)
     entry.timer = null
   }
-  const patch = entry.patch
-  const invalidateList = entry.invalidateList
-  entry.patch = {}
-  entry.invalidateList = false
 
-  if (Object.keys(patch).length === 0) {
-    await entry.chain
-    return
-  }
-
-  const path = join(dir, 'status.json')
+  // Serialize concurrent flushDir callers on the per-dir chain so a second flush
+  // cannot await a stale chain while the first still holds the pending patch.
   const flushOp = entry.chain.then(async () => {
-    const current = await readStatusFile(path)
-    const next: RunStatus = {
-      ...current,
-      ...patch,
-      updatedAt: new Date().toISOString()
-    }
-    await atomicWriteJsonAsync(path, next)
-    if (invalidateList) {
-      const workspacePath = next.workspacePath ?? current.workspacePath
-      if (workspacePath) invalidateListRunsCache(workspacePath)
+    const patch = entry.patch
+    const invalidateList = entry.invalidateList
+    entry.patch = {}
+    entry.invalidateList = false
+    if (Object.keys(patch).length === 0) return
+
+    try {
+      const path = join(dir, 'status.json')
+      const current = await readStatusFile(path)
+      const next: RunStatus = {
+        ...current,
+        ...patch,
+        updatedAt: new Date().toISOString()
+      }
+      await atomicWriteJsonAsync(path, next)
+      statusStats.flushed += 1
+      if (invalidateList) {
+        const workspacePath = next.workspacePath ?? current.workspacePath
+        if (workspacePath) invalidateListRunsCache(workspacePath)
+      }
+    } catch (err) {
+      // Re-merge so a later flush can retry after disk/permission failures.
+      mergePendingPatch(dir, patch, invalidateList)
+      throw err
     }
   })
 
   entry.chain = flushOp.catch((err) => {
-    mergePendingPatch(dir, patch, invalidateList)
     logger.warn('Failed to flush status.json', {
       scope: 'state',
       correlationId: basename(dir),
@@ -132,16 +137,11 @@ async function flushDir(dir: string): Promise<void> {
     })
   })
 
-  try {
-    await flushOp
-    statusStats.flushed += 1
-    if (pendingByDir.get(dir) === entry && Object.keys(entry.patch).length === 0) {
-      if (entry.timer == null) {
-        pendingByDir.delete(dir)
-      }
+  await flushOp
+  if (pendingByDir.get(dir) === entry && Object.keys(entry.patch).length === 0) {
+    if (entry.timer == null) {
+      pendingByDir.delete(dir)
     }
-  } catch (err) {
-    throw err
   }
 }
 

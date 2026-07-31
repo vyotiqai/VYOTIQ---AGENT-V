@@ -356,7 +356,7 @@ describe('runAgent context overflow', () => {
     const events = await collect('overflow-stop', workspace)
 
     expect(events.find((e) => e.type === 'incomplete')?.reason).toBe('context_overflow')
-    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
+    expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
     expect(events.some((e) => e.type === 'text_delta')).toBe(false)
     expect(streamChat).not.toHaveBeenCalled()
   })

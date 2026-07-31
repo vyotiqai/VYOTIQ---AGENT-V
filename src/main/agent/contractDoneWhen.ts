@@ -153,7 +153,8 @@ export function unmetCriteriaSummaries(results: readonly CriterionResult[], cap 
 /**
  * Soft contract Done-when gate before accepting a no-tool finish.
  * - `notice`: at most one nudge (`alreadyNudged` blocks repeats)
- * - `require`: keep nudging while any checkable criterion is unmet
+ * - `require`: keep nudging while any checkable criterion is unmet; the loop
+ *   applies a circuit breaker so this cannot spin forever
  * - No checkable criteria → never nudge (subjective bullets stay advisory)
  */
 export function shouldNudgeContractDoneWhen(opts: {

@@ -327,7 +327,11 @@ function persistToolResult(ctx: ToolStepContext, outcome: ToolOutcome): void {
   }
 }
 
-function abortedToolResult(call: ToolCall, ctx: ToolStepContext): ToolOutcome {
+function abortedToolResult(
+  call: ToolCall,
+  ctx: ToolStepContext,
+  options?: { emitStart?: boolean }
+): ToolOutcome {
   const content = abortToolContent(ctx)
   const summary = abortToolSummary(ctx)
   const toolMsg: ChatMessage = {
@@ -353,8 +357,12 @@ function abortedToolResult(call: ToolCall, ctx: ToolStepContext): ToolOutcome {
     ok: false,
     content
   }
-  emitToolStart(ctx, startEv)
-  return { ok: false, events: [startEv, ev], message: toolMsg }
+  const emitStart = options?.emitStart !== false
+  if (emitStart) {
+    emitToolStart(ctx, startEv)
+    return { ok: false, events: [startEv, ev], message: toolMsg }
+  }
+  return { ok: false, events: [ev], message: toolMsg }
 }
 
 async function runParallelBatch(
@@ -363,6 +371,7 @@ async function runParallelBatch(
   parallelLimit: number
 ): Promise<Map<string, ToolOutcome>> {
   const results = new Map<string, ToolOutcome>()
+  const startedIds = new Set<string>()
   let index = 0
   const workers = Array.from({ length: Math.min(parallelLimit, calls.length) }, async () => {
     while (index < calls.length) {
@@ -370,15 +379,22 @@ async function runParallelBatch(
       const i = index++
       const call = calls[i]
       if (!call) break
+      startedIds.add(call.id)
       const result = await runSingleTool(call, ctx)
       results.set(call.id, result)
     }
   })
   await Promise.all(workers)
-  // After abort, discard late successes so the step does not report ok for cancelled work.
+  // After abort, keep settled outcomes; only synthesize abort results for tools
+  // that never produced a ToolOutcome. Never re-emit tool_start for started ids.
   if (ctx.signal.aborted) {
     for (const call of calls) {
-      results.set(call.id, abortedToolResult(call, ctx))
+      const existing = results.get(call.id)
+      if (existing) continue
+      results.set(
+        call.id,
+        abortedToolResult(call, ctx, { emitStart: !startedIds.has(call.id) })
+      )
     }
   }
   return results

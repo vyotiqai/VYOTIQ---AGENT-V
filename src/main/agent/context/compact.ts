@@ -13,6 +13,7 @@ import {
   estimateMessagesTokensAsync,
   estimateTextTokensAsync
 } from './estimate'
+import { stripLeadingOrphanToolMessages } from './historyTrim'
 import { KEEP_RECENT_TURNS, type CompactionRecord } from './types'
 
 const COMPACTION_PROMPT = `Summarize this coding-agent session for future context. Be concise and factual. Do not invent files or decisions.`
@@ -246,9 +247,17 @@ export function preserveRecentMessages(
     start = Math.min(start + 2, messages.length - 1)
   }
 
-  let kept = messages.slice(start)
-  while (kept.length > 1 && kept[0].role === 'tool') {
-    kept = kept.slice(1)
+  let kept = stripLeadingOrphanToolMessages(messages.slice(start))
+  // Budget/index trim landed inside a tool turn — rewind to include the owner.
+  while (kept.length === 0 && start > 0) {
+    start--
+    kept = stripLeadingOrphanToolMessages(messages.slice(start))
+  }
+  if (kept.length === 0) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role !== 'tool') return messages.slice(i)
+    }
+    return messages.slice(-1)
   }
 
   if (historyBudgetTokens && model) {
@@ -260,10 +269,9 @@ export function preserveRecentMessages(
       if (dropIdx < 0) break
       const nextUser = kept.findIndex((m, idx) => idx > dropIdx && m.role === 'user')
       const end = nextUser >= 0 ? nextUser : kept.length
-      kept = kept.slice(end)
-      while (kept.length > 1 && kept[0].role === 'tool') {
-        kept = kept.slice(1)
-      }
+      let next = stripLeadingOrphanToolMessages(kept.slice(end))
+      if (next.length === 0) break
+      kept = next
     }
   }
 
@@ -295,9 +303,16 @@ export async function preserveRecentMessagesAsync(
     start = Math.min(start + 2, messages.length - 1)
   }
 
-  let kept = messages.slice(start)
-  while (kept.length > 1 && kept[0].role === 'tool') {
-    kept = kept.slice(1)
+  let kept = stripLeadingOrphanToolMessages(messages.slice(start))
+  while (kept.length === 0 && start > 0) {
+    start--
+    kept = stripLeadingOrphanToolMessages(messages.slice(start))
+  }
+  if (kept.length === 0) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role !== 'tool') return messages.slice(i)
+    }
+    return messages.slice(-1)
   }
 
   if (historyBudgetTokens && model) {
@@ -309,10 +324,9 @@ export async function preserveRecentMessagesAsync(
       if (dropIdx < 0) break
       const nextUser = kept.findIndex((m, idx) => idx > dropIdx && m.role === 'user')
       const end = nextUser >= 0 ? nextUser : kept.length
-      kept = kept.slice(end)
-      while (kept.length > 1 && kept[0].role === 'tool') {
-        kept = kept.slice(1)
-      }
+      const next = stripLeadingOrphanToolMessages(kept.slice(end))
+      if (next.length === 0) break
+      kept = next
     }
   }
 

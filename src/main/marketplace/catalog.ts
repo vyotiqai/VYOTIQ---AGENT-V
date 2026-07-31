@@ -44,6 +44,8 @@ function writeCachedRemoteCatalog(catalog: MarketplaceCatalog): void {
   writeFileSync(path, JSON.stringify(catalog, null, 2), 'utf8')
 }
 
+import { assertPublicUrl } from '../agent/tools/webFetch'
+
 /** Fetch remote catalog when registryUrl is set; cache on success. */
 export async function refreshRemoteCatalog(): Promise<MarketplaceCatalog> {
   const registryUrl = (getSettings().marketplace?.registryUrl ?? '').trim().replace(/\/$/, '')
@@ -52,6 +54,7 @@ export async function refreshRemoteCatalog(): Promise<MarketplaceCatalog> {
   }
   const url = `${registryUrl}/v1/catalog`
   try {
+    await assertPublicUrl(url)
     const res = await fetch(url, { signal: AbortSignal.timeout(15_000) })
     if (!res.ok) throw new Error(`Catalog fetch failed: HTTP ${res.status}`)
     const raw = (await res.json()) as unknown

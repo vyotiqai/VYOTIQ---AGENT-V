@@ -1,7 +1,11 @@
 import type { ProviderId } from '../../../shared/ipc'
 
 type ProviderErrorJson = {
-  error?: { message?: string; code?: unknown }
+  error?: {
+    message?: string
+    code?: unknown
+    metadata?: { raw?: unknown; provider_name?: unknown }
+  }
   message?: string
 }
 
@@ -10,16 +14,28 @@ function parseProviderErrorMessage(body: string): string | undefined {
   if (!trimmed.startsWith('{')) return undefined
   try {
     const parsed = JSON.parse(trimmed) as ProviderErrorJson
-    if (typeof parsed.error?.message === 'string' && parsed.error.message.trim()) {
-      return parsed.error.message.trim()
+    const outer =
+      typeof parsed.error?.message === 'string' && parsed.error.message.trim()
+        ? parsed.error.message.trim()
+        : typeof parsed.message === 'string' && parsed.message.trim()
+          ? parsed.message.trim()
+          : undefined
+
+    // OpenRouter often wraps upstream failures as "Provider returned error"
+    // with the real message nested in error.metadata.raw (JSON string).
+    const raw = parsed.error?.metadata?.raw
+    if (typeof raw === 'string' && raw.trim()) {
+      const nested = parseProviderErrorMessage(raw)
+      if (nested && nested !== outer) return nested
+      if (!outer || /^provider returned error$/i.test(outer)) {
+        return nested ?? raw.trim().slice(0, 280)
+      }
     }
-    if (typeof parsed.message === 'string' && parsed.message.trim()) {
-      return parsed.message.trim()
-    }
+
+    return outer
   } catch {
     return undefined
   }
-  return undefined
 }
 
 /** OpenRouter 402 bodies include "can only afford N" when max_tokens exceeds credit budget. */
@@ -30,6 +46,20 @@ export function parseOpenRouterAffordableOutputTokens(body: string): number | un
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined
 }
 
+const PROVIDER_SECRET_RE =
+  /\b(?:sk-[a-zA-Z0-9_-]+|Bearer\s+[a-zA-Z0-9._\-+=\/]+|api[_-]?key["\s:=]+[a-zA-Z0-9._\-]+)/gi
+
+/** Redact common provider secret shapes from error text. */
+export function scrubProviderErrorText(text: string): string {
+  return text.replace(PROVIDER_SECRET_RE, '[redacted]').slice(0, 280)
+}
+
+/** Scrubbed ≤280-char snippet for logs / UI (no API keys). */
+export function scrubProviderErrorSnippet(body: string): string {
+  const formatted = parseProviderErrorMessage(body) ?? body.trim()
+  return scrubProviderErrorText(formatted)
+}
+
 export function formatProviderHttpError(
   status: number,
   body: string,
@@ -37,6 +67,7 @@ export function formatProviderHttpError(
 ): string {
   const providerMessage = parseProviderErrorMessage(body)
   const affordable = providerId === 'openrouter' ? parseOpenRouterAffordableOutputTokens(body) : undefined
+  const scrubbedMessage = providerMessage ? scrubProviderErrorText(providerMessage) : undefined
 
   if (status === 402) {
     if (providerId === 'openrouter') {
@@ -44,26 +75,26 @@ export function formatProviderHttpError(
         return `OpenRouter credits are insufficient for the requested output budget. Add credits at https://openrouter.ai/settings/credits or retry with a lower output limit (balance covers ~${affordable.toLocaleString()} output tokens).`
       }
       return (
-        providerMessage ??
+        scrubbedMessage ??
         'OpenRouter credits are insufficient for this request. Add credits at https://openrouter.ai/settings/credits.'
       )
     }
-    return providerMessage ?? 'Insufficient provider credits for this request.'
+    return scrubbedMessage ?? 'Insufficient provider credits for this request.'
   }
 
   if (status === 401 || status === 403) {
     return (
-      providerMessage ??
+      scrubbedMessage ??
       `Authentication failed (HTTP ${status}). Check your API key in Settings.`
     )
   }
 
   if (status === 429) {
-    return providerMessage ?? 'Rate limited (HTTP 429). Wait a moment and try again.'
+    return scrubbedMessage ?? 'Rate limited (HTTP 429). Wait a moment and try again.'
   }
 
-  if (providerMessage) return providerMessage
+  if (scrubbedMessage) return scrubbedMessage
 
-  const snippet = body.trim().slice(0, 280)
+  const snippet = scrubProviderErrorText(body.trim())
   return snippet ? `HTTP ${status}: ${snippet}` : `HTTP ${status}`
 }

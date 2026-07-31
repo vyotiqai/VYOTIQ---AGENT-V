@@ -556,12 +556,16 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     throwIfAborted(signal)
     return toolOk('browser_select_option', selector, content)
   },
-  mcp_list_tools: (_workspace, args, signal) => {
+  mcp_list_tools: (_workspace, args, signal, context) => {
     throwIfAborted(signal)
     const filter = optionalMcpServerId(args)?.toLowerCase() ?? ''
-    const defs = listMcpToolDefinitions().filter((t) =>
-      filter ? t.name.toLowerCase().includes(filter) : true
-    )
+    const enabled = context.runEnabledMcpIds
+    const defs = listMcpToolDefinitions().filter((t) => {
+      if (filter && !t.name.toLowerCase().includes(filter)) return false
+      if (!enabled) return true
+      const parsed = parseMcpToolName(t.name)
+      return parsed ? enabled.has(parsed.serverId) : true
+    })
     if (defs.length === 0) {
       return toolOk(
         'mcp_list_tools',

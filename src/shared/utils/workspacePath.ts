@@ -86,6 +86,8 @@ export function isSafeWorkspaceRelPath(path: string): boolean {
   if (UNC_PREFIX.test(t)) return false
   const parts = t.split('/')
   if (parts.some((p) => !p || p === '.' || p === '..')) return false
+  // Reject Windows drive-style segments mid-path (e.g. packages/C:/Windows).
+  if (parts.some((p) => /^[a-zA-Z]:/.test(p))) return false
   return true
 }
 

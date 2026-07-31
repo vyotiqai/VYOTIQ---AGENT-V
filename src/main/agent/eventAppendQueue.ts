@@ -57,13 +57,14 @@ export async function flushEventAppends(dir?: string): Promise<void> {
 
 /**
  * Block until pending appends for a run dir settle (sync loaders only).
+ * Returns false when the wait timed out (caller should treat events as possibly stale).
  * Times out instead of hanging forever when the chain never settles.
  */
-export function blockUntilEventAppendsFlushed(dir: string, timeoutMs = 2000): void {
+export function blockUntilEventAppendsFlushed(dir: string, timeoutMs = 2000): boolean {
   const chain = appendChains.get(dir)
   if (!chain) {
     throwIfAppendError(dir)
-    return
+    return true
   }
   const sab = new SharedArrayBuffer(4)
   const ia = new Int32Array(sab)
@@ -83,11 +84,13 @@ export function blockUntilEventAppendsFlushed(dir: string, timeoutMs = 2000): vo
   if (result === 'timed-out') {
     logger.warn('Timed out waiting for event append flush', {
       scope: 'state',
-      correlationId: basename(dir)
+      correlationId: basename(dir),
+      timeoutMs
     })
-    return
+    return false
   }
   if (flushError) throw flushError
+  return true
 }
 
 /** @internal Test helper — how many run dirs still have a pending chain. */

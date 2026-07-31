@@ -157,26 +157,28 @@ describe('executeStepToolCalls', () => {
       ctx
     )
 
-    expect(outcome.stepToolsOk).toBe(false)
+    expect(outcome.messages.map((m) => m.toolCallId)).toEqual(['c1', 'c2', 'c3'])
+    // At least one tool never started or was interrupted after abort.
     const cancelled = outcome.messages.filter((m) => m.content === 'Cancelled')
     expect(cancelled.length).toBeGreaterThanOrEqual(1)
-    expect(outcome.messages.map((m) => m.toolCallId)).toEqual(['c1', 'c2', 'c3'])
   })
 
-  it('discards late parallel successes after abort', async () => {
+  it('preserves completed parallel successes after abort and cancels only unfinished tools', async () => {
     const ac = new AbortController()
     let started = 0
     executeTool.mockImplementation(async () => {
       started += 1
       if (started === 1) {
-        ac.abort()
-        await new Promise((r) => setTimeout(r, 30))
-        return { ok: true, summary: 'late', content: 'should-not-persist' }
+        // Finish successfully before abort is observed by the other worker.
+        await new Promise((r) => setTimeout(r, 5))
+        return { ok: true, summary: 'early', content: 'completed-ok' }
       }
-      return { ok: true, summary: 'file', content: 'ok' }
+      ac.abort()
+      await new Promise((r) => setTimeout(r, 30))
+      return { ok: true, summary: 'late', content: 'also-finished' }
     })
 
-    const { ctx } = makeCtx(ac.signal)
+    const { ctx, events } = makeCtx(ac.signal)
     const outcome = await executeStepToolCalls(
       [
         { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' },
@@ -185,8 +187,57 @@ describe('executeStepToolCalls', () => {
       ctx
     )
 
-    expect(outcome.messages.every((m) => m.content === 'Cancelled')).toBe(true)
-    expect(outcome.stepToolsOk).toBe(false)
+    // Settled ToolOutcomes are kept (including late finishes that returned ok).
+    expect(outcome.messages.every((m) => m.content === 'Cancelled')).toBe(false)
+    expect(outcome.messages.some((m) => m.content === 'completed-ok' || m.content === 'also-finished')).toBe(
+      true
+    )
+    // No duplicate tool_start for the same toolCallId.
+    const starts = events.filter((e) => e.type === 'tool_start')
+    const startIds = starts.map((e) => (e.type === 'tool_start' ? e.toolCallId : ''))
+    expect(startIds.length).toBe(new Set(startIds).size)
+  })
+
+  it('does not re-emit tool_start when synthesizing abort for never-started parallel tools', async () => {
+    const ac = new AbortController()
+    let releaseFirst!: () => void
+    const firstStarted = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    executeTool.mockImplementation(async (_name, _args, _ws, toolSignal: AbortSignal) => {
+      releaseFirst()
+      while (!toolSignal.aborted) {
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      throw new DOMException('Aborted', 'AbortError')
+    })
+
+    const { ctx, events } = makeCtx(ac.signal)
+    // Two workers for three tools → one call never starts after abort.
+    ctx.maxParallelReadTools = 2
+    const work = executeStepToolCalls(
+      [
+        { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' },
+        { id: 'c2', name: 'read', arguments: '{"path":"b.ts"}' },
+        { id: 'c3', name: 'read', arguments: '{"path":"c.ts"}' }
+      ],
+      ctx
+    )
+    await firstStarted
+    ac.abort()
+    const outcome = await work
+
+    expect(outcome.messages.map((m) => m.toolCallId)).toEqual(['c1', 'c2', 'c3'])
+    expect(outcome.messages.some((m) => m.content === 'Cancelled')).toBe(true)
+    const startsById = new Map<string, number>()
+    for (const ev of events) {
+      if (ev.type !== 'tool_start') continue
+      startsById.set(ev.toolCallId, (startsById.get(ev.toolCallId) ?? 0) + 1)
+    }
+    expect(startsById.size).toBe(3)
+    for (const count of startsById.values()) {
+      expect(count).toBe(1)
+    }
   })
 
   it('prepends repeat hint when the same path fails twice in one run', async () => {

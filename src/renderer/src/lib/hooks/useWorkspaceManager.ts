@@ -213,6 +213,7 @@ export function useWorkspaceManager() {
   const contextsRef = useRef(contexts)
   const registryRef = useRef(registry)
   const persistTimersRef = useRef(new Map<string, number>())
+  const uiWriteGenerationRef = useRef(new Map<string, number>())
   const eventBufferRef = useRef(new Map<string, AgentEvent[]>())
   const approvalBufferRef = useRef(new Map<string, ToolApprovalRequest[]>())
   const questionBufferRef = useRef(new Map<string, AgentQuestionRequest[]>())
@@ -313,15 +314,19 @@ export function useWorkspaceManager() {
       persistTimersRef.current.delete(path)
       const ctx = snapshot ?? contextsRef.current[path]
       if (!ctx || !window.vyotiq?.updateWorkspaceUiState) return
-      void window.vyotiq.updateWorkspaceUiState(path, uiStateFromContext(ctx)).then((res) => {
-        if (!res.ok) {
-          logger.warn('updateWorkspaceUiState failed', {
-            scope: 'workspaces',
-            path,
-            err: toLogErr(res.error)
-          })
-        }
-      })
+      const gen = (uiWriteGenerationRef.current.get(path) ?? 0) + 1
+      uiWriteGenerationRef.current.set(path, gen)
+      void window.vyotiq
+        .updateWorkspaceUiState(path, { ...uiStateFromContext(ctx), writeGeneration: gen })
+        .then((res) => {
+          if (!res.ok) {
+            logger.warn('updateWorkspaceUiState failed', {
+              scope: 'workspaces',
+              path,
+              err: toLogErr(res.error)
+            })
+          }
+        })
     }, UI_PERSIST_DEBOUNCE_MS)
     persistTimersRef.current.set(path, timerId)
   }, [])
@@ -343,7 +348,9 @@ export function useWorkspaceManager() {
     for (const workspacePath of paths) {
       const ctx = contextsRef.current[workspacePath]
       if (!ctx) continue
-      const ui = uiStateFromContext(ctx)
+      const gen = (uiWriteGenerationRef.current.get(workspacePath) ?? 0) + 1
+      uiWriteGenerationRef.current.set(workspacePath, gen)
+      const ui = { ...uiStateFromContext(ctx), writeGeneration: gen }
       const api = window.vyotiq
       if (!api) continue
       const sync = (
@@ -698,6 +705,8 @@ export function useWorkspaceManager() {
           await ctrl.reattachActiveRun(entry.runId)
           didReattach = true
         }
+        await restorePendingQuestions(ctrl, entry.runId)
+        await restorePendingApprovals(ctrl, entry.runId)
         applyUiSuspendForController(entry.runId, ctrl)
       }
       if (didReattach) bump()

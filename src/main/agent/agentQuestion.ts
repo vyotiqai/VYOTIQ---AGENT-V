@@ -110,7 +110,7 @@ export function askQuestionThroughRenderer(
     function onTimeout(): void {
       pending.delete(request.requestId)
       clearWaiters()
-      reject(new Error('Question timed out without a response'))
+      reject(new Error('Question timed out without a response. Continue without waiting, or ask again.'))
     }
     if (signal.aborted) {
       reject(abortQuestionError())
