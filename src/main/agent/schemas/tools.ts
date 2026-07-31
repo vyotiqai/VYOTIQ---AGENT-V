@@ -71,16 +71,13 @@ const searchArgs = z.object({
     .optional()
 })
 
-const TERMINAL_SESSION_UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-
-/** Drop invented session_id labels when a command is also present (poll footgun). */
+/** Drop session_id when a command is also present (poll footgun; includes invented UUIDs). */
 function coerceTerminalSessionId(raw: unknown): unknown {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
   const v = raw as Record<string, unknown>
   const sid = typeof v.session_id === 'string' ? v.session_id.trim() : ''
   const cmd = typeof v.command === 'string' ? v.command.trim() : ''
-  if (sid && cmd && !TERMINAL_SESSION_UUID_RE.test(sid)) {
+  if (sid && cmd) {
     const { session_id: _drop, ...rest } = v
     return rest
   }
@@ -504,11 +501,11 @@ const subagentArgs = z.object({
   task: z
     .string()
     .describe(
-      'Self-contained investigation for the sub-agent, including what to report back. Nested agent is read-only.'
+      'Self-contained task for a nested agent (same runtime as the main agent). Returns one report under subagents/<id>/report.md.'
     ),
   context: z
     .string()
-    .describe('Findings so far that save the sub-agent re-deriving them')
+    .describe('Findings so far that save the nested agent re-deriving them')
     .optional()
 })
 
@@ -764,7 +761,7 @@ const TOOL_REGISTRY = {
   },
   subagent: {
     description:
-      'Delegate a read-only investigation to a nested agent. Returns one report and persists it under subagents/<id>/report.md for re-read after compaction.',
+      'Delegate a task to a nested agent (same harness, tools, and approvals as the main agent; isolated context). Returns one report under subagents/<id>/report.md for re-read after compaction.',
     schema: subagentArgs
   },
   ask_question: {

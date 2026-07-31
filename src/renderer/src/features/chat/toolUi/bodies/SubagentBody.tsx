@@ -6,8 +6,17 @@ import { formatTokens } from '@renderer/lib/utils/formatTokens'
 import { MarkdownContent } from '@renderer/lib/ui'
 import { useRunSession } from '../../RunSessionContext'
 import type { ToolBodyProps } from '../types'
-import type { SubagentContextUsageState } from '@shared/utils/contextUsage'
+import type {
+  SubagentContextUsageState
+} from '@shared/utils/contextUsage'
+import type {
+  UiNestedAgentLeaf,
+  UiNestedAgentState,
+  UiSubagentContextUsage,
+  UiToolApproval
+} from '@shared/transcript'
 import { CopyButton, TruncatedBanner } from '../primitives'
+import { ToolApprovalCard } from '../../components/ToolApprovalCard'
 
 const STEP_ICON: Record<string, 'edit' | 'sparkles' | 'check' | 'doc'> = {
   tool: 'edit',
@@ -29,22 +38,29 @@ function parsePersistedReport(content: string): { reportPath: string | null; bod
   return { reportPath, body }
 }
 
-function SubagentContextBar({ usage }: { usage: SubagentContextUsageState }) {
-  const denominator = usage.contentWindow > 0 ? usage.contentWindow : usage.window
-  const ratio = denominator > 0 ? Math.min(1, usage.used / denominator) : 0
+function SubagentContextBar({
+  usage
+}: {
+  usage: SubagentContextUsageState | UiSubagentContextUsage
+}) {
+  const used = usage.used
+  const windowSize = usage.contentWindow > 0 ? usage.contentWindow : usage.window
+  const ratio = windowSize > 0 ? Math.min(1, used / windowSize) : 0
   const pct = Math.round(ratio * 100)
   const barColor =
     ratio >= 0.9 ? 'bg-danger' : ratio >= 0.7 ? 'bg-warning' : 'bg-success'
+  const model = usage.model
+  const step = usage.step
 
   return (
     <div
       className={cn(TOOL_BODY_INNER, 'flex flex-col gap-1 border-b border-border/50 pb-2')}
-      title={`Sub-agent context: ${formatTokens(usage.used)} / ${formatTokens(denominator)} (${usage.model})`}
+      title={`Nested agent context: ${formatTokens(used)} / ${formatTokens(windowSize)} (${model})`}
     >
       <div className="flex items-center justify-between gap-2 text-[10px] text-tertiary">
-        <span>Sub-agent context · step {usage.step}</span>
+        <span>Nested agent context · step {step}</span>
         <span className="tabular-nums">
-          {pct}% · {formatTokens(usage.used)}/{formatTokens(denominator)}
+          {pct}% · {formatTokens(used)}/{formatTokens(windowSize)}
         </span>
       </div>
       <div className="h-1 overflow-hidden rounded-full bg-surface-2" role="presentation">
@@ -87,10 +103,111 @@ function ReportPathRow({ path }: { path: string }) {
   )
 }
 
+function NestedApproval({
+  approval,
+  onRespond
+}: {
+  approval: UiToolApproval
+  onRespond?: (requestId: string, decision: 'once' | 'session' | 'always' | 'deny') => void
+}) {
+  if (!onRespond) {
+    return (
+      <div className="rounded border border-border/60 bg-surface-2/40 px-2 py-1.5 text-[11px] text-tertiary">
+        Approval pending: {approval.toolName} — {approval.summary}
+      </div>
+    )
+  }
+  return <ToolApprovalCard approval={approval} onDecide={onRespond} />
+}
+
+function NestedLeaf({
+  leaf,
+  onRespondApproval
+}: {
+  leaf: UiNestedAgentLeaf
+  onRespondApproval?: (requestId: string, decision: 'once' | 'session' | 'always' | 'deny') => void
+}) {
+  if (leaf.kind === 'thinking') {
+    return (
+      <div className="flex gap-2 text-[11px] text-tertiary">
+        <Icon name="sparkles" size={14} className="mt-0.5 shrink-0" />
+        <span className="min-w-0 whitespace-pre-wrap break-words italic opacity-80">
+          {leaf.text}
+          {leaf.streaming ? '…' : ''}
+        </span>
+      </div>
+    )
+  }
+  if (leaf.kind === 'text') {
+    return (
+      <div className="text-[11px] text-fg/85">
+        <MarkdownContent content={leaf.text} />
+        {leaf.streaming ? (
+          <span className="text-tertiary">…</span>
+        ) : null}
+      </div>
+    )
+  }
+  // tool
+  const statusColor =
+    leaf.tool.status === 'fail'
+      ? 'text-danger'
+      : leaf.tool.status === 'done'
+        ? 'text-success'
+        : 'text-tertiary'
+  return (
+    <div className="flex flex-col gap-1 rounded border border-border/40 bg-surface-2/30 px-2 py-1.5">
+      <div className="flex min-w-0 items-center gap-2 text-[11px]">
+        <Icon name="edit" size={14} className={cn('shrink-0', statusColor)} />
+        <span className="shrink-0 font-medium text-fg/90">{leaf.tool.name}</span>
+        <span className="min-w-0 truncate text-tertiary">{leaf.tool.summary}</span>
+      </div>
+      {leaf.approval ? (
+        <NestedApproval approval={leaf.approval} onRespond={onRespondApproval} />
+      ) : null}
+      {leaf.terminalOutput ? (
+        <pre className="m-0 max-h-24 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] text-tertiary">
+          {leaf.terminalOutput.slice(-4000)}
+        </pre>
+      ) : null}
+      {leaf.tool.content && leaf.tool.status !== 'running' ? (
+        <div className="max-h-40 overflow-auto text-[10px] text-tertiary">
+          <MarkdownContent content={leaf.tool.content.slice(0, 4000)} />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function NestedAgentPanel({
+  nested,
+  onRespondApproval
+}: {
+  nested: UiNestedAgentState
+  onRespondApproval?: (requestId: string, decision: 'once' | 'session' | 'always' | 'deny') => void
+}) {
+  return (
+    <div className={cn(TOOL_BODY_INNER, 'flex flex-col gap-2 border-b border-border/50 pb-2')}>
+      <div className="flex items-center gap-2 text-[10px] text-tertiary">
+        <Icon name="bot" size={12} />
+        <span className="font-mono">agent {nested.subagentId}</span>
+      </div>
+      {nested.contextUsage ? <SubagentContextBar usage={nested.contextUsage} /> : null}
+      <div className="flex flex-col gap-1.5">
+        {nested.leaves.map((leaf) => (
+          <NestedLeaf key={leaf.id} leaf={leaf} onRespondApproval={onRespondApproval} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function SubagentBody({
   tool,
   subagent,
   subagentContextUsage,
+  nestedAgent,
+  onRespondApproval,
   loading,
   loadFailed
 }: ToolBodyProps) {
@@ -100,12 +217,19 @@ export function SubagentBody({
     [tool.content]
   )
 
+  const showLegacySteps = !nestedAgent?.leaves.length && steps.length > 0
+  const contextUsage = nestedAgent?.contextUsage ?? subagentContextUsage
+
   return (
     <div className="flex flex-col gap-1">
       {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
-      {subagentContextUsage ? <SubagentContextBar usage={subagentContextUsage} /> : null}
+      {nestedAgent ? (
+        <NestedAgentPanel nested={nestedAgent} onRespondApproval={onRespondApproval} />
+      ) : contextUsage ? (
+        <SubagentContextBar usage={contextUsage} />
+      ) : null}
       {reportPath ? <ReportPathRow path={reportPath} /> : null}
-      {steps.length > 0 ? (
+      {showLegacySteps ? (
         <ul className={cn(TOOL_BODY_INNER, 'm-0 list-none space-y-1 p-0')}>
           {steps.map((entry, index) => (
             <li key={index} className="flex min-w-0 items-start gap-2 text-[11px]">

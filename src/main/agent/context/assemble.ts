@@ -45,6 +45,7 @@ function systemFingerprint(parts: {
   plan: string
   modeSection?: string
   sessionEnv?: string
+  nestedRoleSection?: string
   compactionSummary?: string
   loopHint?: string
   historyBudget: number
@@ -62,6 +63,7 @@ function systemFingerprint(parts: {
     parts.plan,
     parts.modeSection ?? '',
     parts.sessionEnv ?? '',
+    parts.nestedRoleSection ?? '',
     parts.compactionSummary ?? '',
     parts.loopHint ?? '',
     String(parts.historyBudget),
@@ -139,6 +141,7 @@ function buildSystem(parts: {
   plan?: string
   modeSection?: string
   sessionEnv?: string
+  nestedRoleSection?: string
   compaction?: CompactionRecord | null
   budgets: ReturnType<typeof allocateBudget>
   loopHint?: string
@@ -155,6 +158,7 @@ function buildSystem(parts: {
     plan: parts.plan ?? '',
     modeSection: parts.modeSection,
     sessionEnv: parts.sessionEnv,
+    nestedRoleSection: parts.nestedRoleSection,
     compactionSummary:
       parts.compaction?.summary && !isTrimWatermarkCompaction(parts.compaction)
         ? parts.compaction.summary
@@ -169,6 +173,11 @@ function buildSystem(parts: {
 
   const sections: string[] = []
   sections.push(capHarness(parts.harness, parts.budgets.system))
+  if (parts.nestedRoleSection?.trim()) {
+    sections.push(
+      capText(parts.nestedRoleSection.trim(), Math.max(300, Math.floor(parts.budgets.system * 0.25)))
+    )
+  }
   if (parts.modeSection?.trim()) {
     // Mode instructions must survive budget pressure — do not cap aggressively.
     sections.push(
@@ -342,6 +351,7 @@ export async function assembleContext(
     plan: input.plan,
     modeSection: input.modeSection,
     sessionEnv: input.sessionEnv,
+    nestedRoleSection: input.nestedRoleSection,
     budgets,
     loopHint: input.loopHint
   }

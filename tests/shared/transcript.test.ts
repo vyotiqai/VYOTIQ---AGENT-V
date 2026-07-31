@@ -800,6 +800,64 @@ describe('applyEventTimestamps', () => {
     }
   })
 
+  it('replays subagent_event envelopes onto the nested agent panel', () => {
+    const items = messagesToUiItems([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'subagent', arguments: '{"task":"look"}' }]
+      },
+      {
+        role: 'tool',
+        toolCallId: 'c1',
+        toolName: 'subagent',
+        content: 'report',
+        ok: true
+      }
+    ])
+    const enriched = applyEventTimestamps(items, [
+      {
+        at: '2026-07-24T12:00:00.000Z',
+        event: {
+          type: 'subagent_event',
+          runId: 'r1',
+          parentToolCallId: 'c1',
+          subagentId: 'ab12',
+          event: {
+            type: 'text_delta',
+            runId: 'r1',
+            text: 'Hello'
+          }
+        }
+      },
+      {
+        at: '2026-07-24T12:00:01.000Z',
+        event: {
+          type: 'subagent_event',
+          runId: 'r1',
+          parentToolCallId: 'c1',
+          subagentId: 'ab12',
+          event: {
+            type: 'tool_start',
+            runId: 'r1',
+            toolCallId: 'n1',
+            name: 'read',
+            summary: 'a.ts'
+          }
+        }
+      }
+    ])
+    const tool = enriched.find((i) => i.kind === 'tool')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind === 'tool') {
+      expect(tool.nestedAgent?.subagentId).toBe('ab12')
+      expect(tool.nestedAgent?.leaves.some((l) => l.kind === 'text' && l.text.includes('Hello'))).toBe(
+        true
+      )
+      expect(tool.nestedAgent?.leaves.some((l) => l.kind === 'tool' && l.id === 'n1')).toBe(true)
+    }
+  })
+
   it('replays subagent_context_usage onto the parent tool row', () => {
     const items = messagesToUiItems([
       {

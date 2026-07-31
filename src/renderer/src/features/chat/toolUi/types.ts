@@ -1,5 +1,10 @@
+import type {
+  UiNestedAgentState,
+  UiSubagentContextUsage,
+  UiSubagentEntry,
+  UiToolRow
+} from '@shared/transcript'
 import type { IconName } from '@renderer/lib/icons'
-import type { UiSubagentContextUsage, UiSubagentEntry, UiToolRow } from '@shared/transcript'
 
 export type ToolPresentation = 'prominent' | 'compact'
 
@@ -10,6 +15,11 @@ export type ToolBodyContext = {
   expanded: boolean
   subagent?: UiSubagentEntry[]
   subagentContextUsage?: UiSubagentContextUsage
+  nestedAgent?: UiNestedAgentState
+  onRespondApproval?: (
+    requestId: string,
+    decision: 'once' | 'session' | 'always' | 'deny'
+  ) => void
   onLoadFullContent?: (toolCallId: string) => Promise<string | null>
   mcpServerNames?: ReadonlyMap<string, string>
   /** Nested inside a tool group — suppress redundant path chrome in bodies. */

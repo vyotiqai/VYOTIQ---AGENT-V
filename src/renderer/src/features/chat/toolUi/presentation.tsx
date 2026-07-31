@@ -9,8 +9,17 @@ export function ToolBodyView({
 }: {
   context: ToolBodyContext
 }) {
-  const { tool, expanded, onLoadFullContent, subagent, subagentContextUsage, mcpServerNames, inGroup } =
-    context
+  const {
+    tool,
+    expanded,
+    onLoadFullContent,
+    subagent,
+    subagentContextUsage,
+    nestedAgent,
+    onRespondApproval,
+    mcpServerNames,
+    inGroup
+  } = context
   // Fetch full content only while the body is expanded (mounted in ExpandPanel).
   const enabled = tool.contentTruncated === true && expanded === true
   const { loading, failed } = useFullToolContent(tool, enabled, onLoadFullContent)
@@ -19,6 +28,8 @@ export function ToolBodyView({
     expanded,
     subagent,
     subagentContextUsage,
+    nestedAgent,
+    onRespondApproval,
     onLoadFullContent,
     loading,
     loadFailed: failed,

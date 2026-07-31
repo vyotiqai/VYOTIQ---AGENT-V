@@ -91,8 +91,8 @@ export function modeSectionMarkdown(
         'and use the full tools catalog (subject to user approval settings).',
         'Workspace writes are checkpointed for Keep/Discard; plan.md / contract.md run',
         'artifacts are not. Prefer non-destructive commands.',
-        'You may delegate broad research with `subagent`;',
-        'the parent alone edits and uses the `terminal` tool.',
+        'You may delegate work with `subagent` (nested agents share your tools and approvals;',
+        'each has an isolated context and returns a report).',
         'Follow the run contract; if an approved `## Plan` is present, implement it unless',
         'the user redirects you. Use `ask_question` for ambiguous product decisions.',
         ...(auto
@@ -109,7 +109,8 @@ export function modeSectionMarkdown(
         'You are in Ask mode. Use read-only built-in tools liberally to investigate and answer.',
         'MCP tools are not available in Ask mode (server-reported readOnlyHint is untrusted).',
         'Only avoid mutating tools. Do not edit files, delete paths, run the `terminal` tool,',
-        'run `diagnostics`, or write memory. `subagent` is allowed for broad read-only research.',
+        'run `diagnostics`, or write memory. `subagent` is allowed for broad investigation',
+        '(nested agents inherit Ask mode tool limits).',
         ...(auto
           ? [
               'If the user wants a multi-step plan, call `switch_mode` to `plan` before writing plan artifacts.',

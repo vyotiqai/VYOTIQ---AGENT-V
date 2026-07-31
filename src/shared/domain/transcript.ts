@@ -47,6 +47,25 @@ export type UiSubagentContextUsage = {
   updatedAt: string
 }
 
+/** Rich nested-agent panel leaf (mirrors main chat leaves under a subagent tool). */
+export type UiNestedAgentLeaf =
+  | { kind: 'text'; id: string; text: string; streaming?: boolean }
+  | { kind: 'thinking'; id: string; text: string; streaming?: boolean }
+  | {
+      kind: 'tool'
+      id: string
+      tool: UiToolRow
+      approval?: UiToolApproval
+      terminalOutput?: string
+    }
+
+/** Live nested-agent panel state under a parent `subagent` tool row. */
+export type UiNestedAgentState = {
+  subagentId: string
+  leaves: UiNestedAgentLeaf[]
+  contextUsage?: UiSubagentContextUsage
+}
+
 /** A document the user attached, shown as a chip instead of its extracted text. */
 export type UiAttachment = {
   name: string
@@ -119,6 +138,8 @@ export type UiItem =
       subagent?: UiSubagentEntry[]
       /** Latest context fill for this nested sub-agent run. */
       subagentContextUsage?: UiSubagentContextUsage
+      /** Rich nested-agent panel (from `subagent_event` envelopes). */
+      nestedAgent?: UiNestedAgentState
     }
   | {
       kind: 'question'
@@ -711,6 +732,180 @@ function applySubagentContextUsage(items: UiItem[], events: PersistedEvent[]): U
   return out
 }
 
+/** Apply one nested AgentEvent into a UiNestedAgentState panel. */
+export function reduceNestedAgentEvent(
+  prev: UiNestedAgentState | undefined,
+  subagentId: string,
+  event: AgentEvent
+): UiNestedAgentState {
+  const state: UiNestedAgentState = prev?.subagentId === subagentId
+    ? { ...prev, leaves: [...prev.leaves] }
+    : { subagentId, leaves: [] }
+
+  const leaves = state.leaves
+
+  if (event.type === 'text_delta' && event.text) {
+    const last = leaves[leaves.length - 1]
+    if (last?.kind === 'text' && last.streaming) {
+      leaves[leaves.length - 1] = { ...last, text: last.text + event.text }
+    } else {
+      leaves.push({ kind: 'text', id: `text-${leaves.length}`, text: event.text, streaming: true })
+    }
+  } else if (event.type === 'thinking_delta' && event.text) {
+    const last = leaves[leaves.length - 1]
+    if (last?.kind === 'thinking' && last.streaming) {
+      leaves[leaves.length - 1] = { ...last, text: last.text + event.text }
+    } else {
+      leaves.push({
+        kind: 'thinking',
+        id: `think-${leaves.length}`,
+        text: event.text,
+        streaming: true
+      })
+    }
+  } else if (event.type === 'thinking_done') {
+    const last = leaves[leaves.length - 1]
+    if (last?.kind === 'thinking') {
+      leaves[leaves.length - 1] = {
+        ...last,
+        text: event.text || last.text,
+        streaming: false
+      }
+    } else if (event.text) {
+      leaves.push({ kind: 'thinking', id: `think-${leaves.length}`, text: event.text })
+    }
+  } else if (event.type === 'assistant_message') {
+    // Finalize streaming text; replace with complete assistant content.
+    for (let i = leaves.length - 1; i >= 0; i--) {
+      const leaf = leaves[i]
+      if (leaf?.kind === 'text' && leaf.streaming) {
+        leaves[i] = { ...leaf, text: event.content || leaf.text, streaming: false }
+        break
+      }
+    }
+    if (event.content && !leaves.some((l) => l.kind === 'text' && l.text === event.content)) {
+      leaves.push({ kind: 'text', id: `msg-${leaves.length}`, text: event.content })
+    }
+    if (event.thinking) {
+      leaves.push({ kind: 'thinking', id: `think-${leaves.length}`, text: event.thinking })
+    }
+  } else if (event.type === 'tool_call_delta' || event.type === 'tool_start') {
+    const toolCallId =
+      event.type === 'tool_call_delta' ? event.toolCallId : event.toolCallId
+    const name =
+      event.type === 'tool_call_delta'
+        ? event.name || 'tool'
+        : event.name
+    const summary =
+      event.type === 'tool_start' ? event.summary : summarizeToolArgs(name, event.argumentsDelta ?? '')
+    const existing = leaves.findIndex((l) => l.kind === 'tool' && l.id === toolCallId)
+    if (existing >= 0) {
+      const leaf = leaves[existing]
+      if (leaf?.kind === 'tool') {
+        leaves[existing] = {
+          ...leaf,
+          tool: {
+            ...leaf.tool,
+            name: name !== 'tool' ? name : leaf.tool.name,
+            summary: summary || leaf.tool.summary,
+            argsPreview:
+              event.type === 'tool_call_delta' && event.argumentsDelta
+                ? (leaf.tool.argsPreview ?? '') + event.argumentsDelta
+                : leaf.tool.argsPreview
+          }
+        }
+      }
+    } else {
+      leaves.push({
+        kind: 'tool',
+        id: toolCallId,
+        tool: {
+          id: toolCallId,
+          name,
+          summary: summary || name,
+          status: 'running',
+          ...(event.type === 'tool_call_delta' && event.argumentsDelta
+            ? { argsPreview: event.argumentsDelta }
+            : {})
+        }
+      })
+    }
+  } else if (event.type === 'tool_result') {
+    const existing = leaves.findIndex((l) => l.kind === 'tool' && l.id === event.toolCallId)
+    const tool: UiToolRow = {
+      id: event.toolCallId,
+      name: event.name,
+      summary: event.summary,
+      status: event.ok ? 'done' : 'fail',
+      content: event.content,
+      contentTruncated: event.contentTruncated
+    }
+    if (existing >= 0) {
+      const leaf = leaves[existing]
+      if (leaf?.kind === 'tool') {
+        leaves[existing] = { ...leaf, tool: { ...leaf.tool, ...tool }, approval: undefined }
+      }
+    } else {
+      leaves.push({ kind: 'tool', id: event.toolCallId, tool })
+    }
+  } else if (event.type === 'terminal_output_delta') {
+    const existing = leaves.findIndex((l) => l.kind === 'tool' && l.id === event.toolCallId)
+    if (existing >= 0) {
+      const leaf = leaves[existing]
+      if (leaf?.kind === 'tool') {
+        leaves[existing] = {
+          ...leaf,
+          terminalOutput: (leaf.terminalOutput ?? '') + event.text
+        }
+      }
+    }
+  } else if (event.type === 'context_usage') {
+    state.contextUsage = {
+      step: event.step,
+      used: event.inputTokens ?? event.estimatedTokens,
+      window: event.contextWindow,
+      contentWindow: event.contentWindow ?? event.contextWindow,
+      model: '',
+      updatedAt: new Date().toISOString()
+    }
+  } else if (event.type === 'stream_reset') {
+    // Drop trailing streaming leaves from this attempt.
+    while (leaves.length > 0) {
+      const last = leaves[leaves.length - 1]
+      if (last && (last.kind === 'text' || last.kind === 'thinking') && last.streaming) {
+        leaves.pop()
+      } else break
+    }
+  }
+
+  // Cap leaf count for memory.
+  if (leaves.length > 120) {
+    state.leaves = leaves.slice(-120)
+  } else {
+    state.leaves = leaves
+  }
+  return state
+}
+
+function applySubagentEvents(items: UiItem[], events: PersistedEvent[]): UiItem[] {
+  const out = [...items]
+  for (const row of events) {
+    if (!isAgentEvent(row.event)) continue
+    if (row.event.type !== 'subagent_event') continue
+    const parentToolCallId = row.event.parentToolCallId
+    const idx = out.findIndex((item) => item.kind === 'tool' && item.id === parentToolCallId)
+    if (idx < 0) continue
+    const item = out[idx]
+    if (item.kind !== 'tool') continue
+    const nested = row.event.event as AgentEvent
+    out[idx] = {
+      ...item,
+      nestedAgent: reduceNestedAgentEvent(item.nestedAgent, row.event.subagentId, nested)
+    }
+  }
+  return out
+}
+
 /** Attach ISO timestamps from persisted events.jsonl rows where available. */
 export function applyEventTimestamps(items: UiItem[], events: PersistedEvent[]): UiItem[] {
   if (!events.length) return items
@@ -776,7 +971,10 @@ export function applyEventTimestamps(items: UiItem[], events: PersistedEvent[]):
     const at = messageAtById.get(item.id)
     return at ? { ...item, at } : item
   })
-  return applySubagentContextUsage(applySubagentUpdates(withMessages, events), events)
+  return applySubagentEvents(
+    applySubagentContextUsage(applySubagentUpdates(withMessages, events), events),
+    events
+  )
 }
 
 function messageTimestampsFromEvents(

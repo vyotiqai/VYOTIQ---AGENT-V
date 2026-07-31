@@ -110,4 +110,90 @@ describe('createChatStreamController', () => {
       controller.items.some((i) => i.kind === 'message' && String(i.content).includes('during'))
     ).toBe(false)
   })
+
+  it('folds subagent_event envelopes into the parent nestedAgent panel', () => {
+    const controller = createChatStreamController({ workspacePath: '/ws', runId: 'r1' })
+
+    controller.handleEvent({
+      type: 'tool_start',
+      runId: 'r1',
+      toolCallId: 'parent-1',
+      name: 'subagent',
+      summary: 'Investigate auth'
+    })
+    controller.handleEvent({
+      type: 'subagent_event',
+      runId: 'r1',
+      parentToolCallId: 'parent-1',
+      subagentId: 'ab12',
+      event: { type: 'text_delta', runId: 'nested', text: 'Looking at auth…' }
+    })
+    controller.handleEvent({
+      type: 'subagent_event',
+      runId: 'r1',
+      parentToolCallId: 'parent-1',
+      subagentId: 'ab12',
+      event: {
+        type: 'tool_start',
+        runId: 'nested',
+        toolCallId: 'n-read',
+        name: 'read',
+        summary: 'src/auth.ts'
+      }
+    })
+
+    const tool = controller.items.find((item) => item.kind === 'tool' && item.id === 'parent-1')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind !== 'tool') return
+    expect(tool.nestedAgent?.subagentId).toBe('ab12')
+    expect(
+      tool.nestedAgent?.leaves.some((l) => l.kind === 'text' && l.text.includes('Looking at auth'))
+    ).toBe(true)
+    expect(tool.nestedAgent?.leaves.some((l) => l.kind === 'tool' && l.id === 'n-read')).toBe(true)
+  })
+
+  it('attaches nested approval requests under the parent subagent panel', () => {
+    const controller = createChatStreamController({ workspacePath: '/ws', runId: 'r1' })
+
+    controller.handleEvent({
+      type: 'tool_start',
+      runId: 'r1',
+      toolCallId: 'parent-1',
+      name: 'subagent',
+      summary: 'Edit config'
+    })
+    controller.handleEvent({
+      type: 'subagent_event',
+      runId: 'r1',
+      parentToolCallId: 'parent-1',
+      subagentId: 'cd34',
+      event: {
+        type: 'tool_start',
+        runId: 'nested',
+        toolCallId: 'n-edit',
+        name: 'edit',
+        summary: 'config.json'
+      }
+    })
+    controller.handleApprovalRequest({
+      requestId: 'apr-1',
+      runId: 'r1',
+      toolCallId: 'n-edit',
+      name: 'edit',
+      summary: 'config.json',
+      argsPreview: '{"path":"config.json"}',
+      mutating: true,
+      parentToolCallId: 'parent-1',
+      subagentId: 'cd34'
+    })
+
+    const tool = controller.items.find((item) => item.kind === 'tool' && item.id === 'parent-1')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind !== 'tool') return
+    const leaf = tool.nestedAgent?.leaves.find((l) => l.kind === 'tool' && l.id === 'n-edit')
+    expect(leaf?.kind).toBe('tool')
+    if (leaf?.kind !== 'tool') return
+    expect(leaf.approval?.requestId).toBe('apr-1')
+    expect(leaf.approval?.toolName).toBe('edit')
+  })
 })

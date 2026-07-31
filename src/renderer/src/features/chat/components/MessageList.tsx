@@ -369,6 +369,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
         }
         onToolToggle={onToolToggle}
         onLoadFullContent={onLoadToolContent}
+        onApprovalDecision={onApprovalDecision}
         mcpServerNames={mcpServerNames}
       />
     )

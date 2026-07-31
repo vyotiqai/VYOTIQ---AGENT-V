@@ -76,6 +76,8 @@ export type AssembleInput = {
   plan?: string
   /** Fresh session env block (UTC + local time/tz, OS version, shell, mode) — not workspace-cached. */
   sessionEnv?: string
+  /** Nested-agent role overlay (does not replace harness). */
+  nestedRoleSection?: string
 }
 
 export type ContextLayerBreakdown = {

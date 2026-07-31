@@ -3,6 +3,7 @@ import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
 import { ACTIVITY_ROW, DISCLOSURE_ROW, TOOL_GROUP_LIST_VIEWPORT } from '@renderer/lib/utils/layout'
 import { formatElapsed } from '@shared/utils/timeFormat'
+import type { ToolApprovalDecision } from '@shared/ipc'
 import type { ToolItem } from '../utils/transcriptRows'
 import { mapToolGroupProps, type ToolGroupNestedTool } from '../utils/toolGroupAdapter'
 import { TextShimmer } from './TextShimmer'
@@ -45,6 +46,7 @@ function NestedToolRow({
   interrupted,
   onToolToggle,
   onLoadFullContent,
+  onApprovalDecision,
   mcpServerNames
 }: {
   item: ToolItem
@@ -54,11 +56,13 @@ function NestedToolRow({
   interrupted: boolean
   onToolToggle?: (toolCallId: string, expanded: boolean) => void
   onLoadFullContent?: (toolCallId: string) => Promise<string | null>
+  onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void
   mcpServerNames?: ReadonlyMap<string, string>
 }) {
   const hasBody = toolHasBody(item.tool, {
     subagent: item.subagent,
-    subagentContextUsage: item.subagentContextUsage
+    subagentContextUsage: item.subagentContextUsage,
+    nestedAgent: item.nestedAgent
   })
   return (
     <div
@@ -80,6 +84,8 @@ function NestedToolRow({
             tool={item.tool}
             subagent={item.subagent}
             subagentContextUsage={item.subagentContextUsage}
+            nestedAgent={item.nestedAgent}
+            onRespondApproval={onApprovalDecision}
             onLoadFullContent={onLoadFullContent}
             mcpServerNames={mcpServerNames}
             inGroup
@@ -101,6 +107,7 @@ export const ToolGroup = memo(function ToolGroup({
   onGroupToggle,
   onToolToggle,
   onLoadFullContent,
+  onApprovalDecision,
   mcpServerNames
 }: {
   tools: ToolItem[]
@@ -111,6 +118,7 @@ export const ToolGroup = memo(function ToolGroup({
   onGroupToggle?: (expanded: boolean) => void
   onToolToggle?: (toolCallId: string, expanded: boolean) => void
   onLoadFullContent?: (toolCallId: string) => Promise<string | null>
+  onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void
   mcpServerNames?: ReadonlyMap<string, string>
 }) {
   const uiTools = useMemo(() => tools.map((item) => item.tool), [tools])
@@ -247,6 +255,8 @@ export const ToolGroup = memo(function ToolGroup({
               tool={item.tool}
               subagent={item.subagent}
               subagentContextUsage={item.subagentContextUsage}
+              nestedAgent={item.nestedAgent}
+              onRespondApproval={onApprovalDecision}
               onLoadFullContent={onLoadFullContent}
               mcpServerNames={mcpServerNames}
               inGroup
@@ -335,6 +345,7 @@ export const ToolGroup = memo(function ToolGroup({
                 interrupted={isInterrupted}
                 onToolToggle={onToolToggle}
                 onLoadFullContent={onLoadFullContent}
+                onApprovalDecision={onApprovalDecision}
                 mcpServerNames={mcpServerNames}
               />
             )

@@ -39,6 +39,7 @@ import {
   stripToolShapedAssistantTextForStream,
   uiAttachments,
   MAX_SUBAGENT_PROGRESS_ENTRIES,
+  reduceNestedAgentEvent,
   type UiItem,
   type UiToolRow
 } from '@shared/transcript'
@@ -437,11 +438,27 @@ function clearQuestionsForTool(items: UiItem[], toolCallId: string): UiItem[] {
 function clearApprovals(items: UiItem[], requestId?: string): UiItem[] {
   let changed = false
   const next = items.map((item) => {
-    if (item.kind !== 'tool' || !item.approval) return item
-    if (requestId && item.approval.requestId !== requestId) return item
-    changed = true
-    const { approval: _approval, ...rest } = item
-    return rest
+    if (item.kind !== 'tool') return item
+    let nextItem = item
+    if (item.approval && (!requestId || item.approval.requestId === requestId)) {
+      changed = true
+      const { approval: _approval, ...rest } = item
+      nextItem = rest
+    }
+    if (nextItem.kind === 'tool' && nextItem.nestedAgent?.leaves.some((l) => l.kind === 'tool' && l.approval)) {
+      const leaves = nextItem.nestedAgent.leaves.map((leaf) => {
+        if (leaf.kind !== 'tool' || !leaf.approval) return leaf
+        if (requestId && leaf.approval.requestId !== requestId) return leaf
+        changed = true
+        const { approval: _a, ...rest } = leaf
+        return rest
+      })
+      nextItem = {
+        ...nextItem,
+        nestedAgent: { ...nextItem.nestedAgent, leaves }
+      }
+    }
+    return nextItem
   })
   return changed ? next : items
 }
@@ -1584,6 +1601,23 @@ export function createChatStreamController(
           subagentContextUsage: usage
         })
       })
+    } else if (event.type === 'subagent_event') {
+      const idx = findToolRowIndex(state.items, event.parentToolCallId)
+      const item = idx >= 0 ? state.items[idx] : undefined
+      if (!item || item.kind !== 'tool') return
+      const nested = event.event as AgentEvent
+      patch({
+        items: replaceAt(state.items, idx, {
+          ...item,
+          nestedAgent: reduceNestedAgentEvent(item.nestedAgent, event.subagentId, nested),
+          toolExpanded:
+            item.toolExpanded === false
+              ? false
+              : item.tool.status === 'running'
+                ? true
+                : item.toolExpanded
+        })
+      })
     } else if (event.type === 'mode_changed') {
       onAgentModeChange?.(event.mode)
     } else if (event.type === 'error') {
@@ -2383,6 +2417,48 @@ export function createChatStreamController(
       argsPreview: request.argsPreview,
       mutating: request.mutating
     }
+
+    // Nested agent approval — attach under the parent subagent tool panel.
+    if (request.parentToolCallId) {
+      const parentIdx = findToolRowIndex(state.items, request.parentToolCallId)
+      const parent = parentIdx >= 0 ? state.items[parentIdx] : undefined
+      if (parent?.kind === 'tool') {
+        const nested = parent.nestedAgent ?? {
+          subagentId: request.subagentId ?? 'nested',
+          leaves: []
+        }
+        const leaves = [...nested.leaves]
+        const leafIdx = leaves.findIndex((l) => l.kind === 'tool' && l.id === request.toolCallId)
+        if (leafIdx >= 0) {
+          const leaf = leaves[leafIdx]!
+          if (leaf.kind === 'tool') {
+            leaves[leafIdx] = { ...leaf, approval }
+          }
+        } else {
+          leaves.push({
+            kind: 'tool',
+            id: request.toolCallId,
+            tool: {
+              id: request.toolCallId,
+              name: request.name,
+              summary: request.summary,
+              status: 'running',
+              ...(request.argsPreview ? { argsPreview: request.argsPreview } : {})
+            },
+            approval
+          })
+        }
+        patch({
+          items: replaceAt(state.items, parentIdx, {
+            ...parent,
+            nestedAgent: { ...nested, leaves },
+            toolExpanded: parent.toolExpanded === false ? false : true
+          })
+        })
+        return
+      }
+    }
+
     const idx = findToolRowIndex(state.items, request.toolCallId)
     if (idx < 0 || state.items[idx]?.kind !== 'tool') {
       // The row should already exist, but the loop is parked either way: show

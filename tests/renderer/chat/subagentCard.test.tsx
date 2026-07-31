@@ -83,8 +83,39 @@ describe('sub-agent transcript row', () => {
     })
     render(<MessageList items={[item]} />)
 
-    expect(screen.getByText(/Sub-agent context/)).toBeTruthy()
+    expect(screen.getByText(/Nested agent context/)).toBeTruthy()
     expect(screen.getByText(/step 2/)).toBeTruthy()
+  })
+
+  it('renders rich nestedAgent panel leaves when present', () => {
+    const item = subagentItem({
+      nestedAgent: {
+        subagentId: 'ab12',
+        leaves: [
+          { kind: 'text', id: 't1', text: 'Checking auth module' },
+          {
+            kind: 'tool',
+            id: 'n1',
+            tool: {
+              id: 'n1',
+              name: 'grep',
+              summary: 'session',
+              status: 'done',
+              content: 'src/auth.ts:12'
+            }
+          }
+        ]
+      },
+      toolExpanded: true
+    })
+    render(<MessageList items={[item]} />)
+
+    expect(screen.getByText(/agent ab12/)).toBeTruthy()
+    expect(screen.getByText('Checking auth module')).toBeTruthy()
+    expect(screen.getByText('grep')).toBeTruthy()
+    expect(screen.getByText('session')).toBeTruthy()
+    // Legacy step list is suppressed when nestedAgent leaves are present.
+    expect(screen.queryByText(/grep session/)).toBeNull()
   })
 
   it('collapses and expands the nested group', () => {

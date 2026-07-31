@@ -208,6 +208,21 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     model: z.string()
   }),
   z.object({
+    /**
+     * Full nested-agent event mirrored under the parent `subagent` tool row.
+     * Prefer this over expanding `subagent_update` kinds.
+     */
+    type: z.literal('subagent_event'),
+    ...eventBase,
+    parentToolCallId: z.string(),
+    subagentId: z.string().min(1),
+    /**
+     * Nested payload (any AgentEvent except another `subagent_event`).
+     * Loose object parse — emitters must not wrap recursively.
+     */
+    event: z.object({ type: z.string() }).passthrough()
+  }),
+  z.object({
     type: z.literal('status'),
     ...eventBase,
     status: z.enum(['running', 'cancelled', 'error', 'done'])
@@ -681,7 +696,10 @@ export const ToolApprovalRequestSchema = z.object({
   /** Raw arguments so the card can show exactly what would run. */
   argsPreview: z.string(),
   /** False for approval-exempt tools; true for mutating tools, web_fetch, and MCP. */
-  mutating: z.boolean()
+  mutating: z.boolean(),
+  /** When set, the gated call belongs to a nested agent under this parent tool row. */
+  parentToolCallId: z.string().min(1).optional(),
+  subagentId: z.string().min(1).optional()
 })
 export type ToolApprovalRequest = z.infer<typeof ToolApprovalRequestSchema>
 
@@ -733,7 +751,10 @@ export const AgentQuestionRequestSchema = z.object({
   runId: z.string().min(1),
   toolCallId: z.string().min(1),
   title: z.string().min(1).optional(),
-  questions: z.array(AgentQuestionItemSchema).min(1).max(8)
+  questions: z.array(AgentQuestionItemSchema).min(1).max(8),
+  /** When set, the question belongs to a nested agent under this parent tool row. */
+  parentToolCallId: z.string().min(1).optional(),
+  subagentId: z.string().min(1).optional()
 })
 export type AgentQuestionRequest = z.infer<typeof AgentQuestionRequestSchema>
 export type AgentQuestionItem = z.infer<typeof AgentQuestionItemSchema>

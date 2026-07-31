@@ -111,6 +111,9 @@ export type ApprovalGateOptions = {
   persistAlways?: (toolName: string) => void
   /** Overridable so tests can drive the decision without an Electron window. */
   ask?: (request: ToolApprovalRequest) => Promise<ToolApprovalDecision>
+  /** When set, approval cards attribute to a nested agent under this parent tool. */
+  parentToolCallId?: string
+  subagentId?: string
 }
 
 function askThroughRenderer(
@@ -212,7 +215,9 @@ export function createApprovalGate(options: ApprovalGateOptions): ToolApprovalGa
         summary: summarizeToolArgs(call.name, call.arguments),
         argsPreview: call.arguments.slice(0, 4000),
         // True when the tool is not approval-exempt (mutating tools, web_fetch, MCP).
-        mutating: !isApprovalExemptTool(call.name)
+        mutating: !isApprovalExemptTool(call.name),
+        ...(options.parentToolCallId ? { parentToolCallId: options.parentToolCallId } : {}),
+        ...(options.subagentId ? { subagentId: options.subagentId } : {})
       }
 
       const decision = await ask(request).catch((err: unknown) => {

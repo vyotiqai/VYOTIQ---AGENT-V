@@ -50,6 +50,11 @@ export type ToolStepContext = {
   /** Run-scoped MCP tools pinned via request_mcp_tools. */
   runPinnedMcpToolNames?: Set<string>
   invalidateMcpToolCatalogCache?: () => void
+  /** Nesting level: 0 for top-level run, 1 inside a nested agent. */
+  depth?: number
+  /** Nested attribution for approvals / ask_question UI routing. */
+  parentToolCallId?: string
+  subagentId?: string
 }
 
 /** Count repeated failures silently (no didactic recipe injected into tool results). */
@@ -203,7 +208,7 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
       runId: ctx.runId,
       toolCallId: call.id,
       invokeId: ctx.invokeId,
-      depth: 0,
+      depth: ctx.depth ?? 0,
       agentMode: ctx.getAgentMode?.() ?? ctx.agentMode,
       getAgentMode: ctx.getAgentMode,
       setAgentMode: ctx.setAgentMode,
@@ -214,6 +219,8 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
       stepMcpToolNames: ctx.stepMcpToolNames,
       runPinnedMcpToolNames: ctx.runPinnedMcpToolNames,
       invalidateMcpToolCatalogCache: ctx.invalidateMcpToolCatalogCache,
+      parentToolCallId: ctx.parentToolCallId,
+      subagentId: ctx.subagentId,
       onProgress: ctx.emitLiveEvent
         ? (update) =>
             ctx.emitLiveEvent?.({

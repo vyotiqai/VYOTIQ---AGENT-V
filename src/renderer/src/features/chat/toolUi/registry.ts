@@ -43,22 +43,16 @@ import { parseTodoData } from './parsers/todo'
 import { parseTerminalCardData } from './parsers/terminal'
 import type { ToolBodyProps, ToolHeaderMeta } from './types'
 
+type ToolBodyCtx = {
+  subagent?: ToolBodyProps['subagent']
+  subagentContextUsage?: ToolBodyProps['subagentContextUsage']
+  nestedAgent?: ToolBodyProps['nestedAgent']
+}
+
 export type ToolRegistryEntry = {
   Body: ComponentType<ToolBodyProps>
-  hasBody: (
-    tool: UiToolRow,
-    ctx?: {
-      subagent?: ToolBodyProps['subagent']
-      subagentContextUsage?: ToolBodyProps['subagentContextUsage']
-    }
-  ) => boolean
-  headerMeta?: (
-    tool: UiToolRow,
-    ctx?: {
-      subagent?: ToolBodyProps['subagent']
-      subagentContextUsage?: ToolBodyProps['subagentContextUsage']
-    }
-  ) => ToolHeaderMeta
+  hasBody: (tool: UiToolRow, ctx?: ToolBodyCtx) => boolean
+  headerMeta?: (tool: UiToolRow, ctx?: ToolBodyCtx) => ToolHeaderMeta
 }
 
 function editHasBody(tool: UiToolRow): boolean {
@@ -74,17 +68,12 @@ function todoHasBody(tool: UiToolRow): boolean {
   return parseTodoData(tool).items.length > 0
 }
 
-function subagentHasBody(
-  tool: UiToolRow,
-  ctx?: {
-    subagent?: ToolBodyProps['subagent']
-    subagentContextUsage?: ToolBodyProps['subagentContextUsage']
-  }
-): boolean {
+function subagentHasBody(tool: UiToolRow, ctx?: ToolBodyCtx): boolean {
   return (
     Boolean((tool.content ?? '').trim()) ||
     (ctx?.subagent?.length ?? 0) > 0 ||
-    Boolean(ctx?.subagentContextUsage)
+    Boolean(ctx?.subagentContextUsage) ||
+    (ctx?.nestedAgent?.leaves.length ?? 0) > 0
   )
 }
 
@@ -507,13 +496,7 @@ export function getToolBody(name: string): ComponentType<ToolBodyProps> {
   return getToolEntry(name).Body
 }
 
-export function toolHasBody(
-  tool: UiToolRow,
-  ctx?: {
-    subagent?: ToolBodyProps['subagent']
-    subagentContextUsage?: ToolBodyProps['subagentContextUsage']
-  }
-): boolean {
+export function toolHasBody(tool: UiToolRow, ctx?: ToolBodyCtx): boolean {
   // Nameless streaming deltas must not expand FallbackBody with raw args JSON.
   if (isUnresolvedToolName(tool.name)) return false
   if (tool.status === 'running') {
@@ -523,13 +506,7 @@ export function toolHasBody(
   return getToolEntry(tool.name).hasBody(tool, ctx)
 }
 
-export function getToolHeaderMeta(
-  tool: UiToolRow,
-  ctx?: {
-    subagent?: ToolBodyProps['subagent']
-    subagentContextUsage?: ToolBodyProps['subagentContextUsage']
-  }
-): ToolHeaderMeta {
+export function getToolHeaderMeta(tool: UiToolRow, ctx?: ToolBodyCtx): ToolHeaderMeta {
   if (isUnresolvedToolName(tool.name)) {
     return {
       verb: toolLabel(tool.name, tool.status),

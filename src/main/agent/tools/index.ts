@@ -110,6 +110,9 @@ export type ToolExecutionContext = {
   runPinnedMcpToolNames?: Set<string>
   /** Invalidate the loop MCP catalog cache after pinning. */
   invalidateMcpToolCatalogCache?: () => void
+  /** Nested attribution for ask_question / approval UI under the parent tool row. */
+  parentToolCallId?: string
+  subagentId?: string
 }
 
 type ToolHandler = (
@@ -808,6 +811,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
         invokeId: context.invokeId,
         parentToolCallId: context.toolCallId,
         emit: context.onProgress,
+        emitAgentEvent: context.emitAgentEvent,
         onContextUsage: context.onSubagentContextUsage
       })
     } catch (err) {
@@ -836,7 +840,9 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       runId: context.runId,
       toolCallId: context.toolCallId,
       ...(form.title ? { title: form.title } : {}),
-      questions: form.questions
+      questions: form.questions,
+      ...(context.parentToolCallId ? { parentToolCallId: context.parentToolCallId } : {}),
+      ...(context.subagentId ? { subagentId: context.subagentId } : {})
     }
     const ask =
       context.askQuestion ??
@@ -882,19 +888,13 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     return toolOk('switch_mode', mode, content)
   },
   terminal: async (workspace, args, signal, context) => {
-    const rawSessionId =
-      typeof args.session_id === 'string' && args.session_id.trim()
-        ? args.session_id.trim()
-        : ''
     const command = typeof args.command === 'string' ? args.command : ''
-    // Invented labels (e.g. "run1") with a command: ignore session_id and run the command.
-    const uuidRe =
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    // Command present: ignore session_id (including invented UUIDs) and run the command.
     const sessionId =
-      rawSessionId && uuidRe.test(rawSessionId)
-        ? rawSessionId
-        : rawSessionId && !command.trim()
-          ? rawSessionId
+      command.trim()
+        ? ''
+        : typeof args.session_id === 'string' && args.session_id.trim()
+          ? args.session_id.trim()
           : ''
     const shell = getSettings().terminalShell ?? 'auto'
     const pattern = typeof args.pattern === 'string' ? args.pattern : undefined

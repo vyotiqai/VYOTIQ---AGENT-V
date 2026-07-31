@@ -1463,6 +1463,7 @@ export async function* runAgent(input: {
           if (
             ev.type === 'subagent_update' ||
             ev.type === 'subagent_context_usage' ||
+            ev.type === 'subagent_event' ||
             ev.type === 'mode_changed'
           ) {
             appendEvent(runDir!, ev)
