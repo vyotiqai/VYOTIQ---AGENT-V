@@ -17,7 +17,7 @@ This handbook is **guidance for humans** editing harness proposals. It does **no
 | [`src/main/agent/harnessHeldOutEval.ts`](../src/main/agent/harnessHeldOutEval.ts) | Frozen held-out grader (receipt → buckets / predictions); in apply gate; never auto-applies |
 | [`docs/architecture.md`](./architecture.md) | Scaffold + research status |
 
-**Evidence buckets** (`HARNESS_EVIDENCE_BUCKETS`): `system_prompt`, `tool_policy`, `loop_notices`, `verify`, `memory`.
+**Evidence buckets** (`HARNESS_EVIDENCE_BUCKETS`): `system_prompt`, `tool_policy`, `loop_notices`, `memory`.
 
 ---
 
@@ -38,7 +38,7 @@ This handbook is **guidance for humans** editing harness proposals. It does **no
 
 ## Tool policy (`## Tool policy`)
 
-**What this section governs:** Call tools to act; prefer read before blind edits; MCP naming/approval; parallel read-only exploration.
+**What this section governs:** Call tools to act; MCP naming/approval; exploration tools.
 
 | Failure mode | Bucket | Evidence sources |
 |---|---|---|
@@ -60,13 +60,13 @@ This handbook is **guidance for humans** editing harness proposals. It does **no
 | Memory tool failure clusters | `memory` | `receipt.failureClusters` / tool stats for memory tools |
 | Sub-agents with high step counts | `memory` | Sub-agent report step metadata (review threshold in `harnessReview.ts`) |
 
-**Suggested edit focus:** Prefer durable `memory_write` over relying on long context alone when pressure or memory failures recur.
+**Suggested edit focus:** Note compaction pressure or memory tool failures in proposals; keep harness edits factual (do not invent memory-write rituals).
 
 ---
 
 ## Work style (`## Work style`)
 
-**What this section governs:** Inspect before guessing; todos; surgical edits; safety; Keep/Discard checkpoints; `switch_mode`.
+**What this section governs:** Surgical edits; safety; Keep/Discard checkpoints; `switch_mode`.
 
 | Failure mode | Bucket | Evidence sources |
 |---|---|---|
@@ -74,7 +74,7 @@ This handbook is **guidance for humans** editing harness proposals. It does **no
 | Sub-agent reports with uncertainty language | `loop_notices` | Rule match on `report.md` prose in `summarizeWeaknesses` |
 | Destructive or out-of-workspace risk (operator judgment) | _(manual)_ | Not auto-bucketed — edit **Work style** Safety bullets by hand |
 
-**Suggested edit focus:** Prefer inspect-before-edit guidance in Work style when unread paths recur in receipts.
+**Suggested edit focus:** Treat unread-edit paths as observational signals only; do not reintroduce mechanical read-before-edit gates.
 
 ---
 

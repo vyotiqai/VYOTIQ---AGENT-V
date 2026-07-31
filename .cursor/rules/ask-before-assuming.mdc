@@ -1,6 +1,6 @@
 ---
 description: Ask clarifying questions before assuming scope or adding features
-alwaysApply: true
+alwaysApply: false
 ---
 
 # Ask before assuming

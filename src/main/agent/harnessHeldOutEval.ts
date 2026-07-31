@@ -84,7 +84,7 @@ export const HELD_OUT_CASES: readonly HeldOutCase[] = [
     ],
     expect: {
       buckets: ['loop_notices', 'system_prompt'],
-      absentBuckets: ['tool_policy', 'verify', 'memory'],
+      absentBuckets: ['tool_policy', 'memory'],
       predictionTargets: ['work_style']
     }
   },
@@ -106,7 +106,7 @@ export const HELD_OUT_CASES: readonly HeldOutCase[] = [
     ],
     expect: {
       buckets: ['tool_policy', 'system_prompt'],
-      absentBuckets: ['loop_notices', 'verify', 'memory'],
+      absentBuckets: ['loop_notices', 'memory'],
       predictionTargets: ['tool_policy']
     }
   },
@@ -128,7 +128,7 @@ export const HELD_OUT_CASES: readonly HeldOutCase[] = [
     ],
     expect: {
       buckets: ['memory', 'tool_policy', 'system_prompt'],
-      absentBuckets: ['loop_notices', 'verify'],
+      absentBuckets: ['loop_notices'],
       predictionTargets: ['memory', 'tool_policy']
     }
   },
@@ -159,7 +159,7 @@ export const HELD_OUT_CASES: readonly HeldOutCase[] = [
     ],
     expect: {
       buckets: ['system_prompt', 'tool_policy', 'loop_notices'],
-      absentBuckets: ['verify', 'memory']
+      absentBuckets: ['memory']
     }
   },
   {
@@ -173,7 +173,7 @@ export const HELD_OUT_CASES: readonly HeldOutCase[] = [
     ],
     expect: {
       buckets: [],
-      absentBuckets: ['loop_notices', 'tool_policy', 'verify', 'memory', 'system_prompt'],
+      absentBuckets: ['loop_notices', 'tool_policy', 'memory', 'system_prompt'],
       predictionTargets: []
     }
   }

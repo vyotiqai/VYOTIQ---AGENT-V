@@ -75,8 +75,10 @@ describe('harnessReview', () => {
     expect(summary.bullets.some((b) => /Recurring failure/.test(b))).toBe(true)
     expect(summary.evidenceBuckets.some((b) => b.component === 'loop_notices')).toBe(true)
     expect(summary.evidenceBuckets.some((b) => b.component === 'tool_policy')).toBe(true)
-    expect(summary.evidenceBuckets.some((b) => b.component === 'verify')).toBe(false)
     expect(summary.evidenceBuckets.some((b) => b.component === 'system_prompt')).toBe(true)
+    expect(summary.suggestions.every((s) => !/Prefer file-backed|recovery hint|memory_write/i.test(s))).toBe(
+      true
+    )
 
     // Provide a harness so the proposal includes a Proposed harness body.
     mkdirSync(join(workspace, 'resources', 'harness'), { recursive: true })

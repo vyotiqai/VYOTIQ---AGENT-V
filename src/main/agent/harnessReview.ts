@@ -25,7 +25,6 @@ export const HARNESS_EVIDENCE_BUCKETS = [
   'system_prompt',
   'tool_policy',
   'loop_notices',
-  'verify',
   'memory'
 ] as const
 
@@ -314,7 +313,7 @@ export function summarizeWeaknesses(
       bucketMap,
       'tool_policy',
       top
-        ? `Top failure cluster: ${top[0]} (${top[1]}×) — recovery / narrower-retry guidance.`
+        ? `Top failure cluster: ${top[0]} (${top[1]}×).`
         : `${highFailureStreaks} high consecutive-failure streak(s).`
     )
   }
@@ -323,7 +322,7 @@ export function summarizeWeaknesses(
       bucketMap,
       'memory',
       compactionHeavy > 0
-        ? `${compactionHeavy} compaction-heavy run(s); prefer durable memory_write over relying on context alone.`
+        ? `${compactionHeavy} compaction-heavy run(s).`
         : `Memory tool failure clusters (${memoryToolFails}×).`
     )
   }
@@ -405,21 +404,6 @@ export function summarizeWeaknesses(
   }))
 
   const suggestions: string[] = []
-  if (topFailures.length > 0) {
-    suggestions.push(
-      '- Add a short recovery hint for the top failure cluster (path checks, narrower retries).'
-    )
-  }
-  if (compactionHeavy > 0 || memoryToolFails > 0 || highStepReports > 0) {
-    suggestions.push(
-      '- Prefer file-backed `.vyotiq/memory/` writes when context pressure or memory tool failures recur.'
-    )
-  }
-  if (failedSubagents > 0 || emptyReports > 0) {
-    suggestions.push(
-      '- Clarify when to use `subagent` vs parent tools; require concrete paths in sub-agent reports.'
-    )
-  }
   if (suggestions.length === 0) {
     suggestions.push('- No harness edit suggested from this sample; keep the surface small.')
   }

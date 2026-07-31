@@ -101,8 +101,6 @@ describe('subagent file-backed audit pipeline', () => {
       messages: trimmed,
       events: [],
       contract: '',
-      verifyMode: 'off',
-      verifyNudged: false,
       runDir
     })
     expect(receipt.subagents).toEqual([{ id, status: 'ok', reportPath: reportRel }])

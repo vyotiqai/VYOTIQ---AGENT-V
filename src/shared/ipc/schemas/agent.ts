@@ -503,7 +503,7 @@ export const PredictionEntrySchema = z.object({
   type: z.literal('harness_section'),
   target: z.enum(['context', 'tool_policy', 'memory', 'work_style']),
   bucket: z
-    .enum(['system_prompt', 'tool_policy', 'loop_notices', 'verify', 'memory'])
+    .enum(['system_prompt', 'tool_policy', 'loop_notices', 'memory'])
     .optional(),
   confidence: z.number().min(0).max(1),
   observed_only: z.literal(true),

@@ -38,7 +38,7 @@ export const SECTION_LABELS: Record<
   },
   agent: {
     title: 'Agent',
-    description: 'Compaction, memory, approval, finish gates, and sub-agent settings.'
+    description: 'Compaction, memory, approval, and sub-agent settings.'
   },
   marketplace: {
     title: 'Registry',

@@ -102,11 +102,10 @@ export function modeSectionMarkdown(mode: AgentInteractionMode): string | null {
         '',
         'You are in Plan mode. Explore with read-only built-in tools',
         '(MCP tools are not available — readOnlyHint is untrusted as a security gate),',
-        'update `plan.md` and `contract.md` incrementally (run plan artifacts — not product source),',
-        'and keep todos via `todo_write`. Prefer updating the injected `## Plan` rather than',
-        're-deriving it from scratch each turn.',
-        '`diagnostics` is allowed. Do not edit application code, delete files, run the `terminal`',
-        'tool, or spawn `subagent` (not Plan).',
+        'and update `plan.md` and `contract.md` incrementally (run plan artifacts — not product source).',
+        'Prefer updating the injected `## Plan` rather than re-deriving it from scratch each turn.',
+        '`todo_write` and `diagnostics` are available. Do not edit application code, delete files,',
+        'run the `terminal` tool, or spawn `subagent` (not Plan).',
         'End with a clear plan the user can approve by switching to Agent mode.'
       ].join('\n')
     default: {

@@ -253,9 +253,7 @@ const todoWriteArgs = z.object({
         content: z.string().min(1).describe('What the task is'),
         status: z
           .enum(['pending', 'in_progress', 'completed', 'cancelled'])
-          .describe(
-            'Task status. Keep at most one task in_progress; update as work progresses.'
-          )
+          .describe('Task status: pending, in_progress, completed, or cancelled.')
       })
     )
     .describe('The full task list, or the subset to update when merge=true'),

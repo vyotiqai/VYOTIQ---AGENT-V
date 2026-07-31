@@ -144,6 +144,7 @@ describe('modePolicy', () => {
     expect(modeSectionMarkdown('agent')).toContain('Agent mode')
     expect(modeSectionMarkdown('ask')).toContain('Ask mode')
     expect(modeSectionMarkdown('plan')).toContain('Plan mode')
+    expect(modeSectionMarkdown('plan')).not.toMatch(/keep todos via/i)
   })
 
   it('Ask forbids diagnostics and terminal; Plan allows diagnostics', () => {
@@ -152,7 +153,7 @@ describe('modePolicy', () => {
     expect(ask).toMatch(/Do not edit files|Only avoid mutating/)
     expect(ask).toMatch(/`diagnostics`/)
     expect(ask).toMatch(/`terminal`/)
-    expect(plan).toMatch(/`diagnostics` is allowed/)
+    expect(plan).toMatch(/`todo_write` and `diagnostics` are available/)
     expect(plan).toMatch(/`terminal`/)
   })
 
