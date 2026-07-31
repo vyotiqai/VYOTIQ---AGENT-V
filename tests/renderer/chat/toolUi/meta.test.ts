@@ -1,19 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { isProminentTool, toolCategory, toolLabel } from '@renderer/features/chat/toolUi/meta'
+import { toolCategory, toolLabel, toolPresentation } from '@renderer/features/chat/toolUi/meta'
 import { toolHasBody } from '@renderer/features/chat/toolUi/registry'
 
 describe('toolUi meta', () => {
-  it('marks prominent tools for standalone cards', () => {
-    expect(isProminentTool('terminal')).toBe(true)
-    expect(isProminentTool('edit')).toBe(true)
-    expect(isProminentTool('read')).toBe(false)
-    expect(isProminentTool('grep')).toBe(false)
-  })
-
-  it('demotes read-only terminal commands to compact groups', () => {
-    const args = JSON.stringify({ command: 'type C:\\foo\\bar.txt' })
-    expect(isProminentTool('terminal', args)).toBe(false)
-    expect(isProminentTool('terminal', JSON.stringify({ command: 'pnpm build' }))).toBe(true)
+  it('routes all tools through compact family shells', () => {
+    expect(toolPresentation('terminal')).toBe('compact')
+    expect(toolPresentation('edit')).toBe('compact')
+    expect(toolPresentation('todo_write')).toBe('compact')
+    expect(toolPresentation('read')).toBe('compact')
   })
 
   it('categorizes tools for group headers', () => {

@@ -25,7 +25,11 @@ export function TodoBody({ tool }: ToolBodyProps) {
         const icon = STATUS_ICON[item.status]
         return (
           <li key={index} className="flex items-start gap-2 py-0.5 text-[11px] leading-relaxed">
-            <Icon name={icon.name} size={14} className={cn('mt-0.5 shrink-0', icon.className)} />
+            <Icon
+              name={icon.name}
+              size={14}
+              className={cn('mt-0.5 shrink-0 tool-status-morph', icon.className)}
+            />
             <span
               className={cn(
                 'min-w-0 whitespace-pre-wrap text-secondary [overflow-wrap:anywhere]',

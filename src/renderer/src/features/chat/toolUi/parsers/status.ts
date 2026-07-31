@@ -29,6 +29,11 @@ export function parseStatusMessageData(tool: UiToolRow): StatusMessageParsed {
     const multi = content.match(/^User answered:\s*\n([\s\S]*)$/i)
     if (multi) {
       for (const line of multi[1]!.split(/\r?\n/)) {
+        const labeled = line.match(/^-\s+(.+?):\s+(.+)$/)
+        if (labeled) {
+          answers.push(`${labeled[1]!.trim()}: ${labeled[2]!.trim()}`)
+          continue
+        }
         const bullet = line.match(/^-\s+(.+)$/)
         if (bullet) answers.push(bullet[1]!.trim())
       }

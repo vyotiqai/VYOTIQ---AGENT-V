@@ -11,6 +11,7 @@ import type {
   WorkspaceUiState,
   WorkspacesState
 } from '@shared/ipc'
+import type { UiAgentQuestionAnswer } from '@shared/transcript'
 import { toLogErr } from '@shared/errors'
 import { logger } from '@shared/logger'
 import { workspacePathsEqual, findByWorkspacePath } from '@shared/workspacePathMatch'
@@ -1364,7 +1365,7 @@ export function useWorkspaceManager() {
   )
 
   const onQuestionSubmit = useCallback(
-    (requestId: string, answers: string[]) =>
+    (requestId: string, answers: UiAgentQuestionAnswer[]) =>
       activeControllerRef.current?.respondToQuestion(requestId, answers) ?? Promise.resolve(),
     []
   )

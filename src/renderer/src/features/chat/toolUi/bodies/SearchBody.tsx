@@ -4,7 +4,7 @@ import type { ToolBodyProps } from '../types'
 import { parseSearchData } from '../parsers/search'
 import { Chip, TruncatedBanner } from '../primitives'
 
-export function SearchBody({ tool, loading, loadFailed }: ToolBodyProps) {
+export function SearchBody({ tool, loading, loadFailed, inGroup }: ToolBodyProps) {
   const data = useMemo(() => parseSearchData(tool), [tool])
   const filenameHits = data.hits.filter((h) => h.isFilenameHit)
   const contentHits = data.hits.filter((h) => !h.isFilenameHit)
@@ -12,7 +12,7 @@ export function SearchBody({ tool, loading, loadFailed }: ToolBodyProps) {
   return (
     <div>
       <div className={`${TOOL_BODY_PAD} flex flex-wrap items-center gap-2 pb-1`}>
-        <Chip>{data.query}</Chip>
+        {!inGroup ? <Chip>{data.query}</Chip> : null}
         <span className="text-[10px] tabular-nums text-tertiary">
           {data.hits.length} {data.hits.length === 1 ? 'hit' : 'hits'}
         </span>

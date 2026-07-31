@@ -866,14 +866,16 @@ export async function invokeMcpTool(
   toolName: string,
   args: Record<string, unknown>,
   signal: AbortSignal,
-  fullToolName?: string
+  fullToolName?: string,
+  enabledIds?: ReadonlySet<string>
 ): Promise<ToolResult> {
   if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
   const summary = mcpToolSummary(toolName, args)
-  const session = sessions.get(serverId)
-  if (!session) {
-    return { ok: false, summary, content: `MCP server not connected: ${serverId}` }
+  const access = assertMcpServerAccess(serverId, enabledIds)
+  if (!access.ok) {
+    return { ok: false, summary, content: access.error }
   }
+  const session = access.session
   try {
     const result = await session.client.callTool(
       { name: toolName, arguments: args },

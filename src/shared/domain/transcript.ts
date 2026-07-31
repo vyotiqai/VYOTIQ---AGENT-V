@@ -56,14 +56,27 @@ export type UiToolApproval = {
   mutating: boolean
 }
 
-/** A structured question the agent is waiting on in the transcript. */
+/** One field in a pending ask_question form. */
+export type UiAgentQuestionItem = {
+  id: string
+  prompt: string
+  type: 'single' | 'multi' | 'boolean' | 'text'
+  options?: string[]
+  allowCustom?: boolean
+}
+
+/** A structured question form the agent is waiting on in the transcript. */
 export type UiAgentQuestion = {
   requestId: string
   toolCallId: string
-  question: string
-  options?: string[]
-  allowMultiple?: boolean
-  allowCustom?: boolean
+  title?: string
+  questions: UiAgentQuestionItem[]
+}
+
+/** Structured answer payload submitted for a pending question form. */
+export type UiAgentQuestionAnswer = {
+  questionId: string
+  values: string[]
 }
 
 export type UiItem =

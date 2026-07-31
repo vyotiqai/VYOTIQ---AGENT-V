@@ -107,6 +107,19 @@ export function cancelRun(runId: string): boolean {
   entry.streamInterrupt?.abort()
   entry.streamInterrupt = null
   entry.controller.abort()
+  try {
+    // Lazy require avoids a cycle: toolApproval/agentQuestion → runRegistry.
+    const { cancelPendingApprovals } = require('./toolApproval') as {
+      cancelPendingApprovals: (runId: string, invokeId?: number) => void
+    }
+    const { cancelPendingQuestions } = require('./agentQuestion') as {
+      cancelPendingQuestions: (runId: string, invokeId?: number) => void
+    }
+    cancelPendingApprovals(runId)
+    cancelPendingQuestions(runId)
+  } catch {
+    // ignore if modules unavailable in early boot / tests
+  }
   void disposeSubagentsForRun(runId)
   return true
 }

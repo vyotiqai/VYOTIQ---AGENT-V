@@ -138,6 +138,79 @@ describe('useChatStream', () => {
     expect(result.current.running).toBe(true)
   })
 
+  it('places tools after a mid-run continue bubble, not above it', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('first')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running', invokeId: 1 })
+      handler?.({
+        type: 'assistant_message',
+        runId: 'run-1',
+        invokeId: 1,
+        content: '',
+        toolCalls: [{ id: 't-old', name: 'read', arguments: '{"path":"a.ts"}' }]
+      })
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        invokeId: 1,
+        toolCallId: 't-old',
+        name: 'read',
+        summary: 'a.ts'
+      })
+      handler?.({
+        type: 'tool_result',
+        runId: 'run-1',
+        invokeId: 1,
+        toolCallId: 't-old',
+        name: 'read',
+        summary: 'a.ts',
+        ok: true,
+        content: 'ok'
+      })
+    })
+
+    await act(async () => {
+      await result.current.send('continue')
+    })
+
+    const continueIdx = result.current.items.findIndex(
+      (item) => item.kind === 'message' && item.role === 'user' && item.content === 'continue'
+    )
+    expect(continueIdx).toBeGreaterThanOrEqual(0)
+
+    await act(async () => {
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        invokeId: 1,
+        toolCallId: 't-new',
+        name: 'read',
+        summary: 'b.ts'
+      })
+    })
+
+    const newToolIdx = result.current.items.findIndex(
+      (item) => item.kind === 'tool' && (item.id === 't-new' || item.tool.id === 't-new')
+    )
+    expect(newToolIdx).toBeGreaterThan(continueIdx)
+
+    const rows = buildTranscriptRows(result.current.items, { running: true })
+    const continueTurn = rows.find(
+      (row) => row.kind === 'user' && row.item.content === 'continue'
+    )?.turnIndex
+    const newActivity = rows.find(
+      (row) =>
+        row.kind === 'activity' &&
+        row.tools.some((t) => t.id === 't-new' || t.tool.id === 't-new')
+    )
+    expect(continueTurn).toBeDefined()
+    expect(newActivity?.turnIndex).toBe(continueTurn)
+  })
+
   it('queues cancel when stop races chatStart', async () => {
     let resolveStart: (v: unknown) => void = () => undefined
     chatStart.mockImplementation(
@@ -1192,13 +1265,13 @@ describe('useChatStream', () => {
       'thinking',
       'activity',
       'thinking',
-      'card',
+      'activity',
       'turn',
       'text'
     ])
   })
 
-  it('renders narration, reasoning and a command card while the run is still live', async () => {
+  it('renders narration, reasoning and a command while the run is still live', async () => {
     const { result } = renderHook(() => useChatStream('/ws'))
 
     await act(async () => {
@@ -1247,15 +1320,21 @@ describe('useChatStream', () => {
       'thinking',
       'activity',
       'text',
-      'card',
+      'activity',
       'turn'
     ])
     const narration = rows.find((row) => row.kind === 'text')
     expect(narration?.kind === 'text' && narration.item.content).toBe(
       'The table is built up front.'
     )
-    const card = rows.find((row) => row.kind === 'card')
-    expect(card?.kind === 'card' && card.item.tool.status).toBe('running')
+    const command = rows.find(
+      (row) =>
+        row.kind === 'activity' && row.tools.some((item) => item.tool.name === 'terminal')
+    )
+    expect(
+      command?.kind === 'activity' &&
+        command.tools.find((item) => item.tool.name === 'terminal')?.tool.status
+    ).toBe('running')
   })
 
   it('completes the live row when a tool_result id drifts from its tool_start', async () => {
@@ -1331,9 +1410,9 @@ describe('useChatStream', () => {
     })
 
     const tool = result.current.items.find((i) => i.kind === 'tool')
-    expect(tool?.kind === 'tool' ? tool.tool.presentation : null).toBe('prominent')
+    expect(tool?.kind === 'tool' ? tool.tool.presentation : null).toBe('compact')
     const rows = buildTranscriptRows(result.current.items)
-    expect(rows.some((row) => row.kind === 'card')).toBe(true)
+    expect(rows.some((row) => row.kind === 'activity')).toBe(true)
   })
 
   it('does not attach a drifted tool_result to the wrong parallel same-name row', async () => {
@@ -1950,9 +2029,49 @@ describe('useChatStream', () => {
         requestId: 'q-cancel',
         runId: 'run-1',
         toolCallId: 'tq1',
-        question: 'Still waiting?'
+        questions: [{ id: 'q1', prompt: 'Still waiting?', type: 'text' }]
       })
       handler?.({ type: 'status', runId: 'run-1', status: 'cancelled' })
+    })
+
+    expect(result.current.items.some((i) => i.kind === 'question')).toBe(false)
+  })
+
+  it('clears pending question when ask_question tool_result settles', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('ask')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        toolCallId: 'tq-settle',
+        name: 'ask_question',
+        summary: 'Pick?'
+      })
+      result.current.handleQuestionRequest({
+        requestId: 'q-settle',
+        runId: 'run-1',
+        toolCallId: 'tq-settle',
+        questions: [{ id: 'q1', prompt: 'Pick?', type: 'boolean' }]
+      })
+    })
+
+    expect(result.current.items.some((i) => i.kind === 'question')).toBe(true)
+
+    await act(async () => {
+      handler?.({
+        type: 'tool_result',
+        runId: 'run-1',
+        toolCallId: 'tq-settle',
+        name: 'ask_question',
+        summary: 'Pick?',
+        ok: false,
+        content: 'Interrupted'
+      })
     })
 
     expect(result.current.items.some((i) => i.kind === 'question')).toBe(false)
@@ -1970,7 +2089,7 @@ describe('useChatStream', () => {
         requestId: 'q-orphan',
         runId: 'run-1',
         toolCallId: 'tq-missing',
-        question: 'No tool row yet?'
+        questions: [{ id: 'q1', prompt: 'No tool row yet?', type: 'text' }]
       })
     })
 
@@ -1998,18 +2117,23 @@ describe('useChatStream', () => {
         requestId: 'q-1',
         runId: 'run-1',
         toolCallId: 'tq1',
-        question: 'Pick one?',
-        options: ['A', 'B']
+        questions: [
+          { id: 'q1', prompt: 'Pick one?', type: 'single', options: ['A', 'B'] }
+        ]
       })
     })
 
     expect(result.current.items.some((i) => i.kind === 'question')).toBe(true)
 
     await act(async () => {
-      await result.current.respondToQuestion('q-1', ['A'])
+      await result.current.respondToQuestion('q-1', [{ questionId: 'q1', values: ['A'] }])
     })
 
-    expect(respondAgentQuestion).toHaveBeenCalledWith('q-1', ['A'], 'run-1')
+    expect(respondAgentQuestion).toHaveBeenCalledWith(
+      'q-1',
+      [{ questionId: 'q1', values: ['A'] }],
+      'run-1'
+    )
     expect(result.current.items.some((i) => i.kind === 'question')).toBe(false)
   })
 
@@ -2029,14 +2153,14 @@ describe('useChatStream', () => {
         requestId: 'q-stale',
         runId: 'run-1',
         toolCallId: 'tq1',
-        question: 'Still there?'
+        questions: [{ id: 'q1', prompt: 'Still there?', type: 'text' }]
       })
     })
 
     await act(async () => {
-      await expect(result.current.respondToQuestion('q-stale', ['yes'])).rejects.toThrow(
-        /not accepted/
-      )
+      await expect(
+        result.current.respondToQuestion('q-stale', [{ questionId: 'q1', values: ['yes'] }])
+      ).rejects.toThrow(/not accepted/)
     })
 
     expect(
@@ -2058,7 +2182,7 @@ describe('useChatStream', () => {
         requestId: 'q-keep',
         runId: 'run-1',
         toolCallId: 'tq1',
-        question: 'Survive retry?'
+        questions: [{ id: 'q1', prompt: 'Survive retry?', type: 'text' }]
       })
       handler?.({ type: 'stream_reset', runId: 'run-1', step: 1 })
     })

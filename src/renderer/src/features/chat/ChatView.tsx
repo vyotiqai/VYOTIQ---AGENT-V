@@ -20,7 +20,7 @@ import {
   useHasChatItems
 } from './components/ChatStreamLeaves'
 import { useGitChrome } from './components/GitChrome'
-import type { UiItem } from '@shared/transcript'
+import type { UiAgentQuestionAnswer, UiItem } from '@shared/transcript'
 import type { AgentInteractionMode, ProviderId, ToolApprovalDecision } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { Alert, PanelResizeHandle } from '@renderer/lib/ui'
@@ -103,7 +103,7 @@ function TranscriptPane({
   onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
   onTurnToggle?: (turnIndex: number) => void
   onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
-  onQuestionSubmit?: (requestId: string, answers: string[]) => void | Promise<void>
+  onQuestionSubmit?: (requestId: string, answers: UiAgentQuestionAnswer[]) => void | Promise<void>
   collapsedTurns?: ReadonlySet<number>
   showThinking?: boolean
   mcpServerNames?: ReadonlyMap<string, string>
@@ -289,7 +289,7 @@ export function ChatView({
   onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
   onTurnToggle?: (turnIndex: number) => void
   onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
-  onQuestionSubmit?: (requestId: string, answers: string[]) => void | Promise<void>
+  onQuestionSubmit?: (requestId: string, answers: UiAgentQuestionAnswer[]) => void | Promise<void>
   collapsedTurns?: ReadonlySet<number>
   showThinking?: boolean
   mcpServerNames?: ReadonlyMap<string, string>
@@ -656,7 +656,7 @@ export function ChatView({
     }
   }, [workspacePath, activeRunId, running, agentMode, tryAutoOpenPanel])
 
-  // Auto-open terminal when agent starts a prominent terminal tool
+  // Auto-open terminal panel when the agent starts a terminal tool
   useEffect(() => {
     if (!agentTerminalRunning) return
     tryAutoOpenPanel('terminal')

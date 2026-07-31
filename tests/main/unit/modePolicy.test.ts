@@ -147,6 +147,24 @@ describe('modePolicy', () => {
     expect(modeSectionMarkdown('plan')).not.toMatch(/keep todos via/i)
   })
 
+  it('modeSectionMarkdown has no switch_mode hints when autoModeSwitch is off', () => {
+    expect(modeSectionMarkdown('agent')).not.toMatch(/switch_mode/)
+    expect(modeSectionMarkdown('ask')).not.toMatch(/switch_mode/)
+    expect(modeSectionMarkdown('plan')).not.toMatch(/switch_mode/)
+    expect(modeSectionMarkdown('ask')).toMatch(/suggest switching to Agent mode/)
+    expect(modeSectionMarkdown('plan')).toMatch(/switching to Agent mode/)
+  })
+
+  it('modeSectionMarkdown includes proactive switch_mode rules when autoModeSwitch is on', () => {
+    const opts = { autoModeSwitch: true }
+    expect(modeSectionMarkdown('agent', opts)).toMatch(/switch_mode.*ask/i)
+    expect(modeSectionMarkdown('agent', opts)).toMatch(/switch_mode.*plan/i)
+    expect(modeSectionMarkdown('ask', opts)).toMatch(/switch_mode.*plan/)
+    expect(modeSectionMarkdown('ask', opts)).toMatch(/switch_mode.*agent/)
+    expect(modeSectionMarkdown('plan', opts)).toMatch(/switch_mode.*agent/)
+    expect(modeSectionMarkdown('plan', opts)).toMatch(/switch_mode.*ask/)
+  })
+
   it('Ask forbids diagnostics and terminal; Plan allows diagnostics', () => {
     const ask = modeSectionMarkdown('ask')!
     const plan = modeSectionMarkdown('plan')!

@@ -71,21 +71,21 @@ describe('buildTranscriptRows', () => {
     expect(rows.some((row) => row.kind === 'activity')).toBe(true)
   })
 
-  it('breaks commands and edits out of a mixed batch into their own cards', () => {
+  it('keeps commands and edits in the same activity group as lookups', () => {
     const rows = buildTranscriptRows([
       tool('r1', 'read'),
       tool('t1', 'terminal'),
       tool('r2', 'read'),
       tool('e1', 'edit')
     ])
-    expect(rows.map((row) => row.kind)).toEqual(['activity', 'card', 'card'])
+    expect(rows.map((row) => row.kind)).toEqual(['activity'])
     const activity = rows.find((row) => row.kind === 'activity')
     if (activity?.kind === 'activity') {
-      expect(activity.tools.map((item) => item.id)).toEqual(['r1', 'r2'])
+      expect(activity.tools.map((item) => item.id)).toEqual(['r1', 't1', 'r2', 'e1'])
     }
   })
 
-  it('gives a lone terminal or edit call its own card', () => {
+  it('gives a lone terminal or edit call an activity row', () => {
     const items: UiItem[] = [
       { kind: 'message', id: 'u1', role: 'user', content: 'build it' },
       tool('t1', 'terminal'),
@@ -94,7 +94,7 @@ describe('buildTranscriptRows', () => {
     ]
     expect(buildTranscriptRows(items).map((row) => row.kind)).toEqual([
       'user',
-      'card',
+      'activity',
       'turn',
       'user',
       'activity',
@@ -132,7 +132,7 @@ describe('buildTranscriptRows', () => {
     }
   })
 
-  it('gives a command its own card even mid-batch', () => {
+  it('keeps a command in an activity row even mid-batch', () => {
     const items: UiItem[] = [
       tool('a1'),
       { kind: 'message', id: 'm', role: 'assistant', content: 'building' },
@@ -141,7 +141,7 @@ describe('buildTranscriptRows', () => {
     expect(buildTranscriptRows(items).map((row) => row.kind)).toEqual([
       'activity',
       'text',
-      'card'
+      'activity'
     ])
   })
 
@@ -300,6 +300,73 @@ describe('buildTranscriptRows', () => {
     }
   })
 
+  it('defers the Files Changed card on the live turn until the run settles', () => {
+    const edit = tool('e1', 'edit')
+    edit.tool.argsPreview = JSON.stringify({ path: 'src/a.ts', contents: 'x\n' })
+    const sub: UiItem = {
+      kind: 'tool',
+      id: 's1',
+      tool: { id: 's1', name: 'subagent', summary: 'Investigate', status: 'running' }
+    }
+
+    const live = buildTranscriptRows(
+      [
+        { kind: 'message', id: 'u1', role: 'user', content: 'edit then investigate' },
+        edit,
+        sub
+      ],
+      { running: true }
+    )
+    expect(live.some((row) => row.kind === 'changes')).toBe(false)
+    expect(live.some((row) => row.kind === 'activity')).toBe(true)
+
+    const settled = buildTranscriptRows(
+      [
+        { kind: 'message', id: 'u1', role: 'user', content: 'edit then investigate' },
+        edit,
+        {
+          kind: 'tool',
+          id: 's1',
+          tool: { id: 's1', name: 'subagent', summary: 'Investigate', status: 'done' }
+        }
+      ],
+      { running: false }
+    )
+    const changes = settled.find((row) => row.kind === 'changes')
+    expect(changes?.kind).toBe('changes')
+    if (changes?.kind === 'changes') {
+      expect(changes.files).toEqual([{ path: 'src/a.ts', added: 1, removed: 0 }])
+    }
+  })
+
+  it('still shows Files Changed for a prior turn while a later turn is live', () => {
+    const firstEdit = tool('e1', 'edit')
+    firstEdit.tool.argsPreview = JSON.stringify({ path: 'src/a.ts', contents: 'x\n' })
+    const secondEdit = tool('e2', 'edit')
+    secondEdit.tool.argsPreview = JSON.stringify({ path: 'src/b.ts', contents: 'y\n' })
+
+    const rows = buildTranscriptRows(
+      [
+        { kind: 'message', id: 'u1', role: 'user', content: 'first' },
+        firstEdit,
+        { kind: 'message', id: 'u2', role: 'user', content: 'second' },
+        secondEdit,
+        {
+          kind: 'tool',
+          id: 'r1',
+          tool: { id: 'r1', name: 'read', summary: 'x', status: 'running' }
+        }
+      ],
+      { running: true }
+    )
+    const changes = rows.filter((row) => row.kind === 'changes')
+    expect(changes).toHaveLength(1)
+    if (changes[0]?.kind === 'changes') {
+      expect(changes[0].turnIndex).toBe(0)
+      expect(changes[0].files).toEqual([{ path: 'src/a.ts', added: 1, removed: 0 }])
+    }
+  })
+
   it('adds up repeated edits to the same file', () => {
     const first = tool('e1', 'edit')
     first.tool.argsPreview = JSON.stringify({ path: 'src/a.ts', contents: 'x\ny\n' })
@@ -362,8 +429,9 @@ describe('buildTranscriptRows', () => {
         question: {
           requestId: 'req-q',
           toolCallId: 'q1',
-          question: 'Pick?',
-          options: ['A', 'B']
+          questions: [
+            { id: 'q1', prompt: 'Pick?', type: 'single', options: ['A', 'B'] }
+          ]
         }
       }
     ])
@@ -404,7 +472,7 @@ describe('buildTranscriptRows', () => {
     }
   })
 
-  it('keeps terminal tools in card presentation once locked', () => {
+  it('keeps terminal tools in activity groups (family shell, not cards)', () => {
     const rows = buildTranscriptRows([
       {
         kind: 'tool',
@@ -419,7 +487,7 @@ describe('buildTranscriptRows', () => {
         }
       }
     ])
-    expect(rows[0]?.kind).toBe('card')
+    expect(rows[0]?.kind).toBe('activity')
   })
 
   it('keeps activity batches split by thinking in step order', () => {
@@ -468,7 +536,7 @@ describe('buildTranscriptRows', () => {
     }
   })
 
-  it('merges duplicate activity groups across prominent tool cards', () => {
+  it('keeps edit and lookup tools in one activity group', () => {
     const items: UiItem[] = [
       tool('r1', 'read'),
       tool('d1', 'list_dir'),
@@ -477,10 +545,10 @@ describe('buildTranscriptRows', () => {
       tool('d2', 'list_dir')
     ]
     const rows = buildTranscriptRows(items)
-    expect(rows.map((row) => row.kind)).toEqual(['activity', 'card'])
+    expect(rows.map((row) => row.kind)).toEqual(['activity'])
     const activity = rows[0]
     if (activity?.kind === 'activity') {
-      expect(activity.tools.map((item) => item.id)).toEqual(['r1', 'd1', 'r2', 'd2'])
+      expect(activity.tools.map((item) => item.id)).toEqual(['r1', 'd1', 't1', 'r2', 'd2'])
     }
   })
 
@@ -520,7 +588,7 @@ describe('buildTranscriptRows', () => {
       'thinking',
       'activity',
       'thinking',
-      'card',
+      'activity',
       'turn'
     ])
   })
@@ -610,7 +678,7 @@ describe('buildTranscriptRows', () => {
     }
   })
 
-  it('keeps only the latest todo_write card even when separated by thinking', () => {
+  it('keeps only the latest todo_write even when separated by thinking', () => {
     const first = tool('todo1', 'todo_write')
     first.tool.summary = '5 tasks'
     const second = tool('todo2', 'todo_write')
@@ -628,11 +696,13 @@ describe('buildTranscriptRows', () => {
       },
       second
     ])
-    const todoCards = rows.filter((row) => row.kind === 'card' && row.item.tool.name === 'todo_write')
-    expect(todoCards).toHaveLength(1)
-    if (todoCards[0]?.kind === 'card') {
-      expect(todoCards[0].item.id).toBe('todo2')
-    }
+    const todoTools = rows.flatMap((row) =>
+      row.kind === 'activity'
+        ? row.tools.filter((item) => item.tool.name === 'todo_write')
+        : []
+    )
+    expect(todoTools).toHaveLength(1)
+    expect(todoTools[0]?.id).toBe('todo2')
   })
 
   it('groups parallel subagent tools into one activity row', () => {
@@ -712,35 +782,39 @@ describe('buildTranscriptRows', () => {
         question: {
           requestId: 'rq',
           toolCallId: 't1',
-          question: 'Continue?'
+          questions: [{ id: 'q1', prompt: 'Continue?', type: 'boolean' }]
         }
       })
     ).toBe(false)
   })
 
-  it('hides running tool cards when a turn is collapsed (timeline owns live phase)', () => {
+  it('hides running tool activity when a turn is collapsed (timeline owns live phase)', () => {
     expect(
       isTurnWorkRow({
-        kind: 'card',
-        id: 'c-run',
+        kind: 'activity',
+        id: 'a-run',
         turnIndex: 0,
-        item: {
-          kind: 'tool',
-          id: 't-run',
-          tool: { id: 't-run', name: 'terminal', summary: 'npm test', status: 'running' }
-        }
+        tools: [
+          {
+            kind: 'tool',
+            id: 't-run',
+            tool: { id: 't-run', name: 'terminal', summary: 'npm test', status: 'running' }
+          }
+        ]
       })
     ).toBe(true)
     expect(
       isTurnWorkRow({
-        kind: 'card',
-        id: 'c-done',
+        kind: 'activity',
+        id: 'a-done',
         turnIndex: 0,
-        item: {
-          kind: 'tool',
-          id: 't-done',
-          tool: { id: 't-done', name: 'terminal', summary: 'npm test', status: 'done' }
-        }
+        tools: [
+          {
+            kind: 'tool',
+            id: 't-done',
+            tool: { id: 't-done', name: 'terminal', summary: 'npm test', status: 'done' }
+          }
+        ]
       })
     ).toBe(true)
   })
@@ -774,7 +848,7 @@ describe('transcriptRowFingerprint / stabilizeTranscriptRows', () => {
     expect(stable[0]).not.toBe(prev[0])
   })
 
-  it('invalidates card identity when subagent progress updates', () => {
+  it('invalidates activity identity when subagent progress updates', () => {
     const base: UiItem = {
       kind: 'tool',
       id: 'edit-1',
@@ -796,9 +870,9 @@ describe('transcriptRowFingerprint / stabilizeTranscriptRows', () => {
     }
     const prev = buildTranscriptRows([base])
     const next = buildTranscriptRows([grown])
-    expect(prev[0]?.kind).toBe('card')
-    expect(next[0]?.kind).toBe('card')
-    if (prev[0]?.kind !== 'card' || next[0]?.kind !== 'card') return
+    expect(prev[0]?.kind).toBe('activity')
+    expect(next[0]?.kind).toBe('activity')
+    if (prev[0]?.kind !== 'activity' || next[0]?.kind !== 'activity') return
     expect(transcriptRowFingerprint(prev[0])).not.toBe(transcriptRowFingerprint(next[0]))
     const stable = stabilizeTranscriptRows(prev, next)
     expect(stable[0]).not.toBe(prev[0])

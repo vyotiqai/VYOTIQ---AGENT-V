@@ -1,7 +1,10 @@
-export { isProminentTool, toolPresentation, toolCategory, toolLabel, categoryLabels, mixedGroupLabels, toolIconName } from './meta'
+export { toolPresentation, toolCategory, toolLabel, categoryLabels, mixedGroupLabels, toolIconName } from './meta'
 export { getToolEntry, getToolBody, toolHasBody, getToolHeaderMeta } from './registry'
 export { ToolBodyView } from './presentation'
-export { ProminentChrome, CompactRow } from './chrome'
+export { CompactRow } from './chrome'
+export { ExpandPanel } from './ExpandPanel'
+export { useExpandMotion, EXPAND_CLOSE_FALLBACK_MS } from './useExpandMotion'
+export { wrapFamilyShell, familyDefaultExpanded } from './shells'
 export { basename } from './pathUtils'
 export type { ToolBodyProps, ToolBodyContext, ToolHeaderMeta, ToolPresentation, ToolCategory } from './types'
 

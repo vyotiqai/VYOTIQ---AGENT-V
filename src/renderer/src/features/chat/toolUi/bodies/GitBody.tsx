@@ -51,20 +51,25 @@ export function GitStatusBody({ tool, loading, loadFailed }: ToolBodyProps) {
   )
 }
 
-export function GitDiffBody({ tool, expanded, loading, loadFailed }: ToolBodyProps) {
+export function GitDiffBody({ tool, expanded, loading, loadFailed, inGroup }: ToolBodyProps) {
   const data = useMemo(() => parseGitDiffData(tool), [tool])
+  const showMeta = !inGroup || data.added > 0 || data.removed > 0
 
   return (
     <div aria-busy={loading || undefined}>
-      <div className={`${TOOL_BODY_PAD} flex flex-wrap items-center gap-2 border-b border-border pb-2`}>
-        <Chip>{data.summary}</Chip>
-        {data.added > 0 ? (
-          <span className="text-[10px] tabular-nums text-success">+{data.added}</span>
-        ) : null}
-        {data.removed > 0 ? (
-          <span className="text-[10px] tabular-nums text-danger">-{data.removed}</span>
-        ) : null}
-      </div>
+      {showMeta ? (
+        <div
+          className={`${TOOL_BODY_PAD} flex flex-wrap items-center gap-2 border-b border-border pb-2`}
+        >
+          {!inGroup ? <Chip>{data.summary}</Chip> : null}
+          {data.added > 0 ? (
+            <span className="text-[10px] tabular-nums text-success">+{data.added}</span>
+          ) : null}
+          {data.removed > 0 ? (
+            <span className="text-[10px] tabular-nums text-danger">-{data.removed}</span>
+          ) : null}
+        </div>
+      ) : null}
       {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
       {data.lines.length > 0 ? (
         <DiffPreview lines={data.lines} path={data.path || 'diff'} expanded={expanded} />

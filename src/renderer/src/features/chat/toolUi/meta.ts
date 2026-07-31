@@ -3,22 +3,11 @@ import {
   MCP_TOOL_PREFIX,
   TOOL_LABELS,
   isUnresolvedToolName,
-  parseArgsRecord,
   parseMcpToolDisplay
 } from '@shared/toolSummary'
 import { mcpDoneLabel, mcpRunningLabel, mcpToolKind, humanizeSnakeCase } from '@shared/utils/mcpToolMeta'
-import { isReadOnlyTerminalCommand } from '@shared/utils/displayPath'
 import type { IconName } from '@renderer/lib/icons'
 import type { ToolCategory, ToolPresentation } from './types'
-
-const PROMINENT_TOOLS = new Set([
-  'terminal',
-  'edit',
-  'multi_edit',
-  'str_replace',
-  'todo_write',
-  'delete'
-])
 
 const FILE_TOOLS = new Set(['read', 'memory_read'])
 const EDIT_TOOLS = new Set([
@@ -74,18 +63,9 @@ const CATEGORY_LABELS: Record<ToolCategory, { running: string; done: string }> =
 
 const MIXED_LABELS = { running: 'Exploring', done: 'Explored' }
 
-export function isProminentTool(name: string, argsPreview?: string): boolean {
-  if (!PROMINENT_TOOLS.has(name)) return false
-  if (name === 'terminal' && argsPreview) {
-    const args = parseArgsRecord(argsPreview)
-    const command = args?.command ?? args?.cmd
-    if (typeof command === 'string' && isReadOnlyTerminalCommand(command)) return false
-  }
-  return true
-}
-
-export function toolPresentation(name: string, argsPreview?: string): ToolPresentation {
-  return isProminentTool(name, argsPreview) ? 'prominent' : 'compact'
+/** All tools share the compact activity pipeline; family shells differentiate chrome. */
+export function toolPresentation(_name?: string, _argsPreview?: string): ToolPresentation {
+  return 'compact'
 }
 
 export function mcpToolCategory(toolName: string): ToolCategory {
@@ -196,5 +176,3 @@ export function toolIconName(name: string): IconName {
   if (isMcpTool(name)) return 'plug'
   return TOOL_ICON_BY_NAME[name] ?? 'file'
 }
-
-export { FILE_TOOLS, EDIT_TOOLS, SEARCH_TOOLS, BROWSE_TOOLS, BROWSER_TOOLS, COMMAND_TOOLS }

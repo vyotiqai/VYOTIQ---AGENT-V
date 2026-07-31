@@ -34,11 +34,21 @@ import {
   isRunPlanPath,
   isSubagentReportPath
 } from './modePolicy'
-import type { AgentEvent, AgentInteractionMode, AgentQuestionRequest } from '../../../shared/ipc'
+import type {
+  AgentEvent,
+  AgentInteractionMode,
+  AgentQuestionAnswer,
+  AgentQuestionRequest
+} from '../../../shared/ipc'
 import { basename, join } from 'path'
 import { existsSync } from 'fs'
 import { randomUUID } from 'crypto'
 import { askQuestionThroughRenderer } from '../agentQuestion'
+import {
+  askQuestionSummary,
+  formatQuestionAnswers,
+  normalizeAskQuestionArgs
+} from '../../../shared/utils/agentQuestionForm'
 
 export interface ToolResult {
   ok: boolean
@@ -67,7 +77,10 @@ export type ToolExecutionContext = {
   /** Emit live agent events (e.g. mode_changed) while a tool is running. */
   emitAgentEvent?: (event: AgentEvent) => void
   /** Overridable in tests; defaults to renderer IPC round trip. */
-  askQuestion?: (request: AgentQuestionRequest, signal: AbortSignal) => Promise<string[]>
+  askQuestion?: (
+    request: AgentQuestionRequest,
+    signal: AbortSignal
+  ) => Promise<AgentQuestionAnswer[]>
   /** Skip write-checkpoint priors (Plan run artifacts are not workspace writes). */
   skipWriteCheckpoint?: boolean
   /** Live progress from a long-running tool, surfaced under its transcript row. */
@@ -171,12 +184,6 @@ export function terminalResultOk(command: string, content: string): boolean {
   if (shell && shell !== 'cmd') return false
   if (isFindstrNoMatchContent(command, content)) return true
   return isDirMissingPathContent(command, content)
-}
-
-function formatQuestionAnswers(answers: string[]): string {
-  if (answers.length === 0) return 'User provided no answer.'
-  if (answers.length === 1) return `User answered: ${answers[0]}`
-  return `User answered:\n${answers.map((a) => `- ${a}`).join('\n')}`
 }
 
 function resolveAgentMode(context: ToolExecutionContext): AgentInteractionMode {
@@ -688,37 +695,43 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
   },
   ask_question: async (_workspace, args, signal, context) => {
     throwIfAborted(signal)
-    const question = String(args.question ?? '').trim()
-    if (!question) return toolFail('ask_question', 'question', 'question is required')
-    if (!context.runId || !context.toolCallId) {
-      return toolFail('ask_question', question, 'ask_question requires an active run')
+    const normalized = normalizeAskQuestionArgs(args as Record<string, unknown>)
+    if (!normalized.ok) {
+      return toolFail('ask_question', 'question', normalized.error)
     }
-    const options = Array.isArray(args.options)
-      ? args.options.filter((o): o is string => typeof o === 'string' && o.trim().length > 0)
-      : undefined
+    const { form } = normalized
+    const summary = askQuestionSummary(form)
+    if (!context.runId || !context.toolCallId) {
+      return toolFail('ask_question', summary, 'ask_question requires an active run')
+    }
     const request: AgentQuestionRequest = {
       requestId: randomUUID(),
       runId: context.runId,
       toolCallId: context.toolCallId,
-      question,
-      ...(options?.length ? { options } : {}),
-      ...(args.allowMultiple === true ? { allowMultiple: true } : {}),
-      ...(args.allowCustom === false ? { allowCustom: false } : {})
+      ...(form.title ? { title: form.title } : {}),
+      questions: form.questions
     }
     const ask =
       context.askQuestion ??
       ((req, sig) => askQuestionThroughRenderer(req, sig, context.invokeId))
     try {
       const answers = await ask(request, signal)
-      return toolOk('ask_question', question.slice(0, 80), formatQuestionAnswers(answers))
+      return toolOk('ask_question', summary, formatQuestionAnswers(form, answers))
     } catch (err) {
       if (isAbortError(err)) throw err
       const message = err instanceof Error ? err.message : 'Question failed'
-      return toolFail('ask_question', question.slice(0, 80), message)
+      return toolFail('ask_question', summary, message)
     }
   },
   switch_mode: (_workspace, args, signal, context) => {
     throwIfAborted(signal)
+    if (!getSettings().autoModeSwitch) {
+      return toolFail(
+        'switch_mode',
+        'mode',
+        'Automatic mode switching is off. Only the user can change Ask / Plan / Agent (composer or slash).'
+      )
+    }
     const mode = args.mode
     if (mode !== 'ask' && mode !== 'plan' && mode !== 'agent') {
       return toolFail('switch_mode', 'mode', 'mode must be ask, plan, or agent')
@@ -900,7 +913,9 @@ export async function executeTool(
     } catch {
       return toolFail(name, name, 'Failed to parse tool arguments JSON')
     }
-    const modeGate = assertToolAllowedInMode(agentMode, name, parsed)
+    const modeGate = assertToolAllowedInMode(agentMode, name, parsed, {
+      autoModeSwitch: getSettings().autoModeSwitch
+    })
     if (!modeGate.ok) {
       return toolFail(name, name, modeGate.error)
     }
@@ -935,7 +950,14 @@ export async function executeTool(
       })
       return toolFail(name, 'invalid args', checked.error)
     }
-    return invokeMcpTool(mcp.serverId, mcp.toolName, parsed, signal, name)
+    return invokeMcpTool(
+      mcp.serverId,
+      mcp.toolName,
+      parsed,
+      signal,
+      name,
+      context.runEnabledMcpIds
+    )
   }
 
   const validated = validateToolArgs(name, argsJson)
@@ -948,7 +970,9 @@ export async function executeTool(
     return toolFail(name, 'invalid args', validated.error)
   }
   const args = validated.data
-  const modeGate = assertToolAllowedInMode(agentMode, name, args)
+  const modeGate = assertToolAllowedInMode(agentMode, name, args, {
+    autoModeSwitch: getSettings().autoModeSwitch
+  })
   if (!modeGate.ok) {
     return toolFail(name, summarizeToolArgsFromRecord(name, args), modeGate.error)
   }

@@ -3,6 +3,12 @@ import type { AgentInteractionMode } from '../../../shared/ipc'
 import { parseMcpToolName } from '../mcp'
 import { isParallelSafeTool } from './classify'
 
+/** Options for mode policy gates (tool allowlists + mode section prompts). */
+export type ModePolicyOptions = {
+  /** When true, agent may call `switch_mode`. Default false. */
+  autoModeSwitch?: boolean
+}
+
 /** Built-in tools allowed in Ask mode (read-only / parallel-safe). */
 export const ASK_SAFE_BUILTIN = new Set([
   'read',
@@ -41,9 +47,6 @@ const PLAN_EXTRA_BUILTIN = new Set(['todo_write', 'edit', 'str_replace', 'multi_
 /** Built-ins allowed in Ask but not Plan (avoid nested research loops while planning). */
 const PLAN_EXCLUDED_BUILTIN = new Set(['subagent'])
 
-/** Allowed in every interaction mode (not read-only, but mode control). */
-const ALL_MODE_BUILTIN = new Set(['switch_mode'])
-
 /** Filenames Plan mode may write inside the run directory. */
 export const PLAN_ARTIFACT_NAMES = new Set(['contract.md', 'plan.md'])
 
@@ -70,7 +73,15 @@ export function isRunPlanPath(pathArg: string): boolean {
   return base === 'plan.md'
 }
 
-export function modeSectionMarkdown(mode: AgentInteractionMode): string | null {
+function autoModeSwitchEnabled(opts?: ModePolicyOptions): boolean {
+  return opts?.autoModeSwitch === true
+}
+
+export function modeSectionMarkdown(
+  mode: AgentInteractionMode,
+  opts?: ModePolicyOptions
+): string | null {
+  const auto = autoModeSwitchEnabled(opts)
   switch (mode) {
     case 'agent':
       return [
@@ -83,8 +94,13 @@ export function modeSectionMarkdown(mode: AgentInteractionMode): string | null {
         'You may delegate broad research with `subagent`;',
         'the parent alone edits and uses the `terminal` tool.',
         'Follow the run contract; if an approved `## Plan` is present, implement it unless',
-        'the user redirects you. Use `ask_question` for ambiguous product decisions and',
-        '`switch_mode` if Ask or Plan fits better.'
+        'the user redirects you. Use `ask_question` for ambiguous product decisions.',
+        ...(auto
+          ? [
+              'When the task becomes pure Q&A with no edits, call `switch_mode` to `ask`.',
+              'When you need a fresh multi-step plan before more edits, call `switch_mode` to `plan`.'
+            ]
+          : [])
       ].join('\n')
     case 'ask':
       return [
@@ -94,7 +110,14 @@ export function modeSectionMarkdown(mode: AgentInteractionMode): string | null {
         'MCP tools are not available in Ask mode (server-reported readOnlyHint is untrusted).',
         'Only avoid mutating tools. Do not edit files, delete paths, run the `terminal` tool,',
         'run `diagnostics`, or write memory. `subagent` is allowed for broad read-only research.',
-        'If the user needs changes, explain what you would do and suggest switching to Agent mode.'
+        ...(auto
+          ? [
+              'If the user wants a multi-step plan, call `switch_mode` to `plan` before writing plan artifacts.',
+              'If the user wants code or other changes, call `switch_mode` to `agent` before editing.'
+            ]
+          : [
+              'If the user needs changes, explain what you would do and suggest switching to Agent mode.'
+            ])
       ].join('\n')
     case 'plan':
       return [
@@ -106,7 +129,12 @@ export function modeSectionMarkdown(mode: AgentInteractionMode): string | null {
         'Prefer updating the injected `## Plan` rather than re-deriving it from scratch each turn.',
         '`todo_write` and `diagnostics` are available. Do not edit application code, delete files,',
         'run the `terminal` tool, or spawn `subagent` (not Plan).',
-        'End with a clear plan the user can approve by switching to Agent mode.'
+        ...(auto
+          ? [
+              'When a clear plan is ready to implement, call `switch_mode` to `agent`.',
+              'If the user only wants Q&A with no plan, call `switch_mode` to `ask`.'
+            ]
+          : ['End with a clear plan the user can approve by switching to Agent mode.'])
       ].join('\n')
     default: {
       const _exhaustive: never = mode
@@ -115,9 +143,13 @@ export function modeSectionMarkdown(mode: AgentInteractionMode): string | null {
   }
 }
 
-export function isBuiltinAllowedInMode(mode: AgentInteractionMode, name: string): boolean {
+export function isBuiltinAllowedInMode(
+  mode: AgentInteractionMode,
+  name: string,
+  opts?: ModePolicyOptions
+): boolean {
+  if (name === 'switch_mode') return autoModeSwitchEnabled(opts)
   if (mode === 'agent') return true
-  if (ALL_MODE_BUILTIN.has(name)) return true
   if (mode === 'plan' && PLAN_EXCLUDED_BUILTIN.has(name)) return false
   if (ASK_SAFE_BUILTIN.has(name)) return true
   if (mode === 'plan' && PLAN_EXTRA_BUILTIN.has(name)) return true
@@ -134,12 +166,13 @@ export function isMcpAllowedInMode(mode: AgentInteractionMode, _fullName: string
 
 export function filterToolDefsForMode<T extends { name: string }>(
   mode: AgentInteractionMode,
-  defs: T[]
+  defs: T[],
+  opts?: ModePolicyOptions
 ): T[] {
-  if (mode === 'agent') return defs
+  if (mode === 'agent' && autoModeSwitchEnabled(opts)) return defs
   return defs.filter((t) => {
     if (parseMcpToolName(t.name)) return isMcpAllowedInMode(mode, t.name)
-    return isBuiltinAllowedInMode(mode, t.name)
+    return isBuiltinAllowedInMode(mode, t.name, opts)
   })
 }
 
@@ -151,8 +184,17 @@ export type ModeDenyResult = { ok: true } | { ok: false; error: string }
 export function assertToolAllowedInMode(
   mode: AgentInteractionMode,
   name: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  opts?: ModePolicyOptions
 ): ModeDenyResult {
+  if (name === 'switch_mode' && !autoModeSwitchEnabled(opts)) {
+    return {
+      ok: false,
+      error:
+        'Automatic mode switching is off. Only the user can change Ask / Plan / Agent (composer or slash).'
+    }
+  }
+
   if (mode === 'agent') return { ok: true }
 
   const mcp = parseMcpToolName(name)
@@ -166,7 +208,7 @@ export function assertToolAllowedInMode(
     return { ok: true }
   }
 
-  if (!isBuiltinAllowedInMode(mode, name)) {
+  if (!isBuiltinAllowedInMode(mode, name, opts)) {
     return {
       ok: false,
       error: `${mode === 'ask' ? 'Ask' : 'Plan'} mode does not allow tool "${name}". Switch to Agent mode to make changes.`

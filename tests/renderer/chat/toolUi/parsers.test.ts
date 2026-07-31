@@ -392,4 +392,15 @@ describe('status message parser', () => {
     expect(data.chip).toBe('Answered')
     expect(data.answers).toEqual(['Option A', 'Option B'])
   })
+
+  it('parses labeled multi-question answers', () => {
+    const data = parseStatusMessageData(
+      tool({
+        name: 'ask_question',
+        content: 'User answered:\n- Mode?: Ask\n- Continue?: Yes'
+      })
+    )
+    expect(data.chip).toBe('Answered')
+    expect(data.answers).toEqual(['Mode?: Ask', 'Continue?: Yes'])
+  })
 })

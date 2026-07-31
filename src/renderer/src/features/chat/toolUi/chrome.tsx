@@ -1,68 +1,8 @@
 import { memo } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
-import {
-  TOOL_CARD_BODY,
-  TOOL_CARD_HEADER,
-  TOOL_CARD_SURFACE,
-  TOOL_BODY_CLAMP_PX
-} from '@renderer/lib/utils/layout'
 import { DISCLOSURE_ROW } from '@renderer/lib/utils/layout'
 import { TextShimmer } from '../components/TextShimmer'
-
-export function ProminentChrome({
-  header,
-  body,
-  expanded,
-  hasBody,
-  running: _running,
-  clampWhenCollapsed = true,
-  onToggle
-}: {
-  header: React.ReactNode
-  body: React.ReactNode
-  expanded: boolean
-  hasBody: boolean
-  running: boolean
-  /** When false, the collapsed preview is not height-clamped (e.g. task checklists). */
-  clampWhenCollapsed?: boolean
-  onToggle: () => void
-}) {
-  return (
-    <div className={cn(TOOL_CARD_SURFACE, 'w-full')}>
-      <button
-        type="button"
-        className={cn(
-          TOOL_CARD_HEADER,
-          'flex w-full items-center gap-2 text-left vy-transition',
-          hasBody && 'hover:bg-surface/60'
-        )}
-        onClick={onToggle}
-        aria-expanded={hasBody ? expanded : undefined}
-        disabled={!hasBody}
-      >
-        {header}
-        {hasBody ? (
-          <Icon
-            name="chevronRight"
-            size={14}
-            className={cn('shrink-0 text-tertiary vy-transition', expanded && 'rotate-90')}
-          />
-        ) : null}
-      </button>
-      {hasBody && body ? (
-        <div
-          className={cn(TOOL_CARD_BODY, !expanded && clampWhenCollapsed && 'mask-fade-bottom')}
-          style={
-            !expanded && clampWhenCollapsed ? { maxHeight: TOOL_BODY_CLAMP_PX } : undefined
-          }
-        >
-          {body}
-        </div>
-      ) : null}
-    </div>
-  )
-}
 
 export const CompactRow = memo(function CompactRow({
   title,
@@ -91,7 +31,7 @@ export const CompactRow = memo(function CompactRow({
     >
       <span
         className={cn(
-          'flex shrink-0 items-center gap-1.5 font-medium',
+          'flex shrink-0 items-center gap-1.5 font-medium tool-status-morph',
           interrupted || status === 'fail' ? 'text-danger' : 'text-fg'
         )}
       >
@@ -105,7 +45,11 @@ export const CompactRow = memo(function CompactRow({
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         {interrupted ? <span className="text-danger">interrupted</span> : null}
         {!interrupted && status === 'fail' ? (
-          <Icon name="warning" size={14} className="shrink-0 text-danger" />
+          <Icon
+            name="warning"
+            size={14}
+            className="shrink-0 text-danger tool-status-morph"
+          />
         ) : null}
         {hasBody ? (
           <Icon

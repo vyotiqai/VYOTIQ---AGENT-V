@@ -1,13 +1,22 @@
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type UIEvent } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
-import { ACTIVITY_ROW, DISCLOSURE_ROW } from '@renderer/lib/utils/layout'
+import { ACTIVITY_ROW, DISCLOSURE_ROW, TOOL_GROUP_LIST_VIEWPORT } from '@renderer/lib/utils/layout'
 import { formatElapsed } from '@shared/utils/timeFormat'
 import type { ToolItem } from '../utils/transcriptRows'
 import { mapToolGroupProps, type ToolGroupNestedTool } from '../utils/toolGroupAdapter'
 import { TextShimmer } from './TextShimmer'
 import { ToolRowOutput } from './ToolRow'
-import { CompactRow, toolCategory, toolHasBody, toolLabel } from '../toolUi'
+import {
+  CompactRow,
+  ExpandPanel,
+  familyDefaultExpanded,
+  toolCategory,
+  toolHasBody,
+  toolLabel
+} from '../toolUi'
+
+const LIST_PIN_PX = 24
 
 /** Earliest start to latest end across every batch in the group. */
 function spanGroupTiming(tools: ToolItem[]): ToolItem['groupTiming'] {
@@ -31,14 +40,18 @@ function spanGroupTiming(tools: ToolItem[]): ToolItem['groupTiming'] {
 function NestedToolRow({
   item,
   nested,
+  staggerIndex,
   isToolExpanded,
+  interrupted,
   onToolToggle,
   onLoadFullContent,
   mcpServerNames
 }: {
   item: ToolItem
   nested: ToolGroupNestedTool
+  staggerIndex: number
   isToolExpanded: boolean
+  interrupted: boolean
   onToolToggle?: (toolCallId: string, expanded: boolean) => void
   onLoadFullContent?: (toolCallId: string) => Promise<string | null>
   mcpServerNames?: ReadonlyMap<string, string>
@@ -48,25 +61,32 @@ function NestedToolRow({
     subagentContextUsage: item.subagentContextUsage
   })
   return (
-    <div className="flex min-w-0 flex-col">
+    <div
+      className="tool-stagger-enter flex min-w-0 flex-col"
+      style={{ '--stagger-index': staggerIndex } as CSSProperties}
+    >
       <CompactRow
         title={nested.title}
         subtitle={nested.subtitle}
         status={nested.status}
         expanded={isToolExpanded}
         hasBody={hasBody}
+        interrupted={interrupted}
         onToggle={() => onToolToggle?.(item.id, !isToolExpanded)}
       />
-      {hasBody && isToolExpanded ? (
-        <ToolRowOutput
-          tool={item.tool}
-          subagent={item.subagent}
-          subagentContextUsage={item.subagentContextUsage}
-          onLoadFullContent={onLoadFullContent}
-          mcpServerNames={mcpServerNames}
-          inGroup
-        />
-      ) : null}
+      <ExpandPanel open={hasBody && isToolExpanded}>
+        <div className="tool-body-enter">
+          <ToolRowOutput
+            tool={item.tool}
+            subagent={item.subagent}
+            subagentContextUsage={item.subagentContextUsage}
+            onLoadFullContent={onLoadFullContent}
+            mcpServerNames={mcpServerNames}
+            inGroup
+            indent={false}
+          />
+        </div>
+      </ExpandPanel>
     </div>
   )
 }
@@ -76,6 +96,8 @@ export const ToolGroup = memo(function ToolGroup({
   groupTiming,
   expandedToolIds,
   groupExpanded,
+  /** True for the active turn while the chat run is live — keep this group open between batches. */
+  live = false,
   onGroupToggle,
   onToolToggle,
   onLoadFullContent,
@@ -85,6 +107,7 @@ export const ToolGroup = memo(function ToolGroup({
   groupTiming?: ToolItem['groupTiming']
   expandedToolIds?: ReadonlySet<string>
   groupExpanded?: boolean
+  live?: boolean
   onGroupToggle?: (expanded: boolean) => void
   onToolToggle?: (toolCallId: string, expanded: boolean) => void
   onLoadFullContent?: (toolCallId: string) => Promise<string | null>
@@ -111,13 +134,26 @@ export const ToolGroup = memo(function ToolGroup({
   }, [nestedTools])
 
   const [localOverride, setLocalOverride] = useState<boolean | null>(null)
-  const expanded = groupExpanded ?? localOverride ?? isPending
+  // Open while tools are running or the agent run is still live; fold when the run ends.
+  const expanded = groupExpanded ?? localOverride ?? (isPending || live)
   const toggle = (): void => {
     const next = !expanded
     if (onGroupToggle) onGroupToggle(next)
     else setLocalOverride(next)
   }
   const [elapsedMs, setElapsedMs] = useState(props.elapsedMs ?? 0)
+  const listRef = useRef<HTMLDivElement | null>(null)
+  const listPinnedRef = useRef(true)
+  const toolsScrollKey = useMemo(
+    () =>
+      tools
+        .map(
+          (t) =>
+            `${t.id}:${t.tool.status}:${t.tool.content?.length ?? 0}:${t.tool.summary ?? ''}`
+        )
+        .join('|'),
+    [tools]
+  )
 
   useEffect(() => {
     if (isPending && resolvedGroupTiming?.startedAt != null) {
@@ -131,6 +167,25 @@ export const ToolGroup = memo(function ToolGroup({
     if (props.elapsedMs != null) setElapsedMs(props.elapsedMs)
     return undefined
   }, [isPending, resolvedGroupTiming?.startedAt, props.elapsedMs])
+
+  const listLive = isPending || live
+
+  useEffect(() => {
+    if (listLive) listPinnedRef.current = true
+  }, [listLive])
+
+  useEffect(() => {
+    if (!listLive || singleTool) return
+    const el = listRef.current
+    if (!el || !listPinnedRef.current) return
+    el.scrollTop = el.scrollHeight
+  }, [listLive, singleTool, toolsScrollKey])
+
+  const onListScroll = (event: UIEvent<HTMLDivElement>): void => {
+    const el = event.currentTarget
+    listPinnedRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight <= LIST_PIN_PX
+  }
 
   const elapsedDisplay =
     isPending && elapsedMs >= 1000 ? formatElapsed(elapsedMs) : props.elapsedDisplay
@@ -154,10 +209,11 @@ export const ToolGroup = memo(function ToolGroup({
       subagent: item.subagent,
       subagentContextUsage: item.subagentContextUsage
     })
-    // Bodies auto-open only while that tool is actively running (or host says so).
-    const defaultExpanded = item.tool.status === 'running'
-    const isToolExpanded =
-      item.toolExpanded ?? (groupExpanded ?? localOverride ?? defaultExpanded)
+    const defaultExpanded =
+      live || familyDefaultExpanded(item.tool.name, item.tool.status)
+    // Do not let groupExpanded:false hide a running/default-expanded body.
+    // Nested rows already ignore groupExpanded for per-tool expand.
+    const isToolExpanded = item.toolExpanded ?? localOverride ?? defaultExpanded
     const toggleSingle = (): void => {
       if (!hasBody) return
       const next = !isToolExpanded
@@ -167,7 +223,12 @@ export const ToolGroup = memo(function ToolGroup({
       else setLocalOverride(next)
     }
     return (
-      <div className={ACTIVITY_ROW} role="group" aria-busy={isPending || undefined}>
+      <div
+        className={cn(ACTIVITY_ROW, 'tool-stagger-enter')}
+        role="group"
+        aria-busy={isPending || live || undefined}
+        style={{ '--stagger-index': 0 } as CSSProperties}
+      >
         <CompactRow
           title={nested.title}
           subtitle={nested.subtitle}
@@ -177,22 +238,25 @@ export const ToolGroup = memo(function ToolGroup({
           interrupted={isInterrupted}
           onToggle={toggleSingle}
         />
-        {hasBody && isToolExpanded ? (
-          <ToolRowOutput
-            tool={item.tool}
-            subagent={item.subagent}
-            subagentContextUsage={item.subagentContextUsage}
-            onLoadFullContent={onLoadFullContent}
-            mcpServerNames={mcpServerNames}
-            inGroup
-          />
-        ) : null}
+        <ExpandPanel open={hasBody && isToolExpanded}>
+          <div className="tool-body-enter">
+            <ToolRowOutput
+              tool={item.tool}
+              subagent={item.subagent}
+              subagentContextUsage={item.subagentContextUsage}
+              onLoadFullContent={onLoadFullContent}
+              mcpServerNames={mcpServerNames}
+              inGroup
+              indent={false}
+            />
+          </div>
+        </ExpandPanel>
       </div>
     )
   }
 
   return (
-    <div className={ACTIVITY_ROW} role="group" aria-busy={isPending || undefined}>
+    <div className={ACTIVITY_ROW} role="group" aria-busy={isPending || live || undefined}>
       <button
         type="button"
         className={cn(DISCLOSURE_ROW, 'w-full text-left')}
@@ -202,7 +266,12 @@ export const ToolGroup = memo(function ToolGroup({
         {isPending ? (
           <TextShimmer className="shrink-0 font-medium text-fg">{headerLabel}</TextShimmer>
         ) : (
-          <span className={cn('shrink-0 font-medium', isInterrupted ? 'text-danger' : 'text-fg')}>
+          <span
+            className={cn(
+              'shrink-0 font-medium tool-status-morph',
+              isInterrupted ? 'text-danger' : 'text-fg'
+            )}
+          >
             {headerLabel}
           </span>
         )}
@@ -224,15 +293,21 @@ export const ToolGroup = memo(function ToolGroup({
         </span>
       </button>
 
-      {expanded ? (
-        <div className="flex flex-col gap-0.5 pl-2">
-          {tools.map((item) => {
+      <ExpandPanel open={expanded}>
+        <div
+          ref={listRef}
+          className={cn('flex flex-col gap-0.5 pl-2', TOOL_GROUP_LIST_VIEWPORT)}
+          data-testid="tool-group-list"
+          onScroll={onListScroll}
+        >
+          {tools.map((item, index) => {
             const nested = nestedById.get(item.id)
             if (!nested) {
               return (
                 <div
                   key={item.id}
-                  className="rounded-md px-2 py-1 text-[12px] text-muted"
+                  className="tool-stagger-enter rounded-md px-2 py-1 text-[12px] text-muted"
+                  style={{ '--stagger-index': index } as CSSProperties}
                   data-testid={`tool-group-fallback-${item.id}`}
                 >
                   {item.tool.name}
@@ -240,24 +315,21 @@ export const ToolGroup = memo(function ToolGroup({
                 </div>
               )
             }
-            const hasBody = toolHasBody(item.tool, {
-              subagent: item.subagent,
-              subagentContextUsage: item.subagentContextUsage
-            })
-            // Bodies auto-open only for the running tool; completed siblings stay collapsed.
-            const defaultExpanded = item.tool.status === 'running'
-            // When the host passes expandedToolIds, membership is authoritative.
-            // MessageList omits the prop (undefined) until a tool has explicit
-            // toolExpanded so defaultExpanded can still auto-open running bodies.
-            const isToolExpanded = expandedToolIds
-              ? expandedToolIds.has(item.id)
-              : (item.toolExpanded ?? defaultExpanded)
+            const defaultExpanded =
+              live || familyDefaultExpanded(item.tool.name, item.tool.status)
+            // Per-item toolExpanded wins; expandedToolIds is an optional host override
+            // for tests. Never treat Set membership as exclusive of defaults for siblings.
+            const isToolExpanded =
+              item.toolExpanded ??
+              (expandedToolIds != null ? expandedToolIds.has(item.id) : defaultExpanded)
             return (
               <NestedToolRow
                 key={item.id}
                 item={item}
                 nested={nested}
+                staggerIndex={index}
                 isToolExpanded={isToolExpanded}
+                interrupted={isInterrupted}
                 onToolToggle={onToolToggle}
                 onLoadFullContent={onLoadFullContent}
                 mcpServerNames={mcpServerNames}
@@ -265,7 +337,7 @@ export const ToolGroup = memo(function ToolGroup({
             )
           })}
         </div>
-      ) : null}
+      </ExpandPanel>
     </div>
   )
 })

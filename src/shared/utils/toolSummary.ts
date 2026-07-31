@@ -196,6 +196,16 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
     if (typeof task === 'string') return truncate(task)
   }
   if (name === 'ask_question') {
+    const title = args.title
+    if (typeof title === 'string' && title.trim()) return truncate(title)
+    const questions = args.questions
+    if (Array.isArray(questions) && questions.length > 0) {
+      if (questions.length === 1) {
+        const prompt = (questions[0] as { prompt?: unknown } | undefined)?.prompt
+        if (typeof prompt === 'string') return truncate(prompt)
+      }
+      return `${questions.length} questions`
+    }
     const question = args.question
     if (typeof question === 'string') return truncate(question)
   }

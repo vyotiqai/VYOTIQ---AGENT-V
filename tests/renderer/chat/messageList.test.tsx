@@ -9,6 +9,7 @@ import {
   transcriptRowsContentRevision
 } from '@renderer/features/chat/components/MessageList'
 import { buildTranscriptRows } from '@renderer/features/chat/utils/transcriptRows'
+import { TOOL_BODY_CLAMP_PX, TOOL_GROUP_LIST_MAX_PX } from '@renderer/lib/utils/layout'
 import type { UiItem } from '@shared/transcript'
 
 beforeEach(() => {
@@ -526,6 +527,49 @@ describe('MessageList', () => {
     const activity = rows.find((r) => r.kind === 'activity')
     expect(estimateTranscriptRowSize(thinking)).toBeLessThanOrEqual(52)
     expect(estimateTranscriptRowSize(activity)).toBeLessThanOrEqual(56)
+  })
+
+  it('estimates live multi-tool activity at the capped list viewport', () => {
+    const multi = buildTranscriptRows([
+      {
+        kind: 'tool',
+        id: 't1',
+        tool: { id: 't1', name: 'read', summary: 'a.ts', status: 'done' }
+      },
+      {
+        kind: 'tool',
+        id: 't2',
+        tool: { id: 't2', name: 'read', summary: 'b.ts', status: 'running' }
+      }
+    ])
+    const activity = multi.find((r) => r.kind === 'activity')
+    expect(estimateTranscriptRowSize(activity)).toBe(48 + TOOL_GROUP_LIST_MAX_PX)
+
+    const collapsedStale = buildTranscriptRows([
+      {
+        kind: 'tool',
+        id: 't1',
+        tool: { id: 't1', name: 'read', summary: 'a.ts', status: 'done' },
+        toolExpanded: true
+      },
+      {
+        kind: 'tool',
+        id: 't2',
+        tool: { id: 't2', name: 'read', summary: 'b.ts', status: 'done' }
+      }
+    ])
+    const stale = collapsedStale.find((r) => r.kind === 'activity')
+    expect(estimateTranscriptRowSize(stale)).toBe(48)
+
+    const loneLive = buildTranscriptRows([
+      {
+        kind: 'tool',
+        id: 't1',
+        tool: { id: 't1', name: 'read', summary: 'a.ts', status: 'running' }
+      }
+    ])
+    const single = loneLive.find((r) => r.kind === 'activity')
+    expect(estimateTranscriptRowSize(single)).toBe(56 + TOOL_BODY_CLAMP_PX)
   })
 
   it('estimates long assistant text tall enough to avoid virtual overlap', () => {

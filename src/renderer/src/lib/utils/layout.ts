@@ -107,20 +107,43 @@ export const ACTIVITY_ROW = 'text-xs tracking-[var(--vy-tracking)]'
 export const DISCLOSURE_ROW =
   'flex min-w-0 items-center gap-1.5 rounded-sm py-1 text-xs vy-transition hover:opacity-80'
 
-/** Tool card chrome. */
+/** Tool card chrome — approval / change summary only. */
 export const TOOL_CARD_SURFACE = 'overflow-hidden rounded-lg border border-border'
 export const TOOL_CARD_HEADER = 'px-3 py-2 text-xs'
 /** Body content owns its own padding so a diff can run edge to edge. */
 export const TOOL_CARD_BODY = 'overflow-hidden border-t border-border bg-surface'
 
-/** Collapsed prominent tool body height before fade mask. */
+/** Ask-question gate — quiet panel, not bordered tool-card chrome. */
+export const QUESTION_GATE_SURFACE =
+  'overflow-hidden rounded-md border-l-2 border-l-accent/60 bg-surface/60'
+export const QUESTION_GATE_HEADER = 'flex items-center gap-2 px-3 pt-2.5 pb-1 text-xs text-fg'
+export const QUESTION_GATE_BODY = 'px-3 py-2'
+export const QUESTION_GATE_FOOTER = 'flex items-center gap-2 px-3 pb-2.5 pt-1'
+
+/** Collapsed tool body height before fade mask (virtualizer estimate). */
 export const TOOL_BODY_CLAMP_PX = 168
+
+/**
+ * Cap streaming tool-group list so it cannot dominate the transcript.
+ * ~12rem — keep in sync with TOOL_GROUP_LIST_MAX_PX for virtualizer estimates.
+ */
+export const TOOL_GROUP_LIST_VIEWPORT =
+  'max-h-[min(12rem,28vh)] overflow-y-auto overscroll-contain'
+
+/** Pixel ceiling matching TOOL_GROUP_LIST_VIEWPORT (12rem @ 16px). */
+export const TOOL_GROUP_LIST_MAX_PX = 192
 
 /** Standard inner padding for tool body content. */
 export const TOOL_BODY_PAD = 'px-3 py-2'
 
 /** Scrollable inner region inside a tool body. */
 export const TOOL_BODY_INNER = 'px-3 py-1.5'
+
+/** Family shells — replace bordered tool cards for edit / terminal / todo / delete. */
+export const TOOL_FAMILY_EDIT = 'overflow-hidden rounded-md'
+export const TOOL_FAMILY_TERMINAL = 'overflow-hidden rounded-md bg-surface'
+export const TOOL_FAMILY_TODO = 'rounded-md'
+export const TOOL_FAMILY_DELETE = 'border-l-2 border-danger/50 pl-2'
 
 /** Subtle floating surface shared by docked composer. */
 export const FLOATING_CHROME =

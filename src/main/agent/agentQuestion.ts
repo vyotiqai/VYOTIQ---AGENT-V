@@ -1,5 +1,8 @@
-import type { AgentQuestionRequest, AgentQuestionResponse } from '../../shared/ipc'
-import { isAbortError } from '../../shared/errors'
+import type {
+  AgentQuestionAnswer,
+  AgentQuestionRequest,
+  AgentQuestionResponse
+} from '../../shared/ipc'
 import { logger } from '../../shared/logger'
 
 export type QuestionSender = (request: AgentQuestionRequest) => void
@@ -12,8 +15,9 @@ const senders = new Map<string, QuestionSender>()
 const pending = new Map<
   string,
   {
-    resolve: (answers: string[]) => void
-    reject: (err: Error) => void
+    resolve: (answers: AgentQuestionAnswer[]) => void
+    /** Clears timeout/abort listeners then rejects — used by cancelPendingQuestions. */
+    cancel: (err: Error) => void
     runId: string
     invokeId?: number
     request: AgentQuestionRequest
@@ -54,7 +58,7 @@ export function resolveAgentQuestion(response: AgentQuestionResponse): boolean {
   const entry = pending.get(response.requestId)
   if (!entry) return false
   if (entry.runId !== response.runId) return false
-  pending.delete(response.requestId)
+  // Resolve through the stored settle path so waiters are cleared.
   entry.resolve(response.answers)
   return true
 }
@@ -64,11 +68,10 @@ export function resolveAgentQuestion(response: AgentQuestionResponse): boolean {
  * When `invokeId` is set, only that turn's prompts are cleared.
  */
 export function cancelPendingQuestions(runId: string, invokeId?: number): void {
-  for (const [requestId, entry] of pending) {
+  for (const [, entry] of pending) {
     if (entry.runId !== runId) continue
     if (invokeId !== undefined && entry.invokeId !== invokeId) continue
-    pending.delete(requestId)
-    entry.reject(abortQuestionError())
+    entry.cancel(abortQuestionError())
   }
 }
 
@@ -76,7 +79,7 @@ export function askQuestionThroughRenderer(
   request: AgentQuestionRequest,
   signal: AbortSignal,
   invokeId?: number
-): Promise<string[]> {
+): Promise<AgentQuestionAnswer[]> {
   const sender = senders.get(request.runId)
   if (!sender) {
     logger.warn('Agent question required but no window is listening', {
@@ -91,26 +94,39 @@ export function askQuestionThroughRenderer(
     )
   }
 
-  return new Promise<string[]>((resolve, reject) => {
+  return new Promise<AgentQuestionAnswer[]>((resolve, reject) => {
     let timeoutId: ReturnType<typeof setTimeout> | undefined
+    let settled = false
     const clearWaiters = (): void => {
-      if (timeoutId !== undefined) clearTimeout(timeoutId)
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId)
+        timeoutId = undefined
+      }
       signal.removeEventListener('abort', onAbort)
     }
-    const settle = (answers: string[]): void => {
+    const settle = (answers: AgentQuestionAnswer[]): void => {
+      if (settled || !pending.has(request.requestId)) return
+      settled = true
       pending.delete(request.requestId)
       clearWaiters()
       resolve(answers)
     }
-    function onAbort(): void {
+    const cancel = (err: Error): void => {
+      if (settled || !pending.has(request.requestId)) return
+      settled = true
       pending.delete(request.requestId)
       clearWaiters()
-      reject(abortQuestionError())
+      reject(err)
+    }
+    function onAbort(): void {
+      cancel(abortQuestionError())
     }
     function onTimeout(): void {
-      pending.delete(request.requestId)
-      clearWaiters()
-      reject(new Error('Question timed out without a response. Continue without waiting, or ask again.'))
+      cancel(
+        new Error(
+          'Question timed out without a response. Continue without waiting, or ask again.'
+        )
+      )
     }
     if (signal.aborted) {
       reject(abortQuestionError())
@@ -118,7 +134,7 @@ export function askQuestionThroughRenderer(
     }
     pending.set(request.requestId, {
       resolve: settle,
-      reject,
+      cancel,
       runId: request.runId,
       invokeId,
       request

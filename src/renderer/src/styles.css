@@ -644,3 +644,61 @@
 .vy-text-shimmer--active {
   animation: vy-shimmer var(--vy-shimmer-duration, 2s) linear infinite;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .vy-text-shimmer--active {
+    animation: none;
+    color: inherit;
+    background-image: none;
+    background-clip: unset;
+    -webkit-background-clip: unset;
+  }
+}
+
+@keyframes tool-stagger-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.tool-status-morph {
+  transition-property: color, opacity;
+  transition-duration: var(--vy-duration);
+  transition-timing-function: var(--vy-ease);
+}
+
+/* Height disclosure — keep content mounted while grid rows animate 0fr ↔ 1fr. */
+.tool-expand {
+  display: grid;
+  grid-template-rows: 0fr;
+}
+
+.tool-expand[data-open='true'] {
+  grid-template-rows: 1fr;
+}
+
+.tool-expand-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tool-stagger-enter {
+    animation: tool-stagger-in 0.28s var(--vy-ease) both;
+    animation-delay: calc(min(var(--stagger-index, 0), 8) * 40ms);
+  }
+
+  .tool-body-enter {
+    animation: tool-stagger-in 0.22s var(--vy-ease) both;
+  }
+
+  .tool-expand {
+    transition: grid-template-rows var(--vy-duration) var(--vy-ease);
+  }
+}

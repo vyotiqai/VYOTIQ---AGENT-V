@@ -7,6 +7,7 @@ import type {
   PersistedEvent,
   ToolApprovalDecision,
   ToolApprovalRequest,
+  AgentQuestionAnswer,
   AgentQuestionRequest
 } from '@shared/ipc'
 import {
@@ -171,18 +172,32 @@ function insertBeforeTrailingTools(items: UiItem[], next: UiItem | UiItem[]): Ui
   return [...closeOpenGroupTimings(items), ...batch]
 }
 
+/**
+ * Where to splice a new tool row into the transcript.
+ * Prefer the stretch after the latest user message when that user sits after the
+ * last assistant (follow-up / continue) — otherwise tools land before the bubble
+ * and inherit the previous turnIndex.
+ */
 function toolInsertIndex(items: UiItem[]): number {
+  let lastUser = -1
   let lastAssistant = -1
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
-    if (item.kind === 'message' && item.role === 'assistant') {
-      lastAssistant = i
-      break
-    }
+    if (item.kind !== 'message') continue
+    if (lastUser < 0 && item.role === 'user') lastUser = i
+    if (lastAssistant < 0 && item.role === 'assistant') lastAssistant = i
+    if (lastUser >= 0 && lastAssistant >= 0) break
   }
+
+  if (lastUser > lastAssistant) {
+    let insertAt = lastUser + 1
+    while (insertAt < items.length && items[insertAt]?.kind === 'tool') insertAt++
+    return insertAt
+  }
+
   if (lastAssistant < 0) return items.length
   let insertAt = lastAssistant + 1
-  while (insertAt < items.length && items[insertAt].kind === 'tool') insertAt++
+  while (insertAt < items.length && items[insertAt]?.kind === 'tool') insertAt++
   return insertAt
 }
 
@@ -406,6 +421,13 @@ function clearQuestions(items: UiItem[], requestId?: string): UiItem[] {
   })
 }
 
+/** Drop question panels gated on a settled ask_question tool call. */
+function clearQuestionsForTool(items: UiItem[], toolCallId: string): UiItem[] {
+  return items.filter(
+    (item) => !(item.kind === 'question' && item.question.toolCallId === toolCallId)
+  )
+}
+
 /** Drop pending approval prompts, either one answered or all of them. */
 function clearApprovals(items: UiItem[], requestId?: string): UiItem[] {
   let changed = false
@@ -623,7 +645,7 @@ export type ChatStreamController = ChatStreamState & {
   handleApprovalRequest: (request: ToolApprovalRequest) => void
   respondToApproval: (requestId: string, decision: ToolApprovalDecision) => Promise<void>
   handleQuestionRequest: (request: AgentQuestionRequest) => void
-  respondToQuestion: (requestId: string, answers: string[]) => Promise<void>
+  respondToQuestion: (requestId: string, answers: AgentQuestionAnswer[]) => Promise<void>
   /** Reload transcript from disk when a run finished but IPC was missed. */
   syncFromDisk: (runId: string) => Promise<boolean>
   /** Update meter + notice after a manual Compact now. */
@@ -1467,8 +1489,14 @@ export function createChatStreamController(
         event.content ?? event.summary,
         event.ok
       )
+      // ask_question UI is a separate item; clear it when the tool settles
+      // (answer, interrupt, timeout) so a stale panel cannot outlive the wait.
+      const itemsForPatch =
+        event.name === 'ask_question'
+          ? clearQuestionsForTool(nextItems, event.toolCallId)
+          : nextItems
       patch({
-        items: closeTrailingGroupIfIdle(nextItems),
+        items: closeTrailingGroupIfIdle(itemsForPatch),
         messages: nextMessages
       })
     } else if (event.type === 'terminal_output_delta') {
@@ -2395,10 +2423,14 @@ export function createChatStreamController(
       question: {
         requestId: request.requestId,
         toolCallId: request.toolCallId,
-        question: request.question,
-        ...(request.options?.length ? { options: request.options } : {}),
-        ...(request.allowMultiple ? { allowMultiple: true } : {}),
-        ...(request.allowCustom === false ? { allowCustom: false } : {})
+        ...(request.title ? { title: request.title } : {}),
+        questions: request.questions.map((q) => ({
+          id: q.id,
+          prompt: q.prompt,
+          type: q.type,
+          ...(q.options?.length ? { options: q.options } : {}),
+          ...(q.allowCustom === true ? { allowCustom: true } : {})
+        }))
       },
       at: new Date().toISOString()
     }
@@ -2412,7 +2444,10 @@ export function createChatStreamController(
     patch({ items: [...state.items, questionItem] })
   }
 
-  const respondToQuestion = async (requestId: string, answers: string[]): Promise<void> => {
+  const respondToQuestion = async (
+    requestId: string,
+    answers: AgentQuestionAnswer[]
+  ): Promise<void> => {
     if (!runId) {
       const message = 'No active run for question response.'
       patch({ error: message })

@@ -2,13 +2,14 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
-import type { UiItem } from '@shared/transcript'
+import type { UiAgentQuestionAnswer, UiItem } from '@shared/transcript'
 import type { ToolApprovalDecision } from '@shared/ipc'
 import {
   CHAT_COLUMN,
   CHAT_GUTTER,
   CHAT_STAGE_INSET,
   TOOL_BODY_CLAMP_PX,
+  TOOL_GROUP_LIST_MAX_PX,
   TRANSCRIPT_ROW_GAP,
   TRANSCRIPT_TURN_GAP,
   TRANSCRIPT_WORK_PAIR_GAP,
@@ -27,8 +28,7 @@ import { ChangeSummary } from './ChangeSummary'
 import { MessageFooter } from './MessageFooter'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolApprovalCard } from './ToolApprovalCard'
-import { AskQuestionCard } from './AskQuestionCard'
-import { ToolCard } from './ToolCard'
+import { AskQuestionPanel } from './AskQuestionPanel'
 import { ToolGroup } from './ToolGroup'
 import { TurnSummary } from './TurnSummary'
 import { UserPrompt } from './UserPrompt'
@@ -49,13 +49,17 @@ function turnWorkPanelId(
   return `turn-work-${row.turnIndex}`
 }
 
+function turnHasWorkPanel(rows: readonly TranscriptRow[], turnIndex: number): boolean {
+  return rows.some((row) => row.turnIndex === turnIndex && isTurnWorkRow(row))
+}
+
 /** ~chars per visual line in the 840px chat column at text-sm. */
 const CHARS_PER_LINE = 65
 const LINE_PX = 22
 
 /**
  * First-paint height guesses for the virtualizer.
- * Collapsed Thought/Read stay near disclosure height (~44–52). Text/user/card
+ * Collapsed Thought/Read stay near disclosure height (~44–52). Text/user
  * must not under-estimate — that stacks absolute rows on top of each other.
  */
 export function estimateTranscriptRowSize(
@@ -67,7 +71,7 @@ export function estimateTranscriptRowSize(
     case 'turn':
       return 40
     case 'thinking':
-      return row.item.thinkingStreaming ? 112 : 44
+      return row.item.thinkingStreaming || row.item.thinkingExpanded ? 116 : 44
     case 'user': {
       const len = row.item.content?.length ?? 0
       const media =
@@ -92,23 +96,15 @@ export function estimateTranscriptRowSize(
       const live = row.tools.some((t) => t.tool.status === 'running')
       const groupExpanded = row.tools[0]?.groupExpanded === true
       const toolExpanded = row.tools.some((t) => t.toolExpanded === true)
-      if (live || groupExpanded || toolExpanded) {
-        return toolExpanded ? 56 + TOOL_BODY_CLAMP_PX : 140
+      const multi = row.tools.length > 1
+      if (multi) {
+        // Collapsed multi-tool groups ignore stale per-tool expand flags.
+        if (live || groupExpanded) return 48 + TOOL_GROUP_LIST_MAX_PX
+        return 48
       }
+      // Lone running tools auto-expand via familyDefaultExpanded.
+      if (live || toolExpanded || groupExpanded) return 56 + TOOL_BODY_CLAMP_PX
       return 48
-    }
-    case 'card': {
-      const live = row.item.tool.status === 'running'
-      const expanded = row.item.toolExpanded === true
-      const hasBody = Boolean(
-        row.item.tool.content ||
-          row.item.tool.argsPreview ||
-          (row.item.subagent && row.item.subagent.length > 0)
-      )
-      if (expanded) return 56 + TOOL_BODY_CLAMP_PX + 80
-      // ProminentChrome still paints clamped body when collapsed + hasBody.
-      if (hasBody || live) return 56 + TOOL_BODY_CLAMP_PX
-      return 56
     }
     case 'changes':
       return (
@@ -215,8 +211,7 @@ function rowSpacingClass(row: TranscriptRow, next?: TranscriptRow): string {
   if (row.kind === 'turn') {
     return cn('pt-1', TRANSCRIPT_ROW_GAP)
   }
-  const isWork =
-    row.kind === 'activity' || row.kind === 'thinking' || row.kind === 'card'
+  const isWork = row.kind === 'activity' || row.kind === 'thinking'
   const tightPair =
     (row.kind === 'thinking' && next?.kind === 'activity') ||
     (row.kind === 'activity' && next?.kind === 'thinking')
@@ -230,6 +225,7 @@ function rowSpacingClass(row: TranscriptRow, next?: TranscriptRow): string {
 
 const TranscriptRowBlock = memo(function TranscriptRowBlock({
   row,
+  displayRows,
   onImageClick,
   onLoadToolContent,
   onThinkingToggle,
@@ -240,6 +236,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   onQuestionSubmit,
   turnCollapsed = false,
   showThinking = true,
+  live = false,
   mcpServerNames,
   canUndoWrites = false,
   undoBusy = false,
@@ -255,6 +252,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   onOpenChanges
 }: {
   row: TranscriptRow
+  displayRows: readonly TranscriptRow[]
   onImageClick: (url: string, label: string) => void
   onLoadToolContent?: (toolCallId: string) => Promise<string | null>
   onThinkingToggle?: (messageId: string, expanded: boolean) => void
@@ -262,9 +260,10 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
   onTurnToggle?: (turnIndex: number) => void
   onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
-  onQuestionSubmit?: (requestId: string, answers: string[]) => void | Promise<void>
+  onQuestionSubmit?: (requestId: string, answers: UiAgentQuestionAnswer[]) => void | Promise<void>
   turnCollapsed?: boolean
   showThinking?: boolean
+  live?: boolean
   mcpServerNames?: ReadonlyMap<string, string>
   canUndoWrites?: boolean
   undoBusy?: boolean
@@ -288,7 +287,11 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
       <TurnSummary
         span={row.span}
         collapsed={turnCollapsed}
-        panelId={`turn-work-${row.turnIndex}`}
+        panelId={
+          turnHasWorkPanel(displayRows, row.turnIndex)
+            ? `turn-work-${row.turnIndex}`
+            : undefined
+        }
         onToggle={() => onTurnToggle?.(row.turnIndex)}
       />
     )
@@ -349,23 +352,18 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   }
 
   if (row.kind === 'question') {
-    return <AskQuestionCard question={row.question} onSubmit={onQuestionSubmit} />
+    return <AskQuestionPanel question={row.question} onSubmit={onQuestionSubmit} />
   }
 
   if (row.kind === 'activity') {
-    // Only pass expandedToolIds once a tool has an explicit expand flag.
-    // An empty Set would make Set.has() return false and block defaultExpanded
-    // auto-open for pending multi-tool groups (?? does not treat false as missing).
-    const anyExplicit = row.tools.some((tool) => typeof tool.toolExpanded === 'boolean')
-    const expandedToolIds = anyExplicit
-      ? new Set(row.tools.filter((tool) => tool.toolExpanded).map((tool) => tool.id))
-      : undefined
+    // Prefer per-item toolExpanded so siblings keep familyDefaultExpanded when
+    // only one tool has an explicit expand flag (do not pass a Set that blanks them).
     const anchor = row.tools[0]!
     return (
       <ToolGroup
         tools={row.tools}
-        expandedToolIds={expandedToolIds}
         groupExpanded={anchor.groupExpanded}
+        live={live}
         onGroupToggle={
           onGroupToggle ? (expanded) => onGroupToggle(anchor.id, expanded) : undefined
         }
@@ -376,17 +374,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
     )
   }
 
-  return (
-    <ToolCard
-      item={row.item}
-      expanded={row.item.toolExpanded}
-      // Without a host that persists the choice the card owns its own state,
-      // so it still opens instead of swallowing the click.
-      onToggle={onToolToggle ? (next) => onToolToggle(row.item.id, next) : undefined}
-      onLoadFullContent={onLoadToolContent}
-      mcpServerNames={mcpServerNames}
-    />
-  )
+  return null
 })
 
 export function MessageList({
@@ -434,7 +422,7 @@ export function MessageList({
   onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
   onTurnToggle?: (turnIndex: number) => void
   onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
-  onQuestionSubmit?: (requestId: string, answers: string[]) => void | Promise<void>
+  onQuestionSubmit?: (requestId: string, answers: UiAgentQuestionAnswer[]) => void | Promise<void>
   /** Persisted turn-summary collapse state from the chat stream controller. */
   collapsedTurns?: ReadonlySet<number>
   showThinking?: boolean
@@ -779,7 +767,7 @@ export function MessageList({
   useLayoutEffect(() => {
     if (!shouldVirtualize) return
     remasureMountedRows()
-  }, [rowsContentRevision, shouldVirtualize, remasureMountedRows])
+  }, [rowsContentRevision, expandedDiffRowIds, shouldVirtualize, remasureMountedRows])
 
   useLayoutEffect(() => {
     if (!scrollRestored || displayRows.length === 0) return
@@ -804,9 +792,21 @@ export function MessageList({
     return null
   }, [displayRows])
 
+  // Only the active turn stays auto-expanded while the run is live. Prior turns
+  // must not reopen when the user sends a follow-up (that flipped run-wide live).
+  const activeLiveTurnIndex = useMemo(() => {
+    if (!(pendingRun || running)) return null
+    let max = -1
+    for (const row of allRows) {
+      if (row.turnIndex > max) max = row.turnIndex
+    }
+    return max < 0 ? null : max
+  }, [allRows, pendingRun, running])
+
   const renderRow = (row: TranscriptRow): ReactNode => (
     <TranscriptRowBlock
       row={row}
+      displayRows={displayRows}
       onImageClick={onImageClick}
       onLoadToolContent={onLoadToolContent}
       onThinkingToggle={onThinkingToggle}
@@ -817,6 +817,7 @@ export function MessageList({
       onQuestionSubmit={onQuestionSubmit}
       turnCollapsed={collapsedTurnSet.has(row.turnIndex)}
       showThinking={showThinking}
+      live={activeLiveTurnIndex != null && row.turnIndex === activeLiveTurnIndex}
       mcpServerNames={mcpServerNames}
       canUndoWrites={Boolean(
         canUndoWrites && lastChangesRowId && row.kind === 'changes' && row.id === lastChangesRowId

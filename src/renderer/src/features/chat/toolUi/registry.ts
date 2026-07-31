@@ -152,7 +152,7 @@ function mcpIntrospectHasBody(tool: UiToolRow): boolean {
 
 function statusMessageHasBody(tool: UiToolRow): boolean {
   const data = parseStatusMessageData(tool)
-  return Boolean(data.message || data.answers.length > 0 || data.chip)
+  return Boolean(data.message || data.answers.length > 0)
 }
 
 const browserActionEntry: ToolRegistryEntry = {

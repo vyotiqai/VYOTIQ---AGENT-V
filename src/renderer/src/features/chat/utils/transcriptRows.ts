@@ -7,7 +7,6 @@ import {
   stripToolShapedAssistantText,
   stripToolShapedAssistantTextForStream
 } from '@shared/transcript'
-import { isProminentTool } from '../toolUi'
 import { collectWritingChanges } from '../toolUi/parsers/edit'
 import { parseDeleteData } from '../toolUi/parsers/delete'
 import { deriveRunActivity, type RunActivityPhase } from './runActivity'
@@ -28,7 +27,6 @@ export type TranscriptRow =
   /** `final` marks the turn's closing answer, the one that earns a footer. */
   | { kind: 'text'; id: string; item: AssistantItem; turnIndex: number; final: boolean }
   | { kind: 'activity'; id: string; tools: ToolItem[]; turnIndex: number }
-  | { kind: 'card'; id: string; item: ToolItem; turnIndex: number }
   | { kind: 'changes'; id: string; turnIndex: number; files: ChangedFile[] }
   | { kind: 'approval'; id: string; approval: UiToolApproval; turnIndex: number }
   | { kind: 'question'; id: string; question: UiAgentQuestion; turnIndex: number }
@@ -62,22 +60,12 @@ export type TurnSpan = {
  */
 export function isTurnWorkRow(row: TranscriptRow): boolean {
   if (row.kind === 'approval' || row.kind === 'question') return false
-  // Collapsed turns rely on TurnSummary for live phase; hide cards/activity so
+  // Collapsed turns rely on TurnSummary for live phase; hide activity/thinking so
   // running tools are not duplicated beside the timeline label.
-  if (
-    row.kind === 'thinking' ||
-    row.kind === 'activity' ||
-    row.kind === 'card'
-  ) {
+  if (row.kind === 'thinking' || row.kind === 'activity') {
     return true
   }
   return row.kind === 'text' && !row.final
-}
-
-/** Tools whose output is worth a dedicated card instead of a group line. */
-function isCardTool(item: ToolItem): boolean {
-  if (item.tool.presentation) return item.tool.presentation === 'prominent'
-  return isProminentTool(item.tool.name, item.tool.argsPreview)
 }
 
 /** Extra lead-in above a user prompt that opens a new turn (matches TRANSCRIPT_TURN_GAP). */
@@ -86,10 +74,9 @@ export const TURN_GAP_PX = 24
 /**
  * Build turn-aware transcript rows.
  *
- * Consecutive lookup-style calls collapse into one activity row, while a call
- * whose output is the point — a command, an edit — breaks out into its own card
- * where the reader can see it without opening anything. Assistant narration
- * stays where it happened, which also separates the groups on either side of it.
+ * Consecutive tool calls collapse into activity rows with family-specific body
+ * chrome (edit/terminal/todo/delete). Assistant narration stays where it
+ * happened, which also separates the groups on either side of it.
  */
 export function buildTranscriptRows(
   items: UiItem[],
@@ -123,11 +110,6 @@ export function buildTranscriptRows(
           approval: item.approval,
           turnIndex: Math.max(turnIndex, 0)
         })
-        return
-      }
-      if (isCardTool(item)) {
-        closeGroup()
-        rows.push({ kind: 'card', id: item.id, item, turnIndex })
         return
       }
       group.push(item)
@@ -226,13 +208,17 @@ export function buildTranscriptRows(
   return coalesceTurnWork(
     withChangeSummaries(
       withTurnSummaries(
-        coalesceProminentCards(markFinalText(rows)),
+        coalesceTodoWrites(markFinalText(rows)),
         {
           pendingRun: options?.pendingRun,
           running: options?.running,
           hiddenThinkingStreamingTurns
         }
-      )
+      ),
+      {
+        pendingRun: options?.pendingRun,
+        running: options?.running
+      }
     )
   )
 }
@@ -277,26 +263,6 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
           ].join(':')
         })
         .join('|')}`
-    case 'card': {
-      const t = row.item
-      const sub = t.subagent?.length ?? 0
-      const subLast = t.subagent?.[t.subagent.length - 1]
-      const usage = t.subagentContextUsage
-      return [
-        'card',
-        row.id,
-        t.tool.status,
-        t.tool.argsPreview?.length ?? 0,
-        t.tool.content?.length ?? 0,
-        t.tool.contentTruncated ? 1 : 0,
-        t.tool.summary,
-        t.toolExpanded ?? '',
-        t.groupExpanded ?? '',
-        sub,
-        subLast ? `${subLast.kind}:${subLast.text.length}` : '',
-        usage ? `${usage.step}:${usage.used}:${usage.updatedAt}` : ''
-      ].join(':')
-    }
     case 'changes':
       return `changes:${row.id}:${row.files.map((f) => `${f.path}:${f.added}:${f.removed}`).join('|')}`
     case 'approval':
@@ -345,7 +311,6 @@ function writingToolChanges(item: ToolItem): ChangedFile[] {
 }
 
 function turnToolItems(row: TranscriptRow): ToolItem[] {
-  if (row.kind === 'card') return [row.item]
   if (row.kind === 'activity') return row.tools
   return []
 }
@@ -353,21 +318,35 @@ function turnToolItems(row: TranscriptRow): ToolItem[] {
 /**
  * Close a turn that touched files with a rollup of what changed.
  * Always emit when writes occurred so Keep/Discard has a home (single-file too).
+ * Defer the live turn's card until the run settles — mid-run it reads as
+ * "work is done" while Investigating / more tools are still going.
  */
-function withChangeSummaries(rows: TranscriptRow[]): TranscriptRow[] {
+function withChangeSummaries(
+  rows: TranscriptRow[],
+  options?: { pendingRun?: boolean; running?: boolean }
+): TranscriptRow[] {
+  const live = options?.pendingRun === true || options?.running === true
+  let lastTurnIndex = -1
+  for (const row of rows) {
+    if (row.turnIndex > lastTurnIndex) lastTurnIndex = row.turnIndex
+  }
+
   const out: TranscriptRow[] = []
   let turnIndex: number | null = null
   let totals = new Map<string, ChangedFile>()
 
   const closeTurn = (): void => {
-    // Roll up whenever the turn wrote files so Undo has a home (single-file too).
     if (turnIndex != null && totals.size >= 1) {
-      out.push({
-        kind: 'changes',
-        id: `changes:${turnIndex}`,
-        turnIndex,
-        files: [...totals.values()]
-      })
+      // Prior turns in a multi-turn run still get their receipt; only the
+      // active last turn waits until the agent stops.
+      if (!(live && turnIndex === lastTurnIndex)) {
+        out.push({
+          kind: 'changes',
+          id: `changes:${turnIndex}`,
+          turnIndex,
+          files: [...totals.values()]
+        })
+      }
     }
     totals = new Map()
   }
@@ -397,21 +376,30 @@ function withChangeSummaries(rows: TranscriptRow[]): TranscriptRow[] {
 }
 
 /**
- * Fold duplicate prominent cards that represent the same surface in one turn.
- * - todo_write: keep only the latest checklist snapshot for the turn.
+ * Fold duplicate todo_write snapshots in one turn — keep only the latest checklist.
  */
-function coalesceProminentCards(rows: TranscriptRow[]): TranscriptRow[] {
+function coalesceTodoWrites(rows: TranscriptRow[]): TranscriptRow[] {
   const lastTodoByTurn = new Map<number, string>()
   for (const row of rows) {
-    if (row.kind === 'card' && row.item.tool.name === 'todo_write') {
-      lastTodoByTurn.set(row.turnIndex, row.item.id)
+    if (row.kind === 'activity') {
+      for (const item of row.tools) {
+        if (item.tool.name === 'todo_write') {
+          lastTodoByTurn.set(row.turnIndex, item.id)
+        }
+      }
     }
   }
 
   const out: TranscriptRow[] = []
   for (const row of rows) {
-    if (row.kind === 'card' && row.item.tool.name === 'todo_write') {
-      if (lastTodoByTurn.get(row.turnIndex) !== row.item.id) continue
+    if (row.kind === 'activity') {
+      const tools = row.tools.filter(
+        (item) =>
+          item.tool.name !== 'todo_write' || lastTodoByTurn.get(row.turnIndex) === item.id
+      )
+      if (tools.length === 0) continue
+      out.push(tools.length === row.tools.length ? row : { ...row, tools })
+      continue
     }
     out.push(row)
   }
@@ -466,8 +454,6 @@ function rowTimestamps(row: TranscriptRow): { at: number | null; endedAt: number
     case 'thinking':
     case 'text':
       return { at: toMs(row.item.at), endedAt: null }
-    case 'card':
-      return { at: toMs(row.item.at), endedAt: row.item.groupTiming?.endedAt ?? null }
     case 'activity': {
       let at: number | null = null
       let endedAt: number | null = null
@@ -492,8 +478,6 @@ function isRowActive(row: TranscriptRow): boolean {
     case 'thinking':
     case 'text':
       return row.item.streaming === true || row.item.thinkingStreaming === true
-    case 'card':
-      return row.item.tool.status === 'running'
     case 'activity':
       return row.tools.some((tool) => tool.tool.status === 'running')
     case 'approval':
@@ -512,17 +496,6 @@ function isRowActive(row: TranscriptRow): boolean {
 
 /** Earliest start timestamp for the currently running tool phase, if any. */
 function phaseStartedAtFromRows(turnRows: TranscriptRow[]): number | null {
-  const runningCard = [...turnRows]
-    .reverse()
-    .find((row) => row.kind === 'card' && row.item.tool.status === 'running')
-  if (runningCard?.kind === 'card') {
-    return (
-      toMs(runningCard.item.at) ??
-      runningCard.item.groupTiming?.startedAt ??
-      null
-    )
-  }
-
   const runningActivity = [...turnRows]
     .reverse()
     .find(
@@ -680,7 +653,6 @@ function coalesceTurnWork(rows: TranscriptRow[]): TranscriptRow[] {
     const groupKey = activityGroupKey(row.tools)
     let mergedTools = [...row.tools]
     const anchorId = row.id
-    const sandwichedCards: TranscriptRow[] = []
     index += 1
 
     while (index < rows.length && rows[index]!.turnIndex === turnIndex) {
@@ -694,11 +666,6 @@ function coalesceTurnWork(rows: TranscriptRow[]): TranscriptRow[] {
       if (index >= rows.length || rows[index]!.turnIndex !== turnIndex) break
 
       const next = rows[index]!
-      if (next.kind === 'card') {
-        sandwichedCards.push(next)
-        index += 1
-        continue
-      }
       if (next.kind === 'activity' && activityGroupKey(next.tools) === groupKey) {
         mergedTools.push(...next.tools)
         index += 1
@@ -713,7 +680,6 @@ function coalesceTurnWork(rows: TranscriptRow[]): TranscriptRow[] {
       tools: mergedTools,
       turnIndex
     })
-    for (const card of sandwichedCards) out.push(card)
   }
 
   return out

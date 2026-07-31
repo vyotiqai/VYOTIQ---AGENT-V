@@ -34,19 +34,6 @@ function textRow(streaming: boolean): TranscriptRow {
   }
 }
 
-function cardRow(name: string, status: 'running' | 'done', summary: string): TranscriptRow {
-  return {
-    kind: 'card',
-    id: 'card-1',
-    turnIndex: 0,
-    item: {
-      kind: 'tool',
-      id: 't1',
-      tool: { id: 't1', name, summary, status }
-    }
-  }
-}
-
 function activityRow(
   tools: Array<{ id: string; name: string; summary: string; status: 'running' | 'done' }>
 ): TranscriptRow {
@@ -77,16 +64,16 @@ describe('deriveRunActivity', () => {
     expect(phase).toEqual({ kind: 'tool', label: 'Grepping', detail: 'foo' })
   })
 
-  it('prefers a prominent running card over compact activity and writing', () => {
+  it('prefers a running edit activity over compact read activity and writing', () => {
     const phase = deriveRunActivity([
       activityRow([{ id: 't1', name: 'read', summary: 'a.ts', status: 'running' }]),
-      cardRow('edit', 'running', 'src/foo.ts'),
+      activityRow([{ id: 't2', name: 'edit', summary: 'src/foo.ts', status: 'running' }]),
       textRow(true)
     ])
     expect(phase).toEqual({ kind: 'tool', label: 'Editing', detail: 'foo.ts' })
   })
 
-  it('uses compact activity labels when no prominent card is running', () => {
+  it('uses compact activity labels when tools are running', () => {
     const phase = deriveRunActivity([
       activityRow([{ id: 't1', name: 'grep', summary: 'pattern', status: 'running' }])
     ])
@@ -124,6 +111,23 @@ describe('deriveRunActivity', () => {
       }
     ])
     expect(phase).toEqual({ kind: 'awaiting_approval' })
+  })
+
+  it('reports awaiting_question when a question row is pending', () => {
+    const phase = deriveRunActivity([
+      {
+        kind: 'question',
+        id: 'question:1',
+        turnIndex: 0,
+        question: {
+          requestId: 'q-1',
+          toolCallId: 't1',
+          questions: [{ id: 'q1', prompt: 'Continue?', type: 'boolean' }]
+        }
+      }
+    ])
+    expect(phase).toEqual({ kind: 'awaiting_question' })
+    expect(formatRunActivityLabel({ kind: 'awaiting_question' })).toBe('Awaiting answer')
   })
 
   it('reports planning when pendingRun is true with no rows yet', () => {

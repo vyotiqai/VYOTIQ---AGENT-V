@@ -1,6 +1,10 @@
-import { readdirSync } from 'fs'
+import { existsSync, readdirSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { gitignoreMatcherForDir } from './gitignore'
+import {
+  canonicalizeWorkspacePath,
+  isWindowsStylePath
+} from '../../../shared/utils/workspacePath'
 
 /** Directories never worth walking, even when .gitignore does not mention them. */
 export const IGNORED_DIRS = new Set([
@@ -71,9 +75,31 @@ export type WalkedFile = {
   rel: string
 }
 
+function pathKey(path: string): string {
+  return isWindowsStylePath(path) ? path.toLowerCase() : path
+}
+
+function isInsideRoot(resolved: string, realRoot: string): boolean {
+  const rootKey = pathKey(canonicalizeWorkspacePath(realRoot))
+  const resolvedKey = pathKey(canonicalizeWorkspacePath(resolved))
+  const sep = isWindowsStylePath(realRoot) ? '\\' : '/'
+  return resolvedKey === rootKey || resolvedKey.startsWith(rootKey + sep)
+}
+
+/** True when the path exists and its realpath stays inside the workspace root. */
+function isContainedInWorkspace(full: string, realRoot: string): boolean {
+  try {
+    if (!existsSync(full)) return false
+    return isInsideRoot(realpathSync(full), realRoot)
+  } catch {
+    return false
+  }
+}
+
 /**
  * Breadth-first workspace walk that honours .gitignore. Shared by search, glob
  * and grep so all three agree on what counts as part of the project.
+ * Symlinks are skipped so walks cannot escape via links (same rule as safePath).
  */
 export async function collectWorkspaceFiles(
   workspaceRoot: string,
@@ -81,7 +107,8 @@ export async function collectWorkspaceFiles(
   signal?: AbortSignal
 ): Promise<WalkedFile[]> {
   const files: WalkedFile[] = []
-  const queue: Array<{ dir: string; relDir: string }> = [{ dir: workspaceRoot, relDir: '' }]
+  const realRoot = realpathSync(canonicalizeWorkspacePath(workspaceRoot))
+  const queue: Array<{ dir: string; relDir: string }> = [{ dir: realRoot, relDir: '' }]
   let scanned = 0
 
   while (queue.length > 0) {
@@ -106,12 +133,15 @@ export async function collectWorkspaceFiles(
       throwIfAborted(signal)
       if (files.length >= cap) break
       if (IGNORED_DIRS.has(entry.name)) continue
+      // Never follow symlinks — a link inside the tree can point outside.
+      if (entry.isSymbolicLink()) continue
       if (dirMatcher.shouldIgnoreEntry(entry.name, entry.isDirectory())) continue
       const full = join(next.dir, entry.name)
       const childRel = (next.relDir ? `${next.relDir}/${entry.name}` : entry.name).replace(
         /\\/g,
         '/'
       )
+      if (!isContainedInWorkspace(full, realRoot)) continue
       if (entry.isDirectory()) {
         queue.push({ dir: full, relDir: childRel })
       } else if (entry.isFile()) {

@@ -497,21 +497,62 @@ const subagentArgs = z.object({
     .optional()
 })
 
-const askQuestionArgs = z.object({
-  question: z.string().min(1).describe('Clear question for the user'),
+const askQuestionItemArgs = z.object({
+  id: z.string().min(1).describe('Stable id used to match the answer'),
+  prompt: z.string().min(1).describe('Question text shown to the user'),
+  type: z
+    .enum(['single', 'multi', 'boolean', 'text'])
+    .describe('single=one option; multi=many; boolean=yes/no; text=freeform'),
   options: z
     .array(z.string().min(1))
-    .describe('Fixed choices; omit for a free-text answer')
-    .optional(),
-  allowMultiple: z
-    .boolean()
-    .describe('When options are set, allow selecting more than one (default false)')
+    .min(2)
+    .describe('Required for single/multi (at least 2 choices)')
     .optional(),
   allowCustom: z
     .boolean()
-    .describe('When options are set, allow a custom text answer (default true)')
+    .describe('For single/multi, allow an Other… text answer (default false)')
     .optional()
 })
+
+const askQuestionArgs = z
+  .object({
+    title: z
+      .string()
+      .min(1)
+      .describe('Optional form title when asking multiple questions')
+      .optional(),
+    questions: z
+      .array(askQuestionItemArgs)
+      .min(1)
+      .max(8)
+      .describe('Typed question form (1–8 items). Prefer this over legacy fields.')
+      .optional(),
+    question: z
+      .string()
+      .min(1)
+      .describe('Legacy single-question text when questions[] is omitted')
+      .optional(),
+    options: z
+      .array(z.string().min(1))
+      .describe('Legacy fixed choices for a single question')
+      .optional(),
+    allowMultiple: z
+      .boolean()
+      .describe('Legacy: allow selecting more than one option (default false)')
+      .optional(),
+    allowCustom: z
+      .boolean()
+      .describe('Legacy: allow a custom text answer with options (default true)')
+      .optional()
+  })
+  .superRefine((val, ctx) => {
+    if ((!val.questions || val.questions.length === 0) && !val.question?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Provide questions[] or question'
+      })
+    }
+  })
 
 const switchModeArgs = z.object({
   mode: z
@@ -708,7 +749,7 @@ const TOOL_REGISTRY = {
   },
   ask_question: {
     description:
-      'Pause and ask the user a structured question in the transcript. Blocks until they answer.',
+      'Pause and ask the user a typed question form in the transcript (single, multi, boolean, text; up to 8 questions). Blocks until they answer.',
     schema: askQuestionArgs
   },
   switch_mode: {

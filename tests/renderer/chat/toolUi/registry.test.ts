@@ -56,4 +56,23 @@ describe('tool UI registry coverage', () => {
       })
     ).toBe(false)
   })
+
+  it('does not treat chip-only ask_question/switch_mode as expandable', () => {
+    const ask: UiToolRow = {
+      id: 'a1',
+      name: 'ask_question',
+      summary: '',
+      status: 'done',
+      content: ''
+    }
+    const mode: UiToolRow = {
+      id: 'm1',
+      name: 'switch_mode',
+      summary: '',
+      status: 'done',
+      content: ''
+    }
+    expect(getToolEntry('ask_question').hasBody(ask)).toBe(false)
+    expect(getToolEntry('switch_mode').hasBody(mode)).toBe(false)
+  })
 })

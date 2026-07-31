@@ -3,42 +3,122 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { AskQuestionCard } from '@renderer/features/chat/components/AskQuestionCard'
+import { AskQuestionPanel } from '@renderer/features/chat/components/AskQuestionPanel'
+import type { UiAgentQuestion } from '@shared/transcript'
 
 afterEach(() => {
   cleanup()
 })
 
-describe('AskQuestionCard', () => {
-  it('submits a selected option', async () => {
+function baseQuestion(partial: Partial<UiAgentQuestion> & Pick<UiAgentQuestion, 'questions'>): UiAgentQuestion {
+  return {
+    requestId: 'q1',
+    toolCallId: 't1',
+    ...partial
+  }
+}
+
+describe('AskQuestionPanel', () => {
+  it('submits a single-choice selection', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined)
     render(
-      <AskQuestionCard
-        question={{
-          requestId: 'q1',
-          toolCallId: 't1',
-          question: 'Which path?',
-          options: ['A', 'B']
-        }}
+      <AskQuestionPanel
+        question={baseQuestion({
+          questions: [
+            { id: 'q1', prompt: 'Which path?', type: 'single', options: ['A', 'B'] }
+          ]
+        })}
         onSubmit={onSubmit}
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'A' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'A' }))
     fireEvent.click(screen.getByRole('button', { name: 'Submit answer' }))
 
-    expect(onSubmit).toHaveBeenCalledWith('q1', ['A'])
+    expect(onSubmit).toHaveBeenCalledWith('q1', [{ questionId: 'q1', values: ['A'] }])
     expect(await screen.findByRole('button', { name: 'Answered' })).toBeTruthy()
+  })
+
+  it('submits multi-select values', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined)
+    render(
+      <AskQuestionPanel
+        question={baseQuestion({
+          questions: [
+            {
+              id: 'q1',
+              prompt: 'Pick features',
+              type: 'multi',
+              options: ['A', 'B', 'C']
+            }
+          ]
+        })}
+        onSubmit={onSubmit}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'A' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'C' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Submit answer' }))
+
+    expect(onSubmit).toHaveBeenCalledWith('q1', [{ questionId: 'q1', values: ['A', 'C'] }])
+  })
+
+  it('submits a boolean Yes/No answer', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined)
+    render(
+      <AskQuestionPanel
+        question={baseQuestion({
+          questions: [{ id: 'q1', prompt: 'Continue?', type: 'boolean' }]
+        })}
+        onSubmit={onSubmit}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Yes' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Submit answer' }))
+
+    expect(onSubmit).toHaveBeenCalledWith('q1', [{ questionId: 'q1', values: ['Yes'] }])
+  })
+
+  it('requires every question in a multi-question form', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined)
+    render(
+      <AskQuestionPanel
+        question={baseQuestion({
+          title: 'Setup',
+          questions: [
+            { id: 'a', prompt: 'Mode?', type: 'single', options: ['Ask', 'Agent'] },
+            { id: 'b', prompt: 'Notes', type: 'text' }
+          ]
+        })}
+        onSubmit={onSubmit}
+      />
+    )
+
+    expect(screen.getByText('Setup')).toBeTruthy()
+    fireEvent.click(screen.getByRole('radio', { name: 'Ask' }))
+    expect(screen.getByRole('button', { name: 'Submit answer' }).hasAttribute('disabled')).toBe(
+      true
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Your answer…'), {
+      target: { value: 'ship it' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Submit answer' }))
+
+    expect(onSubmit).toHaveBeenCalledWith('q1', [
+      { questionId: 'a', values: ['Ask'] },
+      { questionId: 'b', values: ['ship it'] }
+    ])
   })
 
   it('disables submit when onSubmit is missing', () => {
     render(
-      <AskQuestionCard
-        question={{
-          requestId: 'q1',
-          toolCallId: 't1',
-          question: 'No handler?'
-        }}
+      <AskQuestionPanel
+        question={baseQuestion({
+          questions: [{ id: 'q1', prompt: 'No handler?', type: 'text' }]
+        })}
       />
     )
 
@@ -54,12 +134,10 @@ describe('AskQuestionCard', () => {
   it('restores idle after submit failure', async () => {
     const onSubmit = vi.fn().mockRejectedValue(new Error('boom'))
     render(
-      <AskQuestionCard
-        question={{
-          requestId: 'q1',
-          toolCallId: 't1',
-          question: 'Retry?'
-        }}
+      <AskQuestionPanel
+        question={baseQuestion({
+          questions: [{ id: 'q1', prompt: 'Retry?', type: 'text' }]
+        })}
         onSubmit={onSubmit}
       />
     )
@@ -74,5 +152,18 @@ describe('AskQuestionCard', () => {
     expect(screen.getByRole('button', { name: 'Submit answer' }).hasAttribute('disabled')).toBe(
       false
     )
+  })
+
+  it('hides custom text unless allowCustom is set', () => {
+    render(
+      <AskQuestionPanel
+        question={baseQuestion({
+          questions: [
+            { id: 'q1', prompt: 'Pick', type: 'single', options: ['A', 'B'] }
+          ]
+        })}
+      />
+    )
+    expect(screen.queryByPlaceholderText('Other…')).toBeNull()
   })
 })

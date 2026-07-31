@@ -552,7 +552,9 @@ export async function* runAgent(input: {
       })
       const allToolDefs =
         modelInfo.supportsTools !== false
-          ? filterToolDefsForMode(agentMode, [...AGENT_TOOLS, ...mcpToolDefs])
+          ? filterToolDefsForMode(agentMode, [...AGENT_TOOLS, ...mcpToolDefs], {
+              autoModeSwitch: settings.autoModeSwitch
+            })
           : []
       const toolBudget = allocateBudget(modelInfo).tools
       const trimmedTools = trimToolsToBudget(allToolDefs, toolBudget)
@@ -637,7 +639,8 @@ export async function* runAgent(input: {
         compactionTriggerRatio: settings.compactionTriggerRatio,
         skillsSection,
         pluginRulesSection,
-        modeSection: modeSectionMarkdown(agentMode) ?? undefined,
+        modeSection:
+          modeSectionMarkdown(agentMode, { autoModeSwitch: settings.autoModeSwitch }) ?? undefined,
         loopHint: combineLoopHints(omittedMcpHint),
         providerId,
         provider,
@@ -742,7 +745,9 @@ export async function* runAgent(input: {
             compactionTriggerRatio: Math.min(settings.compactionTriggerRatio, 0.5),
             skillsSection,
             pluginRulesSection,
-            modeSection: modeSectionMarkdown(agentMode) ?? undefined,
+            modeSection:
+              modeSectionMarkdown(agentMode, { autoModeSwitch: settings.autoModeSwitch }) ??
+              undefined,
             loopHint: combineLoopHints(omittedMcpHint),
             providerId,
             provider,

@@ -14,8 +14,10 @@ const REQUEST: AgentQuestionRequest = {
   requestId: 'req-1',
   runId: 'run-1',
   toolCallId: 'tool-1',
-  question: 'Which approach?'
+  questions: [{ id: 'q1', prompt: 'Which approach?', type: 'text' }]
 }
+
+const ANSWER = [{ questionId: 'q1', values: ['Option A'] }]
 
 describe('agentQuestion', () => {
   beforeEach(() => {
@@ -37,10 +39,10 @@ describe('agentQuestion', () => {
     const answers = askQuestionThroughRenderer(REQUEST, new AbortController().signal)
     await Promise.resolve()
     expect(seen).toHaveLength(1)
-    expect(seen[0]!.question).toBe('Which approach?')
+    expect(seen[0]!.questions[0]!.prompt).toBe('Which approach?')
 
-    expect(resolveAgentQuestion({ requestId: 'req-1', runId: 'run-1', answers: ['Option A'] })).toBe(true)
-    await expect(answers).resolves.toEqual(['Option A'])
+    expect(resolveAgentQuestion({ requestId: 'req-1', runId: 'run-1', answers: ANSWER })).toBe(true)
+    await expect(answers).resolves.toEqual(ANSWER)
   })
 
   it('releases a waiting prompt when the run is cancelled', async () => {
@@ -76,8 +78,14 @@ describe('agentQuestion', () => {
     })
     expect(seen).toHaveLength(2)
 
-    expect(resolveAgentQuestion({ requestId: 'req-1', runId: 'run-1', answers: ['yes'] })).toBe(true)
-    await expect(pending).resolves.toEqual(['yes'])
+    expect(
+      resolveAgentQuestion({
+        requestId: 'req-1',
+        runId: 'run-1',
+        answers: [{ questionId: 'q1', values: ['yes'] }]
+      })
+    ).toBe(true)
+    await expect(pending).resolves.toEqual([{ questionId: 'q1', values: ['yes'] }])
     expect(listPendingAgentQuestions('run-1')).toEqual([])
   })
 
@@ -86,10 +94,20 @@ describe('agentQuestion', () => {
     const pending = askQuestionThroughRenderer(REQUEST, new AbortController().signal)
     await Promise.resolve()
     expect(
-      resolveAgentQuestion({ requestId: 'req-1', runId: 'other-run', answers: ['no'] })
+      resolveAgentQuestion({
+        requestId: 'req-1',
+        runId: 'other-run',
+        answers: [{ questionId: 'q1', values: ['no'] }]
+      })
     ).toBe(false)
-    expect(resolveAgentQuestion({ requestId: 'req-1', runId: 'run-1', answers: ['yes'] })).toBe(true)
-    await expect(pending).resolves.toEqual(['yes'])
+    expect(
+      resolveAgentQuestion({
+        requestId: 'req-1',
+        runId: 'run-1',
+        answers: [{ questionId: 'q1', values: ['yes'] }]
+      })
+    ).toBe(true)
+    await expect(pending).resolves.toEqual([{ questionId: 'q1', values: ['yes'] }])
   })
 
   it('rejects after the question timeout', async () => {
@@ -102,7 +120,6 @@ describe('agentQuestion', () => {
       await expectReject
     } finally {
       vi.useRealTimers()
-      resetAgentQuestionForTests()
     }
   })
 })

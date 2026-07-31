@@ -94,10 +94,7 @@ export function collectTurnFileDiffs(
   }
 
   for (const row of rows) {
-    if (row.kind === 'card') {
-      if (row.item.tool.status !== 'done') continue
-      mergeToolDiffs(ensure(row.turnIndex), diffLinesByPath(row.item.tool))
-    } else if (row.kind === 'activity') {
+    if (row.kind === 'activity') {
       for (const toolItem of row.tools) {
         if (toolItem.tool.status !== 'done') continue
         mergeToolDiffs(ensure(row.turnIndex), diffLinesByPath(toolItem.tool))
