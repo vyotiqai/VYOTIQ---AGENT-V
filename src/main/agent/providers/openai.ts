@@ -27,7 +27,8 @@ import { fetchWithRetry } from './fetchWithRetry'
 import {
   formatProviderHttpError,
   parseOpenRouterAffordableOutputTokens,
-  scrubProviderErrorSnippet
+  scrubProviderErrorSnippet,
+  shouldRetryOpenRouterCompatBody
 } from './httpErrors'
 
 export function openAiCompatMessageReasoningDelta(
@@ -559,11 +560,12 @@ export function createOpenAiCompatibleProvider(
           continue
         }
 
-        // OpenRouter/OpenAI-compat 400: one fallback without strict tools, then
+        // OpenRouter/OpenAI-compat: one fallback without strict tools, then
         // without reasoning — mirrors Anthropic's 400 field-stripping retries.
+        // Also retry on 404 "no endpoints" (privacy/params often report as 404).
         if (
-          res.status === 400 &&
-          (id === 'openrouter' || opts.openRouterReasoning)
+          (id === 'openrouter' || opts.openRouterReasoning) &&
+          shouldRetryOpenRouterCompatBody(res.status, text)
         ) {
           if (bodyOverrides?.strictTools !== false && req.tools.length > 0 && !bodyOverrides) {
             bodyOverrides = { strictTools: false }

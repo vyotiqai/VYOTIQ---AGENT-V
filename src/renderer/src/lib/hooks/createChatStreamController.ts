@@ -496,13 +496,23 @@ function findToolResultRowIndex(
   return -1
 }
 
-function errorFromPersisted(events: PersistedEvent[]): string | null {
+function errorMessageFromPersisted(events: PersistedEvent[]): string | null {
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i]?.event
     if (!isAgentEvent(event)) continue
     if (event.type === 'error') return event.message
   }
   return null
+}
+
+function errorFromPersisted(
+  events: PersistedEvent[],
+  dismissedErrorMessage: string | null = null
+): string | null {
+  const message = errorMessageFromPersisted(events)
+  if (!message) return null
+  if (dismissedErrorMessage && dismissedErrorMessage === message) return null
+  return message
 }
 
 /** A turn that ended before the work was finished, offering a Continue affordance. */
@@ -567,7 +577,11 @@ function modeFromPersisted(events: PersistedEvent[]): AgentInteractionMode | nul
   return null
 }
 
-function hydrateFromDisk(kept: ChatMessage[], events: PersistedEvent[]) {
+function hydrateFromDisk(
+  kept: ChatMessage[],
+  events: PersistedEvent[],
+  dismissedErrorMessage: string | null = null
+) {
   const items = applyEventTimestamps(
     applyPersistedLiveTools(messagesToUiItems(kept), events),
     events
@@ -583,7 +597,7 @@ function hydrateFromDisk(kept: ChatMessage[], events: PersistedEvent[]) {
   })
   return {
     messages: kept,
-    error: errorFromPersisted(events),
+    error: errorFromPersisted(events, dismissedErrorMessage),
     incomplete: incompleteFromPersisted(events),
     contextUsage: summarizeContextUsageFromEvents(events),
     items: finalizeHydratedTranscript(items, events),
@@ -742,6 +756,8 @@ export function createChatStreamController(
   let completedTurnSeq = 0
   let runningTurnSeq = 0
   let lastRunErrorMessage: string | null = null
+  /** Persisted error message dismissed by the reader; hydrate skips restoring it. */
+  let dismissedErrorMessage: string | null = null
   let usageTotals: StepUsageTotals = emptyStepUsageTotals()
   let streamPatchRaf: number | null = null
   let pendingTextDelta = ''
@@ -1039,6 +1055,8 @@ export function createChatStreamController(
     runId = null
     contentRunId = null
     ignoreStreamEvents = false
+    dismissedErrorMessage = null
+    lastRunErrorMessage = null
     if (activeInvokeId != null) supersededInvokeIds.add(activeInvokeId)
     activeInvokeId = null
     usageTotals = emptyStepUsageTotals()
@@ -1158,7 +1176,7 @@ export function createChatStreamController(
           })
         : state.pendingFollowUps
     patch({
-      ...hydrateFromDisk(kept, events),
+      ...hydrateFromDisk(kept, events, dismissedErrorMessage),
       pendingFollowUps: hydratedPending,
       runId: id,
       pendingRun: false,
@@ -1560,6 +1578,7 @@ export function createChatStreamController(
       onAgentModeChange?.(event.mode)
     } else if (event.type === 'error') {
       lastRunErrorMessage = event.message
+      dismissedErrorMessage = null
       logger.warn('Agent run error', {
         scope: 'chat',
         correlationId: event.runId,
@@ -1714,6 +1733,9 @@ export function createChatStreamController(
         const unappliedItemIds = dropUnapplied
           ? new Set(state.pendingFollowUps.map((entry) => entry.itemId))
           : null
+        if (event.status === 'error' && !state.error) {
+          dismissedErrorMessage = null
+        }
         patch({
           pendingRun: false,
           running: false,
@@ -2102,7 +2124,7 @@ export function createChatStreamController(
     const mode = modeFromPersisted(events)
     if (mode) onAgentModeChange?.(mode)
     patch({
-      ...hydrateFromDisk(kept, events),
+      ...hydrateFromDisk(kept, events, dismissedErrorMessage),
       ...(eventsLoadError ? { error: eventsLoadError } : {}),
       runId: null,
       pendingRun: false,
@@ -2193,7 +2215,7 @@ export function createChatStreamController(
     const mode = modeFromPersisted(rows)
     if (mode) onAgentModeChange?.(mode)
     patch({
-      ...hydrateFromDisk(kept, rows),
+      ...hydrateFromDisk(kept, rows, dismissedErrorMessage),
       collapsedTurnIndices: []
     })
   }
@@ -2309,7 +2331,7 @@ export function createChatStreamController(
     const mode = modeFromPersisted(events)
     if (mode) onAgentModeChange?.(mode)
     patch({
-      ...hydrateFromDisk(kept, events),
+      ...hydrateFromDisk(kept, events, dismissedErrorMessage),
       pendingFollowUps: hydratedPending,
       ...(eventsLoadError ? { error: eventsLoadError } : {})
     })
@@ -2480,6 +2502,7 @@ export function createChatStreamController(
   }
 
   const clearError = (): void => {
+    if (state.error) dismissedErrorMessage = state.error
     patch({ error: null })
   }
 

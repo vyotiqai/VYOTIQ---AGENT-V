@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   formatProviderHttpError,
-  parseOpenRouterAffordableOutputTokens
+  isOpenRouterNoEndpointsError,
+  parseOpenRouterAffordableOutputTokens,
+  shouldRetryOpenRouterCompatBody
 } from '@main/agent/providers/httpErrors'
 
 const OPENROUTER_402 = JSON.stringify({
@@ -12,6 +14,14 @@ const OPENROUTER_402 = JSON.stringify({
   }
 })
 
+const OPENROUTER_NO_ENDPOINTS = JSON.stringify({
+  error: {
+    message:
+      'No endpoints available matching your guardrail restrictions and data policy. Configure: https://openrouter.ai/settings/privacy',
+    code: 404
+  }
+})
+
 describe('formatProviderHttpError', () => {
   it('formats OpenRouter 402 with affordable token hint', () => {
     const msg = formatProviderHttpError(402, OPENROUTER_402, 'openrouter')
@@ -19,6 +29,14 @@ describe('formatProviderHttpError', () => {
     expect(msg).toMatch(/54,013/)
     expect(msg).toMatch(/openrouter\.ai\/settings\/credits/)
     expect(msg).not.toMatch(/HTTP 402/)
+  })
+
+  it('enriches OpenRouter no-endpoints / data-policy 404', () => {
+    const msg = formatProviderHttpError(404, OPENROUTER_NO_ENDPOINTS, 'openrouter')
+    expect(msg).toMatch(/privacy\/guardrail/i)
+    expect(msg).toMatch(/openrouter\.ai\/settings\/privacy/)
+    expect(msg).toMatch(/another model/i)
+    expect(msg).not.toMatch(/HTTP 404/)
   })
 
   it('extracts provider JSON message for generic errors', () => {
@@ -61,5 +79,38 @@ describe('formatProviderHttpError', () => {
 describe('parseOpenRouterAffordableOutputTokens', () => {
   it('parses affordable output tokens from 402 body', () => {
     expect(parseOpenRouterAffordableOutputTokens(OPENROUTER_402)).toBe(54013)
+  })
+})
+
+describe('shouldRetryOpenRouterCompatBody', () => {
+  it('retries all OpenRouter HTTP 400s', () => {
+    expect(shouldRetryOpenRouterCompatBody(400, '{"error":{"message":"bad request"}}')).toBe(true)
+  })
+
+  it('retries 404 only for no-endpoints / data-policy messages', () => {
+    expect(shouldRetryOpenRouterCompatBody(404, OPENROUTER_NO_ENDPOINTS)).toBe(true)
+    expect(
+      shouldRetryOpenRouterCompatBody(
+        404,
+        JSON.stringify({ error: { message: 'Model not found' } })
+      )
+    ).toBe(false)
+  })
+
+  it('does not retry unrelated statuses', () => {
+    expect(shouldRetryOpenRouterCompatBody(429, OPENROUTER_NO_ENDPOINTS)).toBe(false)
+    expect(shouldRetryOpenRouterCompatBody(500, OPENROUTER_NO_ENDPOINTS)).toBe(false)
+  })
+})
+
+describe('isOpenRouterNoEndpointsError', () => {
+  it('detects guardrail / data-policy wording on 404', () => {
+    expect(isOpenRouterNoEndpointsError(404, OPENROUTER_NO_ENDPOINTS)).toBe(true)
+  })
+
+  it('rejects unrelated 404 bodies', () => {
+    expect(
+      isOpenRouterNoEndpointsError(404, JSON.stringify({ error: { message: 'Not found' } }))
+    ).toBe(false)
   })
 })

@@ -46,6 +46,26 @@ export function parseOpenRouterAffordableOutputTokens(body: string): number | un
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined
 }
 
+const OPENROUTER_NO_ENDPOINTS_RE =
+  /no endpoints?\s+(?:available\s+)?(?:found\s+)?matching|guardrail restrictions|data policy|routing requirements/i
+
+/** True when OpenRouter reports zero matching endpoints (privacy/guardrails/params). */
+export function isOpenRouterNoEndpointsError(status: number, body: string): boolean {
+  if (status !== 404 && status !== 400) return false
+  const message = parseProviderErrorMessage(body) ?? body
+  return OPENROUTER_NO_ENDPOINTS_RE.test(message)
+}
+
+/**
+ * Whether OpenRouter/OpenAI-compat should strip strict tools then reasoning and retry.
+ * Always for HTTP 400; for 404 only when the body looks like a no-endpoints routing miss.
+ */
+export function shouldRetryOpenRouterCompatBody(status: number, body: string): boolean {
+  if (status === 400) return true
+  if (status === 404) return isOpenRouterNoEndpointsError(status, body)
+  return false
+}
+
 const PROVIDER_SECRET_RE =
   /\b(?:sk-[a-zA-Z0-9_-]+|Bearer\s+[a-zA-Z0-9._\-+=\/]+|api[_-]?key["\s:=]+[a-zA-Z0-9._\-]+)/gi
 
@@ -80,6 +100,15 @@ export function formatProviderHttpError(
       )
     }
     return scrubbedMessage ?? 'Insufficient provider credits for this request.'
+  }
+
+  if (
+    providerId === 'openrouter' &&
+    isOpenRouterNoEndpointsError(status, body)
+  ) {
+    return scrubProviderErrorText(
+      'No OpenRouter endpoints match your privacy/guardrail settings for this model. Adjust https://openrouter.ai/settings/privacy (or try another model). Thinking or strict tool requirements can also shrink available endpoints.'
+    )
   }
 
   if (status === 401 || status === 403) {

@@ -462,6 +462,47 @@ describe('useChatStream', () => {
     expect(result.current.error).toBe('Provider exploded')
   })
 
+  it('does not restore a dismissed error banner on rehydrate', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      result.current.hydrateTranscript([{ role: 'user', content: 'x' }], [
+        {
+          at: '2026-07-24T12:00:00.000Z',
+          event: {
+            type: 'error',
+            runId: 'run-1',
+            message: 'Provider exploded',
+            code: 'PROVIDER_STREAM'
+          }
+        }
+      ])
+    })
+
+    expect(result.current.error).toBe('Provider exploded')
+
+    await act(async () => {
+      result.current.clearError()
+    })
+    expect(result.current.error).toBeNull()
+
+    await act(async () => {
+      result.current.hydrateTranscript([{ role: 'user', content: 'x' }], [
+        {
+          at: '2026-07-24T12:00:00.000Z',
+          event: {
+            type: 'error',
+            runId: 'run-1',
+            message: 'Provider exploded',
+            code: 'PROVIDER_STREAM'
+          }
+        }
+      ])
+    })
+
+    expect(result.current.error).toBeNull()
+  })
+
   it('sets a fallback error when status is error without an error event', async () => {
     const { result } = renderHook(() => useChatStream('/ws'))
 

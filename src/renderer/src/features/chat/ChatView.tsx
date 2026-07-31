@@ -705,7 +705,10 @@ export function ChatView({
     model,
     running,
     disabled: !hasWorkspace,
-    hasTranscript: !showHero,
+    hasTranscript: liveItems.some(
+      (item) =>
+        (item.kind === 'message' && item.role === 'assistant') || item.kind === 'tool'
+    ),
     hasWorkspace,
     ollamaBaseUrl,
     modelsRefreshKey,
