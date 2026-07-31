@@ -90,6 +90,7 @@ import {
   updateStatus,
   flushEventAppends,
   flushMessageAppends,
+  takeMessageAppendFailureNotice,
   flushStatusWrites,
   loadMessagesAsync
 } from './state'
@@ -212,6 +213,26 @@ function* applyDrainedFollowUps(
     ids,
     messages: applied
   }
+  appendEvent(runDir, ev)
+  yield ev
+}
+
+/** Surface the first mid-run messages.jsonl append failure as a run error event. */
+function* emitMessageAppendFailureNotice(
+  runId: string,
+  runDir: string,
+  invokeId: number
+): Generator<AgentEvent> {
+  const err = takeMessageAppendFailureNotice(runDir)
+  if (!err) return
+  const message = `Failed to persist a chat message: ${formatError(err)}`
+  logger.error(message, {
+    scope: 'agent',
+    code: 'PERSIST',
+    correlationId: runId,
+    err
+  })
+  const ev: AgentEvent = { type: 'error', runId, invokeId, message, code: 'PERSIST' }
   appendEvent(runDir, ev)
   yield ev
 }
@@ -519,6 +540,14 @@ export async function* runAgent(input: {
     let toolsJsonEstimate = 0
     let omittedMcpHint: string | undefined
     let lastMcpRefreshFp = ''
+    let lastMcpCatalogFp = ''
+    /** MCP tool names in the current step's provider catalog (post budget trim). */
+    let stepMcpToolNames = new Set<string>()
+    /** Agent-requested MCP tools to prefer in trimToolsToBudget on later steps. */
+    const runPinnedMcpToolNames = new Set<string>()
+    const invalidateMcpToolCatalogCache = (): void => {
+      lastMcpCatalogFp = ''
+    }
 
     const refreshMcpToolsForStep = async (): Promise<void> => {
       // Session map unions every open workspace so Force-off only disconnects when
@@ -543,6 +572,13 @@ export async function* runAgent(input: {
             }
           ])
       )
+      const pinnedKey = [...runPinnedMcpToolNames].sort().join(',')
+      const catalogFp = `${refreshFp}::${agentMode}::${settings.autoModeSwitch ? 1 : 0}::${modelInfo.supportsTools === false ? 0 : 1}::${pinnedKey}`
+      if (configUnchanged && catalogFp === lastMcpCatalogFp && lastMcpCatalogFp !== '') {
+        // Fingerprint + mode + pins + tools support unchanged — reuse prior trimmed defs.
+        return
+      }
+      lastMcpCatalogFp = catalogFp
       const mcpToolDefs = listMcpToolDefinitions().filter((t) => {
         const parsed = parseMcpToolName(t.name)
         if (parsed == null || !runEnabledMcpIds.has(parsed.serverId)) return false
@@ -557,7 +593,9 @@ export async function* runAgent(input: {
             })
           : []
       const toolBudget = allocateBudget(modelInfo).tools
-      const trimmedTools = trimToolsToBudget(allToolDefs, toolBudget)
+      const trimmedTools = trimToolsToBudget(allToolDefs, toolBudget, {
+        pinnedMcpNames: runPinnedMcpToolNames
+      })
       toolDefs = trimmedTools.tools.map((t) => ({
         name: t.name,
         description: t.description,
@@ -565,6 +603,9 @@ export async function* runAgent(input: {
       }))
       toolsJsonEstimate = trimmedTools.estimate
       omittedMcpHint = loopHintForOmittedMcpTools(trimmedTools.omittedMcpNames)
+      stepMcpToolNames = new Set(
+        toolDefs.map((t) => t.name).filter((n) => parseMcpToolName(n) != null)
+      )
     }
 
     await refreshMcpToolsForStep()
@@ -581,6 +622,7 @@ export async function* runAgent(input: {
       if (controller.signal.aborted) break
       // Inject any queued user follow-ups before the next model call.
       yield* applyDrainedFollowUps(runId, runDir, messages)
+      yield* emitMessageAppendFailureNotice(runId, runDir, invokeId)
       step++
       const stepSoftAbort = new AbortController()
       setStreamInterrupt(runId, stepSoftAbort)
@@ -1000,10 +1042,12 @@ export async function* runAgent(input: {
                 contentWindow: effectiveContentWindow,
                 compactionTrigger,
                 source: 'provider',
-                ...(assembled.overflow ? { overflow: true } : {}),
-                layers: assembled.layers
+                ...(assembled.overflow ? { overflow: true } : {})
+                // Omit pre-stream layers — they are estimate splits and mislead
+                // when paired with provider-reported inputTokens.
               }
-              // Live UI still needs context_usage; skip a second disk write for the same step.
+              // Persist so reload/hydration keeps provider-accurate meter (latest wins per step).
+              appendEvent(runDir, providerContextEv)
               yield providerContextEv
               if (chunk.usage.cachedInputTokens && chunk.usage.cachedInputTokens > 0) {
                 logger.info('Prompt cache hit', {
@@ -1408,8 +1452,12 @@ export async function* runAgent(input: {
           agentMode = mode
           writeStatus({ mode })
         },
+        autoModeSwitch: settings.autoModeSwitch,
         runEnabledMcpIds,
         mcpToolPolicies,
+        stepMcpToolNames,
+        runPinnedMcpToolNames,
+        invalidateMcpToolCatalogCache,
         emitLiveEvent: (ev: AgentEvent) => {
           liveEvents.push(ev)
           if (
@@ -1452,6 +1500,9 @@ export async function* runAgent(input: {
           (hasPendingFollowUps(runId) || stepSoftAbort.signal.aborted)
         ) {
           toolsSteered = true
+          // Ensure in-flight tools see soft-abort even if enqueue raced before
+          // streamInterrupt was bound, or AbortSignal.any is unavailable.
+          if (!stepSoftAbort.signal.aborted) stepSoftAbort.abort()
         }
         await Promise.race([
           settledWork.catch(() => undefined),

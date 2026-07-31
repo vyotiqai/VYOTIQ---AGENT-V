@@ -272,4 +272,37 @@ describe('runReceipt', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('keeps latest step inputTokens and sums outputTokens across steps', () => {
+    const receipt = buildRunReceipt({
+      runId: 'multi-step',
+      status: { status: 'done', step: 2, updatedAt: new Date().toISOString() },
+      messages: [{ role: 'assistant', content: 'done' }],
+      events: [
+        {
+          at: 't1',
+          event: {
+            type: 'step_usage',
+            runId: 'multi-step',
+            step: 1,
+            inputTokens: 1000,
+            outputTokens: 50
+          }
+        },
+        {
+          at: 't2',
+          event: {
+            type: 'step_usage',
+            runId: 'multi-step',
+            step: 2,
+            inputTokens: 1500,
+            outputTokens: 30
+          }
+        }
+      ],
+      contract: ''
+    })
+    // Full-context input is not additive across steps.
+    expect(receipt.tokenUsage).toEqual({ inputTokens: 1500, outputTokens: 80 })
+  })
 })

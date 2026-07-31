@@ -20,7 +20,8 @@ import {
   enqueueMessageAppend,
   flushMessageAppends,
   messageAppendChainSizeForTests,
-  resetMessageAppendQueueForTests
+  resetMessageAppendQueueForTests,
+  takeMessageAppendFailureNotice
 } from '@main/agent/messageAppendQueue'
 
 describe('messageAppendQueue', () => {
@@ -57,5 +58,15 @@ describe('messageAppendQueue', () => {
 
     enqueueMessageAppend(dir, `${JSON.stringify({ role: 'user', content: 'x' })}\n`)
     await expect(flushMessageAppends(dir)).rejects.toThrow('append failed')
+  })
+
+  it('exposes the first mid-run append failure as a consumable notice', async () => {
+    appendFileMock.mockRejectedValueOnce(new Error('disk full'))
+
+    await enqueueMessageAppend(dir, `${JSON.stringify({ role: 'user', content: 'x' })}\n`)
+
+    const notice = takeMessageAppendFailureNotice(dir)
+    expect(notice?.message).toBe('disk full')
+    expect(takeMessageAppendFailureNotice(dir)).toBeUndefined()
   })
 })

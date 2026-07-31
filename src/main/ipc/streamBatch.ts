@@ -26,8 +26,11 @@ type RunSlot = {
   workspacePath: string
   send: (ev: AgentEvent) => void
   pendingSegments: PendingSegment[]
-  /** Latest usage event held for background coalesce / pressure drop. */
-  pendingUsage: AgentEvent | null
+  /**
+   * Background coalesce: latest usage event per step so inactive workspaces do
+   * not lose earlier step meters when several arrive before activate.
+   */
+  pendingUsageByStep: Map<number, AgentEvent>
   /** Number of ChatEventBatcher owners; detach only when this hits 0. */
   attachCount: number
 }
@@ -135,7 +138,7 @@ function totalPendingDepth(slots: Map<string, RunSlot>): number {
   let n = 0
   for (const slot of slots.values()) {
     n += slot.pendingSegments.length
-    if (slot.pendingUsage) n += 1
+    n += slot.pendingUsageByStep.size
   }
   return n
 }
@@ -167,7 +170,7 @@ export class ChatEventDispatcher {
       workspacePath,
       send,
       pendingSegments: [],
-      pendingUsage: null,
+      pendingUsageByStep: new Map(),
       attachCount: 1
     })
     stats.attachedRuns = this.slots.size
@@ -243,11 +246,10 @@ export class ChatEventDispatcher {
 
     if (ev.type === 'step_usage' || ev.type === 'context_usage') {
       if (!isActiveWorkspace(slot.workspacePath)) {
-        // Keep only the latest usage event (depth stays capped at one).
-        if (slot.pendingUsage) {
-          stats.usageCoalesced += 1
-        }
-        slot.pendingUsage = ev
+        // Keep latest usage per step so background workspaces retain meters.
+        const prev = slot.pendingUsageByStep.get(ev.step)
+        if (prev) stats.usageCoalesced += 1
+        slot.pendingUsageByStep.set(ev.step, ev)
         this.notePendingDepth()
         this.schedule(slot.workspacePath)
         return
@@ -279,15 +281,22 @@ export class ChatEventDispatcher {
     return this.slots.size
   }
 
+  private flushPendingUsageEvents(slot: RunSlot): void {
+    if (slot.pendingUsageByStep.size === 0) return
+    const steps = [...slot.pendingUsageByStep.keys()].sort((a, b) => a - b)
+    for (const step of steps) {
+      const usageEv = slot.pendingUsageByStep.get(step)
+      if (usageEv) this.emit(slot, usageEv)
+    }
+    slot.pendingUsageByStep.clear()
+  }
+
   private flushRun(runId: string): void {
     const slot = this.slots.get(runId)
     if (!slot) return
     this.emitSegments(slot, runId, slot.pendingSegments)
     slot.pendingSegments = []
-    if (slot.pendingUsage) {
-      this.emit(slot, slot.pendingUsage)
-      slot.pendingUsage = null
-    }
+    this.flushPendingUsageEvents(slot)
   }
 
   private flushAllDeltas(): void {
@@ -307,7 +316,7 @@ export class ChatEventDispatcher {
     let flushedBackground = false
     for (const [runId, slot] of ordered) {
       const had =
-        slot.pendingSegments.length > 0 || slot.pendingUsage != null
+        slot.pendingSegments.length > 0 || slot.pendingUsageByStep.size > 0
       if (!had) continue
       if (isActiveWorkspace(slot.workspacePath)) flushedActive = true
       else flushedBackground = true
@@ -315,10 +324,7 @@ export class ChatEventDispatcher {
         this.emitSegments(slot, runId, slot.pendingSegments)
         slot.pendingSegments = []
       }
-      if (slot.pendingUsage) {
-        this.emit(slot, slot.pendingUsage)
-        slot.pendingUsage = null
-      }
+      this.flushPendingUsageEvents(slot)
     }
     if (flushedActive) stats.activeFlushes += 1
     else if (flushedBackground) stats.backgroundFlushes += 1

@@ -74,6 +74,8 @@ export type ToolExecutionContext = {
   agentMode?: AgentInteractionMode
   getAgentMode?: () => AgentInteractionMode
   setAgentMode?: (mode: AgentInteractionMode) => void
+  /** Snapshot of settings.autoModeSwitch for this invoke (not live mid-run). */
+  autoModeSwitch?: boolean
   /** Emit live agent events (e.g. mode_changed) while a tool is running. */
   emitAgentEvent?: (event: AgentEvent) => void
   /** Overridable in tests; defaults to renderer IPC round trip. */
@@ -96,6 +98,18 @@ export type ToolExecutionContext = {
   runEnabledMcpIds?: ReadonlySet<string>
   /** Per-server allow/deny policy for bare MCP tool names. */
   mcpToolPolicies?: ReadonlyMap<string, { allowedTools?: string[]; deniedTools?: string[] }>
+  /**
+   * MCP tool full names offered to the model this step (post budget trim).
+   * When set, MCP invokes outside this set are rejected.
+   */
+  stepMcpToolNames?: ReadonlySet<string>
+  /**
+   * Run-scoped MCP tools the agent pinned via request_mcp_tools.
+   * Applied on the next refresh/trim (not mid-stream).
+   */
+  runPinnedMcpToolNames?: Set<string>
+  /** Invalidate the loop MCP catalog cache after pinning. */
+  invalidateMcpToolCatalogCache?: () => void
 }
 
 type ToolHandler = (
@@ -571,11 +585,13 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     throwIfAborted(signal)
     const filter = optionalMcpServerId(args)?.toLowerCase() ?? ''
     const enabled = context.runEnabledMcpIds
+    const stepCatalog = context.stepMcpToolNames
     const defs = listMcpToolDefinitions().filter((t) => {
-      if (filter && !t.name.toLowerCase().includes(filter)) return false
-      if (!enabled) return true
       const parsed = parseMcpToolName(t.name)
-      return parsed ? enabled.has(parsed.serverId) : true
+      if (!parsed) return false
+      if (filter && parsed.serverId.toLowerCase() !== filter) return false
+      if (enabled && !enabled.has(parsed.serverId)) return false
+      return true
     })
     if (defs.length === 0) {
       return toolOk(
@@ -588,10 +604,121 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       const hint = getMcpReadOnlyHint(t.name)
       const hintNote =
         hint === true ? ' readOnlyHint=true' : hint === false ? ' readOnlyHint=false' : ''
+      const omitted =
+        stepCatalog && !stepCatalog.has(t.name) ? ' [omitted from this step catalog]' : ''
       const desc = (t.description || '').replace(/\s+/g, ' ').trim().slice(0, 160)
-      return `- ${t.name}${hintNote}${desc ? `: ${desc}` : ''}`
+      return `- ${t.name}${hintNote}${omitted}${desc ? `: ${desc}` : ''}`
     })
     return toolOk('mcp_list_tools', `${defs.length} tools`, lines.join('\n'))
+  },
+  request_mcp_tools: (_workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    const pinned = context.runPinnedMcpToolNames
+    if (!pinned) {
+      return toolFail(
+        'request_mcp_tools',
+        'pin',
+        'request_mcp_tools requires an active agent run.'
+      )
+    }
+    const serverId =
+      (typeof args.serverId === 'string' && args.serverId.trim()) ||
+      (typeof args.server_id === 'string' && args.server_id.trim()) ||
+      ''
+    const requested = Array.isArray(args.tools)
+      ? args.tools.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+      : []
+    if (!serverId && requested.length === 0) {
+      return toolFail(
+        'request_mcp_tools',
+        'pin',
+        'Provide tools: string[] and/or serverId to pin MCP tools for the next step.'
+      )
+    }
+    const enabled = context.runEnabledMcpIds
+    const connected = listMcpToolDefinitions().filter((t) => {
+      const parsed = parseMcpToolName(t.name)
+      if (!parsed) return false
+      if (enabled && !enabled.has(parsed.serverId)) return false
+      return true
+    })
+    const byFull = new Map(connected.map((t) => [t.name, t]))
+    const byBare = new Map<string, string[]>()
+    for (const t of connected) {
+      const parsed = parseMcpToolName(t.name)
+      if (!parsed) continue
+      const list = byBare.get(parsed.toolName) ?? []
+      list.push(t.name)
+      byBare.set(parsed.toolName, list)
+    }
+
+    const newlyPinned: string[] = []
+    const unknown: string[] = []
+    const already: string[] = []
+
+    if (serverId) {
+      const fromServer = connected.filter((t) => {
+        const parsed = parseMcpToolName(t.name)
+        return parsed?.serverId.toLowerCase() === serverId.toLowerCase()
+      })
+      if (fromServer.length === 0) {
+        return toolFail(
+          'request_mcp_tools',
+          serverId,
+          `No connected MCP tools for serverId=${serverId}.`
+        )
+      }
+      for (const t of fromServer) {
+        if (pinned.has(t.name)) already.push(t.name)
+        else {
+          pinned.add(t.name)
+          newlyPinned.push(t.name)
+        }
+      }
+    }
+
+    for (const raw of requested) {
+      const name = raw.trim()
+      if (byFull.has(name)) {
+        if (pinned.has(name)) already.push(name)
+        else {
+          pinned.add(name)
+          newlyPinned.push(name)
+        }
+        continue
+      }
+      const bareMatches = byBare.get(name) ?? []
+      if (bareMatches.length === 1) {
+        const full = bareMatches[0]!
+        if (pinned.has(full)) already.push(full)
+        else {
+          pinned.add(full)
+          newlyPinned.push(full)
+        }
+        continue
+      }
+      if (bareMatches.length > 1) {
+        unknown.push(`${name} (ambiguous: ${bareMatches.join(', ')})`)
+        continue
+      }
+      unknown.push(name)
+    }
+
+    if (newlyPinned.length > 0) context.invalidateMcpToolCatalogCache?.()
+
+    const lines = [
+      newlyPinned.length
+        ? `Pinned for next step (${newlyPinned.length}): ${newlyPinned.join(', ')}`
+        : 'No new tools pinned.',
+      already.length ? `Already pinned: ${already.join(', ')}` : '',
+      unknown.length ? `Unknown / unresolved: ${unknown.join(', ')}` : '',
+      'Definitions are offered on the next model step if they fit the tools token budget.'
+    ].filter(Boolean)
+    return toolOk(
+      'request_mcp_tools',
+      `${newlyPinned.length} pinned`,
+      lines.join('\n')
+    )
   },
   mcp_list_resources: async (_workspace, args, signal, context) => {
     throwIfAborted(signal)
@@ -716,6 +843,13 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       ((req, sig) => askQuestionThroughRenderer(req, sig, context.invokeId))
     try {
       const answers = await ask(request, signal)
+      if (answers.length === 0) {
+        return toolFail(
+          'ask_question',
+          summary,
+          'Question timed out without a response. Continue without waiting, or ask again.'
+        )
+      }
       return toolOk('ask_question', summary, formatQuestionAnswers(form, answers))
     } catch (err) {
       if (isAbortError(err)) throw err
@@ -725,7 +859,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
   },
   switch_mode: (_workspace, args, signal, context) => {
     throwIfAborted(signal)
-    if (!getSettings().autoModeSwitch) {
+    if (!context.autoModeSwitch) {
       return toolFail(
         'switch_mode',
         'mode',
@@ -914,7 +1048,7 @@ export async function executeTool(
       return toolFail(name, name, 'Failed to parse tool arguments JSON')
     }
     const modeGate = assertToolAllowedInMode(agentMode, name, parsed, {
-      autoModeSwitch: getSettings().autoModeSwitch
+      autoModeSwitch: context.autoModeSwitch
     })
     if (!modeGate.ok) {
       return toolFail(name, name, modeGate.error)
@@ -924,6 +1058,13 @@ export async function executeTool(
         name,
         name,
         `MCP server "${mcp.serverId}" is not enabled for this workspace run`
+      )
+    }
+    if (context.stepMcpToolNames && !context.stepMcpToolNames.has(name)) {
+      return toolFail(
+        name,
+        name,
+        `MCP tool "${name}" is not in this step's tool catalog (omitted by context budget or mode). Use mcp_list_tools then request_mcp_tools to pin it for the next step.`
       )
     }
     const policy = context.mcpToolPolicies?.get(mcp.serverId)
@@ -971,7 +1112,7 @@ export async function executeTool(
   }
   const args = validated.data
   const modeGate = assertToolAllowedInMode(agentMode, name, args, {
-    autoModeSwitch: getSettings().autoModeSwitch
+    autoModeSwitch: context.autoModeSwitch
   })
   if (!modeGate.ok) {
     return toolFail(name, summarizeToolArgsFromRecord(name, args), modeGate.error)

@@ -190,6 +190,9 @@ export function createMcpOAuthProvider(
         serverId,
         host: authorizationUrl.host
       })
+      if (authorizationUrl.protocol !== 'https:') {
+        throw new Error('MCP OAuth authorization URL must be https')
+      }
       await shell.openExternal(authorizationUrl.toString())
     },
     saveCodeVerifier(codeVerifier: string): void {

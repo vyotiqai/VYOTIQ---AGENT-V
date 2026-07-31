@@ -31,6 +31,8 @@ export type ToolStepContext = {
   agentMode?: AgentInteractionMode
   getAgentMode?: () => AgentInteractionMode
   setAgentMode?: (mode: AgentInteractionMode) => void
+  /** Snapshot of settings.autoModeSwitch for this invoke. */
+  autoModeSwitch?: boolean
   /** Streams events while a tool is still running (sub-agent progress). */
   emitLiveEvent?: (ev: AgentEvent) => void
   /**
@@ -40,6 +42,14 @@ export type ToolStepContext = {
   runEnabledMcpIds?: ReadonlySet<string>
   /** Per-server allow/deny for bare MCP tool names. */
   mcpToolPolicies?: ReadonlyMap<string, { allowedTools?: string[]; deniedTools?: string[] }>
+  /**
+   * MCP tool full names in this step's provider catalog (post budget trim).
+   * When set, MCP invokes outside this set are rejected.
+   */
+  stepMcpToolNames?: ReadonlySet<string>
+  /** Run-scoped MCP tools pinned via request_mcp_tools. */
+  runPinnedMcpToolNames?: Set<string>
+  invalidateMcpToolCatalogCache?: () => void
 }
 
 /** Count repeated failures silently (no didactic recipe injected into tool results). */
@@ -197,9 +207,13 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
       agentMode: ctx.getAgentMode?.() ?? ctx.agentMode,
       getAgentMode: ctx.getAgentMode,
       setAgentMode: ctx.setAgentMode,
+      autoModeSwitch: ctx.autoModeSwitch,
       emitAgentEvent: ctx.emitLiveEvent,
       runEnabledMcpIds: ctx.runEnabledMcpIds,
       mcpToolPolicies: ctx.mcpToolPolicies,
+      stepMcpToolNames: ctx.stepMcpToolNames,
+      runPinnedMcpToolNames: ctx.runPinnedMcpToolNames,
+      invalidateMcpToolCatalogCache: ctx.invalidateMcpToolCatalogCache,
       onProgress: ctx.emitLiveEvent
         ? (update) =>
             ctx.emitLiveEvent?.({

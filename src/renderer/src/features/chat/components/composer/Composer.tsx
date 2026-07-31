@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AgentInteractionMode, AttachedFile, ProviderId, ServiceTier, SlashCommandDescriptor } from '@shared/ipc'
+import type {
+  AgentInteractionMode,
+  AttachedFile,
+  ComposerSendExtras,
+  ProviderId,
+  ServiceTier,
+  SlashCommandDescriptor
+} from '@shared/ipc'
 import { buildUserContent } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { triggerKey } from '@shared/slashCommands'
@@ -19,6 +26,7 @@ import { PlanHandoff } from './PlanHandoff'
 import { useComposerDraft } from './useComposerDraft'
 import { useComposerImages, MAX_IMAGES } from './useComposerImages'
 import { useComposerFiles, ATTACHMENT_ACCEPT, MAX_FILES, isImageFile } from './useComposerFiles'
+import { useComposerAudio, isAudioFile } from './useComposerAudio'
 import { useComposerModels } from './useComposerModels'
 import { pickVisionFallback } from './composerModelUtils'
 import { useWorkspaceHotUi } from '@renderer/lib/hooks/workspaceHotUiStore'
@@ -102,7 +110,8 @@ export function Composer({
   onSend: (
     text: string,
     images?: string[],
-    files?: AttachedFile[]
+    files?: AttachedFile[],
+    extras?: import('@shared/ipc').ComposerSendExtras
   ) => boolean | void | Promise<boolean | void>
   onStop: () => void
   pendingFollowUps?: import('@renderer/lib/hooks/createChatStreamController').PendingFollowUpState[]
@@ -154,15 +163,22 @@ export function Composer({
     removeImage
   } = useComposerImages()
 
+  const preferNativePdfRef = useRef(false)
+
   const {
     files,
     setFiles,
+    nativeFiles,
+    setNativeFiles,
     fileError,
     setFileError,
     extracting,
     addFiles,
-    removeFile
-  } = useComposerFiles()
+    removeFile,
+    removeNativeFile
+  } = useComposerFiles({ getPreferNativePdf: () => preferNativePdfRef.current })
+
+  const { audio, setAudio, audioError, addAudio, removeAudio } = useComposerAudio()
 
   const slash = useSlashCommands({
     workspacePath,
@@ -206,7 +222,8 @@ export function Composer({
     async (
       rawText: string,
       sendImages?: string[],
-      sendFiles?: AttachedFile[]
+      sendFiles?: AttachedFile[],
+      extras?: ComposerSendExtras
     ): Promise<boolean | void> => {
       const boundWorkspace = workspacePath
       const resolved = await resolveComposerMentions({
@@ -219,13 +236,20 @@ export function Composer({
         return false
       }
       if (resolved.error) setFileError(resolved.error)
-      if (!resolved.text.trim() && !resolved.files.length && !(sendImages?.length)) {
+      const hasExtras = Boolean(extras?.audio?.length || extras?.nativeFiles?.length)
+      if (
+        !resolved.text.trim() &&
+        !resolved.files.length &&
+        !(sendImages?.length) &&
+        !hasExtras
+      ) {
         return false
       }
       return onSend(
         resolved.text,
         sendImages?.length ? sendImages : undefined,
-        resolved.files.length ? resolved.files : undefined
+        resolved.files.length ? resolved.files : undefined,
+        extras
       )
     },
     [workspacePath, onSend, setFileError]
@@ -328,6 +352,8 @@ export function Composer({
           setImages([])
           setImageError(null)
           setFiles([])
+          setNativeFiles([])
+          setAudio([])
           setFileError(null)
         } else {
           // Restore pre-strip draft on CTA / IPC failure / pending marketplace.
@@ -345,6 +371,8 @@ export function Composer({
       setImages,
       setImageError,
       setFiles,
+      setNativeFiles,
+      setAudio,
       setFileError
     ]
   )
@@ -369,6 +397,10 @@ export function Composer({
     setImageError,
     files,
     setFiles,
+    nativeFiles,
+    setNativeFiles,
+    audio,
+    setAudio,
     setFileError,
     running,
     disabled,
@@ -419,6 +451,10 @@ export function Composer({
     browsedProvider
   })
 
+  preferNativePdfRef.current = Boolean(
+    modelMetaByValue?.[model]?.inputModalities?.includes('file')
+  )
+
   const catalogLoading = catalogFetchLoading || refreshingCatalog
 
   const ensureVisionModel = (): void => {
@@ -436,11 +472,13 @@ export function Composer({
     if (!list?.length) return
     const picked = Array.from(list)
     const imageFiles = picked.filter(isImageFile)
-    const documents = picked.filter((file) => !isImageFile(file))
+    const audioFiles = picked.filter((file) => !isImageFile(file) && isAudioFile(file))
+    const documents = picked.filter((file) => !isImageFile(file) && !isAudioFile(file))
     if (imageFiles.length) {
       await onPickImages(imageFiles)
       ensureVisionModel()
     }
+    if (audioFiles.length) await addAudio(audioFiles)
     if (documents.length) await addFiles(documents)
   }
 
@@ -530,11 +568,16 @@ export function Composer({
             images={images}
             imageError={imageError}
             files={files}
+            nativeFiles={nativeFiles}
+            audio={audio}
             fileError={fileError}
+            audioError={audioError}
             extracting={extracting}
             attachLocked={inputLocked}
             onRemove={removeImage}
             onRemoveFile={removeFile}
+            onRemoveNativeFile={removeNativeFile}
+            onRemoveAudio={removeAudio}
           />
 
           <div ref={mentionAnchorRef} className="col-span-full min-w-0">

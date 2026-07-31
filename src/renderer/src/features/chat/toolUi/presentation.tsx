@@ -11,8 +11,8 @@ export function ToolBodyView({
 }) {
   const { tool, expanded, onLoadFullContent, subagent, subagentContextUsage, mcpServerNames, inGroup } =
     context
-  // Load full content whenever truncated — collapsed previews still need the full text.
-  const enabled = tool.contentTruncated === true
+  // Fetch full content only while the body is expanded (mounted in ExpandPanel).
+  const enabled = tool.contentTruncated === true && expanded === true
   const { loading, failed } = useFullToolContent(tool, enabled, onLoadFullContent)
   const body = createElement(getToolBody(tool.name), {
     tool,

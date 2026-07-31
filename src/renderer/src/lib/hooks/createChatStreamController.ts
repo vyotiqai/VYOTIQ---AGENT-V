@@ -2,6 +2,7 @@ import type {
   AgentEvent,
   AgentInteractionMode,
   AttachedFile,
+  ComposerSendExtras,
   ChatMessage,
   IncompleteReason,
   PersistedEvent,
@@ -49,6 +50,10 @@ import {
   subagentContextUsageFromEvent,
   summarizeContextUsageFromEvents
 } from '@shared/utils/contextUsage'
+import {
+  compactionTriggerFromRaw,
+  DEFAULT_COMPACTION_TRIGGER_RATIO
+} from '@shared/domain/contextBudget'
 import { recordUiResume, recordUiSuspendSkip } from './chatUiPerf'
 
 /** A sub-agent's progress is a live view, not a log; keep the recent tail. */
@@ -635,7 +640,12 @@ export type ChatStreamState = {
 
 export type ChatStreamController = ChatStreamState & {
   workspacePath: string
-  send: (text: string, images?: string[], files?: AttachedFile[]) => Promise<boolean>
+  send: (
+    text: string,
+    images?: string[],
+    files?: AttachedFile[],
+    extras?: ComposerSendExtras
+  ) => Promise<boolean>
   /** Drop a still-queued mid-run follow-up before the loop applies it. */
   removeFollowUp: (id: string) => Promise<boolean>
   stop: () => Promise<void>
@@ -1779,12 +1789,15 @@ export function createChatStreamController(
   const send = async (
     text: string,
     images?: string[],
-    files?: AttachedFile[]
+    files?: AttachedFile[],
+    extras?: ComposerSendExtras
   ): Promise<boolean> => {
     const trimmed = text.trim()
-    if ((!trimmed && !images?.length && !files?.length) || state.transcriptLoading) return false
+    const hasExtras = Boolean(extras?.audio?.length || extras?.nativeFiles?.length)
+    if ((!trimmed && !images?.length && !files?.length && !hasExtras) || state.transcriptLoading)
+      return false
     if (state.running) {
-      return followUp(text, images, files)
+      return followUp(text, images, files, extras)
     }
     if (!workspacePath) {
       patch({ error: 'Pick a workspace before starting a chat.' })
@@ -1802,7 +1815,7 @@ export function createChatStreamController(
     if (activeInvokeId != null) supersededInvokeIds.add(activeInvokeId)
     activeInvokeId = null
     turnSeq += 1
-    const content = buildUserContent(text, images, files)
+    const content = buildUserContent(text, images, files, extras)
     const user: ChatMessage = { role: 'user', content }
     const priorMessages = state.messages
     const nextMessages = messagesForNextTurn([...priorMessages, user])
@@ -1899,11 +1912,13 @@ export function createChatStreamController(
   const followUp = async (
     text: string,
     images?: string[],
-    files?: AttachedFile[]
+    files?: AttachedFile[],
+    extras?: ComposerSendExtras
   ): Promise<boolean> => {
     const trimmed = text.trim()
     const id = runId
-    if ((!trimmed && !images?.length && !files?.length) || !state.running) return false
+    const hasExtras = Boolean(extras?.audio?.length || extras?.nativeFiles?.length)
+    if ((!trimmed && !images?.length && !files?.length && !hasExtras) || !state.running) return false
     if (!id) {
       patch({
         error: state.pendingRun
@@ -1916,7 +1931,7 @@ export function createChatStreamController(
       patch({ error: 'Pick a workspace before sending a follow-up.' })
       return false
     }
-    const content = buildUserContent(text, images, files)
+    const content = buildUserContent(text, images, files, extras)
     const user: ChatMessage = { role: 'user', content }
     const priorMessages = state.messages
     const nextMessages = messagesForNextTurn([...priorMessages, user])
@@ -2610,6 +2625,9 @@ export function createChatStreamController(
     if (disposed) return
     const estimated = result.estimatedTokens ?? result.tokenEstimate
     const prev = state.contextUsage
+    // remainingEstimate is kept history + summary; summary lives in system after
+    // compact — attribute to history until the next assembleContext refresh.
+    const compactLayers = { system: 0, history: estimated, tools: 0, buffer: 0 }
     patch({
       runNotice: 'Context summarized to stay within the model window.',
       contextUsage: prev
@@ -2621,6 +2639,7 @@ export function createChatStreamController(
             source: 'estimate',
             window: result.contextWindow ?? prev.window,
             contentWindow: result.contentWindow ?? prev.contentWindow,
+            layers: compactLayers,
             updatedAt: new Date().toISOString()
           }
         : result.contextWindow && result.contentWindow
@@ -2630,9 +2649,12 @@ export function createChatStreamController(
               estimatedTokens: estimated,
               window: result.contextWindow,
               contentWindow: result.contentWindow,
-              compactionTrigger: Math.floor(result.contextWindow * 0.7),
+              compactionTrigger: compactionTriggerFromRaw(
+                result.contextWindow,
+                DEFAULT_COMPACTION_TRIGGER_RATIO
+              ),
               source: 'estimate',
-              layers: { system: 0, history: estimated, tools: 0, buffer: 0 },
+              layers: compactLayers,
               stepUsage: emptyStepUsageTotals(),
               updatedAt: new Date().toISOString()
             }

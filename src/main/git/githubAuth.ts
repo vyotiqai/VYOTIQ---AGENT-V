@@ -227,7 +227,11 @@ export async function startGithubAuth(): Promise<GithubAuthStatus> {
   }
 
   try {
-    await shell.openExternal(json.verification_uri)
+    const uri = new URL(json.verification_uri)
+    if (uri.protocol !== 'https:') {
+      throw new Error('GitHub verification URL must be https')
+    }
+    await shell.openExternal(uri.toString())
   } catch (err) {
     logger.warn('Failed to open GitHub verification URI', { scope: 'github-auth', err })
   }
@@ -236,18 +240,10 @@ export async function startGithubAuth(): Promise<GithubAuthStatus> {
   return githubAuthStatus()
 }
 
-export function logoutGithubAuth(): GithubAuthStatus {
+export async function logoutGithubAuth(): Promise<GithubAuthStatus> {
   cancelGithubAuth()
   clearGithubAccessToken()
-  return {
-    ghAvailable: true,
-    clientIdConfigured: Boolean(resolveGithubClientId()),
-    hasAppToken: false,
-    pending: false,
-    userCode: null,
-    verificationUri: null,
-    error: null
-  }
+  return githubAuthStatus()
 }
 
 /** Prefer app-stored token for `gh` CLI; fall back to ambient env. */

@@ -232,12 +232,11 @@ function mcpServerNeedsAck(s: {
 /** Require remoteInstallAcked when adding or changing stdio/remote MCP entries. */
 function assertMcpServersAcked(
   prev: Settings,
-  partial: Partial<Settings>,
   nextServers: NonNullable<Settings['mcpServers']>
 ): void {
-  const acked =
-    partial.marketplace?.remoteInstallAcked ?? prev.marketplace?.remoteInstallAcked
-  if (acked) return
+  // Ack must come from main-only `setMarketplaceRemoteInstallAcked` — never from
+  // a renderer `setSettings` partial (stripped below).
+  if (prev.marketplace?.remoteInstallAcked) return
   const prevById = new Map((prev.mcpServers ?? []).map((s) => [s.id, s]))
   for (const server of nextServers) {
     if (!mcpServerNeedsAck(server)) continue
@@ -255,6 +254,23 @@ function assertMcpServersAcked(
   }
 }
 
+/**
+ * Main-only writer for marketplace remote-install acknowledgement.
+ * Renderer must use `marketplace:ack-remote-install` IPC — not `setSettings`.
+ */
+export function setMarketplaceRemoteInstallAcked(acked: boolean): Settings {
+  const prev = getSettings()
+  return setSettings(
+    {
+      marketplace: {
+        registryUrl: prev.marketplace?.registryUrl ?? '',
+        remoteInstallAcked: acked
+      }
+    },
+    { allowRemoteInstallAck: true }
+  )
+}
+
 export type SetSettingsOptions = {
   /**
    * Skip the remoteInstallAcked gate. Main-process only — used when syncing
@@ -263,6 +279,12 @@ export type SetSettingsOptions = {
    * Never pass from renderer IPC.
    */
   skipMcpAck?: boolean
+  /**
+   * Allow writing `marketplace.remoteInstallAcked`. Main-process only —
+   * `setMarketplaceRemoteInstallAcked` / dedicated IPC. Renderer `setSettings`
+   * strips this field.
+   */
+  allowRemoteInstallAck?: boolean
 }
 
 /**
@@ -279,14 +301,28 @@ export function setSettings(
   opts?: SetSettingsOptions
 ): Settings {
   const prev = getSettings()
+  // Strip renderer-writable ack unless main explicitly allows it.
+  let marketplace = partial.marketplace
+  if (marketplace !== undefined && !opts?.allowRemoteInstallAck) {
+    const { remoteInstallAcked: _ignored, ...rest } = marketplace
+    marketplace = {
+      ...rest,
+      remoteInstallAcked: prev.marketplace?.remoteInstallAcked ?? false
+    }
+  }
   let mcpServers = partial.mcpServers
   if (mcpServers !== undefined) {
     mcpServers = restoreRedactedMcpHeaders(prev.mcpServers ?? [], mcpServers)
     if (!opts?.skipMcpAck) {
-      assertMcpServersAcked(prev, partial, mcpServers)
+      assertMcpServersAcked(prev, mcpServers)
     }
   }
-  const merged = { ...prev, ...partial, ...(mcpServers !== undefined ? { mcpServers } : {}) }
+  const merged = {
+    ...prev,
+    ...partial,
+    ...(marketplace !== undefined ? { marketplace } : {}),
+    ...(mcpServers !== undefined ? { mcpServers } : {})
+  }
   if (typeof merged.ollamaBaseUrl === 'string') {
     merged.ollamaBaseUrl = normalizeOllamaHost(merged.ollamaBaseUrl)
   }

@@ -5,14 +5,25 @@ import { logger } from '../../shared/logger'
 /** Per-run-dir serialized message append chain — ordered, non-blocking. */
 const appendChains = new Map<string, Promise<void>>()
 const lastErrors = new Map<string, Error>()
+/** First mid-run append failure per dir that has not yet been consumed as a notice. */
+const pendingNotices = new Map<string, Error>()
 
 function recordAppendError(dir: string, err: unknown): void {
-  lastErrors.set(dir, err instanceof Error ? err : new Error(String(err)))
+  const error = err instanceof Error ? err : new Error(String(err))
+  lastErrors.set(dir, error)
+  if (!pendingNotices.has(dir)) pendingNotices.set(dir, error)
 }
 
 function takeAppendError(dir: string): Error | undefined {
   const err = lastErrors.get(dir)
   if (err) lastErrors.delete(dir)
+  return err
+}
+
+/** Consume the first unread mid-run append failure for a run dir, if any. */
+export function takeMessageAppendFailureNotice(dir: string): Error | undefined {
+  const err = pendingNotices.get(dir)
+  if (err) pendingNotices.delete(dir)
   return err
 }
 
@@ -62,4 +73,5 @@ export function messageAppendChainSizeForTests(): number {
 export function resetMessageAppendQueueForTests(): void {
   appendChains.clear()
   lastErrors.clear()
+  pendingNotices.clear()
 }

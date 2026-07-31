@@ -13,6 +13,8 @@ export type GitChrome = {
   result: GitStatusResult | null
   error: string | null
   ready: boolean
+  /** True until the first gitStatus answer arrives. */
+  loading: boolean
   busy: boolean
   notice: string | null
   noticeFailed: boolean
@@ -125,6 +127,7 @@ export function useGitChrome(
     result,
     error,
     ready: !loading && result != null,
+    loading,
     busy,
     notice,
     noticeFailed,

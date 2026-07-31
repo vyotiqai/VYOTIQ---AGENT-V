@@ -4,7 +4,7 @@ import type { BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc/channels'
 import { workspacePathsEqual } from '../../shared/workspacePath'
 import { getSettings } from '../settings/settings'
-import { resolveTerminalShell } from '../agent/tools/terminal'
+import { resolveTerminalShell, sanitizedTerminalEnv } from '../agent/tools/terminal'
 import type { PtySessionInfo } from '../../shared/ipc'
 import { getMainWindow } from './window'
 
@@ -133,7 +133,7 @@ export function createPtySession(opts: {
         cols: opts.cols ?? 80,
         rows: opts.rows ?? 24,
         cwd: opts.cwd,
-        env: process.env as Record<string, string>
+        env: sanitizedTerminalEnv()
       })
       backend = { kind: 'pty', pty }
       pty.onData((data: string) => {
@@ -155,7 +155,7 @@ export function createPtySession(opts: {
     // Fallback when native node-pty cannot load or spawn (missing rebuild / Spectre libs).
     const child = spawn(file, args, {
       cwd: opts.cwd,
-      env: process.env,
+      env: sanitizedTerminalEnv(),
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe']
     })

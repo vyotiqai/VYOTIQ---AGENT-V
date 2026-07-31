@@ -8,7 +8,9 @@ import {
   baseModelInfo,
   looksLikeChatModel,
   normalizeOpenAiStyleModels,
-  parseDataUrl
+  parseDataUrl,
+  wireSupportedInputModalities,
+  wireSupportedOutputModalities
 } from './normalize'
 import type {
   LlmProvider,
@@ -77,9 +79,40 @@ function toOpenAiContent(
 ): string | Array<Record<string, unknown>> {
   if (typeof content === 'string') return content
   const parts: Array<Record<string, unknown>> = []
-  for (const p of providerContentParts(content)) {
+  for (const p of providerContentParts(content, {
+    image: true,
+    audio: !opts.ollamaVision,
+    fileNative: false
+  })) {
     if (p.type === 'text') {
       parts.push({ type: 'text', text: p.text })
+      continue
+    }
+    if (p.type === 'audio') {
+      const data = parseDataUrl(p.url)
+      if (!data) {
+        parts.push({
+          type: 'text',
+          text: '[audio omitted: OpenAI requires a base64 data URL]'
+        })
+        continue
+      }
+      const format = data.mediaType.includes('wav')
+        ? 'wav'
+        : data.mediaType.includes('mpeg') || data.mediaType.includes('mp3')
+          ? 'mp3'
+          : 'wav'
+      parts.push({
+        type: 'input_audio',
+        input_audio: { data: data.data, format }
+      })
+      continue
+    }
+    if (p.type === 'file_native') {
+      parts.push({
+        type: 'text',
+        text: `[file omitted: use a Responses-capable model for native file "${p.name}"]`
+      })
       continue
     }
     if (opts.ollamaVision && !p.url.startsWith('data:')) {
@@ -307,15 +340,11 @@ function normalizeXaiLanguageModels(data: unknown): ModelInfo[] {
             : typeof row.context_length === 'number'
               ? row.context_length
               : undefined,
-        inputModalities: inputMods.filter((m) =>
-          ['text', 'image', 'audio', 'file'].includes(m)
-        ) as ModelInfo['inputModalities'],
-        outputModalities: outputMods.filter((m) =>
-          ['text', 'image'].includes(m)
-        ) as ModelInfo['outputModalities'],
+        inputModalities: wireSupportedInputModalities(inputMods, supportsVision, 'xai'),
+        outputModalities: wireSupportedOutputModalities(outputMods),
         supportsTools: true,
         supportsVision
-      })
+      }, 'xai')
     )
   }
   return out

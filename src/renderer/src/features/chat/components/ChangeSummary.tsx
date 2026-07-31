@@ -1,7 +1,7 @@
 import { memo, useState } from 'react'
 import { cn } from '@renderer/lib/ui'
 import { Button } from '@renderer/lib/ui'
-import { TOOL_CARD_HEADER, TOOL_CARD_SURFACE } from '@renderer/lib/utils/layout'
+import { QUESTION_GATE_HEADER, QUESTION_GATE_SURFACE } from '@renderer/lib/utils/layout'
 import type { ChangedFile } from '../utils/transcriptRows'
 import { basename } from '../toolUi'
 import type { DiffLine } from '../toolUi'
@@ -73,12 +73,12 @@ export const ChangeSummary = memo(function ChangeSummary({
 
   if (compact) {
     return (
-      <div className={cn(TOOL_CARD_SURFACE, 'w-full')}>
+      <div className={cn(QUESTION_GATE_SURFACE, 'w-full')}>
         <button
           type="button"
           className={cn(
-            TOOL_CARD_HEADER,
-            'flex w-full items-center border-b border-border text-left text-fg hover:bg-surface/40'
+            QUESTION_GATE_HEADER,
+            'flex w-full items-center border-b border-border/40 text-left text-fg hover:bg-surface/40'
           )}
           onClick={() => onOpenChanges?.()}
           aria-label="Open Changes panel"
@@ -107,8 +107,8 @@ export const ChangeSummary = memo(function ChangeSummary({
   }
 
   return (
-    <div className={cn(TOOL_CARD_SURFACE, 'w-full')}>
-      <div className={cn(TOOL_CARD_HEADER, 'flex items-center border-b border-border text-fg')}>
+    <div className={cn(QUESTION_GATE_SURFACE, 'w-full')}>
+      <div className={cn(QUESTION_GATE_HEADER, 'flex items-center border-b border-border/40 text-fg')}>
         <span className="font-medium">
           {files.length} {files.length === 1 ? 'File Changed' : 'Files Changed'}
         </span>

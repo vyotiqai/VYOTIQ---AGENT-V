@@ -12,6 +12,7 @@ import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
 import { formatProviderHttpError } from './httpErrors'
+import { parseDataUrl } from './normalize'
 
 export function serializeToolArgs(value: unknown): string {
   if (value == null) return ''
@@ -20,11 +21,36 @@ export function serializeToolArgs(value: unknown): string {
   return String(value)
 }
 
-/** Split a base64 data URL into the mime type and payload Gemini expects. */
-function inlineDataFromUrl(url: string): { mime_type: string; data: string } | null {
-  const match = /^data:([^;,]+);base64,(.+)$/s.exec(url)
-  if (!match) return null
-  return { mime_type: match[1], data: match[2] }
+/** Best-effort mime from a remote image URL path (Interactions ImageContent.mime_type). */
+function mimeFromImageUrl(url: string): string | undefined {
+  const path = url.split(/[?#]/, 1)[0]?.toLowerCase() ?? ''
+  if (path.endsWith('.png')) return 'image/png'
+  if (path.endsWith('.jpg') || path.endsWith('.jpeg')) return 'image/jpeg'
+  if (path.endsWith('.webp')) return 'image/webp'
+  if (path.endsWith('.gif')) return 'image/gif'
+  if (path.endsWith('.bmp')) return 'image/bmp'
+  if (path.endsWith('.tif') || path.endsWith('.tiff')) return 'image/tiff'
+  if (path.endsWith('.heic')) return 'image/heic'
+  if (path.endsWith('.heif')) return 'image/heif'
+  return undefined
+}
+
+/**
+ * Map a composer image URL to Interactions API ImageContent
+ * (`type: "image"` + `data` or `uri`). See:
+ * https://ai.google.dev/gemini-api/docs/interactions/image-understanding
+ */
+function imageContentFromUrl(url: string): Record<string, unknown> | null {
+  const data = parseDataUrl(url)
+  if (data) {
+    return { type: 'image', data: data.data, mime_type: data.mediaType }
+  }
+  // Public https(s) URLs and Files API URIs (also https) use ImageContent.uri.
+  if (/^https?:\/\//i.test(url)) {
+    const mime = mimeFromImageUrl(url)
+    return mime ? { type: 'image', uri: url, mime_type: mime } : { type: 'image', uri: url }
+  }
+  return null
 }
 
 export function toInteractionsInput(
@@ -42,14 +68,49 @@ export function toInteractionsInput(
         parts.push({ type: 'text', text: m.content })
         continue
       }
-      // Flattening to text here would drop the attached image entirely.
-      for (const part of providerContentParts(m.content)) {
+      // Flattening to text here would drop rich attachments.
+      for (const part of providerContentParts(m.content, {
+        image: true,
+        audio: true,
+        fileNative: true
+      })) {
         if (part.type === 'text') {
           if (part.text) parts.push({ type: 'text', text: part.text })
           continue
         }
-        const inline = inlineDataFromUrl(part.url)
-        if (inline) parts.push({ type: 'inline_data', inline_data: inline })
+        if (part.type === 'file_native') {
+          parts.push({
+            type: 'document',
+            data: part.data,
+            mime_type: part.mime || 'application/pdf'
+          })
+          continue
+        }
+        if (part.type === 'audio') {
+          const data = parseDataUrl(part.url)
+          if (data) {
+            parts.push({
+              type: 'audio',
+              data: data.data,
+              mime_type: data.mediaType || part.mime || 'audio/mpeg'
+            })
+          } else {
+            parts.push({
+              type: 'text',
+              text: '[audio omitted: Gemini Interactions requires a base64 data URL]'
+            })
+          }
+          continue
+        }
+        const image = imageContentFromUrl(part.url)
+        if (image) {
+          parts.push(image)
+        } else {
+          parts.push({
+            type: 'text',
+            text: '[image omitted: Gemini Interactions requires a base64 data URL or http(s) image URI]'
+          })
+        }
       }
     } else if (m.role === 'assistant') {
       const text = typeof m.content === 'string' ? m.content : contentToText(m.content)

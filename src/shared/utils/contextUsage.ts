@@ -51,7 +51,7 @@ export function contextUsageFromEvent(
     contentWindow: event.contentWindow ?? event.contextWindow,
     compactionTrigger: event.compactionTrigger,
     source: event.source,
-    layers: event.layers,
+    layers: event.layers ?? { system: 0, history: 0, tools: 0, buffer: 0 },
     stepUsage,
     updatedAt: new Date().toISOString(),
     ...(event.overflow ? { overflow: true } : {})

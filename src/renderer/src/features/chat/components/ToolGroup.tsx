@@ -134,9 +134,12 @@ export const ToolGroup = memo(function ToolGroup({
   }, [nestedTools])
 
   const [localOverride, setLocalOverride] = useState<boolean | null>(null)
-  // Open while tools are running or the agent run is still live; fold when the run ends.
-  const expanded = groupExpanded ?? localOverride ?? (isPending || live)
+  // While tools are still running, keep the group open even if the user collapsed it.
+  const expanded = isPending
+    ? true
+    : (groupExpanded ?? localOverride ?? live)
   const toggle = (): void => {
+    if (isPending) return
     const next = !expanded
     if (onGroupToggle) onGroupToggle(next)
     else setLocalOverride(next)

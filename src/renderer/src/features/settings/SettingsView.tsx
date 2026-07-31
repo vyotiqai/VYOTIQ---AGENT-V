@@ -53,7 +53,13 @@ export function SettingsView(props: SettingsViewProps) {
       case 'agent':
         return <AgentSection form={form} />
       case 'marketplace':
-        return <MarketplaceRegistrySection settings={settings} form={form} />
+        return (
+          <MarketplaceRegistrySection
+            settings={settings}
+            form={form}
+            onReloadSettings={props.onReloadSettings}
+          />
+        )
       default: {
         const _exhaustive: never = form.section
         return _exhaustive

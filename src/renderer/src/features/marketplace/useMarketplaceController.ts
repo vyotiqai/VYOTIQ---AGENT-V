@@ -179,18 +179,12 @@ export function useMarketplaceController({
 
   const ensureRemoteAck = useCallback(async (): Promise<boolean> => {
     if (settings.marketplace?.remoteInstallAcked) return true
-    const ok = window.confirm(
-      'Marketplace packages (remote catalogs, git/npm/zip, local path folders) and MCP endpoints are unsigned. Install only from sources you trust. Continue?'
-    )
-    if (!ok) return false
-    return runUpdate({
-      marketplace: {
-        ...settings.marketplace,
-        registryUrl: settings.marketplace?.registryUrl ?? '',
-        remoteInstallAcked: true
-      }
-    })
-  }, [runUpdate, settings.marketplace])
+    const res = await window.vyotiq.marketplaceAckRemoteInstall(true)
+    if (!res.ok) return false
+    if (!res.data.marketplace?.remoteInstallAcked) return false
+    await onReloadSettings?.()
+    return true
+  }, [onReloadSettings, settings.marketplace?.remoteInstallAcked])
 
   const runInstall = useCallback(
     async (payload: MarketplaceInstallRequest): Promise<boolean> => {

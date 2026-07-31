@@ -144,6 +144,8 @@ function lastIncompleteFromEvents(
 function tokenUsageFromEvents(
   events: readonly PersistedEvent[]
 ): RunReceipt['tokenUsage'] | undefined {
+  // Match live UI mergeStepUsageTotals: each step's inputTokens is full context
+  // (keep latest), while output accumulates across steps.
   let inputTokens = 0
   let outputTokens = 0
   let sawStep = false
@@ -157,7 +159,9 @@ function tokenUsageFromEvents(
     if (!ev?.type) continue
     if (ev.type === 'step_usage') {
       sawStep = true
-      if (typeof ev.inputTokens === 'number') inputTokens += ev.inputTokens
+      if (typeof ev.inputTokens === 'number' && ev.inputTokens > 0) {
+        inputTokens = ev.inputTokens
+      }
       if (typeof ev.outputTokens === 'number') outputTokens += ev.outputTokens
     } else if (ev.type === 'context_usage') {
       lastContext = {

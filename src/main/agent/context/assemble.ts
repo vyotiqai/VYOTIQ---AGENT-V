@@ -21,7 +21,7 @@ import {
   type CompactionRecord,
   type ContextLayerBreakdown
 } from './types'
-import { stripImagesFromMessages } from './stripImages'
+import { stripUnsupportedModalitiesFromMessages, wireCapsFromModel } from './stripImages'
 import { buildWorkspaceRulesSection } from './rules'
 import { buildWorkspaceSnapshotAsync } from './workspaceSnapshot'
 import { logger } from '../../../shared/logger'
@@ -67,10 +67,6 @@ function systemFingerprint(parts: {
     String(parts.historyBudget),
     String(parts.toolsBudget)
   ].join('\0')
-}
-
-function modelAcceptsVision(model: AssembleInput['model']): boolean {
-  return model.supportsVision || model.inputModalities.includes('image')
 }
 
 function capText(text: string, maxTokens: number): string {
@@ -321,8 +317,7 @@ export async function assembleContext(
       ])
     : ['', '']
 
-  // Attachments stay their own part in the transcript, but no provider knows
-  // that shape — inline them as text before anything measures or sends them.
+  // Text attachments flatten to text; audio/native files stay until caps apply.
   let messages = trimToolResults(
     input.messages.map((message) =>
       typeof message.content === 'string'
@@ -330,9 +325,7 @@ export async function assembleContext(
         : { ...message, content: flattenFileParts(message.content) }
     )
   )
-  if (!modelAcceptsVision(input.model)) {
-    messages = stripImagesFromMessages(messages)
-  }
+  messages = stripUnsupportedModalitiesFromMessages(messages, wireCapsFromModel(input.model))
   let compaction = input.priorCompaction ?? null
   let contextShrunk = false
 

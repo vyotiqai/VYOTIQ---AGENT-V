@@ -787,6 +787,53 @@ describe('useWorkspaceManager', () => {
     expect(assistant.content).toContain('kept-answer')
   })
 
+  it('coalesces older orphan usage under backpressure and keeps the latest meter', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    const { ORPHAN_EVENT_BUFFER_MAX } = WORKSPACE_MANAGER_LIMITS
+
+    await act(async () => {
+      for (let i = 0; i < ORPHAN_EVENT_BUFFER_MAX; i++) {
+        handler?.({
+          type: 'context_usage',
+          runId: 'ghost-usage',
+          step: i,
+          estimatedTokens: i,
+          inputTokens: i,
+          contextWindow: 100_000,
+          contentWindow: 100_000,
+          compactionTrigger: 80_000,
+          source: 'estimate',
+          layers: { system: 0, history: 0, tools: 0, buffer: 0 }
+        })
+      }
+      handler?.({
+        type: 'context_usage',
+        runId: 'ghost-usage',
+        step: ORPHAN_EVENT_BUFFER_MAX,
+        estimatedTokens: 9999,
+        inputTokens: 9999,
+        contextWindow: 100_000,
+        contentWindow: 100_000,
+        compactionTrigger: 80_000,
+        source: 'estimate',
+        layers: { system: 0, history: 0, tools: 0, buffer: 0 }
+      })
+    })
+
+    await act(async () => {
+      result.current.openRunTab('ghost-usage')
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    })
+
+    const ctrl = result.current.getRunController('ghost-usage')
+    expect(ctrl?.getContextUsage()?.inputTokens).toBe(9999)
+  })
+
   it('does not resurrect an empty transcript from late events after closing a idle run tab', async () => {
     loadRun.mockResolvedValue({
       ok: true,

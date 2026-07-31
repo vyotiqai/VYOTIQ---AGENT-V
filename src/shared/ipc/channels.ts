@@ -86,6 +86,7 @@ export const IPC = {
   marketplaceSetEnabled: 'marketplace:setEnabled',
   marketplacePickLocal: 'marketplace:pickLocal',
   marketplaceGetContents: 'marketplace:getContents',
+  marketplaceAckRemoteInstall: 'marketplace:ack-remote-install',
   slashCommandsList: 'slash-commands:list',
   slashCommandsResolve: 'slash-commands:resolve',
   slashCommandsCreateRule: 'slash-commands:createRule',

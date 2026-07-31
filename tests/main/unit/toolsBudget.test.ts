@@ -47,4 +47,18 @@ describe('trimToolsToBudget', () => {
     // Sanity: under the old pin, a larger graph tool would have been considered first.
     expect(base).toBeLessThan(withSmall)
   })
+
+  it('prefers pinned MCP tools over smaller unpinned ones', () => {
+    const builtins = [tool('read', 'r')]
+    const small = tool('mcp__other__small', 's')
+    const pinnedBig = tool('mcp__pin__big', 'P'.repeat(2000))
+    const base = trimToolsToBudget(builtins, 1_000_000).estimate
+    const withSmall = trimToolsToBudget([...builtins, small], 1_000_000).estimate
+    const smallCost = withSmall - base
+    const budget = base + smallCost + 50
+    const result = trimToolsToBudget([...builtins, small, pinnedBig], budget, {
+      pinnedMcpNames: new Set(['mcp__pin__big'])
+    })
+    expect(result.tools.map((t) => t.name)).toContain('mcp__pin__big')
+  })
 })

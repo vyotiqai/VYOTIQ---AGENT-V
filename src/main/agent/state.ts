@@ -7,7 +7,7 @@ import {
   enqueueEventAppend,
   flushEventAppends
 } from './eventAppendQueue'
-import { enqueueMessageAppend, flushMessageAppends } from './messageAppendQueue'
+import { enqueueMessageAppend, flushMessageAppends, takeMessageAppendFailureNotice } from './messageAppendQueue'
 import { enqueueStatusPatch, writeStatusImmediate } from './statusWriteQueue'
 import { getCachedListRuns, invalidateListRunsCache } from './runListCache'
 import {
@@ -31,7 +31,7 @@ import { isActive } from './runRegistry'
 import { CompactionRecordSchema, type CompactionRecord } from './context/types'
 
 export { flushEventAppends } from './eventAppendQueue'
-export { flushMessageAppends } from './messageAppendQueue'
+export { flushMessageAppends, takeMessageAppendFailureNotice } from './messageAppendQueue'
 export { flushStatusWrites } from './statusWriteQueue'
 
 const CONTRACT_CAP = 4000

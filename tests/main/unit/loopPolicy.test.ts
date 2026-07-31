@@ -77,7 +77,7 @@ describe('loopPolicy', () => {
   it('combines omitted-MCP hints without injecting failure recipes', () => {
     const omitted = loopHintForOmittedMcpTools(['mcp__a__t1', 'mcp__b__t2'])
     expect(omitted).toMatch(/2 MCP tool/)
-    expect(omitted).toMatch(/mcp_list_tools/)
+    expect(omitted).toMatch(/request_mcp_tools/)
     expect(omitted).not.toMatch(/Prefer built-in/i)
     expect(combineLoopHints(omitted, undefined)).toBe(omitted)
     expect(combineLoopHints(undefined, undefined)).toBeUndefined()

@@ -272,7 +272,8 @@ export function ChatView({
   onSend: (
     text: string,
     images?: string[],
-    files?: import('@shared/ipc').AttachedFile[]
+    files?: import('@shared/ipc').AttachedFile[],
+    extras?: import('@shared/ipc').ComposerSendExtras
   ) => boolean | void | Promise<boolean | void>
   onStop: () => void
   pendingFollowUps?: import('@renderer/lib/hooks/createChatStreamController').PendingFollowUpState[]
@@ -396,8 +397,36 @@ export function ChatView({
   const dismissedPanelsRef = useRef<Set<ChatRightPanelId>>(new Set())
   const wasChangesActiveRef = useRef(false)
   const liveItems = useChatLiveItems(itemsStore, items)
-  const gitRevision = useGitRevision(workspacePath, running, liveItems)
+  const [gitRevision, bumpGitRevision] = useGitRevision(workspacePath, running, liveItems)
   const gitChrome = useGitChrome(workspacePath, gitRevision, Boolean(workspacePath))
+  const notifyGitMutated = useCallback(() => {
+    gitChrome.refresh()
+    bumpGitRevision()
+  }, [gitChrome, bumpGitRevision])
+
+  const keepWriteFile = useCallback(
+    async (path: string) => {
+      const ok = await onKeepWriteFile?.(path)
+      if (ok !== false) notifyGitMutated()
+    },
+    [onKeepWriteFile, notifyGitMutated]
+  )
+  const discardWriteFile = useCallback(
+    async (path: string) => {
+      const ok = await onDiscardWriteFile?.(path)
+      if (ok !== false) notifyGitMutated()
+    },
+    [onDiscardWriteFile, notifyGitMutated]
+  )
+  const keepAllWrites = useCallback(async () => {
+    const ok = await onKeepAllWrites?.()
+    if (ok !== false) notifyGitMutated()
+  }, [onKeepAllWrites, notifyGitMutated])
+  const discardAllWrites = useCallback(async () => {
+    const ok = await onUndoWrites?.()
+    if (ok !== false) notifyGitMutated()
+  }, [onUndoWrites, notifyGitMutated])
+
   // Prefer the shared mutating-tool revision (same clock as composer chrome), not
   // a per-done-tool + fileCount formula that over-fetches and races the status cache.
   const [changesPreferredScope, setChangesPreferredScope] = useState<'agent' | 'uncommitted'>(
@@ -881,17 +910,18 @@ export function ChatView({
             items={liveItems}
             workspacePath={workspacePath}
             gitRevision={gitRevision}
-            onGitMutated={gitChrome.refresh}
+            chrome={gitChrome}
+            onGitMutated={notifyGitMutated}
             onViewPr={() => setRightPanel('pr')}
             writeFileResolutions={writeFileResolutions}
             resolvablePaths={writeResolvablePaths}
             canResolve={canUndoWrites}
             resolveBusy={undoBusy}
             resolveBlockedReason={resolveBlockedReason}
-            onKeepWriteFile={onKeepWriteFile}
-            onDiscardWriteFile={onDiscardWriteFile}
-            onKeepAllWrites={onKeepAllWrites}
-            onDiscardAllWrites={onUndoWrites}
+            onKeepWriteFile={keepWriteFile}
+            onDiscardWriteFile={discardWriteFile}
+            onKeepAllWrites={keepAllWrites}
+            onDiscardAllWrites={discardAllWrites}
             active={visiblePanelId === 'changes'}
             preferredScope={changesPreferredScope}
             preferredScopeToken={changesScopeToken}

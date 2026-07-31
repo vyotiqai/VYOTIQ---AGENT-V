@@ -273,7 +273,7 @@ describe('ChatEventDispatcher priority', () => {
     expect(order[1]).toBe('bg:text_delta')
   })
 
-  it('coalesces background usage to a single latest event', () => {
+  it('keeps latest background usage per step', () => {
     const sent: AgentEvent[] = []
     setChatEventActivePathResolver(() => '/ws-active')
 
@@ -290,6 +290,13 @@ describe('ChatEventDispatcher priority', () => {
     dispatcher.push('run-bg', {
       type: 'step_usage',
       runId: 'run-bg',
+      step: 1,
+      inputTokens: 3,
+      outputTokens: 3
+    })
+    dispatcher.push('run-bg', {
+      type: 'step_usage',
+      runId: 'run-bg',
       step: 2,
       inputTokens: 9,
       outputTokens: 9
@@ -297,7 +304,8 @@ describe('ChatEventDispatcher priority', () => {
 
     vi.advanceTimersByTime(80)
 
-    expect(sent).toHaveLength(1)
-    expect(sent[0]).toMatchObject({ type: 'step_usage', inputTokens: 9, step: 2 })
+    expect(sent).toHaveLength(2)
+    expect(sent[0]).toMatchObject({ type: 'step_usage', inputTokens: 3, step: 1 })
+    expect(sent[1]).toMatchObject({ type: 'step_usage', inputTokens: 9, step: 2 })
   })
 })

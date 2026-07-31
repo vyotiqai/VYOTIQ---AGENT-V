@@ -20,7 +20,7 @@ import {
   setMcpAuthToken,
   clearMcpOAuthState
 } from '../../settings/secrets'
-import { getSettings, setSettings } from '../../settings/settings'
+import { getSettings, setSettings, enqueueSettingsMutation } from '../../settings/settings'
 import {
   getBearerToken,
   headersWithoutAuthorization,
@@ -680,7 +680,7 @@ async function syncMcpServersUnlocked(servers: McpServer[]): Promise<void> {
         const idx = nextList.findIndex((x) => x.id === s.id)
         if (idx >= 0) nextList[idx] = s
       }
-      setSettings({ mcpServers: nextList })
+      void enqueueSettingsMutation(() => setSettings({ mcpServers: nextList }))
     } catch (err) {
       logger.warn('Failed to persist migrated MCP auth headers', { scope: 'mcp', err })
     }

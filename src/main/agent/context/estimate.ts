@@ -30,12 +30,20 @@ export async function estimateContentTokensAsync(
   return countContentTokensAsync(content, encodingForModel(model))
 }
 
+function estimateBinaryPartTokens(bytesApprox: number): number {
+  // Rough multimodal heuristic — avoid BPE over full base64.
+  return Math.max(256, Math.ceil(bytesApprox / 750))
+}
+
 function countContentTokens(content: MessageContent, encoding: EncodingName): number {
   if (typeof content === 'string') return countTextTokens(content, encoding)
   let n = 0
   for (const part of content) {
     if (part.type === 'image_url') n += estimateImageTokens(part.url)
     else if (part.type === 'file') n += countTextTokens(attachedFileToText(part), encoding)
+    else if (part.type === 'audio') n += estimateBinaryPartTokens(Math.ceil((part.url.length * 3) / 4))
+    else if (part.type === 'file_native')
+      n += estimateBinaryPartTokens(Math.ceil((part.data.length * 3) / 4))
     else n += countTextTokens(part.text, encoding)
   }
   return n
@@ -48,13 +56,18 @@ async function countContentTokensAsync(
   if (typeof content === 'string') return countTextTokensAsync(content, encoding)
   const texts: Array<{ text: string; encoding: EncodingName }> = []
   let images = 0
+  let binary = 0
   for (const part of content) {
     if (part.type === 'image_url') images += estimateImageTokens(part.url)
     else if (part.type === 'file') texts.push({ text: attachedFileToText(part), encoding })
+    else if (part.type === 'audio')
+      binary += estimateBinaryPartTokens(Math.ceil((part.url.length * 3) / 4))
+    else if (part.type === 'file_native')
+      binary += estimateBinaryPartTokens(Math.ceil((part.data.length * 3) / 4))
     else texts.push({ text: part.text, encoding })
   }
   const counts = await countTextsTokensAsync(texts)
-  return images + counts.reduce((a, b) => a + b, 0)
+  return images + binary + counts.reduce((a, b) => a + b, 0)
 }
 
 export function estimateMessagesTokens(messages: ChatMessage[], model?: ModelInfo): number {
@@ -90,6 +103,10 @@ export async function estimateMessagesTokensAsync(
       for (const part of message.content) {
         if (part.type === 'image_url') images += estimateImageTokens(part.url)
         else if (part.type === 'file') texts.push({ text: attachedFileToText(part), encoding })
+        else if (part.type === 'audio')
+          images += estimateBinaryPartTokens(Math.ceil((part.url.length * 3) / 4))
+        else if (part.type === 'file_native')
+          images += estimateBinaryPartTokens(Math.ceil((part.data.length * 3) / 4))
         else texts.push({ text: part.text, encoding })
       }
     }
@@ -161,6 +178,10 @@ async function estimateOneMessageTokensAsync(
     for (const part of message.content) {
       if (part.type === 'image_url') images += estimateImageTokens(part.url)
       else if (part.type === 'file') texts.push({ text: attachedFileToText(part), encoding })
+      else if (part.type === 'audio')
+        images += estimateBinaryPartTokens(Math.ceil((part.url.length * 3) / 4))
+      else if (part.type === 'file_native')
+        images += estimateBinaryPartTokens(Math.ceil((part.data.length * 3) / 4))
       else texts.push({ text: part.text, encoding })
     }
   }

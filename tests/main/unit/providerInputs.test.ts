@@ -72,7 +72,7 @@ describe('Gemini Interactions input', () => {
     ])
   })
 
-  it('keeps user images as inline data instead of flattening them away', () => {
+  it('keeps user images as Interactions ImageContent instead of flattening them away', () => {
     const messages = [
       {
         role: 'user' as const,
@@ -85,7 +85,44 @@ describe('Gemini Interactions input', () => {
     const input = toInteractionsInput(messages, undefined, false)
     expect(input).toEqual([
       { type: 'text', text: 'what is this' },
-      { type: 'inline_data', inline_data: { mime_type: 'image/png', data: 'AAAA' } }
+      { type: 'image', data: 'AAAA', mime_type: 'image/png' }
+    ])
+  })
+
+  it('passes https image URLs as ImageContent uri', () => {
+    const messages = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'text' as const, text: 'look' },
+          { type: 'image_url' as const, url: 'https://example.com/x.png' }
+        ]
+      }
+    ]
+    const input = toInteractionsInput(messages, undefined, false)
+    expect(input).toEqual([
+      { type: 'text', text: 'look' },
+      { type: 'image', uri: 'https://example.com/x.png', mime_type: 'image/png' }
+    ])
+  })
+
+  it('emits an omission marker for unsupported image URL schemes', () => {
+    const messages = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'text' as const, text: 'look' },
+          { type: 'image_url' as const, url: 'file:///C:/tmp/x.png' }
+        ]
+      }
+    ]
+    const input = toInteractionsInput(messages, undefined, false)
+    expect(input).toEqual([
+      { type: 'text', text: 'look' },
+      {
+        type: 'text',
+        text: '[image omitted: Gemini Interactions requires a base64 data URL or http(s) image URI]'
+      }
     ])
   })
 

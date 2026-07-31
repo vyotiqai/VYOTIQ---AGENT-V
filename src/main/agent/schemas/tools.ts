@@ -436,12 +436,27 @@ const browserSelectOptionArgs = z
 const mcpListToolsArgs = z.object({
   serverId: z
     .string()
-    .describe('Optional MCP server id filter (substring match on tool name prefix)')
+    .describe('Optional MCP server id filter (exact match on server id)')
     .optional(),
   server_id: z
     .string()
     .describe('Deprecated alias for serverId')
     .optional()
+})
+
+const requestMcpToolsArgs = z.object({
+  tools: z
+    .array(z.string().min(1).max(200))
+    .max(32)
+    .describe(
+      'Full MCP tool names (mcp__server__tool) and/or bare tool names to pin for the next step'
+    )
+    .optional(),
+  serverId: z
+    .string()
+    .describe('Pin every connected tool from this MCP server id for the next step')
+    .optional(),
+  server_id: z.string().describe('Deprecated alias for serverId').optional()
 })
 
 const mcpListResourcesArgs = z.object({
@@ -721,8 +736,13 @@ const TOOL_REGISTRY = {
   },
   mcp_list_tools: {
     description:
-      'List connected MCP tools (name, description, readOnlyHint). Use when MCP defs were trimmed from context.',
+      'List connected MCP tools (name, description, readOnlyHint). Marks tools omitted from this step catalog. Use request_mcp_tools to pin omitted tools for the next step.',
     schema: mcpListToolsArgs
+  },
+  request_mcp_tools: {
+    description:
+      'Pin MCP tool definitions into the next step provider catalog (budget-permitting). Effect applies on the following step, not mid-stream. Pass full mcp__server__tool names and/or a serverId.',
+    schema: requestMcpToolsArgs
   },
   mcp_list_resources: {
     description:

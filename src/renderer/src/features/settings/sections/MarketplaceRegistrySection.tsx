@@ -7,10 +7,12 @@ import { SettingsRow } from '../components/SettingsRow'
 /** Registry URL + remote-install acknowledgement — Browse/Installed live in Marketplace view. */
 export function MarketplaceRegistrySection({
   settings,
-  form
+  form,
+  onReloadSettings
 }: {
   settings: Settings
   form: SettingsFormState
+  onReloadSettings?: () => Promise<void>
 }) {
   const [registryUrl, setRegistryUrl] = useState(settings.marketplace?.registryUrl ?? '')
   const [busy, setBusy] = useState(false)
@@ -47,7 +49,7 @@ export function MarketplaceRegistrySection({
                 void form.runUpdate({
                   marketplace: {
                     registryUrl: registryUrl.trim(),
-                    remoteInstallAcked: settings.marketplace?.remoteInstallAcked ?? false
+                    remoteInstallAcked: remoteAcked
                   }
                 })
               }}
@@ -63,7 +65,7 @@ export function MarketplaceRegistrySection({
                     await form.runUpdate({
                       marketplace: {
                         registryUrl: registryUrl.trim(),
-                        remoteInstallAcked: settings.marketplace?.remoteInstallAcked ?? false
+                        remoteInstallAcked: remoteAcked
                       }
                     })
                     const res = await window.vyotiq.marketplaceRefreshCatalog()
@@ -95,12 +97,19 @@ export function MarketplaceRegistrySection({
             disabled={form.formLocked || busy}
             aria-label="Acknowledge marketplace install risk"
             onChange={(e) => {
-              void form.runUpdate({
-                marketplace: {
-                  registryUrl: settings.marketplace?.registryUrl ?? registryUrl.trim(),
-                  remoteInstallAcked: e.target.checked
+              void (async () => {
+                setBusy(true)
+                try {
+                  const res = await window.vyotiq.marketplaceAckRemoteInstall(e.target.checked)
+                  if (!res.ok) {
+                    setFeedback({ kind: 'error', text: res.error })
+                    return
+                  }
+                  await onReloadSettings?.()
+                } finally {
+                  setBusy(false)
                 }
-              })
+              })()
             }}
           />
           <span>

@@ -4,13 +4,13 @@ import type { ToolBodyProps } from '../types'
 import { parseWebSearchData } from '../parsers/webSearch'
 import { Chip, TruncatedBanner } from '../primitives'
 
-export function WebSearchBody({ tool, loading, loadFailed }: ToolBodyProps) {
+export function WebSearchBody({ tool, loading, loadFailed, inGroup }: ToolBodyProps) {
   const data = useMemo(() => parseWebSearchData(tool), [tool])
 
   return (
     <div>
       <div className={`${TOOL_BODY_PAD} flex flex-wrap items-center gap-2 pb-1`}>
-        <Chip>{data.query || 'web search'}</Chip>
+        {!inGroup ? <Chip>{data.query || 'web search'}</Chip> : null}
         <span className="text-[10px] tabular-nums text-tertiary">
           {data.hits.length} {data.hits.length === 1 ? 'result' : 'results'}
         </span>

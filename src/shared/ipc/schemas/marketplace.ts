@@ -231,6 +231,14 @@ export const DEFAULT_MARKETPLACE_SETTINGS: MarketplaceSettings = {
   remoteInstallAcked: false
 }
 
+/** Main-only ack write — renderer must not set remoteInstallAcked via setSettings. */
+export const MarketplaceRemoteInstallAckRequestSchema = z.object({
+  acked: z.boolean()
+})
+export type MarketplaceRemoteInstallAckRequest = z.infer<
+  typeof MarketplaceRemoteInstallAckRequestSchema
+>
+
 export const MarketplaceInstallRequestSchema = z.object({
   source: MarketplaceInstallSourceSchema,
   /** Absolute folder / zip path, git URL, npm package name, catalog id, or remote MCP URL */

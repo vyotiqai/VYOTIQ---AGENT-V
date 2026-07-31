@@ -141,3 +141,33 @@ describe('runRegistry follow-ups', () => {
     ])
   })
 })
+
+describe('runRegistry cancel clears pending gates', () => {
+  it('chatCancelResult clears pending agent questions', async () => {
+    resetActiveRunsForTests()
+    const {
+      registerQuestionSender,
+      askQuestionThroughRenderer,
+      listPendingAgentQuestions,
+      resetAgentQuestionForTests
+    } = await import('@main/agent/agentQuestion')
+    resetAgentQuestionForTests()
+    const runId = 'cancel-pending-q'
+    registerRunAbort(runId, '/ws')
+    registerQuestionSender(runId, () => {})
+    const pending = askQuestionThroughRenderer(
+      {
+        requestId: 'q1',
+        runId,
+        toolCallId: 't1',
+        questions: [{ id: 'q1', prompt: 'Ready?', type: 'single', options: ['yes', 'no'] }]
+      },
+      new AbortController().signal
+    )
+    expect(listPendingAgentQuestions(runId)).toHaveLength(1)
+    expect(chatCancelResult(runId)).toEqual({ ok: true, data: true })
+    expect(listPendingAgentQuestions(runId)).toHaveLength(0)
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    resetAgentQuestionForTests()
+  })
+})

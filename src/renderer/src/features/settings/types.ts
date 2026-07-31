@@ -26,6 +26,8 @@ export type SettingsViewProps = {
   backRef?: Ref<HTMLButtonElement>
   onClose: () => void
   onUpdate: (partial: Partial<Settings>) => Promise<{ ok: true } | { ok: false; error: string }>
+  /** Reload settings from main after main-only writes (e.g. marketplace ack). */
+  onReloadSettings?: () => Promise<void>
   onSaveSecret: (
     provider: SecretProvider,
     key: string

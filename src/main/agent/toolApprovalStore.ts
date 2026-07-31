@@ -1,10 +1,11 @@
 import { DEFAULT_TOOL_APPROVAL } from '../../shared/ipc'
 import { logger } from '../../shared/logger'
-import { getSettings, setSettings } from '@main/settings/settings'
+import { getSettings, setSettings, enqueueSettingsMutation } from '@main/settings/settings'
 import {
   findWorkspaceSettingsOverride,
   readWorkspacesState,
-  setWorkspaceSettingsOverride
+  setWorkspaceSettingsOverride,
+  enqueueWorkspaceMutation
 } from '@main/workspace/workspaces'
 
 /**
@@ -17,17 +18,21 @@ export function persistAlwaysAllow(workspacePath: string, toolName: string): voi
     if (override?.useOverride) {
       const current = override.toolApproval ?? DEFAULT_TOOL_APPROVAL
       if (current.allowlist.includes(toolName)) return
-      setWorkspaceSettingsOverride(workspacePath, {
-        ...override,
-        toolApproval: { ...current, allowlist: [...current.allowlist, toolName] }
-      })
+      void enqueueWorkspaceMutation(() =>
+        setWorkspaceSettingsOverride(workspacePath, {
+          ...override,
+          toolApproval: { ...current, allowlist: [...current.allowlist, toolName] }
+        })
+      )
       return
     }
 
     const settings = getSettings()
     const current = settings.toolApproval ?? DEFAULT_TOOL_APPROVAL
     if (current.allowlist.includes(toolName)) return
-    setSettings({ toolApproval: { ...current, allowlist: [...current.allowlist, toolName] } })
+    void enqueueSettingsMutation(() =>
+      setSettings({ toolApproval: { ...current, allowlist: [...current.allowlist, toolName] } })
+    )
   } catch (err) {
     // A failed write costs the user one extra prompt next run, nothing more.
     logger.warn('Failed to persist tool allowlist entry', {

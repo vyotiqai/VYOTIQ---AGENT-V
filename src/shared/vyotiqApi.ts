@@ -299,6 +299,7 @@ export interface VyotiqApi {
   ) => Promise<IpcResult<MarketplaceIndex>>
   marketplacePickLocal: () => Promise<IpcResult<string | null>>
   marketplaceGetContents: (id: string) => Promise<IpcResult<PackageContents>>
+  marketplaceAckRemoteInstall: (acked: boolean) => Promise<IpcResult<Settings>>
   slashCommandsList: (payload?: {
     workspacePath?: string | null
   }) => Promise<IpcResult<{ commands: SlashCommandDescriptor[] }>>

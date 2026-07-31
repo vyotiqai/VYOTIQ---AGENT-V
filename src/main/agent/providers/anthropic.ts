@@ -2,7 +2,7 @@ import type { ChatMessage, MessageContent, ModelInfo } from '../../../shared/ipc
 import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
 import type { AnthropicThinkingBlock } from '../../../shared/reasoning'
-import { baseModelInfo, parseDataUrl } from './normalize'
+import { baseModelInfo, parseDataUrl, wireSupportedInputModalities } from './normalize'
 import type {
   LlmProvider,
   ListModelsRequest,
@@ -32,9 +32,27 @@ function mergeContent(a: unknown, b: unknown): Array<Record<string, unknown>> {
 function toAnthropicContent(content: MessageContent): string | Array<Record<string, unknown>> {
   if (typeof content === 'string') return content
   const blocks: Array<Record<string, unknown>> = []
-  for (const p of providerContentParts(content)) {
+  for (const p of providerContentParts(content, { image: true, fileNative: true, audio: false })) {
     if (p.type === 'text') {
       blocks.push({ type: 'text', text: p.text })
+      continue
+    }
+    if (p.type === 'file_native') {
+      blocks.push({
+        type: 'document',
+        source: {
+          type: 'base64',
+          media_type: p.mime || 'application/pdf',
+          data: p.data
+        }
+      })
+      continue
+    }
+    if (p.type === 'audio') {
+      blocks.push({
+        type: 'text',
+        text: '[audio omitted: Anthropic does not support native audio input]'
+      })
       continue
     }
     const data = parseDataUrl(p.url)
@@ -345,13 +363,11 @@ export const anthropicProvider: LlmProvider = {
           maxOutputTokens:
             typeof row.max_tokens === 'number' ? row.max_tokens : undefined,
           inputModalities: inputMods
-            ? (inputMods.filter((m) =>
-                ['text', 'image', 'audio', 'file'].includes(m)
-              ) as ModelInfo['inputModalities'])
+            ? wireSupportedInputModalities(inputMods, supportsVision, 'anthropic')
             : undefined,
           supportsTools: caps?.tools !== false,
           supportsVision
-        })
+        }, 'anthropic')
       )
     }
     return out

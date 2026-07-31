@@ -11,6 +11,13 @@ export const MAX_ATTACHMENT_DATA_CHARS = Math.ceil(MAX_ATTACHMENT_BYTES * (4 / 3
 /** Extracted text kept per attachment, so one document cannot eat the context. */
 export const MAX_ATTACHMENT_CHARS = 120_000
 
+/** Inline audio for providers that accept audio data URLs / inline bytes. */
+export const MAX_AUDIO_BYTES = 16 * 1024 * 1024
+export const MAX_AUDIO_DATA_URL_CHARS = Math.ceil(MAX_AUDIO_BYTES * (4 / 3)) + 128
+/** Native PDF/document bytes sent without text extraction. */
+export const MAX_NATIVE_FILE_BYTES = 8 * 1024 * 1024
+export const MAX_NATIVE_FILE_DATA_CHARS = Math.ceil(MAX_NATIVE_FILE_BYTES * (4 / 3)) + 128
+
 /**
  * A run id becomes a directory name under the workspace sessions root, so it must
  * never contain a separator or a `..` segment. Generated ids are UUIDs.
@@ -34,6 +41,18 @@ export const ContentPartSchema = z.discriminatedUnion('type', [
     name: z.string().min(1).max(400),
     mime: z.string().max(200),
     text: z.string().max(MAX_ATTACHMENT_CHARS)
+  }),
+  z.object({
+    type: z.literal('audio'),
+    url: z.string().min(1).max(MAX_AUDIO_DATA_URL_CHARS),
+    mime: z.string().max(200).optional()
+  }),
+  z.object({
+    /** Native document bytes for providers that accept PDF/file on the wire. */
+    type: z.literal('file_native'),
+    name: z.string().min(1).max(400),
+    mime: z.string().max(200),
+    data: z.string().min(1).max(MAX_NATIVE_FILE_DATA_CHARS)
   })
 ])
 export type ContentPart = z.infer<typeof ContentPartSchema>
@@ -258,12 +277,15 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     source: z.enum(['estimate', 'provider']),
     /** True when estimated tokens still exceed the model window after compaction/trim. */
     overflow: z.boolean().optional(),
-    layers: z.object({
-      system: z.number().int().min(0),
-      history: z.number().int().min(0),
-      tools: z.number().int().min(0),
-      buffer: z.number().int().min(0)
-    })
+    /** Estimate-only layer split; omit when source is provider (totals are not layer-aligned). */
+    layers: z
+      .object({
+        system: z.number().int().min(0),
+        history: z.number().int().min(0),
+        tools: z.number().int().min(0),
+        buffer: z.number().int().min(0)
+      })
+      .optional()
   }),
   z.object({
     /** Agent switched Ask / Plan / Agent mid-run; composer syncs from this. */
@@ -811,6 +833,18 @@ export function contentImages(content: MessageContent): string[] {
 }
 
 export type AttachedFile = Extract<ContentPart, { type: 'file' }>
+export type AttachedAudio = Extract<ContentPart, { type: 'audio' }>
+export type AttachedNativeFile = Extract<ContentPart, { type: 'file_native' }>
+
+export function contentAudios(content: MessageContent): AttachedAudio[] {
+  if (typeof content === 'string') return []
+  return content.filter((p): p is AttachedAudio => p.type === 'audio')
+}
+
+export function contentNativeFiles(content: MessageContent): AttachedNativeFile[] {
+  if (typeof content === 'string') return []
+  return content.filter((p): p is AttachedNativeFile => p.type === 'file_native')
+}
 
 /** Renderer hands raw bytes to main, which owns the parsers and the caps. */
 export const ExtractAttachmentRequestSchema = z.object({
@@ -910,11 +944,8 @@ export function attachedFileToText(file: AttachedFile): string {
 }
 
 /**
- * Collapse attachments into plain text parts.
- *
- * Providers only understand text and images, so a `file` part must be flattened
- * before the request is built. It stays a distinct part until then so the
- * transcript can show it as an attachment chip rather than a wall of quoted text.
+ * Collapse text-extracted attachments into plain text parts.
+ * Native file / audio parts are left intact for capability-aware assemble.
  */
 export function flattenFileParts(content: MessageContent): MessageContent {
   if (typeof content === 'string') return content
@@ -925,25 +956,70 @@ export function flattenFileParts(content: MessageContent): MessageContent {
   return parts
 }
 
-/** The only part shapes a provider request understands. */
+/** Wire shapes providers may understand beyond text. */
 export type ProviderContentPart =
   | Extract<ContentPart, { type: 'text' }>
   | Extract<ContentPart, { type: 'image_url' }>
+  | Extract<ContentPart, { type: 'audio' }>
+  | Extract<ContentPart, { type: 'file_native' }>
 
-/** Provider-facing view of a content array, with attachments inlined as text. */
-export function providerContentParts(content: ContentPart[]): ProviderContentPart[] {
-  return content.map((part) =>
-    part.type === 'file' ? { type: 'text' as const, text: attachedFileToText(part) } : part
-  )
+export type ProviderWireCaps = {
+  image?: boolean
+  audio?: boolean
+  fileNative?: boolean
+}
+
+/**
+ * Provider-facing view of a content array.
+ * Text `file` parts are always inlined; audio/native kept only when caps allow.
+ */
+export function providerContentParts(
+  content: ContentPart[],
+  caps: ProviderWireCaps = { image: true }
+): ProviderContentPart[] {
+  const out: ProviderContentPart[] = []
+  for (const part of content) {
+    if (part.type === 'text') {
+      out.push(part)
+      continue
+    }
+    if (part.type === 'file') {
+      out.push({ type: 'text', text: attachedFileToText(part) })
+      continue
+    }
+    if (part.type === 'image_url') {
+      if (caps.image !== false) out.push(part)
+      else out.push({ type: 'text', text: '[image omitted: model does not support vision]' })
+      continue
+    }
+    if (part.type === 'audio') {
+      if (caps.audio) out.push(part)
+      else out.push({ type: 'text', text: '[audio omitted: model or provider does not support audio input]' })
+      continue
+    }
+    if (part.type === 'file_native') {
+      if (caps.fileNative) out.push(part)
+      else
+        out.push({
+          type: 'text',
+          text: `[file omitted: native file "${part.name}" not supported on this provider — re-attach for text extraction]`
+        })
+    }
+  }
+  return out
 }
 
 export function contentToText(content: MessageContent): string {
   if (typeof content === 'string') return content
   const text = contentDisplayText(content)
   const files = contentFiles(content)
+  const natives = contentNativeFiles(content)
+  const audios = contentAudios(content)
   const imageCount = contentImages(content).length
   const markers: string[] = []
   for (const file of files) markers.push(attachedFileToText(file))
+  for (const file of natives) markers.push(`[file:${file.name}]`)
+  if (audios.length) markers.push(audios.length === 1 ? '[audio]' : `[${audios.length} audio]`)
   if (imageCount) markers.push(imageCount === 1 ? '[image]' : `[${imageCount} images]`)
   if (!markers.length) return text
   return [text, ...markers].filter(Boolean).join('\n').trim()
@@ -954,19 +1030,40 @@ export function contentHasImage(content: MessageContent): boolean {
   return content.some((p) => p.type === 'image_url')
 }
 
+export type ComposerSendExtras = {
+  audio?: AttachedAudio[]
+  nativeFiles?: AttachedNativeFile[]
+}
+
 export function buildUserContent(
   text: string,
   images?: string[],
-  files?: AttachedFile[]
+  files?: AttachedFile[],
+  extras?: { audio?: AttachedAudio[]; nativeFiles?: AttachedNativeFile[] }
 ): MessageContent {
   const trimmed = text.trim()
   const validImages = images?.filter((url) => url) ?? []
   const validFiles = files?.filter((file) => file.name && file.text) ?? []
-  if (!validImages.length && !validFiles.length) return trimmed
+  const validAudio = extras?.audio?.filter((a) => a.url) ?? []
+  const validNative = extras?.nativeFiles?.filter((f) => f.name && f.data) ?? []
+  if (!validImages.length && !validFiles.length && !validAudio.length && !validNative.length) {
+    return trimmed
+  }
   const parts: ContentPart[] = []
   if (trimmed) parts.push({ type: 'text', text: trimmed })
   for (const file of validFiles) {
     parts.push({ type: 'file', name: file.name, mime: file.mime, text: file.text })
+  }
+  for (const native of validNative) {
+    parts.push({
+      type: 'file_native',
+      name: native.name,
+      mime: native.mime,
+      data: native.data
+    })
+  }
+  for (const audio of validAudio) {
+    parts.push({ type: 'audio', url: audio.url, ...(audio.mime ? { mime: audio.mime } : {}) })
   }
   for (const url of validImages) {
     parts.push({ type: 'image_url', url })

@@ -58,9 +58,26 @@ export function parseGeminiUsage(usageMetadata: Record<string, unknown>): TokenU
 function toGeminiParts(content: MessageContent): Array<Record<string, unknown>> {
   if (typeof content === 'string') return [{ text: content }]
   const parts: Array<Record<string, unknown>> = []
-  for (const p of providerContentParts(content)) {
+  for (const p of providerContentParts(content, { image: true, audio: true, fileNative: true })) {
     if (p.type === 'text') {
       parts.push({ text: p.text })
+      continue
+    }
+    if (p.type === 'file_native') {
+      parts.push({
+        inlineData: { mimeType: p.mime || 'application/pdf', data: p.data }
+      })
+      continue
+    }
+    if (p.type === 'audio') {
+      const data = parseDataUrl(p.url)
+      if (data) {
+        parts.push({
+          inlineData: { mimeType: data.mediaType || p.mime || 'audio/mpeg', data: data.data }
+        })
+      } else {
+        parts.push({ text: '[audio omitted: Gemini requires a base64 data URL]' })
+      }
       continue
     }
     const data = parseDataUrl(p.url)

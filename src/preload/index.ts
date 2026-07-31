@@ -233,6 +233,8 @@ const api: VyotiqApi = {
     ipcRenderer.invoke(IPC.marketplaceSetEnabled, { id, enabled }),
   marketplacePickLocal: () => ipcRenderer.invoke(IPC.marketplacePickLocal),
   marketplaceGetContents: (id) => ipcRenderer.invoke(IPC.marketplaceGetContents, { id }),
+  marketplaceAckRemoteInstall: (acked) =>
+    ipcRenderer.invoke(IPC.marketplaceAckRemoteInstall, { acked }),
   getSystemTheme: () => ipcRenderer.invoke(IPC.getSystemTheme),
   slashCommandsList: (payload) => ipcRenderer.invoke(IPC.slashCommandsList, payload ?? {}),
   slashCommandsResolve: (payload) => ipcRenderer.invoke(IPC.slashCommandsResolve, payload),

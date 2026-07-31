@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto'
 import { contentDisplayText, type ChatMessage } from '../../shared/ipc'
+import { cancelPendingQuestions } from './agentQuestion'
 import { disposeSubagentsForRun } from './subagentRegistry'
 
 export type FollowUpEntry = {
@@ -99,6 +100,19 @@ export function markRunTurnComplete(runId: string, invokeId: number): void {
   }
 }
 
+/** Clear parked approval/question waiters (lazy require for toolApproval avoids cycle). */
+function cancelPendingGateWaiters(runId: string): void {
+  try {
+    const { cancelPendingApprovals } = require('./toolApproval') as {
+      cancelPendingApprovals: (runId: string, invokeId?: number) => void
+    }
+    cancelPendingApprovals(runId)
+  } catch {
+    // ignore if modules unavailable in early boot / tests
+  }
+  cancelPendingQuestions(runId)
+}
+
 export function cancelRun(runId: string): boolean {
   const entry = active.get(runId)
   if (!entry) return false
@@ -107,19 +121,7 @@ export function cancelRun(runId: string): boolean {
   entry.streamInterrupt?.abort()
   entry.streamInterrupt = null
   entry.controller.abort()
-  try {
-    // Lazy require avoids a cycle: toolApproval/agentQuestion → runRegistry.
-    const { cancelPendingApprovals } = require('./toolApproval') as {
-      cancelPendingApprovals: (runId: string, invokeId?: number) => void
-    }
-    const { cancelPendingQuestions } = require('./agentQuestion') as {
-      cancelPendingQuestions: (runId: string, invokeId?: number) => void
-    }
-    cancelPendingApprovals(runId)
-    cancelPendingQuestions(runId)
-  } catch {
-    // ignore if modules unavailable in early boot / tests
-  }
+  cancelPendingGateWaiters(runId)
   void disposeSubagentsForRun(runId)
   return true
 }
@@ -220,19 +222,7 @@ export function enqueueFollowUp(runId: string, message: ChatMessage): EnqueueFol
   entry.streamInterrupt?.abort()
   // Soft-abort must also unblock parked approval/question waits (streamInterrupt
   // may already be null during tool execution after the provider stream ended).
-  try {
-    // Lazy require avoids a cycle: toolApproval/agentQuestion → runRegistry.
-    const { cancelPendingApprovals } = require('./toolApproval') as {
-      cancelPendingApprovals: (runId: string, invokeId?: number) => void
-    }
-    const { cancelPendingQuestions } = require('./agentQuestion') as {
-      cancelPendingQuestions: (runId: string, invokeId?: number) => void
-    }
-    cancelPendingApprovals(runId)
-    cancelPendingQuestions(runId)
-  } catch {
-    // ignore if modules unavailable in early boot / tests
-  }
+  cancelPendingGateWaiters(runId)
   return {
     ok: true,
     id,
@@ -305,8 +295,21 @@ export function streamSignalFor(runId: string, runSignal: AbortSignal): AbortSig
   if (typeof AbortSignal.any === 'function') {
     return AbortSignal.any([runSignal, soft])
   }
-  // Fallback: prefer run signal; loop also polls hasPendingFollowUps.
-  return runSignal
+  // Fallback when AbortSignal.any is unavailable: mirror either abort into a local controller.
+  if (runSignal.aborted || soft.aborted) {
+    const done = new AbortController()
+    done.abort()
+    return done.signal
+  }
+  const combined = new AbortController()
+  const onAbort = (): void => {
+    runSignal.removeEventListener('abort', onAbort)
+    soft.removeEventListener('abort', onAbort)
+    if (!combined.signal.aborted) combined.abort()
+  }
+  runSignal.addEventListener('abort', onAbort, { once: true })
+  soft.addEventListener('abort', onAbort, { once: true })
+  return combined.signal
 }
 
 /** Test helper — clear active controllers between tests. */
@@ -332,6 +335,7 @@ export function chatCancelResult(
   entry.streamInterrupt?.abort()
   entry.streamInterrupt = null
   entry.controller.abort()
+  cancelPendingGateWaiters(runId)
   void disposeSubagentsForRun(runId)
   return { ok: true, data: true }
 }

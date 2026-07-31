@@ -1,7 +1,7 @@
 import { memo, useState } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
-import { TOOL_CARD_BODY, TOOL_CARD_HEADER, TOOL_CARD_SURFACE } from '@renderer/lib/utils/layout'
+import { QUESTION_GATE_BODY, QUESTION_GATE_FOOTER, QUESTION_GATE_HEADER, QUESTION_GATE_SURFACE } from '@renderer/lib/utils/layout'
 import type { UiToolApproval } from '@shared/transcript'
 import type { ToolApprovalDecision } from '@shared/ipc'
 import { toolLabel } from '../toolUi/meta'
@@ -45,11 +45,11 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
 
   return (
     <div
-      className={cn(TOOL_CARD_SURFACE, 'w-full border-accent/50')}
+      className={cn(QUESTION_GATE_SURFACE, 'w-full border-l-accent')}
       role="group"
       aria-busy={phase === 'pending' ? true : undefined}
     >
-      <div className={cn(TOOL_CARD_HEADER, 'flex items-center gap-2 text-fg')}>
+      <div className={cn(QUESTION_GATE_HEADER, 'text-fg')}>
         <Icon name="warning" size={14} className="shrink-0 text-danger" />
         <span className="font-medium">
           Allow tool:{' '}
@@ -63,16 +63,16 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
         </span>
       </div>
       {approval.argsPreview ? (
-        <pre className={cn(TOOL_CARD_BODY, 'max-h-40 overflow-auto px-3 py-2 text-xs text-secondary')}>
+        <pre className={cn(QUESTION_GATE_BODY, 'max-h-40 overflow-auto text-xs text-secondary')}>
           {approval.argsPreview}
         </pre>
       ) : null}
       {localError ? (
-        <p className="border-t border-border px-3 py-2 text-xs text-danger" role="alert">
+        <p className="border-t border-border/40 px-3 py-2 text-xs text-danger" role="alert">
           {localError}
         </p>
       ) : null}
-      <div className="flex flex-wrap items-center gap-2 border-t border-border px-3 py-2">
+      <div className={cn(QUESTION_GATE_FOOTER, 'flex-wrap border-t border-border/40')}>
         {CHOICES.map((choice) => (
           <button
             key={choice.decision}

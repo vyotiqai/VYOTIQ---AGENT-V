@@ -240,8 +240,12 @@ export function App() {
   chatActionsRef.current = chatActions
 
   const onChatSend = useCallback(
-    async (text: string, images?: string[], files?: AttachedFile[]) =>
-      chatActionsRef.current?.send(text, images, files) ?? false,
+    async (
+      text: string,
+      images?: string[],
+      files?: AttachedFile[],
+      extras?: import('@shared/ipc').ComposerSendExtras
+    ) => chatActionsRef.current?.send(text, images, files, extras) ?? false,
     []
   )
 
@@ -467,20 +471,13 @@ export function App() {
               }
         // Registry installs require ack; prompt here so slash/skills paths match Marketplace UI.
         if (payload.source === 'registry' && !settings.marketplace?.remoteInstallAcked) {
-          const ok = window.confirm(
-            'Marketplace packages (remote catalogs, git/npm/zip, local path folders) and MCP endpoints are unsigned. Install only from sources you trust. Continue?'
-          )
-          if (!ok) return
-          const ack = await update({
-            marketplace: {
-              registryUrl: settings.marketplace?.registryUrl ?? '',
-              remoteInstallAcked: true
-            }
-          })
+          const ack = await window.vyotiq.marketplaceAckRemoteInstall(true)
           if (!ack.ok) {
             setSettingsError(ack.error)
             return
           }
+          if (!ack.data.marketplace?.remoteInstallAcked) return
+          await refresh()
         }
         const res = await window.vyotiq.marketplaceInstall(payload)
         if (!res.ok) setSettingsError(res.error)
@@ -500,7 +497,7 @@ export function App() {
         setSettingsError(message)
       }
     }),
-    [activeWorkspace, onCompactContext, onUndoWrites, setAgentMode, setSettingsError, settings.marketplace, update]
+    [activeWorkspace, onCompactContext, onUndoWrites, refresh, setAgentMode, setSettingsError, settings.marketplace, update]
   )
 
   const operationalError = settingsError ?? workspaceError
@@ -685,6 +682,7 @@ export function App() {
           onSectionChange={setSettingsSection}
           onClose={() => setView('chat')}
           onUpdate={update}
+          onReloadSettings={refresh}
           onSaveSecret={saveSecret}
           onClearSecret={removeSecret}
           onSetTheme={(theme) => {

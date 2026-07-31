@@ -110,14 +110,14 @@ describe('agentQuestion', () => {
     await expect(pending).resolves.toEqual([{ questionId: 'q1', values: ['yes'] }])
   })
 
-  it('rejects after the question timeout', async () => {
+  it('resolves with empty answers after the question timeout', async () => {
     vi.useFakeTimers()
     try {
       registerQuestionSender('run-1', () => {})
       const pending = askQuestionThroughRenderer(REQUEST, new AbortController().signal)
-      const expectReject = expect(pending).rejects.toThrow(/timed out/i)
+      const expectEmpty = expect(pending).resolves.toEqual([])
       await vi.advanceTimersByTimeAsync(AGENT_QUESTION_TIMEOUT_MS)
-      await expectReject
+      await expectEmpty
     } finally {
       vi.useRealTimers()
     }

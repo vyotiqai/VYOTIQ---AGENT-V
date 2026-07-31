@@ -1,5 +1,12 @@
 import type { AgentEvent, ChatMessage, MessageContent, PersistedEvent } from '../ipc'
-import { contentDisplayText, contentFiles, contentImages, contentToText } from '../ipc'
+import {
+  contentAudios,
+  contentDisplayText,
+  contentFiles,
+  contentImages,
+  contentNativeFiles,
+  contentToText
+} from '../ipc'
 import { isAgentEvent } from '../utils/eventUtils'
 import { subagentContextUsageFromEvent } from '../utils/contextUsage'
 import { summarizeToolArgs } from '../utils/toolSummary'
@@ -122,11 +129,26 @@ export type UiItem =
 
 /** Attachment chips for a message: names and sizes only, never the quoted text. */
 export function uiAttachments(content: MessageContent): UiAttachment[] {
-  return contentFiles(content).map((file) => ({
+  const out: UiAttachment[] = contentFiles(content).map((file) => ({
     name: file.name,
     mime: file.mime,
     chars: file.text.length
   }))
+  for (const file of contentNativeFiles(content)) {
+    out.push({
+      name: file.name,
+      mime: file.mime,
+      chars: Math.ceil((file.data.length * 3) / 4)
+    })
+  }
+  for (const audio of contentAudios(content)) {
+    out.push({
+      name: 'audio',
+      mime: audio.mime || 'audio/*',
+      chars: Math.ceil((audio.url.length * 3) / 4)
+    })
+  }
+  return out
 }
 
 /** Stable ids so reload/sync does not remount every transcript row. */

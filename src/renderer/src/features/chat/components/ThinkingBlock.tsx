@@ -3,6 +3,7 @@ import { Icon } from '@renderer/lib/icons'
 import { MarkdownContent, cn } from '@renderer/lib/ui'
 import { DISCLOSURE_ROW } from '@renderer/lib/utils/layout'
 import { shouldRenderThinking } from '@shared/transcript'
+import { ExpandPanel } from '../toolUi/ExpandPanel'
 import { TextShimmer } from './TextShimmer'
 
 /**
@@ -71,14 +72,14 @@ export function ThinkingBlock({
           )}
         />
       </button>
-      {isExpanded ? (
+      <ExpandPanel open={isExpanded}>
         <div
           ref={bodyRef}
           className={cn('mt-0.5 border-l border-border pl-3', THINKING_BODY_MAX)}
         >
           <MarkdownContent content={content} streaming={streaming} className={THINKING_INK} />
         </div>
-      ) : null}
+      </ExpandPanel>
     </div>
   )
 }

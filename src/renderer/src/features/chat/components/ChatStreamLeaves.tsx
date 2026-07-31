@@ -25,8 +25,11 @@ export function useGitRevision(
   workspacePath: string | null,
   running: boolean,
   items: UiItem[]
-): number {
+): [number, () => void] {
   const [revision, setRevision] = useState(0)
+  const bump = useCallback(() => {
+    setRevision((value) => value + 1)
+  }, [])
   const wasRunning = useRef(running)
   const mutatingDoneCount = useRef(0)
   /** Skip the mount bump — useGitStatus already fetches once for the initial path. */
@@ -64,7 +67,7 @@ export function useGitRevision(
     return () => window.clearTimeout(timer)
   }, [items, running])
 
-  return revision
+  return [revision, bump]
 }
 
 function useLiveItems(itemsStore: ChatItemsStore | undefined, items: UiItem[]): UiItem[] {
@@ -115,7 +118,7 @@ export function useChatGitChrome(
   enabled: boolean
 ): GitChrome {
   const liveItems = useLiveItems(itemsStore, items)
-  const revision = useGitRevision(workspacePath, running, liveItems)
+  const [revision] = useGitRevision(workspacePath, running, liveItems)
   return useGitChrome(workspacePath, revision, enabled)
 }
 

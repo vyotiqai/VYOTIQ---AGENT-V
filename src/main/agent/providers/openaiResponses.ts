@@ -1,5 +1,5 @@
 import type { ChatMessage, MessageContent } from '../../../shared/ipc'
-import { contentHasImage, contentToText, providerContentParts } from '../../../shared/ipc'
+import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
 import {
   normalizeEffortForOpenAiResponses,
@@ -77,20 +77,38 @@ export function toResponsesInput(
 }
 
 /**
- * Responses uses `input_text` / `input_image` parts rather than the chat
- * completions shape. Flattening to text here would silently drop the image the
- * user attached, so build the parts array whenever one is present.
+ * Responses uses `input_text` / `input_image` / `input_file` parts rather than the chat
+ * completions shape. Flattening to text here would silently drop rich attachments.
  */
 export function toResponsesUserContent(
   content: MessageContent
 ): string | Array<Record<string, unknown>> {
   if (typeof content === 'string') return content
-  if (!contentHasImage(content)) return contentToText(content)
-  return providerContentParts(content).map((part) =>
-    part.type === 'image_url'
-      ? { type: 'input_image', image_url: part.url }
-      : { type: 'input_text', text: part.text }
-  )
+  const parts = providerContentParts(content, {
+    image: true,
+    fileNative: true,
+    audio: false
+  })
+  const rich = parts.some((p) => p.type !== 'text')
+  if (!rich) return contentToText(content)
+  return parts.map((part) => {
+    if (part.type === 'image_url') return { type: 'input_image', image_url: part.url }
+    if (part.type === 'file_native') {
+      const mime = part.mime || 'application/pdf'
+      return {
+        type: 'input_file',
+        filename: part.name,
+        file_data: `data:${mime};base64,${part.data}`
+      }
+    }
+    if (part.type === 'audio') {
+      return {
+        type: 'input_text',
+        text: '[audio omitted: OpenAI Responses does not accept input_audio]'
+      }
+    }
+    return { type: 'input_text', text: part.text }
+  })
 }
 
 function toResponsesTools(

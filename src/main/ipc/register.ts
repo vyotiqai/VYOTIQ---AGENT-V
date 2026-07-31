@@ -62,6 +62,7 @@ import {
   WorkspaceDiagnosticsRequestSchema,
   MarketplaceBrowseRequestSchema,
   MarketplaceInstallRequestSchema,
+  MarketplaceRemoteInstallAckRequestSchema,
   MarketplaceSetEnabledRequestSchema,
   MarketplaceUninstallRequestSchema,
   McpDetectRequestSchema,
@@ -111,7 +112,7 @@ import { formatError, AppError, isAbortError } from '../../shared/errors'
 import { logger, logErrorSummary } from '../../shared/logger'
 import { pickWorkspace } from '@main/workspace/workspace'
 import { resolveInsideWorkspace } from '@main/workspace/safePath'
-import { getSettings, setSettings, redactSettingsForIpc, enqueueSettingsMutation } from '@main/settings/settings'
+import { getSettings, setSettings, setMarketplaceRemoteInstallAcked, redactSettingsForIpc, enqueueSettingsMutation } from '@main/settings/settings'
 import { syncMcpServers, getMcpServerStatus, refreshMcpServers, startMcpOAuth } from '@main/agent/mcp'
 import { headersWithoutAuthorization } from '../../shared/utils/mcpAuth'
 import {
@@ -434,7 +435,15 @@ export function registerIpc(): void {
     timeSyncIpc(IPC.workspacesUpdateUiStateSync, () => {
       try {
         const { path, ui } = WorkspacesUpdateUiStateRequestSchema.parse(raw)
-        updateWorkspaceUiState(path, ui)
+        // Fire-and-forget through the same mutation queue / writeGeneration path
+        // as the async handler so sync IPC cannot race other workspace writes.
+        void enqueueWorkspaceMutation(() => updateWorkspaceUiState(path, ui)).catch((err) => {
+          logger.warn('Sync UI state update failed', {
+            scope: 'ipc',
+            channel: IPC.workspacesUpdateUiStateSync,
+            err
+          })
+        })
       } catch (err) {
         logger.warn('Sync UI state update failed', {
           scope: 'ipc',
@@ -904,6 +913,9 @@ export function registerIpc(): void {
           paths: req.paths
         })
         persistWriteCheckpointEvent(runDir, req.runId, result.checkpointId)
+        if (result.discarded.length > 0) {
+          invalidateGitStatusCache(req.workspacePath)
+        }
         logger.info('Resolved agent writes', {
           scope: 'ipc',
           correlationId: req.runId,
@@ -1322,8 +1334,7 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.githubAuthLogout, async (event) => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
-      logoutGithubAuth()
-      return ok(await githubAuthStatus())
+      return ok(await logoutGithubAuth())
     } catch (err) {
       return failFrom(err, IPC.githubAuthLogout)
     }
@@ -1713,6 +1724,44 @@ export function registerIpc(): void {
       return ok(contents)
     } catch (err) {
       return failFrom(err, IPC.marketplaceGetContents)
+    }
+  })
+
+  ipcMain.handle(IPC.marketplaceAckRemoteInstall, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = MarketplaceRemoteInstallAckRequestSchema.parse(raw ?? { acked: true })
+      if (req.acked) {
+        const win = BrowserWindow.fromWebContents(event.sender)
+        const message =
+          'Marketplace packages (remote catalogs, git/npm/zip, local path folders) and MCP endpoints are unsigned. Install only from sources you trust.'
+        const result = win
+          ? await dialog.showMessageBox(win, {
+              type: 'warning',
+              buttons: ['Cancel', 'Continue'],
+              defaultId: 1,
+              cancelId: 0,
+              title: 'Acknowledge marketplace risk',
+              message
+            })
+          : await dialog.showMessageBox({
+              type: 'warning',
+              buttons: ['Cancel', 'Continue'],
+              defaultId: 1,
+              cancelId: 0,
+              title: 'Acknowledge marketplace risk',
+              message
+            })
+        if (result.response !== 1) {
+          return ok(redactSettingsForIpc(getSettings()))
+        }
+      }
+      const next = await enqueueSettingsMutation(() =>
+        setMarketplaceRemoteInstallAcked(req.acked)
+      )
+      return ok(redactSettingsForIpc(next))
+    } catch (err) {
+      return failFrom(err, IPC.marketplaceAckRemoteInstall)
     }
   })
 

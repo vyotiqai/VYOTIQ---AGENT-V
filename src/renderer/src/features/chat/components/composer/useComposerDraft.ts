@@ -6,7 +6,13 @@ import {
   type KeyboardEvent,
   type SetStateAction
 } from 'react'
-import type { AttachedFile, SlashCommandDescriptor } from '@shared/ipc'
+import type {
+  AttachedAudio,
+  AttachedFile,
+  AttachedNativeFile,
+  ComposerSendExtras,
+  SlashCommandDescriptor
+} from '@shared/ipc'
 import { parseSlashSubmit } from '@shared/slashCommands'
 import { hasComposerContent } from './mentionModel'
 import type { MentionMenuItem } from './mentionModel'
@@ -19,6 +25,10 @@ export function useComposerDraft({
   setImageError,
   files,
   setFiles,
+  nativeFiles = [],
+  setNativeFiles,
+  audio = [],
+  setAudio,
   setFileError,
   running,
   disabled,
@@ -44,13 +54,18 @@ export function useComposerDraft({
   setImageError: (error: string | null) => void
   files: AttachedFile[]
   setFiles: Dispatch<SetStateAction<AttachedFile[]>>
+  nativeFiles?: AttachedNativeFile[]
+  setNativeFiles?: Dispatch<SetStateAction<AttachedNativeFile[]>>
+  audio?: AttachedAudio[]
+  setAudio?: Dispatch<SetStateAction<AttachedAudio[]>>
   setFileError: (error: string | null) => void
   running: boolean
   disabled?: boolean
   onSend: (
     text: string,
     images?: string[],
-    files?: AttachedFile[]
+    files?: AttachedFile[],
+    extras?: ComposerSendExtras
   ) => boolean | void | Promise<boolean | void>
   slashMenuOpen?: boolean
   slashActiveCommand?: SlashCommandDescriptor | null
@@ -78,30 +93,52 @@ export function useComposerDraft({
   const setText = isDraftControlled ? onDraftChange : setInternalText
   void running
 
-  const hasAttachments = images.length > 0 || files.length > 0
+  const hasAttachments =
+    images.length > 0 || files.length > 0 || nativeFiles.length > 0 || audio.length > 0
   const canSend = (hasComposerContent(text) || hasAttachments) && !disabled
 
   const clearDraft = useCallback((): {
     draftText: string
     draftImages: string[]
     draftFiles: AttachedFile[]
+    draftNative: AttachedNativeFile[]
+    draftAudio: AttachedAudio[]
     restore: () => void
   } => {
     const draftText = text
     const draftImages = images
     const draftFiles = files
+    const draftNative = nativeFiles
+    const draftAudio = audio
     const restore = (): void => {
       setText(draftText)
       setImages(draftImages)
       setFiles(draftFiles)
+      setNativeFiles?.(draftNative)
+      setAudio?.(draftAudio)
     }
     setText('')
     setImages([])
     setImageError(null)
     setFiles([])
+    setNativeFiles?.([])
+    setAudio?.([])
     setFileError(null)
-    return { draftText, draftImages, draftFiles, restore }
-  }, [text, images, files, setText, setImages, setImageError, setFiles, setFileError])
+    return { draftText, draftImages, draftFiles, draftNative, draftAudio, restore }
+  }, [
+    text,
+    images,
+    files,
+    nativeFiles,
+    audio,
+    setText,
+    setImages,
+    setImageError,
+    setFiles,
+    setNativeFiles,
+    setAudio,
+    setFileError
+  ])
 
   const submit = (e?: FormEvent): void => {
     e?.preventDefault()
@@ -122,12 +159,20 @@ export function useComposerDraft({
       // Unknown slash → fall through as normal chat message
     }
 
-    const { draftText, draftImages, draftFiles, restore } = clearDraft()
+    const { draftText, draftImages, draftFiles, draftNative, draftAudio, restore } = clearDraft()
+    const extras: ComposerSendExtras | undefined =
+      draftNative.length || draftAudio.length
+        ? {
+            ...(draftNative.length ? { nativeFiles: draftNative } : {}),
+            ...(draftAudio.length ? { audio: draftAudio } : {})
+          }
+        : undefined
     void Promise.resolve(
       onSend(
         draftText,
         draftImages.length ? draftImages : undefined,
-        draftFiles.length ? draftFiles : undefined
+        draftFiles.length ? draftFiles : undefined,
+        extras
       )
     ).then((ok) => {
       if (ok === false) restore()
@@ -159,7 +204,6 @@ export function useComposerDraft({
         }
       }
     }
-
     if (mentionMenuOpen) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
@@ -171,21 +215,16 @@ export function useComposerDraft({
         onMentionMove?.(-1)
         return
       }
-      if (e.key === 'ArrowLeft') {
-        if (onMentionBack?.()) {
-          e.preventDefault()
-          e.stopPropagation()
-          return
-        }
-      }
       if (e.key === 'Escape') {
         e.preventDefault()
-        e.stopPropagation()
-        if (onMentionBack?.()) return
         onMentionDismiss?.()
         return
       }
-      if ((e.key === 'Tab' && !e.shiftKey) || (e.key === 'Enter' && !e.shiftKey)) {
+      if (e.key === 'Backspace' && onMentionBack?.()) {
+        e.preventDefault()
+        return
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
         if (mentionActiveItem) {
           e.preventDefault()
           onMentionAccept?.(mentionActiveItem)
@@ -193,12 +232,11 @@ export function useComposerDraft({
         }
       }
     }
-
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       submit()
     }
   }
 
-  return { text, setText, canSend, submit, onKeyDown }
+  return { text, setText, canSend, submit, onKeyDown, clearDraft }
 }

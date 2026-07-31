@@ -16,11 +16,12 @@ function estimateToolDefTokens(tool: ToolDefinition): number {
 
 /**
  * Fit tool definitions into the tools token budget.
- * Built-in tools are always kept; MCP tools may be truncated or dropped.
+ * Built-in tools are always kept; pinned MCP tools are preferred; other MCP may be dropped.
  */
 export function trimToolsToBudget(
   tools: ToolDefinition[],
-  budgetTokens: number
+  budgetTokens: number,
+  options?: { pinnedMcpNames?: ReadonlySet<string> }
 ): {
   tools: ToolDefinition[]
   estimate: number
@@ -29,28 +30,45 @@ export function trimToolsToBudget(
 } {
   const builtins = tools.filter((t) => BUILTIN_NAMES.has(t.name))
   const mcp = tools.filter((t) => t.name.startsWith(MCP_TOOL_PREFIX))
+  const pinnedNames = options?.pinnedMcpNames
 
   let kept = [...builtins]
   let estimate = kept.reduce((n, t) => n + estimateToolDefTokens(t), 0)
 
-  // Fit MCP tools by estimated size (smallest first) so more defs survive the budget.
-  const sortedMcp = [...mcp].sort(
-    (a, b) => estimateToolDefTokens(a) - estimateToolDefTokens(b)
-  )
+  const pinned: ToolDefinition[] = []
+  const unpinned: ToolDefinition[] = []
+  for (const tool of mcp) {
+    if (pinnedNames?.has(tool.name)) pinned.push(tool)
+    else unpinned.push(tool)
+  }
 
-  for (const tool of sortedMcp) {
+  const tryKeep = (tool: ToolDefinition): boolean => {
     const toolEst = estimateToolDefTokens(tool)
     if (estimate + toolEst <= budgetTokens) {
       kept.push(tool)
       estimate += toolEst
-      continue
+      return true
     }
     const truncated = truncateToolDescription(tool, Math.max(80, budgetTokens - estimate))
     const truncEst = estimateToolDefTokens(truncated)
     if (estimate + truncEst <= budgetTokens) {
       kept.push(truncated)
       estimate += truncEst
+      return true
     }
+    return false
+  }
+
+  // Pinned MCP first (agent-requested), then greedy smallest-first fill.
+  for (const tool of pinned) {
+    tryKeep(tool)
+  }
+
+  const sortedUnpinned = [...unpinned].sort(
+    (a, b) => estimateToolDefTokens(a) - estimateToolDefTokens(b)
+  )
+  for (const tool of sortedUnpinned) {
+    tryKeep(tool)
   }
 
   const keptMcpNames = new Set(

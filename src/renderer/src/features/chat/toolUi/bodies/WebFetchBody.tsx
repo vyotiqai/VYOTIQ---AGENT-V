@@ -5,16 +5,18 @@ import type { ToolBodyProps } from '../types'
 import { parseWebFetchData } from '../parsers/webFetch'
 import { TruncatedBanner } from '../primitives'
 
-export function WebFetchBody({ tool, loading, loadFailed }: ToolBodyProps) {
+export function WebFetchBody({ tool, loading, loadFailed, inGroup }: ToolBodyProps) {
   const data = useMemo(() => parseWebFetchData(tool), [tool])
 
   return (
     <div>
-      <div className={`${TOOL_BODY_PAD} border-b border-border pb-2`}>
-        <span className="truncate font-mono text-[10px] text-tertiary" title={data.url}>
-          {data.url}
-        </span>
-      </div>
+      {!inGroup ? (
+        <div className={`${TOOL_BODY_PAD} border-b border-border pb-2`}>
+          <span className="truncate font-mono text-[10px] text-tertiary" title={data.url}>
+            {data.url}
+          </span>
+        </div>
+      ) : null}
       {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
       <div className={`${TOOL_BODY_INNER} max-h-48 overflow-auto text-[11px] text-fg/80`}>
         <MarkdownContent content={data.content} />

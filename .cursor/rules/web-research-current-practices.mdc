@@ -1,6 +1,6 @@
 ---
 description: Web-search current docs and best practices before non-trivial work
-alwaysApply: false
+alwaysApply: true
 ---
 
 # Web research before non-trivial changes

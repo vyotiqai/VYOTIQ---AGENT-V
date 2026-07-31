@@ -62,15 +62,29 @@ const OPEN_RUN_TAB_LIMIT = 10
 const ORPHAN_EVENT_BUFFER_MAX = 128
 const ORPHAN_APPROVAL_BUFFER_MAX = 16
 const ORPHAN_QUESTION_BUFFER_MAX = 16
-/** Low-value telemetry — always prefer dropping these under orphan backpressure. */
-const ORPHAN_DROPPABLE_TYPES = new Set<AgentEvent['type']>([
-  'step_usage',
-  'context_usage'
-])
+/** Prefer coalescing same-type usage under orphan backpressure instead of dropping. */
+const ORPHAN_USAGE_TYPES = new Set<AgentEvent['type']>(['step_usage', 'context_usage'])
 
 const ORPHAN_DELTA_TYPES = new Set<AgentEvent['type']>(['text_delta', 'thinking_delta'])
 const UI_PERSIST_DEBOUNCE_MS = 300
 const LIST_RUNS_DEBOUNCE_MS = 300
+
+/**
+ * Under orphan backpressure, drop an older usage event only when a later
+ * same-type usage remains (latest meter wins). Never sacrifice the sole meter.
+ */
+function coalesceOldestOrphanUsage(buffered: AgentEvent[]): boolean {
+  const dropIdx = buffered.findIndex((ev) => ORPHAN_USAGE_TYPES.has(ev.type))
+  if (dropIdx < 0) return false
+  const victim = buffered[dropIdx]!
+  for (let i = dropIdx + 1; i < buffered.length; i++) {
+    if (buffered[i]!.type === victim.type) {
+      buffered.splice(dropIdx, 1)
+      return true
+    }
+  }
+  return false
+}
 
 /**
  * Under orphan backpressure, fold the oldest stream delta into a later same-type
@@ -432,10 +446,11 @@ export function useWorkspaceManager() {
     if (forgottenRunIdsRef.current.has(runId)) return
     const buffered = eventBufferRef.current.get(runId) ?? []
     if (buffered.length >= ORPHAN_EVENT_BUFFER_MAX) {
-      const droppableIdx = buffered.findIndex((ev) => ORPHAN_DROPPABLE_TYPES.has(ev.type))
-      if (droppableIdx >= 0) {
-        buffered.splice(droppableIdx, 1)
-      } else if (!coalesceOldestOrphanDelta(buffered)) {
+      if (coalesceOldestOrphanDelta(buffered)) {
+        // Folded older stream delta into a later one.
+      } else if (coalesceOldestOrphanUsage(buffered)) {
+        // Dropped an older usage event; a newer same-type meter remains.
+      } else {
         // Prefer freeing a stream delta over dropping tool/terminal/status chrome.
         const deltaIdx = buffered.findIndex((ev) => ORPHAN_DELTA_TYPES.has(ev.type))
         if (deltaIdx >= 0) buffered.splice(deltaIdx, 1)

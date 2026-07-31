@@ -232,4 +232,36 @@ describe('context budget + trim', () => {
     expect(String(stripped[0].content)).toContain('omitted')
     expect(String(stripped[0].content)).toContain('see')
   })
+
+  it('strips audio and native files when wire caps disallow them', async () => {
+    const { stripUnsupportedModalitiesFromMessages } = await import(
+      '@main/agent/context/stripImages'
+    )
+    const msgs: ChatMessage[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'hi' },
+          { type: 'audio', url: 'data:audio/wav;base64,QQ==' },
+          {
+            type: 'file_native',
+            name: 'a.pdf',
+            mime: 'application/pdf',
+            data: 'AAAA'
+          }
+        ]
+      }
+    ]
+    const stripped = stripUnsupportedModalitiesFromMessages(msgs, {
+      image: true,
+      audio: false,
+      fileNative: false
+    })
+    const text = typeof stripped[0]!.content === 'string'
+      ? stripped[0]!.content
+      : JSON.stringify(stripped[0]!.content)
+    expect(text).toContain('audio omitted')
+    expect(text).toContain('file omitted')
+    expect(text).toContain('hi')
+  })
 })

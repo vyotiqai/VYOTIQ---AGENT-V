@@ -122,11 +122,9 @@ export function askQuestionThroughRenderer(
       cancel(abortQuestionError())
     }
     function onTimeout(): void {
-      cancel(
-        new Error(
-          'Question timed out without a response. Continue without waiting, or ask again.'
-        )
-      )
+      // Mirror tool-approval auto-deny: resolve (do not throw) so the tool
+      // returns a structured failure instead of an unexpected exception.
+      settle([])
     }
     if (signal.aborted) {
       reject(abortQuestionError())
