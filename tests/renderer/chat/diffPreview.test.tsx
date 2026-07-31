@@ -90,6 +90,26 @@ describe('DiffPreview', () => {
     expect(screen.getByText('26 more lines')).toBeTruthy()
   })
 
+  it('caps expanded rendering so huge diffs cannot flood the DOM', async () => {
+    highlightToLines.mockImplementation((source: string) =>
+      Promise.resolve(colorEachLine(source))
+    )
+    const lines = Array.from({ length: 320 }, (_, index) =>
+      line('add', `line ${index + 1}`, index + 1)
+    )
+
+    render(<DiffPreview lines={lines} path="a.ts" expanded />)
+
+    await waitFor(() => expect(highlightToLines).toHaveBeenCalled())
+    expect(screen.getByText('line 1')).toBeTruthy()
+    expect(screen.getByText('line 200')).toBeTruthy()
+    expect(screen.queryByText('line 201')).toBeNull()
+    expect(screen.getByText('120 more lines')).toBeTruthy()
+    // Highlight only the first chunk of visible lines.
+    const sent = highlightToLines.mock.calls[0]![0] as string
+    expect(sent.split('\n').length).toBeLessThanOrEqual(64)
+  })
+
   it('leaves gaps between hunks uncoloured and out of the document', async () => {
     highlightToLines.mockImplementation((source: string) =>
       Promise.resolve(colorEachLine(source))

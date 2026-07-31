@@ -80,7 +80,14 @@ export function parseRuleFrontmatter(raw: string): {
     const key = m[1]!
     const value = m[2]!.trim()
     if (key === 'alwaysApply') {
-      meta.alwaysApply = /^(true|yes|1)$/i.test(value)
+      // Empty / missing value ⇒ leave unset (auto-inject). Only explicit false skips.
+      if (!value) {
+        /* absent */
+      } else if (/^(true|yes|1)$/i.test(value)) {
+        meta.alwaysApply = true
+      } else if (/^(false|no|0)$/i.test(value)) {
+        meta.alwaysApply = false
+      }
     } else if (key === 'description') {
       meta.description = value.replace(/^["']|["']$/g, '')
     } else if (key === 'globs') {

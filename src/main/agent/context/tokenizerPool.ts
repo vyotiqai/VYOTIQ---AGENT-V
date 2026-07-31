@@ -40,7 +40,7 @@ type WorkerSlot = {
 
 let slots: WorkerSlot[] | null = null
 
-/** Only set when the worker script is missing or pool create fails — not on a single worker crash. */
+/** Sticky only after worker create fails despite the script existing — not on a missing bundle. */
 
 let poolCreateFailed = false
 
@@ -176,13 +176,8 @@ function tryCreatePool(): WorkerSlot[] | null {
 
   const script = workerScriptPath()
 
-  if (!existsSync(script)) {
-
-    poolCreateFailed = true
-
-    return null
-
-  }
+  // Missing worker (vitest / pre-build) — retry later once the bundle exists.
+  if (!existsSync(script)) return null
 
   const list: WorkerSlot[] = []
 

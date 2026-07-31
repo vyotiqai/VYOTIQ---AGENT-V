@@ -113,27 +113,63 @@ function diffLinesFromStrReplace(args: Record<string, unknown>): DiffLine[] {
   return out
 }
 
-function diffLinesFromEditArgs(args: Record<string, unknown>): DiffLine[] {
+function isUnifiedDiffMetadata(raw: string): boolean {
+  return (
+    raw.startsWith('diff --git') ||
+    raw.startsWith('index ') ||
+    raw.startsWith('new file mode') ||
+    raw.startsWith('deleted file mode') ||
+    raw.startsWith('old mode') ||
+    raw.startsWith('new mode') ||
+    raw.startsWith('similarity index') ||
+    raw.startsWith('rename from') ||
+    raw.startsWith('rename to') ||
+    raw.startsWith('copy from') ||
+    raw.startsWith('copy to') ||
+    raw.startsWith('Binary files ')
+  )
+}
+
+function diffLinesFromEditArgs(
+  args: Record<string, unknown>,
+  maxLines?: number
+): DiffLine[] {
   if (typeof args.old_string === 'string' || typeof args.new_string === 'string') {
-    return diffLinesFromStrReplace(args)
+    const lines = diffLinesFromStrReplace(args)
+    return typeof maxLines === 'number' && lines.length > maxLines
+      ? lines.slice(0, maxLines)
+      : lines
   }
 
   if (typeof args.contents === 'string') {
-    return splitLines(args.contents).map((text, index) => ({
+    const lines = splitLines(args.contents).map((text, index) => ({
       kind: 'add' as const,
       text,
       lineNumber: index + 1
     }))
+    return typeof maxLines === 'number' && lines.length > maxLines
+      ? lines.slice(0, maxLines)
+      : lines
   }
 
   const diff = typeof args.diff === 'string' ? args.diff : ''
   if (!diff.trim()) return []
 
+  // Avoid allocating/scanning a full 100k-char diff when the UI only shows a preview.
+  const parseBudget =
+    typeof maxLines === 'number' && maxLines > 0
+      ? Math.min(diff.length, Math.max(16_000, maxLines * 400))
+      : diff.length
+  const text = parseBudget < diff.length ? diff.slice(0, parseBudget) : diff
+
   const out: DiffLine[] = []
   let lineNumber = 0
+  const limit = typeof maxLines === 'number' && maxLines > 0 ? maxLines : Number.POSITIVE_INFINITY
 
-  for (const raw of diff.split('\n')) {
+  for (const raw of text.split('\n')) {
+    if (out.length >= limit) break
     if (raw.startsWith('+++') || raw.startsWith('---')) continue
+    if (isUnifiedDiffMetadata(raw)) continue
 
     const hunk = raw.match(/^@@\s*-\d+(?:,\d+)?\s*\+(\d+)/)
     if (hunk) {
@@ -160,9 +196,9 @@ function diffLinesFromEditArgs(args: Record<string, unknown>): DiffLine[] {
 }
 
 /** Parse a unified diff string into preview lines (shared by edit + git_diff). */
-export function parseUnifiedDiff(diff: string): DiffLine[] {
+export function parseUnifiedDiff(diff: string, maxLines?: number): DiffLine[] {
   if (!diff.trim()) return []
-  return diffLinesFromEditArgs({ diff })
+  return diffLinesFromEditArgs({ diff }, maxLines)
 }
 
 export function parseDiffPreview(tool: UiToolRow): DiffLine[] {

@@ -3,6 +3,7 @@ import { existsSync, statSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { promisify } from 'util'
 import type { GitChangedFile, GitStatus, GitStatusResult } from '../../shared/ipc'
+import { resolveInsideWorkspace } from '../workspace/safePath'
 
 const execFile = promisify(execFileCb)
 
@@ -70,6 +71,29 @@ async function git(args: string[], cwd: string, timeout: number): Promise<string
     env: GIT_ENV
   })
   return stdout
+}
+
+/**
+ * Like `git`, but keeps stdout when the process exits 1.
+ * `git diff --no-index` implies `--exit-code` and exits 1 whenever the files differ
+ * (see git-diff docs) — that is success for our purposes.
+ */
+async function gitDiffStdout(args: string[], cwd: string, timeout: number): Promise<string> {
+  try {
+    return await git(args, cwd, timeout)
+  } catch (err) {
+    if (
+      err &&
+      typeof err === 'object' &&
+      'code' in err &&
+      (err as { code?: unknown }).code === 1 &&
+      'stdout' in err &&
+      typeof (err as { stdout?: unknown }).stdout === 'string'
+    ) {
+      return (err as { stdout: string }).stdout
+    }
+    throw err
+  }
 }
 
 async function gitQuiet(args: string[], cwd: string, timeout: number): Promise<string | null> {
@@ -333,6 +357,49 @@ function capDiff(text: string): string {
   return text.slice(0, DIFF_CAP_CHARS) + `\n… (diff truncated at ${DIFF_CAP_CHARS} chars)`
 }
 
+/**
+ * Untracked paths are invisible to plain `git diff` / `git diff --cached`.
+ * Compare against `/dev/null` via `--no-index` (Git for Windows accepts this path).
+ * https://git-scm.com/docs/git-diff
+ */
+async function readUntrackedFileDiff(
+  cwd: string,
+  relPath: string,
+  ignoreWhitespace?: boolean
+): Promise<string | null> {
+  const normalized = relPath.replace(/\\/g, '/').trim()
+  if (!normalized || normalized.includes('\0')) return null
+
+  let abs: string
+  try {
+    abs = resolveInsideWorkspace(cwd, normalized)
+  } catch {
+    return null
+  }
+
+  try {
+    const stat = statSync(abs)
+    if (!stat.isFile()) return null
+  } catch {
+    return null
+  }
+
+  const tracked = await gitQuiet(['ls-files', '--', normalized], cwd, READ_TIMEOUT_MS)
+  if (tracked?.trim()) return null
+
+  const args = ['diff', '--no-index', '--no-color', '--no-ext-diff']
+  if (ignoreWhitespace) args.push('-w')
+  args.push('--', '/dev/null', normalized)
+
+  try {
+    const stdout = await gitDiffStdout(args, cwd, READ_TIMEOUT_MS)
+    const text = stdout.trimEnd()
+    return text || null
+  } catch {
+    return null
+  }
+}
+
 /** Unified diff against HEAD (or staged index / commit). Capped for tool output. */
 export async function readGitDiff(
   cwd: string,
@@ -361,23 +428,29 @@ export async function readGitDiff(
 
   const hasCommits =
     (await gitQuiet(['rev-parse', '--verify', 'HEAD'], cwd, READ_TIMEOUT_MS)) != null
+  const path = opts.path?.trim()
   const args = ['diff', '--no-color', '--no-ext-diff']
   if (opts.ignoreWhitespace) args.push('-w')
   if (opts.staged || !hasCommits) args.push('--cached')
-  if (opts.path?.trim()) {
-    args.push('--', opts.path.trim())
+  if (path) {
+    args.push('--', path)
   }
 
   try {
     const stdout = await git(args, cwd, READ_TIMEOUT_MS)
     const text = stdout.trimEnd()
-    if (!text) {
-      return {
-        ok: true,
-        content: opts.staged || !hasCommits ? '(no staged changes)' : '(no unstaged changes)'
-      }
+    if (text) return { ok: true, content: capDiff(text) }
+
+    // Untracked files never appear in worktree/index diffs — synthesize a full add.
+    if (path && !opts.staged) {
+      const untracked = await readUntrackedFileDiff(cwd, path, opts.ignoreWhitespace)
+      if (untracked) return { ok: true, content: capDiff(untracked) }
     }
-    return { ok: true, content: capDiff(text) }
+
+    return {
+      ok: true,
+      content: opts.staged || !hasCommits ? '(no staged changes)' : '(no unstaged changes)'
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     return { ok: false, error: message }

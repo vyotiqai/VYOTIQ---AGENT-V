@@ -4,7 +4,7 @@ import { Icon, type IconName } from '@renderer/lib/icons'
 import { MarkdownContent } from '@renderer/lib/ui/MarkdownContent'
 import { CHAT_RIGHT_PANEL_BODY } from '@renderer/lib/utils/layout'
 import type { GithubAuthStatus, PrFile, PrMergeMethod, PrReview, PrView } from '@shared/ipc'
-import { EmptyPanel } from './PanelChrome'
+import { DOCK_TOOLBAR_ICON_BTN, DockSplitButton, EmptyPanel } from './PanelChrome'
 import { type DiffLayout } from './DiffPreview'
 import {
   ChangedFilesBrowser,
@@ -411,7 +411,8 @@ export function PrPanel({
 
   const expandAll = useCallback(() => {
     if (!pr) return
-    setExpanded(new Set(pr.files.map((f) => f.path)))
+    const EXPAND_ALL_MAX = 12
+    setExpanded(new Set(pr.files.slice(0, EXPAND_ALL_MAX).map((f) => f.path)))
     closeMenus()
   }, [pr, closeMenus])
 
@@ -449,10 +450,19 @@ export function PrPanel({
 
   const connectActions = (
     <>
+      {auth && !auth.clientIdConfigured ? (
+        <p className="m-0 w-full text-[11px] text-muted">
+          Set a GitHub client ID in Settings → Agent (or VYOTIQ_GITHUB_CLIENT_ID) before connecting.
+        </p>
+      ) : null}
       <Button
         variant="subtle"
         className="h-7 px-2.5 text-[11px]"
-        disabled={authBusy || Boolean(auth?.pending)}
+        disabled={
+          authBusy ||
+          Boolean(auth?.pending) ||
+          Boolean(auth && !auth.clientIdConfigured)
+        }
         onClick={() => void connectGithub()}
       >
         {auth?.pending ? 'Waiting…' : 'Connect GitHub'}
@@ -464,6 +474,20 @@ export function PrPanel({
           onClick={() => void openExternal(auth.verificationUri!)}
         >
           Open verification
+        </Button>
+      ) : null}
+      {auth?.pending ? (
+        <Button
+          variant="subtle"
+          className="h-7 px-2.5 text-[11px]"
+          disabled={authBusy}
+          onClick={() => {
+            void window.vyotiq.githubAuthCancel?.().then((res) => {
+              if (res.ok) setAuth(res.data)
+            })
+          }}
+        >
+          Cancel
         </Button>
       ) : null}
       {auth?.hasAppToken ? (
@@ -578,216 +602,216 @@ export function PrPanel({
     >
       {pr ? (
         <div className="flex shrink-0 flex-col gap-1 border-b border-border/40 px-2.5 py-2">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="shrink-0 rounded bg-success/20 px-1.5 py-0.5 text-[10px] font-medium text-success">
+          <div className="flex h-7 min-w-0 items-center gap-2">
+            <span className="shrink-0 rounded bg-success/20 px-1.5 py-0.5 text-[10px] font-medium leading-none text-success">
               {formatPrState(pr.state)}
             </span>
-            <span className="min-w-0 truncate text-[11px] text-muted">
+            <span className="min-w-0 flex-1 truncate text-[11px] leading-none text-muted" title={`${pr.headRefName} → ${pr.baseRefName}`}>
               {pr.headRefName} → {pr.baseRefName}
             </span>
-            <div ref={headerMenusRef} className="relative ml-auto flex items-center gap-1">
-              <button
-                type="button"
-                className="rounded-md px-1.5 py-0.5 text-[11px] text-muted hover:bg-surface-2"
-                aria-label="PR actions"
-                onClick={() => {
-                  const next = !menuOpen
-                  closeMenus()
-                  setMenuOpen(next)
-                }}
-              >
-                ···
-              </button>
-              {menuOpen ? (
-                <div className="absolute right-0 top-full z-dropdown mt-0.5 min-w-[14rem] rounded-md border border-border bg-bg py-1 shadow-lg">
-                  <div className="relative">
+            <div
+              ref={headerMenusRef}
+              className="flex shrink-0 items-center gap-1"
+            >
+              <div className="relative">
+                <button
+                  type="button"
+                  className={DOCK_TOOLBAR_ICON_BTN}
+                  aria-label="PR actions"
+                  onClick={() => {
+                    const next = !menuOpen
+                    closeMenus()
+                    setMenuOpen(next)
+                  }}
+                >
+                  ···
+                </button>
+                {menuOpen ? (
+                  <div className="absolute right-0 top-full z-dropdown mt-0.5 min-w-[14rem] rounded-md border border-border bg-bg py-1 shadow-lg">
+                    <div className="relative">
+                      <button
+                        type="button"
+                        className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                        onClick={() => setLayoutOpen((v) => !v)}
+                      >
+                        <span>Layout</span>
+                        <span className="text-muted">
+                          {layout === 'unified' ? 'Unified' : 'Split'} ›
+                        </span>
+                      </button>
+                      {layoutOpen ? (
+                        <div className="absolute left-0 top-0 z-dropdown min-w-[8rem] -translate-x-full rounded-md border border-border bg-bg py-1 shadow-lg">
+                          {(
+                            [
+                              ['unified', 'Unified'],
+                              ['split', 'Split']
+                            ] as const
+                          ).map(([id, label]) => (
+                            <button
+                              key={id}
+                              type="button"
+                              className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                              onClick={() => {
+                                setLayout(id)
+                                setLayoutOpen(false)
+                              }}
+                            >
+                              <span className="w-3">{layout === id ? '✓' : ''}</span>
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                    <label className="flex cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-[11px] hover:bg-surface">
+                      <span>Ignore Whitespace</span>
+                      <Switch
+                        checked={ignoreWhitespace}
+                        onCheckedChange={setIgnoreWhitespace}
+                        label="Ignore Whitespace"
+                      />
+                    </label>
+                    <label className="flex cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-[11px] hover:bg-surface">
+                      <span>Word Wrap</span>
+                      <Switch
+                        checked={wordWrap}
+                        onCheckedChange={setWordWrap}
+                        label="Word Wrap"
+                      />
+                    </label>
+                    <div className="my-1 border-t border-border/50" />
+                    <button
+                      type="button"
+                      className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                      onClick={expandAll}
+                    >
+                      Expand All Files
+                    </button>
+                    <button
+                      type="button"
+                      className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                      onClick={collapseAll}
+                    >
+                      Collapse All
+                    </button>
+                    <button
+                      type="button"
+                      className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                      onClick={() => {
+                        closeMenus()
+                        setFindOpen(true)
+                        setTab('changes')
+                      }}
+                    >
+                      Find in Diff
+                    </button>
                     <button
                       type="button"
                       className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
-                      onClick={() => setLayoutOpen((v) => !v)}
+                      onClick={() => {
+                        closeMenus()
+                        void load()
+                      }}
                     >
-                      <span>Layout</span>
-                      <span className="text-muted">
-                        {layout === 'unified' ? 'Unified' : 'Split'} ›
-                      </span>
+                      <span>Refresh Changes</span>
+                      <span className="text-muted">Ctrl+R</span>
                     </button>
-                    {layoutOpen ? (
-                      <div className="absolute left-0 top-0 z-dropdown min-w-[8rem] -translate-x-full rounded-md border border-border bg-bg py-1 shadow-lg">
-                        {(
-                          [
-                            ['unified', 'Unified'],
-                            ['split', 'Split']
-                          ] as const
-                        ).map(([id, label]) => (
-                          <button
-                            key={id}
-                            type="button"
-                            className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
-                            onClick={() => {
-                              setLayout(id)
-                              setLayoutOpen(false)
-                            }}
-                          >
-                            <span className="w-3">{layout === id ? '✓' : ''}</span>
-                            {label}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                  <label className="flex cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-[11px] hover:bg-surface">
-                    <span>Ignore Whitespace</span>
-                    <Switch
-                      checked={ignoreWhitespace}
-                      onCheckedChange={setIgnoreWhitespace}
-                      label="Ignore Whitespace"
-                    />
-                  </label>
-                  <label className="flex cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-[11px] hover:bg-surface">
-                    <span>Word Wrap</span>
-                    <Switch
-                      checked={wordWrap}
-                      onCheckedChange={setWordWrap}
-                      label="Word Wrap"
-                    />
-                  </label>
-                  <div className="my-1 border-t border-border/50" />
-                  <button
-                    type="button"
-                    className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
-                    onClick={expandAll}
-                  >
-                    Expand All Files
-                  </button>
-                  <button
-                    type="button"
-                    className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
-                    onClick={collapseAll}
-                  >
-                    Collapse All
-                  </button>
-                  <button
-                    type="button"
-                    className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
-                    onClick={() => {
-                      closeMenus()
-                      setFindOpen(true)
-                      setTab('changes')
-                    }}
-                  >
-                    Find in Diff
-                  </button>
-                  <button
-                    type="button"
-                    className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
-                    onClick={() => {
-                      closeMenus()
-                      void load()
-                    }}
-                  >
-                    <span>Refresh Changes</span>
-                    <span className="text-muted">Ctrl+R</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
-                    onClick={() => {
-                      closeMenus()
-                      void openExternal(pr.url)
-                    }}
-                  >
-                    View on Web
-                  </button>
-                  <button
-                    type="button"
-                    className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
-                    onClick={() => {
-                      closeMenus()
-                      void navigator.clipboard.writeText(pr.url)
-                    }}
-                  >
-                    Copy URL
-                  </button>
-                  <button
-                    type="button"
-                    className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
-                    onClick={startEditTitle}
-                  >
-                    <span>Edit Title</span>
-                    <span className="text-muted">Shift+Alt+T</span>
-                  </button>
-                  <div className="my-1 border-t border-border/50" />
-                  <button
-                    type="button"
-                    className="flex w-full px-2.5 py-1.5 text-left text-[11px] text-danger hover:bg-surface"
-                    onClick={() => void closePr()}
-                  >
-                    Close PR
-                  </button>
-                  <button
-                    type="button"
-                    className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
-                    onClick={() => {
-                      closeMenus()
-                      onPrMeta?.(null)
-                      onUnlink?.()
-                    }}
-                  >
-                    Unlink PR
-                  </button>
-                </div>
-              ) : null}
-              <div className="relative flex">
-                <Button
-                  variant="subtle"
-                  className="h-6 gap-1 rounded-r-none px-2 text-[11px] text-success"
-                  disabled={mergeBusy}
-                  onClick={() => void merge(preferredMerge)}
-                >
-                  <Icon name={mergeMethodIcon(preferredMerge)} size={12} />
-                  {mergeLabel}
-                </Button>
-                <button
-                  type="button"
-                  className="inline-flex h-6 items-center rounded-r-md border border-l-0 border-border bg-surface px-1 text-muted hover:bg-surface-2"
-                  aria-label="Merge method"
-                  onClick={() => {
-                    const next = !mergeOpen
-                    closeMenus()
-                    setMergeOpen(next)
-                  }}
-                >
-                  <Icon name="chevron" size={10} />
-                </button>
-                {mergeOpen ? (
-                  <div className="absolute right-0 top-full z-dropdown mt-0.5 min-w-[11rem] rounded-md border border-border bg-bg py-1 shadow-lg">
-                    <p className="m-0 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-muted">
-                      Merge Method
-                    </p>
-                    {(
-                      [
-                        ['squash', 'Squash & Merge'],
-                        ['merge', 'Merge'],
-                        ['rebase', 'Rebase Merge']
-                      ] as const
-                    ).map(([method, label]) => (
-                      <button
-                        key={method}
-                        type="button"
-                        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
-                        disabled={mergeBusy}
-                        onClick={() => void merge(method)}
-                      >
-                        <Icon name={mergeMethodIcon(method)} size={12} className="shrink-0 text-muted" />
-                        <span className="min-w-0 flex-1">{label}</span>
-                        <span className="w-3 text-success">
-                          {preferredMerge === method ? '✓' : ''}
-                        </span>
-                      </button>
-                    ))}
+                    <button
+                      type="button"
+                      className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                      onClick={() => {
+                        closeMenus()
+                        void openExternal(pr.url)
+                      }}
+                    >
+                      View on Web
+                    </button>
+                    <button
+                      type="button"
+                      className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                      onClick={() => {
+                        closeMenus()
+                        void navigator.clipboard.writeText(pr.url)
+                      }}
+                    >
+                      Copy URL
+                    </button>
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                      onClick={startEditTitle}
+                    >
+                      <span>Edit Title</span>
+                      <span className="text-muted">Shift+Alt+T</span>
+                    </button>
+                    <div className="my-1 border-t border-border/50" />
+                    <button
+                      type="button"
+                      className="flex w-full px-2.5 py-1.5 text-left text-[11px] text-danger hover:bg-surface"
+                      onClick={() => void closePr()}
+                    >
+                      Close PR
+                    </button>
+                    <button
+                      type="button"
+                      className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                      onClick={() => {
+                        closeMenus()
+                        onPrMeta?.(null)
+                        onUnlink?.()
+                      }}
+                    >
+                      Unlink PR
+                    </button>
                   </div>
                 ) : null}
               </div>
+              <DockSplitButton
+                primaryClassName="text-success"
+                primaryLabel={mergeLabel}
+                primaryIcon={
+                  <Icon name={mergeMethodIcon(preferredMerge)} size={12} className="shrink-0" />
+                }
+                primaryDisabled={mergeBusy}
+                onPrimaryClick={() => void merge(preferredMerge)}
+                menuOpen={mergeOpen}
+                onMenuToggle={() => {
+                  const next = !mergeOpen
+                  closeMenus()
+                  setMergeOpen(next)
+                }}
+                menuAriaLabel="Merge method"
+                menu={
+                  mergeOpen ? (
+                    <div className="absolute right-0 top-full z-dropdown mt-0.5 min-w-[11rem] overflow-visible rounded-md border border-border bg-bg py-1 shadow-lg">
+                      <p className="m-0 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-muted">
+                        Merge Method
+                      </p>
+                      {(
+                        [
+                          ['squash', 'Squash & Merge'],
+                          ['merge', 'Merge'],
+                          ['rebase', 'Rebase Merge']
+                        ] as const
+                      ).map(([method, label]) => (
+                        <button
+                          key={method}
+                          type="button"
+                          className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                          disabled={mergeBusy}
+                          onClick={() => void merge(method)}
+                        >
+                          <Icon name={mergeMethodIcon(method)} size={12} className="shrink-0 text-muted" />
+                          <span className="min-w-0 flex-1 whitespace-nowrap">{label}</span>
+                          <span className="w-3 text-success">
+                            {preferredMerge === method ? '✓' : ''}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null
+                }
+              />
             </div>
           </div>
           {editingTitle ? (
@@ -910,7 +934,7 @@ export function PrPanel({
         </div>
       ) : null}
 
-      <div className="min-h-0 min-w-0 flex-1 overflow-auto p-3">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-3">
         {loading ? (
           <p className="m-0 text-xs text-muted">Loading…</p>
         ) : !pr ? (
@@ -927,9 +951,12 @@ export function PrPanel({
             actions={showConnect || auth?.pending ? connectActions : undefined}
           />
         ) : tab === 'description' ? (
-          <MarkdownContent content={pr.body || '_No description_'} className="text-sm" />
+          <div className="min-h-0 flex-1 overflow-auto">
+            <MarkdownContent content={pr.body || '_No description_'} className="text-sm" />
+          </div>
         ) : tab === 'commits' ? (
-          showConnect && pr.commits.length === 0 ? (
+          <div className="min-h-0 flex-1 overflow-auto">
+          {showConnect && pr.commits.length === 0 ? (
             <EmptyPanel
               icon="pullRequest"
               title="GitHub authentication required"
@@ -950,8 +977,10 @@ export function PrPanel({
                 </li>
               ))}
             </ul>
-          )
+          )}
+          </div>
         ) : tab === 'checks' ? (
+          <div className="min-h-0 flex-1 overflow-auto">
           <ul className="m-0 list-none space-y-1 p-0">
             {pr.checks.length === 0 ? (
               <li className="text-[11px] text-muted">
@@ -969,8 +998,9 @@ export function PrPanel({
               ))
             )}
           </ul>
+          </div>
         ) : tab === 'reviews' ? (
-          <div className="space-y-3">
+          <div className="min-h-0 flex-1 space-y-3 overflow-auto">
             {showConnect &&
             (pr.latestReviews.length ? pr.latestReviews : pr.reviews).length === 0 ? (
               <EmptyPanel
@@ -1021,6 +1051,7 @@ export function PrPanel({
               <p className="m-0 text-[11px] text-muted">No files changed.</p>
             ) : (
               <ChangedFilesBrowser
+                className="min-h-0 flex-1"
                 files={filteredBrowserFiles}
                 totals={{ added: pr.additions, removed: pr.deletions }}
                 expanded={expanded}

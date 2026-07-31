@@ -5,6 +5,11 @@ import { useDiffHighlight, type DiffTokens } from './useDiffHighlight'
 
 /** Enough of the change to recognise it without turning the transcript into a file. */
 const COLLAPSED_LINES = 14
+/**
+ * Hard cap even when expanded. Full diffs (up to ~100k chars from git) as DOM +
+ * syntax highlight freeze the renderer — especially Expand All.
+ */
+const MAX_EXPANDED_LINES = 200
 
 export type DiffLayout = 'unified' | 'split'
 
@@ -50,10 +55,10 @@ function DiffLines({
     )
   }, [lines, q])
 
-  const visible = useMemo(
-    () => (expanded ? filtered : filtered.slice(0, COLLAPSED_LINES)),
-    [filtered, expanded]
-  )
+  const visible = useMemo(() => {
+    const limit = expanded ? MAX_EXPANDED_LINES : COLLAPSED_LINES
+    return filtered.length > limit ? filtered.slice(0, limit) : filtered
+  }, [filtered, expanded])
   const tokens: DiffTokens = useDiffHighlight(visible, path)
 
   if (!filtered.length) return null

@@ -1,6 +1,6 @@
 ---
 description: Build and restart the Electron app after code changes
-alwaysApply:
+alwaysApply: true
 ---
 
 # Build and restart after changes

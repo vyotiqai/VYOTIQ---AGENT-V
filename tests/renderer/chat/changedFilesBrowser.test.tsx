@@ -1,9 +1,10 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { render, screen, waitFor } from '@testing-library/react'
 import {
-  buildFileTree,
+  ChangedFilesBrowser,
   type BrowserFileEntry
 } from '@renderer/features/chat/components/ChangedFilesBrowser'
 
@@ -21,19 +22,106 @@ function entry(
   }
 }
 
-describe('buildFileTree', () => {
-  it('nests directories and sorts dirs before files', () => {
-    const tree = buildFileTree([
-      entry('z.ts'),
-      entry('src/a.ts', { statusLetter: 'A', statusLabel: 'New', added: 2 }),
-      entry('src/b/c.ts', { statusLetter: 'D', statusLabel: 'Deleted', removed: 3, added: 0 })
-    ])
-    expect(tree.map((n) => n.name)).toEqual(['src', 'z.ts'])
-    const src = tree[0]
-    expect(src?.kind).toBe('dir')
-    if (src?.kind !== 'dir') throw new Error('expected dir')
-    expect(src.added).toBe(2)
-    expect(src.removed).toBe(3)
-    expect(src.children.map((n) => n.name)).toEqual(['b', 'a.ts'])
+beforeEach(() => {
+  class ImmediateIntersectionObserver {
+    readonly root = null
+    readonly rootMargin = ''
+    readonly thresholds = []
+    constructor(private readonly callback: IntersectionObserverCallback) {}
+    observe(target: Element) {
+      this.callback(
+        [
+          {
+            isIntersecting: true,
+            target,
+            intersectionRatio: 1,
+            time: 0,
+            boundingClientRect: target.getBoundingClientRect(),
+            intersectionRect: target.getBoundingClientRect(),
+            rootBounds: null
+          }
+        ],
+        this as unknown as IntersectionObserver
+      )
+    }
+    unobserve() {}
+    disconnect() {}
+    takeRecords(): IntersectionObserverEntry[] {
+      return []
+    }
+  }
+  vi.stubGlobal('IntersectionObserver', ImmediateIntersectionObserver)
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+describe('ChangedFilesBrowser', () => {
+  it('renders a single-column list with inline expandable diffs', async () => {
+    const fetchDiff = vi.fn().mockResolvedValue({
+      content: ['@@ -1,1 +1,2 @@', ' keep', '+added-line'].join('\n')
+    })
+
+    render(
+      <div style={{ height: 480 }}>
+        <ChangedFilesBrowser
+          className="h-full"
+          files={[
+            entry('hooks/skills/a/SKILL.md', {
+              statusLetter: 'A',
+              statusLabel: 'New',
+              added: 2
+            }),
+            entry('hooks/skills/b/SKILL.md', {
+              statusLetter: 'A',
+              statusLabel: 'New',
+              added: 3
+            })
+          ]}
+          expanded={new Set(['hooks/skills/a/SKILL.md'])}
+          onToggleExpand={() => undefined}
+          selectedPath="hooks/skills/a/SKILL.md"
+          onSelectPath={() => undefined}
+          fetchDiff={fetchDiff}
+          layout="unified"
+          wordWrap={false}
+          findQuery=""
+        />
+      </div>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('added-line')).toBeTruthy()
+    })
+
+    expect(fetchDiff).toHaveBeenCalledTimes(1)
+    expect(screen.getAllByText('added-line')).toHaveLength(1)
+    expect(screen.queryByText('Tree')).toBeNull()
+    expect(screen.getByText('hooks/skills/a/')).toBeTruthy()
+    expect(screen.getByText('hooks/skills/b/')).toBeTruthy()
+  })
+
+  it('does not render empty-diff sentinels as fake diff lines', async () => {
+    const fetchDiff = vi.fn().mockResolvedValue({ content: '(no unstaged changes)' })
+
+    render(
+      <ChangedFilesBrowser
+        files={[entry('new.md', { statusLetter: 'A', statusLabel: 'New', added: 10 })]}
+        expanded={new Set(['new.md'])}
+        onToggleExpand={() => undefined}
+        selectedPath="new.md"
+        onSelectPath={() => undefined}
+        fetchDiff={fetchDiff}
+        layout="unified"
+        wordWrap={false}
+        findQuery=""
+      />
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('No textual diff')).toBeTruthy()
+    })
+    expect(screen.queryByText('(no unstaged changes)')).toBeNull()
   })
 })

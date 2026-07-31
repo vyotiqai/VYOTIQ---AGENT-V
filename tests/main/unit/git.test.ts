@@ -8,6 +8,7 @@ import {
   commitAll,
   isGitRepo,
   listLocalBranches,
+  readGitDiff,
   readGitStatus,
   stageAll,
   stagePaths,
@@ -91,6 +92,16 @@ describe('git status', () => {
       staged: false,
       unstaged: true
     })
+  })
+
+  it('returns a full-add unified diff for an untracked file', async () => {
+    writeFileSync(join(repo, 'brand-new.txt'), 'hello\nworld\n', 'utf8')
+    const diff = await readGitDiff(repo, { path: 'brand-new.txt', staged: false })
+    expect(diff.ok).toBe(true)
+    if (!diff.ok) throw new Error('expected ok')
+    expect(diff.content).not.toMatch(/no unstaged changes/)
+    expect(diff.content).toContain('+hello')
+    expect(diff.content).toContain('+world')
   })
 
   it('splits partially staged line deltas per side', async () => {

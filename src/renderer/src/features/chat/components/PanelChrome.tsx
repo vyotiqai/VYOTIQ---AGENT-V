@@ -1,5 +1,80 @@
-import type { ReactNode } from 'react'
+import type { ButtonHTMLAttributes, ReactNode } from 'react'
 import { Icon } from '@renderer/lib/icons'
+import { cn } from '@renderer/lib/ui'
+
+/** Compact dock toolbar control — avoids Button's min-h-8 base. */
+export const DOCK_TOOLBAR_BTN =
+  'inline-flex h-6 shrink-0 items-center justify-center gap-1 rounded-md border border-border bg-surface px-2 text-[11px] leading-none text-fg hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
+
+export const DOCK_TOOLBAR_ICON_BTN =
+  'inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[11px] leading-none text-muted hover:bg-surface-2 hover:text-fg disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
+
+/** Single-border split control so primary + chevron share one height box. */
+export function DockSplitButton({
+  className,
+  primaryClassName,
+  menuClassName,
+  primaryLabel,
+  primaryIcon,
+  primaryDisabled,
+  onPrimaryClick,
+  menuOpen,
+  onMenuToggle,
+  menuAriaLabel,
+  menu
+}: {
+  className?: string
+  primaryClassName?: string
+  menuClassName?: string
+  primaryLabel: ReactNode
+  primaryIcon?: ReactNode
+  primaryDisabled?: boolean
+  onPrimaryClick: () => void
+  menuOpen: boolean
+  onMenuToggle: () => void
+  menuAriaLabel: string
+  menu?: ReactNode
+}) {
+  return (
+    <div className={cn('relative inline-flex shrink-0', className)}>
+      <div className="inline-flex h-6 overflow-hidden rounded-md border border-border bg-surface">
+        <button
+          type="button"
+          className={cn(
+            'inline-flex h-full items-center gap-1 px-2 text-[11px] leading-none text-fg hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]',
+            primaryClassName
+          )}
+          disabled={primaryDisabled}
+          onClick={onPrimaryClick}
+        >
+          {primaryIcon}
+          <span className="whitespace-nowrap">{primaryLabel}</span>
+        </button>
+        <button
+          type="button"
+          className={cn(
+            'inline-flex h-full w-6 shrink-0 items-center justify-center border-l border-border text-muted hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]',
+            menuClassName
+          )}
+          disabled={primaryDisabled}
+          aria-label={menuAriaLabel}
+          aria-expanded={menuOpen}
+          onClick={onMenuToggle}
+        >
+          <Icon name="chevron" size={10} />
+        </button>
+      </div>
+      {menu}
+    </div>
+  )
+}
+
+export function DockToolbarButton({
+  className,
+  ...props
+}: ButtonHTMLAttributes<HTMLButtonElement>) {
+  return <button type="button" className={cn(DOCK_TOOLBAR_BTN, className)} {...props} />
+}
 
 export function PanelHeader({
   title,

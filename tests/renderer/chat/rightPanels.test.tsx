@@ -214,10 +214,10 @@ describe('ChangesPanel', () => {
     })
   })
 
-  it('shows dual flat list and tree columns', async () => {
+  it('shows a single-column files list', async () => {
     render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
     await screen.findAllByText('a.ts')
-    expect(screen.getByText('Tree')).toBeTruthy()
+    expect(screen.queryByText('Tree')).toBeNull()
     expect(screen.getByText(/Files Changed/i)).toBeTruthy()
   })
 
