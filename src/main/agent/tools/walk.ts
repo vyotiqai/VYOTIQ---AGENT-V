@@ -191,7 +191,7 @@ export function globToRegExp(pattern: string): RegExp {
         const alternatives = normalized
           .slice(i + 1, close)
           .split(',')
-          .map((part) => part.replace(/[.+^${}()|[\]\\]/g, '\\$&'))
+          .map((part) => part.replace(/[.+^${}()|[\]\\*?]/g, '\\$&'))
         out += `(?:${alternatives.join('|')})`
         i = close + 1
         continue

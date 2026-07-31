@@ -45,6 +45,14 @@ describe('globToRegExp', () => {
     expect(re.test('notes.txt')).toBe(true)
     expect(re.test('src/README.md')).toBe(false)
   })
+
+  it('escapes * and ? inside brace alternatives without throwing', () => {
+    const re = globToRegExp('**/{AGENTS.md,package.json,README*,*.md}')
+    expect(re.test('README*')).toBe(true)
+    expect(re.test('*.md')).toBe(true)
+    expect(re.test('AGENTS.md')).toBe(true)
+    expect(re.test('README.md')).toBe(false)
+  })
 })
 
 describe('toolGlob', () => {
@@ -206,6 +214,22 @@ describe('terminal / grep pattern bounds', () => {
     const result = validateToolArgs(
       'terminal',
       JSON.stringify({ command: 'echo hi', session_id: 'run1' })
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.data.session_id).toBeUndefined()
+      expect(result.data.command).toBe('echo hi')
+    }
+  })
+
+  it('strips invented UUID session_id when command is also present', () => {
+    const result = validateToolArgs(
+      'terminal',
+      JSON.stringify({
+        command: 'echo hi',
+        session_id: '98d4409e-3951-4807-85b5-df6f57708d08',
+        block_until_ms: 10000
+      })
     )
     expect(result.ok).toBe(true)
     if (result.ok) {
