@@ -3,6 +3,8 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
+  statSync,
   unlinkSync
 } from 'fs'
 import { homedir } from 'os'
@@ -448,6 +450,11 @@ export async function addWorkspace(
   if (!existsSync(root)) {
     throw new Error(`Workspace not found: ${root}`)
   }
+  const st = statSync(root)
+  if (!st.isDirectory()) {
+    throw new Error(`Workspace is not a directory: ${root}`)
+  }
+  root = realpathSync(root)
   root = canonicalizeWorkspacePath(root)
 
   let state = readWorkspacesState()

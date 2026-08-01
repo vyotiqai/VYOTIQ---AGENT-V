@@ -7,16 +7,11 @@ import { MarkdownContent } from '@renderer/lib/ui'
 import { useRunSession } from '../../RunSessionContext'
 import type { ToolBodyProps } from '../types'
 import type {
-  SubagentContextUsageState
-} from '@shared/utils/contextUsage'
-import type {
   UiNestedAgentLeaf,
   UiNestedAgentState,
-  UiSubagentContextUsage,
-  UiToolApproval
+  UiSubagentContextUsage
 } from '@shared/transcript'
 import { CopyButton, TruncatedBanner } from '../primitives'
-import { ToolApprovalCard } from '../../components/ToolApprovalCard'
 
 const STEP_ICON: Record<string, 'edit' | 'sparkles' | 'check' | 'doc'> = {
   tool: 'edit',
@@ -41,7 +36,7 @@ function parsePersistedReport(content: string): { reportPath: string | null; bod
 function SubagentContextBar({
   usage
 }: {
-  usage: SubagentContextUsageState | UiSubagentContextUsage
+  usage: UiSubagentContextUsage
 }) {
   const used = usage.used
   const windowSize = usage.contentWindow > 0 ? usage.contentWindow : usage.window
@@ -103,30 +98,7 @@ function ReportPathRow({ path }: { path: string }) {
   )
 }
 
-function NestedApproval({
-  approval,
-  onRespond
-}: {
-  approval: UiToolApproval
-  onRespond?: (requestId: string, decision: 'once' | 'session' | 'always' | 'deny') => void
-}) {
-  if (!onRespond) {
-    return (
-      <div className="rounded border border-border/60 bg-surface-2/40 px-2 py-1.5 text-[11px] text-tertiary">
-        Approval pending: {approval.toolName} — {approval.summary}
-      </div>
-    )
-  }
-  return <ToolApprovalCard approval={approval} onDecide={onRespond} />
-}
-
-function NestedLeaf({
-  leaf,
-  onRespondApproval
-}: {
-  leaf: UiNestedAgentLeaf
-  onRespondApproval?: (requestId: string, decision: 'once' | 'session' | 'always' | 'deny') => void
-}) {
+function NestedLeaf({ leaf }: { leaf: UiNestedAgentLeaf }) {
   if (leaf.kind === 'thinking') {
     return (
       <div className="flex gap-2 text-[11px] text-tertiary">
@@ -158,9 +130,6 @@ function NestedLeaf({
         <span className="shrink-0 font-medium text-fg/90">{leaf.tool.name}</span>
         <span className="min-w-0 truncate text-tertiary">{leaf.tool.summary}</span>
       </div>
-      {leaf.approval ? (
-        <NestedApproval approval={leaf.approval} onRespond={onRespondApproval} />
-      ) : null}
       {leaf.terminalOutput ? (
         <pre className="m-0 max-h-24 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] text-tertiary">
           {leaf.terminalOutput.slice(-4000)}
@@ -177,21 +146,22 @@ function NestedLeaf({
 
 function NestedAgentPanel({
   nested,
-  onRespondApproval
+  fallbackUsage
 }: {
   nested: UiNestedAgentState
-  onRespondApproval?: (requestId: string, decision: 'once' | 'session' | 'always' | 'deny') => void
+  fallbackUsage?: UiSubagentContextUsage | null
 }) {
+  const contextUsage = nested.contextUsage ?? fallbackUsage ?? null
   return (
     <div className={cn(TOOL_BODY_INNER, 'flex flex-col gap-2 border-b border-border/50 pb-2')}>
       <div className="flex items-center gap-2 text-[10px] text-tertiary">
         <Icon name="bot" size={12} />
         <span className="font-mono">Nested agent {nested.subagentId}</span>
       </div>
-      {nested.contextUsage ? <SubagentContextBar usage={nested.contextUsage} /> : null}
+      {contextUsage ? <SubagentContextBar usage={contextUsage} /> : null}
       <div className="flex flex-col gap-1.5">
         {nested.leaves.map((leaf) => (
-          <NestedLeaf key={leaf.id} leaf={leaf} onRespondApproval={onRespondApproval} />
+          <NestedLeaf key={leaf.id} leaf={leaf} />
         ))}
       </div>
     </div>
@@ -203,7 +173,6 @@ export function SubagentBody({
   subagent,
   subagentContextUsage,
   nestedAgent,
-  onRespondApproval,
   loading,
   loadFailed
 }: ToolBodyProps) {
@@ -220,7 +189,7 @@ export function SubagentBody({
     <div className="flex flex-col gap-1">
       {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
       {nestedAgent ? (
-        <NestedAgentPanel nested={nestedAgent} onRespondApproval={onRespondApproval} />
+        <NestedAgentPanel nested={nestedAgent} fallbackUsage={subagentContextUsage} />
       ) : contextUsage ? (
         <SubagentContextBar usage={contextUsage} />
       ) : null}

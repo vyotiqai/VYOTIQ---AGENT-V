@@ -706,4 +706,51 @@ describe('MessageList', () => {
     Element.prototype.getBoundingClientRect = originalGbc
     vi.unstubAllGlobals()
   })
+
+  it('clicking a user prompt calls onBeginEditUserMessage with its message index', () => {
+    const onBegin = vi.fn()
+    const items: UiItem[] = [
+      { kind: 'message', id: 'user-0', role: 'user', content: 'first prompt' },
+      { kind: 'message', id: 'a1', role: 'assistant', content: 'ok' },
+      { kind: 'message', id: 'user-2', role: 'user', content: 'second prompt' }
+    ]
+
+    render(<MessageList items={items} onBeginEditUserMessage={onBegin} />)
+
+    const editable = screen.getAllByLabelText('Edit message')
+    expect(editable).toHaveLength(2)
+    fireEvent.click(editable[1]!)
+    expect(onBegin).toHaveBeenCalledWith(2)
+  })
+
+  it('replaces the user bubble with editComposer while editing', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'user-0', role: 'user', content: 'original prompt' }
+    ]
+
+    render(
+      <MessageList
+        items={items}
+        editingUserMessageIndex={0}
+        editComposer={<div data-testid="inline-composer">editing…</div>}
+        onBeginEditUserMessage={() => {}}
+      />
+    )
+
+    expect(screen.getByTestId('inline-composer')).toBeTruthy()
+    expect(screen.queryByText('original prompt')).toBeNull()
+    expect(screen.queryByLabelText('Edit message')).toBeNull()
+  })
+
+  it('marks editable user prompts with a click-to-edit title', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'user-0', role: 'user', content: 'hover me' }
+    ]
+
+    render(<MessageList items={items} onBeginEditUserMessage={() => {}} />)
+
+    const bubble = screen.getByLabelText('Edit message')
+    expect(bubble.getAttribute('title')).toBe('Click to edit')
+    expect(bubble.className).toContain('group/prompt')
+  })
 })

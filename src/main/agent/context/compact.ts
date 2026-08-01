@@ -29,6 +29,13 @@ const COMPACTION_FREEFORM_PROMPT = `Summarize this coding-agent session for futu
 
 Be concise and factual. Do not invent files or decisions.`
 
+function capRollingSummary(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text
+  const tail = text.slice(-maxChars)
+  const firstNewline = tail.indexOf('\n')
+  return firstNewline > 0 ? `…${tail.slice(firstNewline)}` : `… ${tail}`
+}
+
 async function streamFreeformSummary(input: {
   provider: LlmProvider
   model: string
@@ -176,19 +183,24 @@ export async function compactMessages(input: {
   )
   const charCap = tokenCap * 4
 
-  const prior = input.priorSummary?.trim() ?? ''
+  const prior = capRollingSummary(input.priorSummary?.trim() ?? '', charCap)
   const chunks = chunkMessagesForCap(input.messages, Math.max(2000, charCap - 500))
-  if (chunks.length === 0 && !prior) return null
+  if (chunks.length === 0) {
+    return prior
+      ? {
+          summary: prior,
+          createdAt: new Date().toISOString(),
+          tokenEstimate: await estimateTextTokensAsync(prior)
+        }
+      : null
+  }
 
   let mergedPrior = prior
   const parts: string[] = []
 
-  for (const chunk of chunks.length > 0 ? chunks : [[]]) {
+  for (const chunk of chunks) {
     if (input.signal.aborted) return null
-    const priorBlock = mergedPrior
-      ? `## Prior session summary\n${mergedPrior}\n\n## Recent history to fold\n`
-      : ''
-    const historyText = (priorBlock + formatMessagesForCompaction(chunk)).slice(0, charCap)
+    const historyText = formatMessagesForCompaction(chunk).slice(0, charCap)
     if (!historyText.trim()) continue
 
     const summary = await summarizeHistoryChunk({
@@ -202,7 +214,9 @@ export async function compactMessages(input: {
     })
     if (!summary) continue
     parts.push(summary)
-    mergedPrior = mergedPrior ? `${mergedPrior}\n\n---\n\n${summary}` : summary
+    mergedPrior = mergedPrior
+      ? capRollingSummary(`${mergedPrior}\n\n---\n\n${summary}`, charCap)
+      : capRollingSummary(summary, charCap)
   }
 
   if (parts.length === 0) {
@@ -214,7 +228,7 @@ export async function compactMessages(input: {
     return null
   }
 
-  const merged = parts.length === 1 && !prior ? parts[0]! : mergedPrior
+  const merged = capRollingSummary(parts.length === 1 && !prior ? parts[0]! : mergedPrior, charCap)
   return {
     summary: merged,
     createdAt: new Date().toISOString(),

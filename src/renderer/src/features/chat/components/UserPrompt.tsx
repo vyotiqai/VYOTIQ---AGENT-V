@@ -1,14 +1,21 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Icon } from '@renderer/lib/icons'
 import { FileChip, ImageChip, MarkdownContent, balanceIncompleteMarkdown, cn } from '@renderer/lib/ui'
 import { TOOL_BODY_CLAMP_PX, USER_PROMPT_SURFACE } from '@renderer/lib/utils/layout'
 import type { UserItem } from '../utils/transcriptRows'
 
 export function UserPrompt({
   item,
-  onImageClick
+  onImageClick,
+  editing = false,
+  editComposer,
+  onBeginEdit
 }: {
   item: UserItem
   onImageClick: (url: string, label: string) => void
+  editing?: boolean
+  editComposer?: ReactNode
+  onBeginEdit?: () => void
 }) {
   const bodyRef = useRef<HTMLDivElement>(null)
   const [overflows, setOverflows] = useState(false)
@@ -25,14 +32,72 @@ export function UserPrompt({
     setOverflows(el.scrollHeight > TOOL_BODY_CLAMP_PX + 8)
   }, [content])
 
+  if (editing && editComposer) {
+    return <div className="w-full">{editComposer}</div>
+  }
+
   const clamped = overflows && !expanded
+  const editable = Boolean(onBeginEdit)
 
   return (
-    <div className={cn(USER_PROMPT_SURFACE)}>
+    <div
+      className={cn(
+        USER_PROMPT_SURFACE,
+        'relative',
+        editable &&
+          cn(
+            'group/prompt cursor-text vy-transition',
+            'hover:border-border-strong hover:bg-surface/40',
+            'focus-visible:vy-focus-ring'
+          )
+      )}
+      onClick={
+        editable
+          ? (e) => {
+              const target = e.target as HTMLElement
+              if (target.closest('button, a, [data-no-prompt-edit]')) return
+              onBeginEdit?.()
+            }
+          : undefined
+      }
+      role={editable ? 'button' : undefined}
+      tabIndex={editable ? 0 : undefined}
+      onKeyDown={
+        editable
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onBeginEdit?.()
+              }
+            }
+          : undefined
+      }
+      aria-label={editable ? 'Edit message' : undefined}
+      title={editable ? 'Click to edit' : undefined}
+    >
+      {editable ? (
+        <span
+          className={cn(
+            'pointer-events-none absolute right-2 top-2 z-[1] inline-grid size-6 place-items-center rounded-md',
+            'border border-border/70 bg-card/90 text-muted shadow-sm backdrop-blur-sm',
+            'opacity-0 vy-transition',
+            'group-hover/prompt:opacity-100 group-focus-visible/prompt:opacity-100',
+            'group-focus-within/prompt:opacity-100'
+          )}
+          aria-hidden
+        >
+          <Icon name="edit" size={12} />
+        </span>
+      ) : null}
+
       {content ? (
         <div
           ref={bodyRef}
-          className={cn('relative overflow-hidden', clamped && 'mask-fade-bottom')}
+          className={cn(
+            'relative overflow-hidden',
+            editable && 'pr-8',
+            clamped && 'mask-fade-bottom'
+          )}
           style={clamped ? { maxHeight: TOOL_BODY_CLAMP_PX } : undefined}
         >
           <MarkdownContent content={content} />
@@ -51,7 +116,10 @@ export function UserPrompt({
       ) : null}
 
       {item.images?.length || item.attachments?.length ? (
-        <div className={cn('flex flex-wrap items-center gap-1.5', content ? 'mt-2' : null)}>
+        <div
+          className={cn('flex flex-wrap items-center gap-1.5', content ? 'mt-2' : null)}
+          data-no-prompt-edit
+        >
           {item.images?.map((url, imageIndex) => (
             <ImageChip
               key={`${item.id}-${imageIndex}`}

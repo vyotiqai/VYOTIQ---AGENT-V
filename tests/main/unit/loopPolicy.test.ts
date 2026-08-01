@@ -5,6 +5,7 @@ import {
   combineLoopHints,
   editPathsFromToolCall,
   isInspectToolName,
+  loopHintForCompactionFailure,
   loopHintForOmittedMcpTools,
   maxParallelReadToolsForFailureStreak,
   normalizeWorkspaceRelPath,
@@ -81,6 +82,13 @@ describe('loopPolicy', () => {
     expect(omitted).not.toMatch(/Prefer built-in/i)
     expect(combineLoopHints(omitted, undefined)).toBe(omitted)
     expect(combineLoopHints(undefined, undefined)).toBeUndefined()
+  })
+
+  it('surfaces a compact run notice when auto-compaction produces no summary', () => {
+    const hint = loopHintForCompactionFailure()
+    expect(hint).toMatch(/compaction produced no summary/i)
+    expect(hint).toMatch(/memory|\/compact/i)
+    expect(combineLoopHints('mcp omit', hint)).toContain(hint)
   })
 
   it('seeds known paths only from successful matched tool results on resume', () => {

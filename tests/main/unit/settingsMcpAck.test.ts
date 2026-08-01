@@ -47,13 +47,14 @@ describe('setSettings mcpServers ack gate', () => {
   })
 
   it('allows adding stdio MCP after remoteInstallAcked', async () => {
-    const { clearSettingsCacheForTests, setSettings, getSettings } = await import(
-      '@main/settings/settings'
-    )
+    const {
+      clearSettingsCacheForTests,
+      setSettings,
+      getSettings,
+      setMarketplaceRemoteInstallAcked
+    } = await import('@main/settings/settings')
     clearSettingsCacheForTests()
-    setSettings({
-      marketplace: { registryUrl: '', remoteInstallAcked: true }
-    })
+    setMarketplaceRemoteInstallAcked(true)
     const next = setSettings({
       mcpServers: [
         {
@@ -114,11 +115,12 @@ describe('setSettings mcpServers ack gate', () => {
       setSettings,
       getSettings,
       redactSettingsForIpc,
-      REDACTED_HEADER_VALUE
+      REDACTED_VALUE,
+      setMarketplaceRemoteInstallAcked
     } = await import('@main/settings/settings')
     clearSettingsCacheForTests()
+    setMarketplaceRemoteInstallAcked(true)
     setSettings({
-      marketplace: { registryUrl: '', remoteInstallAcked: true },
       mcpServers: [
         {
           id: 'http-mcp',
@@ -133,7 +135,7 @@ describe('setSettings mcpServers ack gate', () => {
     })
     const redacted = redactSettingsForIpc(getSettings())
     const server = redacted.mcpServers.find((s) => s.id === 'http-mcp')
-    expect(server?.headers?.Authorization).toBe(REDACTED_HEADER_VALUE)
+    expect(server?.headers?.Authorization).toBe(REDACTED_VALUE)
 
     const next = setSettings({
       mcpServers: redacted.mcpServers.map((s) =>

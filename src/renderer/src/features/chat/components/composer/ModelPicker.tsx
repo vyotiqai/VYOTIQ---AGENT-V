@@ -44,7 +44,8 @@ function CapabilityBadges({ meta }: { meta?: ModelPickerOption['meta'] }) {
   if (!meta) return null
   const badges: string[] = []
   if (meta.supportsThinking) badges.push('Think')
-  if (meta.supportsVision) badges.push('Vision')
+  if (meta.supportsVision || meta.inputModalities.includes('image')) badges.push('Vision')
+  if (meta.inputModalities.includes('audio')) badges.push('Audio')
   if (meta.supportsTools) badges.push('Tools')
   if (!badges.length) return null
   return (

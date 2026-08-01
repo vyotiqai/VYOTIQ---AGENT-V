@@ -4,6 +4,7 @@ import { IPC } from '../../shared/channels'
 import { toolMessageForIpc } from '../../shared/utils/toolResultIpc'
 import {
   ChatStartRequestSchema,
+  ChatRewindAndStartRequestSchema,
   CancelRunRequestSchema,
   ChatFollowUpRequestSchema,
   ChatFollowUpRemoveRequestSchema,
@@ -154,6 +155,7 @@ import { installIpcTiming, timeSyncIpc } from '../perf/ipcTiming'
 import { runAgent, createRunId } from '../agent/loop'
 import { compactRunNow, CompactionUnavailableError } from '../agent/compactRun'
 import { undoWrites, resolveWrites, getWriteCheckpointMeta } from '../agent/checkpoints'
+import { prepareRewindAndReplaceUserMessage } from '../agent/rewindRun'
 import { resolveRunDir } from '@main/storage/paths'
 import { focusAgentBrowser, closeAgentBrowser, getAgentBrowserState, selectBrowserTab, browserGoBack, browserGoForward, setAgentBrowserBounds, navigateUrl, clearAgentBrowserData, takeBrowserScreenshot, disposeAgentBrowserForWorkspace } from '@main/app/agentBrowser'
 import { extractAttachment } from '../attachments/extract'
@@ -702,10 +704,130 @@ export function registerIpc(): void {
     }
   })
 
+  ipcMain.handle(
+    IPC.chatRewindAndStart,
+    async (event, raw): Promise<IpcResult<ChatStartResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = ChatRewindAndStartRequestSchema.parse(raw)
+        if (!isOpenWorkspace(req.workspacePath)) {
+          return fail('Workspace is not open')
+        }
+        if (!existsSync(req.workspacePath)) {
+          return fail(`Workspace not found: ${req.workspacePath}`)
+        }
+        if (!runExists(req.workspacePath, req.runId)) {
+          return fail('Run not found')
+        }
+
+        if (isActive(req.runId)) {
+          const cancelled = chatCancelResult(req.runId)
+          if (!cancelled.ok) return fail(cancelled.error)
+          const cleared = await waitUntilRunInactive(req.runId)
+          if (!cleared || isActive(req.runId)) {
+            return fail('Run is already active')
+          }
+        }
+
+        const prepared = await prepareRewindAndReplaceUserMessage({
+          workspacePath: req.workspacePath,
+          runId: req.runId,
+          editMessageIndex: req.editMessageIndex,
+          editedUserMessage: req.editedUserMessage
+        })
+        if (prepared.writes.restored.length > 0) {
+          invalidateGitStatusCache(req.workspacePath)
+        }
+
+        const runId = req.runId
+        const registered = tryRegisterRunAbort(runId, req.workspacePath)
+        if (!registered.ok) {
+          return fail(registered.error)
+        }
+        const { invokeId } = registered
+        const wc = event.sender
+        logger.info('Chat rewind and start', {
+          scope: 'ipc',
+          correlationId: runId,
+          channel: IPC.chatRewindAndStart,
+          editMessageIndex: req.editMessageIndex,
+          restoredFiles: prepared.writes.restored.length
+        })
+
+        ;(async () => {
+          let terminalSent = false
+          const agentInput = {
+            runId,
+            workspacePath: req.workspacePath,
+            resume: true as const,
+            mode: req.mode
+          }
+          const sendEvent = (ev: AgentEvent): void => {
+            sendToCurrentRenderer(IPC.chatEvent, { ...ev, invokeId }, wc)
+          }
+          const batcher = new ChatEventBatcher(sendEvent, {
+            runId,
+            workspacePath: req.workspacePath
+          })
+          const releaseApprovalSender = registerApprovalSender(runId, (request) => {
+            batcher.flush()
+            sendToCurrentRenderer(IPC.toolApprovalRequest, request, wc)
+          })
+          const releaseQuestionSender = registerQuestionSender(runId, (request) => {
+            batcher.flush()
+            sendToCurrentRenderer(IPC.agentQuestionRequest, request, wc)
+          })
+          try {
+            for await (const ev of runAgent(agentInput)) {
+              const terminal = isTerminalChatEvent(ev as AgentEvent)
+              if (terminal) terminalSent = true
+              batcher.push(ev as AgentEvent)
+              if (terminal) markRunTurnComplete(runId, invokeId)
+            }
+          } catch (err) {
+            if (isAbortError(err)) {
+              logger.warn('Chat rewind run aborted', {
+                scope: 'ipc',
+                correlationId: runId
+              })
+              if (!terminalSent) {
+                batcher.push({ type: 'status', runId, status: 'cancelled' })
+              }
+              return
+            }
+            const message = formatError(err)
+            logger.error(`Chat rewind run crashed: ${logErrorSummary(err, 'AGENT_LOOP')}`, {
+              scope: 'ipc',
+              code: 'AGENT_LOOP',
+              correlationId: runId,
+              err
+            })
+            if (!terminalSent) {
+              batcher.push({ type: 'error', runId, message, code: 'AGENT_LOOP' })
+              batcher.push({ type: 'status', runId, status: 'error' })
+            }
+          } finally {
+            batcher.flush()
+            batcher.dispose()
+            releaseApprovalSender()
+            releaseQuestionSender()
+            cancelPendingApprovals(runId, invokeId)
+            cancelPendingQuestions(runId, invokeId)
+          }
+        })()
+
+        return ok({ runId, invokeId })
+      } catch (err) {
+        return failFrom(err, IPC.chatRewindAndStart)
+      }
+    }
+  )
+
   ipcMain.handle(IPC.toolApprovalResponse, async (event, raw): Promise<IpcResult<boolean>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
       const response = ToolApprovalResponseSchema.parse(raw)
+      if (!isActive(response.runId)) return fail('Run is not active')
       const workspace = getRunWorkspace(response.runId)
       if (!workspace || !isOpenWorkspace(workspace)) return fail('Workspace is not open')
       return ok(resolveToolApproval(response))
@@ -733,6 +855,7 @@ export function registerIpc(): void {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
       const response = AgentQuestionResponseSchema.parse(raw)
+      if (!isActive(response.runId)) return fail('Run is not active')
       const workspace = getRunWorkspace(response.runId)
       if (!workspace || !isOpenWorkspace(workspace)) return fail('Workspace is not open')
       return ok(resolveAgentQuestion(response))

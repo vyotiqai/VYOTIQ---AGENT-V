@@ -1,5 +1,6 @@
-import { existsSync, readFileSync } from 'fs'
-import { resolveInsideWorkspace } from '../../workspace/safePath'
+import { existsSync, mkdirSync, readFileSync } from 'fs'
+import { dirname } from 'path'
+import { resolveInsideWorkspace, assertResolvedInsideWorkspace } from '../../workspace/safePath'
 import { atomicWriteFile } from '@main/storage/atomicWrite'
 
 /** Count non-overlapping occurrences of `needle` in `haystack`. */
@@ -84,6 +85,9 @@ export function toolStrReplace(
   }
 
   const next = useCrlf ? nextNormalized.replace(/\n/g, '\r\n') : nextNormalized
+  assertResolvedInsideWorkspace(workspaceRoot, dirname(resolved))
+  mkdirSync(dirname(resolved), { recursive: true })
+  assertResolvedInsideWorkspace(workspaceRoot, resolved)
   atomicWriteFile(resolved, next)
   const label = replaceAll && matches > 1 ? `${matches} occurrences` : '1 occurrence'
   return `Replaced ${label} in ${path}`

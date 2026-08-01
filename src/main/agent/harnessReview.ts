@@ -4,6 +4,7 @@ import { randomBytes } from 'crypto'
 import type { HarnessReviewResult, RunReceipt } from '../../shared/ipc'
 import { RUN_RECEIPT_VERSION, RunReceiptSchema } from '../../shared/ipc'
 import { resolveInsideWorkspace } from '../workspace/safePath'
+import { isSafeWorkspaceRelPath } from '../../shared/utils/workspacePath'
 import { resolveRunDir, workspaceSessionsRoot } from '../storage/paths'
 import { RUN_RECEIPT_FILENAME } from './runReceipt'
 import {
@@ -101,8 +102,13 @@ export function loadSubagentReports(
     }
     for (const entry of entries) {
       const rel = entry.reportPath?.replace(/\\/g, '/') || `subagents/${entry.id}/report.md`
-      if (rel.includes('..')) continue
-      const abs = join(runDir, ...rel.split('/'))
+      if (!isSafeWorkspaceRelPath(rel) || !rel.startsWith('subagents/')) continue
+      let abs: string
+      try {
+        abs = resolveInsideWorkspace(runDir, rel)
+      } catch {
+        continue
+      }
       if (!existsSync(abs)) continue
       try {
         const parsed = parseSubagentReportMarkdown(entry.id, readFileSync(abs, 'utf8'), {

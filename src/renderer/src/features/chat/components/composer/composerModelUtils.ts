@@ -3,7 +3,7 @@ import type { ModelInfo, ProviderId } from '@shared/ipc'
 import { modelSelectionKey, parseModelSelectionKey } from '@shared/domain/modelSelection'
 import { inferSupportedServiceTiers } from '@shared/domain/serviceTier'
 
-export type ModelFilterOpts = { hasWorkspace: boolean; hasImages: boolean }
+export type ModelFilterOpts = { hasWorkspace: boolean; hasImages: boolean; hasAudio?: boolean }
 
 export type ModelPickerOption = {
   value: string
@@ -55,17 +55,24 @@ export function formatModelDisplayName(id: string, displayName?: string): string
   return name
 }
 
+export function modelSupportsAudio(model: ModelInfo): boolean {
+  return model.inputModalities.includes('audio')
+}
+
+export function modelSupportsVision(model: ModelInfo): boolean {
+  return model.supportsVision || model.inputModalities.includes('image')
+}
+
 export function filterModelsForWorkspace<T extends ModelInfo>(
   models: T[],
   opts: ModelFilterOpts
 ): T[] {
-  const { hasWorkspace, hasImages } = opts
-  if (!hasWorkspace && !hasImages) return models
+  const { hasWorkspace, hasImages, hasAudio } = opts
+  if (!hasWorkspace && !hasImages && !hasAudio) return models
   return models.filter((model) => {
     if (hasWorkspace && !model.supportsTools) return false
-    if (hasImages && !(model.supportsVision || model.inputModalities.includes('image'))) {
-      return false
-    }
+    if (hasImages && !modelSupportsVision(model)) return false
+    if (hasAudio && !modelSupportsAudio(model)) return false
     return true
   })
 }
@@ -76,13 +83,21 @@ export function pickVisionFallback(
   currentModel: string,
   filterOpts: ModelFilterOpts
 ): string | null {
-  const currentOk = catalog.some(
-    (m) =>
-      m.id === currentModel &&
-      (m.supportsVision || m.inputModalities.includes('image'))
-  )
+  const currentOk = catalog.some((m) => m.id === currentModel && modelSupportsVision(m))
   if (currentOk) return null
   const filtered = filterModelsForWorkspace(catalog, { ...filterOpts, hasImages: true })
+  return filtered[0]?.id ?? null
+}
+
+/** Return an audio-capable model id when the current selection cannot accept audio. */
+export function pickAudioFallback(
+  catalog: ModelInfo[],
+  currentModel: string,
+  filterOpts: ModelFilterOpts
+): string | null {
+  const currentOk = catalog.some((m) => m.id === currentModel && modelSupportsAudio(m))
+  if (currentOk) return null
+  const filtered = filterModelsForWorkspace(catalog, { ...filterOpts, hasAudio: true })
   return filtered[0]?.id ?? null
 }
 

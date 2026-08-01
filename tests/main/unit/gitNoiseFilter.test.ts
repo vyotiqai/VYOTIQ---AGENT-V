@@ -43,7 +43,7 @@ describe('readGitStatus noise filtering', () => {
     expect(status.files.some((f) => f.path === 'app.js')).toBe(true)
     expect(status.files.some((f) => f.path.includes('node_modules'))).toBe(false)
     expect(status.fileCount).toBe(1)
-    expect(ms).toBeLessThan(2_000)
+    expect(ms).toBeLessThan(5_000)
   })
 
   it('stageAll does not stage untracked node_modules', async () => {

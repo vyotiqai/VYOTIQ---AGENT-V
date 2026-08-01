@@ -59,3 +59,26 @@ export function resolveInsideWorkspace(workspaceRoot: string, relPath: string): 
   }
   return resolved
 }
+
+/**
+ * Re-check containment after mkdir/create. Closes the gap where a parent
+ * directory is swapped for an escaping symlink between resolve and write.
+ */
+export function assertResolvedInsideWorkspace(
+  workspaceRoot: string,
+  absolutePath: string
+): void {
+  const realRoot = realpathSync(canonicalizeWorkspacePath(workspaceRoot))
+  let probe = absolutePath
+  while (!existsSync(probe)) {
+    const parent = dirname(probe)
+    if (parent === probe) {
+      throw new Error(`Path escapes workspace: ${absolutePath}`)
+    }
+    probe = parent
+  }
+  const real = realpathSync(probe)
+  if (!isInsideRoot(real, realRoot)) {
+    throw new Error(`Path escapes workspace: ${absolutePath}`)
+  }
+}

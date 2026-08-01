@@ -1,11 +1,8 @@
-import { execFile as execFileCb } from 'child_process'
 import { existsSync, readFileSync, readdirSync } from 'fs'
 import { join } from 'path'
-import { promisify } from 'util'
+import spawn from 'cross-spawn'
 import { getSettings } from '@main/settings/settings'
 import { sanitizedTerminalEnv } from './terminal'
-
-const execFile = promisify(execFileCb)
 
 const DIAG_TIMEOUT_MS = 120_000
 const DIAG_MAX_BUFFER = 4 * 1024 * 1024
@@ -56,12 +53,146 @@ export function hasTypeScriptProject(workspace: string): boolean {
   return false
 }
 
-function shellCommand(workspace: string, command: string): { bin: string; args: string[] } {
-  if (process.platform === 'win32') {
-    return { bin: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', command] }
+/**
+ * Split a user-supplied diagnostics command into an executable and an argv array
+ * without invoking a shell. Shell metacharacters outside of quotes are rejected,
+ * so `;`, `|`, `&`, `$`, backticks, redirections, globs, etc. cannot execute
+ * arbitrary commands. `cross-spawn` resolves `.cmd`/`.bat` shims on Windows.
+ */
+function parseSafeCommand(command: string): { bin: string; args: string[] } {
+  const trimmed = command.trim()
+  if (!trimmed) throw new Error('Empty diagnostics command')
+
+  const args: string[] = []
+  let current = ''
+  let quote: "'" | '"' | null = null
+  let i = 0
+
+  while (i < trimmed.length) {
+    const ch = trimmed[i]
+    if (quote) {
+      if (ch === quote) {
+        quote = null
+      } else if (ch === '\\' && quote === '"' && i + 1 < trimmed.length) {
+        const next = trimmed[i + 1]
+        if (next === '"' || next === '\\') {
+          current += next
+          i += 2
+          continue
+        }
+        current += ch
+      } else {
+        current += ch
+      }
+      i++
+      continue
+    }
+
+    if (ch === ' ' || ch === '\t') {
+      if (current) {
+        args.push(current)
+        current = ''
+      }
+      i++
+      continue
+    }
+
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      i++
+      continue
+    }
+
+    // Reject common shell metacharacters that would only be useful with a shell.
+    if (/[;|&$`()<>!~*?[\]{}#\n\r%^]/.test(ch)) {
+      throw new Error(`Disallowed character in diagnostics command: ${ch}`)
+    }
+
+    current += ch
+    i++
   }
-  const shell = process.env.SHELL || '/bin/bash'
-  return { bin: shell, args: ['-lc', command] }
+
+  if (quote) throw new Error('Unclosed quote in diagnostics command')
+  if (current) args.push(current)
+  if (args.length === 0) throw new Error('Empty diagnostics command')
+
+  return { bin: args[0]!, args: args.slice(1) }
+}
+
+function runSafeCommand(
+  bin: string,
+  args: string[],
+  options: {
+    cwd: string
+    env: NodeJS.ProcessEnv
+    signal?: AbortSignal
+    timeoutMs?: number
+  }
+): Promise<{ stdout: string; stderr: string; exitCode: number | null; killed: boolean }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, args, {
+      cwd: options.cwd,
+      env: options.env,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+
+    const stdout: Buffer[] = []
+    const stderr: Buffer[] = []
+    let stdoutTotal = 0
+    let stderrTotal = 0
+    let killed = false
+
+    function kill(reason: 'aborted' | 'timeout' | 'maxBuffer'): void {
+      if (killed) return
+      killed = true
+      child.kill(reason === 'timeout' ? 'SIGTERM' : 'SIGTERM')
+    }
+
+    function appendBuffer(chunks: Buffer[], total: number, chunk: Buffer): number {
+      const next = total + chunk.length
+      if (next > DIAG_MAX_BUFFER) {
+        kill('maxBuffer')
+        const cap = Math.max(0, DIAG_MAX_BUFFER - total)
+        if (cap > 0) chunks.push(chunk.subarray(0, cap))
+        return total + cap
+      }
+      chunks.push(chunk)
+      return next
+    }
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdoutTotal = appendBuffer(stdout, stdoutTotal, chunk)
+    })
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderrTotal = appendBuffer(stderr, stderrTotal, chunk)
+    })
+
+    const onAbort = (): void => kill('aborted')
+    options.signal?.addEventListener('abort', onAbort, { once: true })
+
+    const timeout =
+      options.timeoutMs && options.timeoutMs > 0
+        ? setTimeout(() => kill('timeout'), options.timeoutMs)
+        : null
+
+    child.on('error', (err) => {
+      if (timeout) clearTimeout(timeout)
+      options.signal?.removeEventListener('abort', onAbort)
+      reject(err)
+    })
+
+    child.on('close', (exitCode) => {
+      if (timeout) clearTimeout(timeout)
+      options.signal?.removeEventListener('abort', onAbort)
+      resolve({
+        stdout: Buffer.concat(stdout).toString('utf8'),
+        stderr: Buffer.concat(stderr).toString('utf8'),
+        exitCode: exitCode ?? null,
+        killed
+      })
+    })
+  })
 }
 
 /** npm swallows package flags unless `--` is present; pnpm exec does not. */
@@ -69,9 +200,13 @@ export function execPackageCommand(pm: 'npm' | 'pnpm', pkg: string, pkgArgs: str
   return pm === 'npm' ? `npm exec -- ${pkg} ${pkgArgs}` : `pnpm exec ${pkg} ${pkgArgs}`
 }
 
-export function resolveDiagnosticsCommand(workspace: string, kind: DiagnosticsKind): string {
-  const settings = getSettings()
-  const override = settings.diagnosticsCommand?.trim()
+export function resolveDiagnosticsCommand(
+  workspace: string,
+  kind: DiagnosticsKind,
+  diagnosticsCommand?: string | null
+): string {
+  const override =
+    (diagnosticsCommand ?? getSettings().diagnosticsCommand)?.trim() || undefined
   if (override && kind === 'typecheck') return override
 
   const scripts = packageScripts(workspace)
@@ -162,10 +297,12 @@ export function parseDiagnosticLines(text: string): DiagnosticItem[] {
 export async function toolDiagnosticsAsync(
   workspace: string,
   kind: DiagnosticsKind,
-  signal: AbortSignal
+  signal: AbortSignal,
+  diagnosticsCommand?: string | null
 ): Promise<{ ok: boolean; content: string }> {
   if (kind === 'typecheck') {
-    const override = getSettings().diagnosticsCommand?.trim()
+    const override =
+      (diagnosticsCommand ?? getSettings().diagnosticsCommand)?.trim() || undefined
     if (!override && !hasTypeScriptProject(workspace)) {
       return {
         ok: true,
@@ -175,27 +312,51 @@ export async function toolDiagnosticsAsync(
     }
   }
 
-  const command = resolveDiagnosticsCommand(workspace, kind)
-  const { bin, args } = shellCommand(workspace, command)
+  const command = resolveDiagnosticsCommand(workspace, kind, diagnosticsCommand)
+  let bin: string
+  let argv: string[]
   try {
-    const { stdout, stderr } = await execFile(bin, args, {
+    ;({ bin, args: argv } = parseSafeCommand(command))
+  } catch (err) {
+    return {
+      ok: false,
+      content: [`command: ${command}`, (err as Error).message].join('\n')
+    }
+  }
+
+  try {
+    const { stdout, stderr, exitCode, killed } = await runSafeCommand(bin, argv, {
       cwd: workspace,
-      encoding: 'utf8',
-      timeout: DIAG_TIMEOUT_MS,
-      maxBuffer: DIAG_MAX_BUFFER,
-      windowsHide: true,
       env: sanitizedTerminalEnv(),
-      signal
+      signal,
+      timeoutMs: DIAG_TIMEOUT_MS
     })
+    if (signal.aborted) throw new Error('Aborted')
+
     const combined = [stdout, stderr].filter(Boolean).join('\n').trim()
     const capped =
       combined.length > DIAG_OUTPUT_CAP
         ? combined.slice(0, DIAG_OUTPUT_CAP) + '\n… (output truncated)'
         : combined || '(no output)'
     const parsed = parseDiagnosticLines(combined)
+
+    if (exitCode !== 0 && !killed && parsed.length === 0) {
+      return {
+        ok: false,
+        content: [
+          `command: ${command}`,
+          `exit: ${exitCode ?? 'error'}`,
+          capped
+        ]
+          .filter(Boolean)
+          .join('\n')
+      }
+    }
+
     if (parsed.length > 0) {
       const lines = [
         `command: ${command}`,
+        ...(exitCode !== 0 ? [`exit: ${exitCode ?? 'error'}`] : []),
         `diagnostics: ${parsed.length}${parsed.length >= MAX_DIAGNOSTICS ? '+' : ''}`,
         '',
         ...parsed.map(
@@ -205,39 +366,22 @@ export async function toolDiagnosticsAsync(
       ]
       return { ok: true, content: lines.join('\n') }
     }
+
+    if (killed) {
+      return {
+        ok: false,
+        content: [`command: ${command}`, 'Diagnostics command was killed (timeout or output too large)', capped]
+          .filter(Boolean)
+          .join('\n')
+      }
+    }
+
     return { ok: true, content: [`command: ${command}`, '', capped].join('\n') }
   } catch (err) {
     if (signal.aborted) throw err
-    const anyErr = err as { stdout?: string; stderr?: string; message?: string; code?: number }
-    const combined = [anyErr.stdout, anyErr.stderr].filter(Boolean).join('\n').trim()
-    const capped =
-      combined.length > DIAG_OUTPUT_CAP
-        ? combined.slice(0, DIAG_OUTPUT_CAP) + '\n… (output truncated)'
-        : combined
-    const parsed = parseDiagnosticLines(combined)
-    if (parsed.length > 0) {
-      const lines = [
-        `command: ${command}`,
-        `exit: ${anyErr.code ?? 'error'}`,
-        `diagnostics: ${parsed.length}${parsed.length >= MAX_DIAGNOSTICS ? '+' : ''}`,
-        '',
-        ...parsed.map(
-          (d) =>
-            `${d.file}:${d.line}:${d.col}: ${d.severity ?? 'error'}: ${d.message}`
-        )
-      ]
-      // Non-zero exit with parsed diagnostics is still useful output.
-      return { ok: true, content: lines.join('\n') }
-    }
     return {
       ok: false,
-      content: [
-        `command: ${command}`,
-        anyErr.message ?? 'Diagnostics command failed',
-        capped
-      ]
-        .filter(Boolean)
-        .join('\n')
+      content: [`command: ${command}`, (err as Error).message ?? 'Diagnostics command failed'].join('\n')
     }
   }
 }

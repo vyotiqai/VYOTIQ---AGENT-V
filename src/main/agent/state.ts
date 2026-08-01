@@ -241,6 +241,20 @@ export function appendEvent(dir: string, event: unknown): void {
   enqueueEventAppend(dir, event)
 }
 
+/** Await pending event appends, then rewrite events.jsonl (authoritative). */
+export async function syncEventsAsync(dir: string, events: unknown[]): Promise<void> {
+  await flushEventAppends(dir)
+  const body = events
+    .map((event) =>
+      JSON.stringify({
+        at: new Date().toISOString(),
+        event
+      })
+    )
+    .join('\n')
+  atomicWriteFile(join(dir, 'events.jsonl'), body ? `${body}\n` : '')
+}
+
 export async function updateStatus(
   dir: string,
   patch: Partial<RunStatus>,

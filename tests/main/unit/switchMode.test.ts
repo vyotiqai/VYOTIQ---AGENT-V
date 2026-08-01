@@ -55,7 +55,8 @@ describe('switch_mode', () => {
         setAgentMode: (next) => {
           mode = next
         },
-        emitAgentEvent: (ev) => events.push(ev)
+        emitAgentEvent: (ev) => events.push(ev),
+        autoModeSwitch: true
       }
     )
     expect(result.ok).toBe(true)
@@ -78,7 +79,8 @@ describe('switch_mode', () => {
         getAgentMode: () => mode,
         setAgentMode: (next) => {
           mode = next
-        }
+        },
+        autoModeSwitch: false
       }
     )
     expect(result.ok).toBe(false)

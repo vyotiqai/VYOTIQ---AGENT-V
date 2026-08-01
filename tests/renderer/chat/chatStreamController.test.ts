@@ -196,4 +196,61 @@ describe('createChatStreamController', () => {
     expect(leaf.approval?.requestId).toBe('apr-1')
     expect(leaf.approval?.toolName).toBe('edit')
   })
+
+  it('editAndResend truncates transcript and calls chatRewindAndStart', async () => {
+    const chatRewindAndStart = vi.fn().mockResolvedValue({
+      ok: true,
+      data: { runId: 'r1', invokeId: 2 }
+    })
+    const chatCancel = vi.fn().mockResolvedValue({ ok: true, data: true })
+    // @ts-expect-error test bridge
+    window.vyotiq = { chatRewindAndStart, chatCancel }
+
+    const controller = createChatStreamController({ workspacePath: '/ws', runId: 'r1' })
+    controller.hydrateTranscript([
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'reply-1' },
+      { role: 'user', content: 'second' },
+      { role: 'assistant', content: 'reply-2' }
+    ])
+
+    const ok = await controller.editAndResend(0, 'first edited')
+    expect(ok).toBe(true)
+    expect(chatRewindAndStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspacePath: '/ws',
+        runId: 'r1',
+        editMessageIndex: 0,
+        editedUserMessage: { role: 'user', content: 'first edited' }
+      })
+    )
+    expect(controller.messages).toEqual([{ role: 'user', content: 'first edited' }])
+    expect(controller.messages.some((m) => m.content === 'reply-2')).toBe(false)
+    expect(controller.running).toBe(true)
+  })
+
+  it('editAndResend rolls back UI when chatRewindAndStart fails', async () => {
+    const chatRewindAndStart = vi.fn().mockResolvedValue({
+      ok: false,
+      error: 'rewind failed'
+    })
+    const chatCancel = vi.fn().mockResolvedValue({ ok: true, data: true })
+    // @ts-expect-error test bridge
+    window.vyotiq = { chatRewindAndStart, chatCancel }
+
+    const controller = createChatStreamController({ workspacePath: '/ws', runId: 'r1' })
+    const prior = [
+      { role: 'user' as const, content: 'keep me' },
+      { role: 'assistant' as const, content: 'stay' },
+      { role: 'user' as const, content: 'edit me' },
+      { role: 'assistant' as const, content: 'drop on success' }
+    ]
+    controller.hydrateTranscript(prior)
+
+    const ok = await controller.editAndResend(2, 'edited')
+    expect(ok).toBe(false)
+    expect(controller.messages).toEqual(prior)
+    expect(controller.error).toBe('rewind failed')
+    expect(controller.running).toBe(false)
+  })
 })

@@ -171,7 +171,7 @@ function ContextMeterPanel({
   compactMessage?: string | null
   compactFailed?: boolean
 }) {
-  const denominator = usage.contentWindow > 0 ? usage.contentWindow : usage.window
+  const denominator = Math.max(1, usage.contentWindow > 0 ? usage.contentWindow : usage.window)
   const ratio = Math.min(1, usage.used / denominator)
   const pct = Math.round(ratio * 100)
   const compactionPct = Math.min(
@@ -193,7 +193,10 @@ function ContextMeterPanel({
           <div className="min-w-0">
             <p className="text-xs font-medium text-fg">Context window</p>
             <p className="mt-0.5 text-[10px] text-muted">
-              Step {usage.step} · {formatTokens(usage.window)} model · {formatTokens(usage.layers.buffer)} buffer
+              Step {usage.step} · {formatTokens(usage.window)} model
+              {usage.layers.buffer > 0
+                ? ` · ${formatTokens(usage.layers.buffer)} buffer`
+                : ''}
             </p>
           </div>
           <span
@@ -277,6 +280,7 @@ function ContextMeterPanel({
           ) : null}
         </PanelSection>
 
+        {consumedLayers > 0 || usage.layers.buffer > 0 ? (
         <PanelSection title="Layers" className="border-t border-border pt-2.5">
           <div className="flex flex-col gap-2">
             <LayerRow label="System" tokens={usage.layers.system} total={denominator} />
@@ -293,6 +297,7 @@ function ContextMeterPanel({
             Consumed {formatTokens(consumedLayers)} · buffer is reserved, not usage
           </p>
         </PanelSection>
+        ) : null}
 
         <PanelSection title="Telemetry" className="border-t border-border">
           <div className="flex flex-col gap-1.5">

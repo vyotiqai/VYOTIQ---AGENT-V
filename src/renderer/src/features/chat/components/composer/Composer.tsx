@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   AgentInteractionMode,
+  AttachedAudio,
   AttachedFile,
+  AttachedNativeFile,
   ComposerSendExtras,
   ProviderId,
   ServiceTier,
@@ -28,7 +30,7 @@ import { useComposerImages, MAX_IMAGES } from './useComposerImages'
 import { useComposerFiles, ATTACHMENT_ACCEPT, MAX_FILES, isImageFile } from './useComposerFiles'
 import { useComposerAudio, isAudioFile } from './useComposerAudio'
 import { useComposerModels } from './useComposerModels'
-import { pickVisionFallback } from './composerModelUtils'
+import { pickAudioFallback, pickVisionFallback } from './composerModelUtils'
 import { useWorkspaceHotUi } from '@renderer/lib/hooks/workspaceHotUiStore'
 import { SlashCommandMenu } from './SlashCommandMenu'
 import { useSlashCommands } from './useSlashCommands'
@@ -83,7 +85,12 @@ export function Composer({
   variant = 'dock',
   sideRailPad = true,
   className,
-  slashHandlers
+  slashHandlers,
+  seedImages,
+  seedFiles,
+  seedAudio,
+  seedNativeFiles,
+  onCancelEdit
 }: {
   provider: ProviderId
   model: string
@@ -137,6 +144,13 @@ export function Composer({
   sideRailPad?: boolean
   className?: string
   slashHandlers?: SlashClientHandlers
+  /** One-shot attachment seed when mounting an inline edit composer. */
+  seedImages?: string[]
+  seedFiles?: AttachedFile[]
+  seedAudio?: AttachedAudio[]
+  seedNativeFiles?: AttachedNativeFile[]
+  /** Escape / cancel while editing a prompt bubble. */
+  onCancelEdit?: () => void
 }) {
   const taRef = useRef<ComposerMentionInputHandle>(null)
   const mentionAnchorRef = useRef<HTMLDivElement | null>(null)
@@ -179,6 +193,16 @@ export function Composer({
   } = useComposerFiles({ getPreferNativePdf: () => preferNativePdfRef.current })
 
   const { audio, setAudio, audioError, addAudio, removeAudio } = useComposerAudio()
+
+  const seededRef = useRef(false)
+  useEffect(() => {
+    if (seededRef.current) return
+    seededRef.current = true
+    if (seedImages?.length) setImages(seedImages.slice(0, MAX_IMAGES))
+    if (seedFiles?.length) setFiles(seedFiles.slice(0, MAX_FILES))
+    if (seedAudio?.length) setAudio(seedAudio)
+    if (seedNativeFiles?.length) setNativeFiles(seedNativeFiles)
+  }, [seedImages, seedFiles, seedAudio, seedNativeFiles, setImages, setFiles, setAudio, setNativeFiles])
 
   const slash = useSlashCommands({
     workspacePath,
@@ -448,6 +472,7 @@ export function Composer({
     modelsRefreshKey,
     hasWorkspace,
     hasImages: images.length > 0,
+    hasAudio: audio.length > 0,
     browsedProvider
   })
 
@@ -457,7 +482,7 @@ export function Composer({
 
   const catalogLoading = catalogFetchLoading || refreshingCatalog
 
-  const ensureVisionModel = (): void => {
+  const ensureVisionModel = useCallback((): void => {
     if (running) return
     const fallback = pickVisionFallback(catalog, model, {
       ...filterOpts,
@@ -466,7 +491,27 @@ export function Composer({
     if (fallback && fallback !== model) {
       onProviderModel(provider, fallback)
     }
-  }
+  }, [running, catalog, model, filterOpts, onProviderModel, provider])
+
+  const ensureAudioModel = useCallback((): void => {
+    if (running) return
+    const fallback = pickAudioFallback(catalog, model, {
+      ...filterOpts,
+      hasAudio: true
+    })
+    if (fallback && fallback !== model) {
+      onProviderModel(provider, fallback)
+    }
+  }, [running, catalog, model, filterOpts, onProviderModel, provider])
+
+  // Cover picker, draft restore, and any setImages path — not only onPickAttachments.
+  useEffect(() => {
+    if (images.length > 0) ensureVisionModel()
+  }, [images.length, ensureVisionModel])
+
+  useEffect(() => {
+    if (audio.length > 0) ensureAudioModel()
+  }, [audio.length, ensureAudioModel])
 
   const onPickAttachments = async (list: FileList | null): Promise<void> => {
     if (!list?.length) return
@@ -474,15 +519,13 @@ export function Composer({
     const imageFiles = picked.filter(isImageFile)
     const audioFiles = picked.filter((file) => !isImageFile(file) && isAudioFile(file))
     const documents = picked.filter((file) => !isImageFile(file) && !isAudioFile(file))
-    if (imageFiles.length) {
-      await onPickImages(imageFiles)
-      ensureVisionModel()
-    }
+    if (imageFiles.length) await onPickImages(imageFiles)
     if (audioFiles.length) await addAudio(audioFiles)
     if (documents.length) await addFiles(documents)
   }
 
   const isDock = variant === 'dock'
+  const isInline = variant === 'inline'
 
   return (
     <div
@@ -497,7 +540,19 @@ export function Composer({
         className
       )}
       data-composer-dock={isDock ? true : undefined}
-      data-composer-hero={!isDock ? true : undefined}
+      data-composer-hero={variant === 'hero' ? true : undefined}
+      data-composer-inline={isInline ? true : undefined}
+      onKeyDown={
+        isInline && onCancelEdit
+          ? (e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault()
+                e.stopPropagation()
+                onCancelEdit()
+              }
+            }
+          : undefined
+      }
     >
       <div
         className={cn(isDock && CHAT_COLUMN, 'flex flex-col gap-2')}
@@ -517,7 +572,8 @@ export function Composer({
             '@container relative grid gap-2 p-2.5',
             FLOATING_CHROME,
             FLOATING_CHROME_SHADOW_BOTTOM,
-            isDock && 'pointer-events-auto'
+            isDock && 'pointer-events-auto',
+            isInline && 'ring-1 ring-accent/35'
           )}
           data-composer-shell
         >
@@ -703,6 +759,7 @@ export function Composer({
             contextUsage={contextUsage}
             metaStore={metaStore}
             onCompactContext={onCompactContext}
+            onCancelEdit={isInline ? onCancelEdit : undefined}
           />
         </form>
 

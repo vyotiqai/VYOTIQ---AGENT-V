@@ -250,9 +250,15 @@ export function useSettingsForm({
     )
     setKeyDraft('')
     if (provider === settings.provider) return true
+    const prefs = settings.thinkingPrefsByProvider[provider] ?? {
+      thinkingEnabled: settings.thinkingEnabled,
+      thinkingEffort: settings.thinkingEffort
+    }
     const ok = await runUpdate({
       provider,
-      model: defaultModelFor(provider)
+      model: defaultModelFor(provider),
+      thinkingEnabled: prefs.thinkingEnabled,
+      thinkingEffort: prefs.thinkingEffort
     })
     if (!ok) return false
     setModelsInfo(`Active provider set to ${providerLabel(provider)}.`)

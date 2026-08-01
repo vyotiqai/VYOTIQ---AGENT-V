@@ -92,7 +92,7 @@ describe('Composer', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Send$/i }))
 
     await waitFor(() => {
-      expect(onSend).toHaveBeenCalledWith('keep me', undefined, undefined)
+      expect(onSend).toHaveBeenCalledWith('keep me', undefined, undefined, undefined)
     })
     await waitFor(() => {
       expect(ta.textContent).toBe('keep me')
@@ -167,9 +167,12 @@ describe('Composer', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /^Send$/i }))
     await waitFor(() => {
-      expect(onSend).toHaveBeenCalledWith('', undefined, [
-        { type: 'file', name: 'spec.md', mime: 'text/markdown', text: 'rules here' }
-      ])
+      expect(onSend).toHaveBeenCalledWith(
+        '',
+        undefined,
+        [{ type: 'file', name: 'spec.md', mime: 'text/markdown', text: 'rules here' }],
+        undefined
+      )
     })
   })
 

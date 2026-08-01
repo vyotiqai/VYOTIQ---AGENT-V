@@ -40,13 +40,15 @@ type WorkerSlot = {
 
 let slots: WorkerSlot[] | null = null
 
+/** Single lazy-initialization promise so concurrent first callers share one pool create. */
+
+let poolInit: Promise<WorkerSlot[] | null> | null = null
+
 /** Sticky only after worker create fails despite the script existing — not on a missing bundle. */
 
 let poolCreateFailed = false
 
 let nextId = 1
-
-let rr = 0
 
 
 
@@ -211,6 +213,26 @@ function tryCreatePool(): WorkerSlot[] | null {
 
 
 
+async function ensurePool(): Promise<WorkerSlot[] | null> {
+
+  if (slots && slots.length > 0) return slots
+
+  if (poolInit) return poolInit
+
+  poolInit = Promise.resolve(tryCreatePool())
+
+  const created = await poolInit
+
+  if (!slots) slots = created
+
+  poolInit = null
+
+  return slots
+
+}
+
+
+
 /**
 
  * Encode a batch off the main thread.
@@ -225,15 +247,15 @@ export async function encodeCountsInWorker(items: CountItem[]): Promise<number[]
 
   if (items.length === 0) return []
 
-  if (!slots || slots.length === 0) slots = tryCreatePool()
+  const pool = await ensurePool()
 
-  if (!slots || slots.length === 0) return null
+  if (!pool || pool.length === 0) return null
 
 
 
   const id = nextId++
 
-  const slot = slots[rr++ % slots.length]!
+  const slot = pool.reduce((a, b) => (a.pending.size <= b.pending.size ? a : b))!
 
   return new Promise<number[]>((resolve, reject) => {
 
@@ -278,8 +300,6 @@ export function resetTokenizerPoolForTests(): void {
   poolCreateFailed = false
 
   nextId = 1
-
-  rr = 0
 
 }
 

@@ -67,7 +67,7 @@ const sendCtl = cn(
 /** Shared control row — every pill/icon aligns to the same 28px baseline. */
 const zone = 'flex h-7 min-w-0 items-center gap-0.5'
 
-export type ComposerVariant = 'hero' | 'dock'
+export type ComposerVariant = 'hero' | 'dock' | 'inline'
 
 export function ComposerToolbar({
   variant,
@@ -102,7 +102,8 @@ export function ComposerToolbar({
   onStop,
   contextUsage,
   metaStore,
-  onCompactContext
+  onCompactContext,
+  onCancelEdit
 }: {
   variant: ComposerVariant
   disabled?: boolean
@@ -138,9 +139,10 @@ export function ComposerToolbar({
   contextUsage?: ContextUsageState | null
   metaStore?: ChatMetaStore
   onCompactContext?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
+  onCancelEdit?: () => void
 }) {
-  void variant
   void disabled
+  const isInline = variant === 'inline'
 
   const imagesFull = imageCount >= MAX_IMAGES
   const filesFull = fileCount >= MAX_FILES
@@ -162,6 +164,17 @@ export function ComposerToolbar({
 
   const sendOrStop = (
     <div className="flex items-center gap-0.5">
+      {isInline && onCancelEdit ? (
+        <button
+          type="button"
+          className={iconCtl}
+          aria-label="Cancel edit"
+          title="Cancel edit (Esc)"
+          onClick={onCancelEdit}
+        >
+          <Icon name="close" size={14} />
+        </button>
+      ) : null}
       {running ? (
         <IconButton
           icon="stop"
@@ -178,7 +191,8 @@ export function ComposerToolbar({
           sendCtl,
           canSend ? 'bg-accent text-accent-fg hover:bg-fg-strong' : 'bg-surface-2 text-muted'
         )}
-        aria-label={running ? 'Send follow-up' : 'Send'}
+        aria-label={isInline ? 'Resend' : running ? 'Send follow-up' : 'Send'}
+        title={isInline ? 'Resend edited message' : undefined}
         disabled={!canSend}
       >
         <Icon name="send" size={14} weight="fill" />

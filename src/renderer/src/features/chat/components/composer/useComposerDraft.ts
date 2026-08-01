@@ -149,11 +149,11 @@ export function useComposerDraft({
       const cmd = findCommandByTrigger(parsed.trigger)
       if (cmd) {
         const { draftImages, draftFiles, restore } = clearDraft()
-        void Promise.resolve(
-          onSlashSubmit(cmd, parsed.trailingText, draftImages, draftFiles)
-        ).then((ok) => {
-          if (ok === false) restore()
-        }, restore)
+        void Promise.resolve()
+          .then(() => onSlashSubmit(cmd, parsed.trailingText, draftImages, draftFiles))
+          .then((ok) => {
+            if (ok === false) restore()
+          }, restore)
         return
       }
       // Unknown slash → fall through as normal chat message
@@ -167,16 +167,18 @@ export function useComposerDraft({
             ...(draftAudio.length ? { audio: draftAudio } : {})
           }
         : undefined
-    void Promise.resolve(
-      onSend(
-        draftText,
-        draftImages.length ? draftImages : undefined,
-        draftFiles.length ? draftFiles : undefined,
-        extras
+    void Promise.resolve()
+      .then(() =>
+        onSend(
+          draftText,
+          draftImages.length ? draftImages : undefined,
+          draftFiles.length ? draftFiles : undefined,
+          extras
+        )
       )
-    ).then((ok) => {
-      if (ok === false) restore()
-    }, restore)
+      .then((ok) => {
+        if (ok === false) restore()
+      }, restore)
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement | HTMLDivElement>): void => {
@@ -232,7 +234,7 @@ export function useComposerDraft({
         }
       }
     }
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       submit()
     }

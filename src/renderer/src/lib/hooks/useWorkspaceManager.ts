@@ -451,10 +451,14 @@ export function useWorkspaceManager() {
       } else if (coalesceOldestOrphanUsage(buffered)) {
         // Dropped an older usage event; a newer same-type meter remains.
       } else {
-        // Prefer freeing a stream delta over dropping tool/terminal/status chrome.
+        // Prefer freeing stream deltas, then usage meters, over tool/status chrome.
         const deltaIdx = buffered.findIndex((ev) => ORPHAN_DELTA_TYPES.has(ev.type))
         if (deltaIdx >= 0) buffered.splice(deltaIdx, 1)
-        else buffered.shift()
+        else {
+          const usageIdx = buffered.findIndex((ev) => ORPHAN_USAGE_TYPES.has(ev.type))
+          if (usageIdx >= 0) buffered.splice(usageIdx, 1)
+          else buffered.shift()
+        }
       }
     }
     buffered.push(event)
@@ -1520,6 +1524,7 @@ export function useWorkspaceManager() {
       activeController
         ? {
             send: activeController.send.bind(activeController),
+            editAndResend: activeController.editAndResend.bind(activeController),
             removeFollowUp: activeController.removeFollowUp.bind(activeController),
             stop: activeController.stop.bind(activeController),
             reset: activeController.reset.bind(activeController),

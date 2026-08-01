@@ -233,6 +233,16 @@ describe('ToolGroup', () => {
     expect(screen.getByText('live output')).toBeTruthy()
   })
 
+  it('honors persisted groupExpanded for a lone idle tool', () => {
+    const tools = [toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 })]
+    tools[0]!.tool.content = 'file contents'
+    const { rerender } = render(<ToolGroup tools={tools} groupExpanded={false} />)
+    expect(screen.queryByText('file contents')).toBeNull()
+
+    rerender(<ToolGroup tools={tools} groupExpanded />)
+    expect(screen.getByText('file contents')).toBeTruthy()
+  })
+
   it('names the group after a single kind of work', () => {
     render(
       <ToolGroup

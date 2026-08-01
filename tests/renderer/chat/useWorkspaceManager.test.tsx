@@ -834,6 +834,62 @@ describe('useWorkspaceManager', () => {
     expect(ctrl?.getContextUsage()?.inputTokens).toBe(9999)
   })
 
+  it('drops a sole orphan usage meter before tool/status chrome under backpressure', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    const { ORPHAN_EVENT_BUFFER_MAX } = WORKSPACE_MANAGER_LIMITS
+
+    await act(async () => {
+      handler?.({
+        type: 'assistant_message',
+        runId: 'ghost-keep-chrome',
+        content: 'keep-me',
+        toolCalls: []
+      })
+      handler?.({
+        type: 'context_usage',
+        runId: 'ghost-keep-chrome',
+        step: 1,
+        estimatedTokens: 42,
+        inputTokens: 42,
+        contextWindow: 100_000,
+        contentWindow: 100_000,
+        compactionTrigger: 80_000,
+        source: 'estimate',
+        layers: { system: 0, history: 0, tools: 0, buffer: 0 }
+      })
+      for (let i = 0; i < ORPHAN_EVENT_BUFFER_MAX - 2; i++) {
+        handler?.({
+          type: 'status',
+          runId: 'ghost-keep-chrome',
+          message: `status-${i}`
+        })
+      }
+      // Buffer is full; this forces eviction. Sole usage should go before chrome.
+      handler?.({
+        type: 'status',
+        runId: 'ghost-keep-chrome',
+        message: 'overflow'
+      })
+    })
+
+    await act(async () => {
+      result.current.openRunTab('ghost-keep-chrome')
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    })
+
+    const ctrl = result.current.getRunController('ghost-keep-chrome')
+    const assistant = ctrl?.items.find((i) => i.kind === 'message' && i.role === 'assistant')
+    expect(assistant?.kind).toBe('message')
+    if (assistant?.kind !== 'message') return
+    expect(assistant.content).toContain('keep-me')
+    expect(ctrl?.getContextUsage()?.inputTokens).not.toBe(42)
+  })
+
   it('does not resurrect an empty transcript from late events after closing a idle run tab', async () => {
     loadRun.mockResolvedValue({
       ok: true,

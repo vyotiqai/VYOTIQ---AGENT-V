@@ -31,7 +31,7 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
   }, [persistedDiagnostics])
 
   const persistDiagnostics = (): void => {
-    if (diagnosticsDraft === persistedDiagnostics) return
+    if (diagnosticsDraft === (form.settings.diagnosticsCommand ?? '')) return
     void form.runUpdate({ diagnosticsCommand: diagnosticsDraft })
   }
 
@@ -42,7 +42,7 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
   }, [persistedGithubClientId])
 
   const persistGithubClientId = (): void => {
-    if (githubClientIdDraft === persistedGithubClientId) return
+    if (githubClientIdDraft === (form.settings.githubClientId ?? '')) return
     void form.runUpdate({ githubClientId: githubClientIdDraft })
   }
 
@@ -50,7 +50,7 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
     <>
       {form.workspaceOverrideActive ? (
         <p className="m-0 mb-3 rounded-md border border-border bg-surface px-2.5 py-2 text-xs text-secondary">
-          Workspace override is on — compaction, memory, thinking, approval, and sub-agent
+          Workspace override is on — compaction, thinking, approval, and sub-agent
           fields apply to this workspace only. Rows marked Global setting still update
           app-wide settings.
         </p>

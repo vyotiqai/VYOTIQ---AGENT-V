@@ -8,6 +8,7 @@ import type {
   ChatFollowUpResult,
   ChatStartRequest,
   ChatStartResult,
+  ChatRewindAndStartRequest,
   CompactRunResult,
   UndoWritesResult,
   ResolveWritesResult,
@@ -87,6 +88,7 @@ export interface VyotiqApi {
     forceRefresh?: boolean
   }) => Promise<IpcResult<ListModelsResult>>
   chatStart: (payload: ChatStartRequest) => Promise<IpcResult<ChatStartResult>>
+  chatRewindAndStart: (payload: ChatRewindAndStartRequest) => Promise<IpcResult<ChatStartResult>>
   chatCancel: (runId: string) => Promise<IpcResult<true>>
   chatFollowUp: (payload: ChatFollowUpRequest) => Promise<IpcResult<ChatFollowUpResult>>
   chatFollowUpRemove: (

@@ -1,5 +1,6 @@
 import { app, safeStorage } from 'electron'
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync } from 'fs'
+import { atomicWriteFile } from '../storage/atomicWrite'
 import { join } from 'path'
 import {
   SECRET_PROVIDERS,
@@ -44,10 +45,7 @@ function writeFile(data: SecretsFile): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   const p = secretsPath()
   try {
-    writeFileSync(p, JSON.stringify(data, null, 2), {
-      encoding: 'utf8',
-      mode: 0o600
-    })
+    atomicWriteFile(p, JSON.stringify(data, null, 2), 0o600)
   } catch (err) {
     logger.error('Failed to write secrets file', { scope: 'secrets', code: 'SECRETS', err })
     throw err
@@ -61,10 +59,24 @@ function writeFile(data: SecretsFile): void {
   }
 }
 
+function assertSafeStorageBackend(): void {
+  if (process.platform !== 'linux') return
+  const backend = (
+    safeStorage as unknown as { getSelectedStorageBackend?(): string }
+  ).getSelectedStorageBackend?.()
+  if (backend === 'basic_text') {
+    throw new Error(
+      'OS secure storage is using the insecure basic_text backend. ' +
+        'Set a supported password store (e.g., --password-store=gnome-libsecret) to protect secrets.'
+    )
+  }
+}
+
 function encryptBlob(value: string): string {
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error('OS secure storage is unavailable')
   }
+  assertSafeStorageBackend()
   return safeStorage.encryptString(value).toString('base64')
 }
 
@@ -296,4 +308,67 @@ export function clearGithubAccessToken(): void {
   delete data[GITHUB_TOKEN_KEY]
   writeFile(data)
   logger.info('GitHub access token cleared', { scope: 'secrets' })
+}
+
+const MCP_SERVER_SECRETS_PREFIX = 'mcp-server:'
+
+export type McpServerSecrets = {
+  env: Record<string, string>
+  headers: Record<string, string>
+}
+
+function mcpServerSecretsKey(serverId: string): string {
+  return `${MCP_SERVER_SECRETS_PREFIX}${serverId.trim()}`
+}
+
+export function setMcpServerSecrets(serverId: string, secrets: McpServerSecrets): void {
+  const id = serverId.trim()
+  if (!id) throw new Error('MCP server id is required')
+  const data = readFile()
+  const key = mcpServerSecretsKey(id)
+  if (Object.keys(secrets.env).length === 0 && Object.keys(secrets.headers).length === 0) {
+    if (key in data) {
+      delete data[key]
+      writeFile(data)
+      logger.info('MCP server secrets cleared', { scope: 'secrets', serverId: id })
+    }
+    return
+  }
+  data[key] = encryptBlob(JSON.stringify(secrets))
+  writeFile(data)
+  logger.info('MCP server secrets saved', { scope: 'secrets', serverId: id })
+}
+
+export function getMcpServerSecrets(serverId: string): McpServerSecrets | null {
+  const id = serverId.trim()
+  if (!id) return null
+  const encrypted = readFile()[mcpServerSecretsKey(id)]
+  if (!encrypted) return null
+  const raw = decryptBlob(encrypted)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as McpServerSecrets
+    if (!parsed || typeof parsed !== 'object') return null
+    return {
+      env: typeof parsed.env === 'object' ? parsed.env : {},
+      headers: typeof parsed.headers === 'object' ? parsed.headers : {}
+    }
+  } catch {
+    return null
+  }
+}
+
+export function hasMcpServerSecrets(serverId: string): boolean {
+  return getMcpServerSecrets(serverId) !== null
+}
+
+export function clearMcpServerSecrets(serverId: string): void {
+  const id = serverId.trim()
+  if (!id) return
+  const data = readFile()
+  const key = mcpServerSecretsKey(id)
+  if (!(key in data)) return
+  delete data[key]
+  writeFile(data)
+  logger.info('MCP server secrets cleared', { scope: 'secrets', serverId: id })
 }

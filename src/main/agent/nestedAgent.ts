@@ -37,7 +37,8 @@ import {
 import { CONTEXT_TRIM_WATERMARK_SUMMARY, type CompactionRecord } from './context/types'
 import { executeStepToolCalls } from './executeStepTools'
 import { loadHarness } from './harness'
-import { combineLoopHints, loopHintForOmittedMcpTools } from './loopPolicy'
+import { combineLoopHints, loopHintForOmittedMcpTools, maxParallelReadToolsForFailureStreak, seedKnownPathsFromMessages } from './loopPolicy'
+import { MAX_PARALLEL_READ_TOOLS } from './tools/classify'
 import { getProvider } from './providers'
 import { resolveModelInfo } from './modelResolve'
 import { requestMaxOutputTokens } from './providers/requestLimits'
@@ -413,6 +414,8 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
   let overflowRetryUsed = false
   let truncationContinues = 0
   const MAX_TRUNCATION_CONTINUES = 2
+  let consecutiveToolFailureSteps = 0
+  const knownPaths = seedKnownPathsFromMessages(messages)
   let lastText = ''
   const goal = options.task.slice(0, 500)
   const thinkingEnabled =
@@ -741,7 +744,29 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
           } else if (chunk.type === 'done') {
             if (chunk.reasoningState) stepReasoningState = chunk.reasoningState
             if (chunk.stopReason) stepStopReason = chunk.stopReason
-            if (chunk.usage) lastUsage = chunk.usage
+            if (chunk.usage) {
+              lastUsage = chunk.usage
+              const providerContextEv: AgentEvent = {
+                type: 'context_usage',
+                runId,
+                step,
+                estimatedTokens: assembled.estimatedTokens,
+                inputTokens: chunk.usage.inputTokens ?? assembled.estimatedTokens,
+                contextWindow: window,
+                contentWindow: contentWin,
+                compactionTrigger,
+                source: 'provider'
+                // Omit estimate layers — not aligned with provider inputTokens.
+              }
+              emitParent(providerContextEv)
+              options.onContextUsage?.({
+                step,
+                estimatedTokens: chunk.usage.inputTokens ?? assembled.estimatedTokens,
+                contextWindow: window,
+                contentWindow: contentWin,
+                model: modelId
+              })
+            }
             if (chunk.compaction?.trim()) {
               const summary = chunk.compaction.trim()
               const keepRecent = settings.keepRecentTurns ?? DEFAULT_SETTINGS.keepRecentTurns
@@ -831,7 +856,7 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
         stepStopReason === 'length' ||
         stepStopReason === 'tool_calls' ||
         (stepStopReason === 'error' && !scrubbed.trim())
-      if (incomplete && truncationContinues < MAX_TRUNCATION_CONTINUES && scrubbed.trim()) {
+      if (incomplete && truncationContinues < MAX_TRUNCATION_CONTINUES) {
         truncationContinues++
         persistMsg({
           role: 'assistant',
@@ -952,6 +977,11 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
       runSignal: options.signal,
       invokeId: options.invokeId,
       depth: options.depth + 1,
+      knownPaths,
+      maxParallelReadTools: maxParallelReadToolsForFailureStreak(
+        consecutiveToolFailureSteps,
+        MAX_PARALLEL_READ_TOOLS
+      ),
       appendMessage: async (msg: ChatMessage) => {
         persistMsg(msg)
       },
@@ -964,6 +994,8 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
       // Nested agents cannot switch mode.
       setAgentMode: undefined,
       autoModeSwitch: false,
+      terminalShell: settings.terminalShell,
+      diagnosticsCommand: settings.diagnosticsCommand,
       runEnabledMcpIds,
       mcpToolPolicies,
       stepMcpToolNames,
@@ -1007,8 +1039,10 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
 
     try {
       const result = await settledWork
-      // Messages already persisted via appendMessage in tool ctx.
-      void result
+      if (allowedCalls.length > 0) {
+        if (result.stepToolsOk) consecutiveToolFailureSteps = 0
+        else consecutiveToolFailureSteps++
+      }
     } catch (err) {
       if (isAbortError(err)) break
       return await finalizeNested(options, {

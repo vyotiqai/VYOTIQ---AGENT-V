@@ -65,9 +65,6 @@ export class ErrorBoundary extends Component<Props, State> {
           The UI hit an unexpected error. You can try again, reload the window, or open the local
           logs folder for details. Chat contents and API keys are not included in crash reports.
         </p>
-        <p className="m-0 max-w-lg truncate font-mono text-xs text-muted">
-          {this.state.error.message}
-        </p>
         <div className="flex flex-wrap items-center justify-center gap-2">
           <Button variant="subtle" onClick={this.tryAgain}>
             Try again

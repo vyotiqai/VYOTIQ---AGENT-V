@@ -100,6 +100,7 @@ async function waitForUnregister(entry: SubagentRegistration): Promise<void> {
   ])
   // Force-clear if the subagent never unregistered (wedged provider).
   if (active.has(entry.id)) {
+    if (!entry.controller.signal.aborted) entry.controller.abort()
     active.delete(entry.id)
     entry.resolveDone()
   }

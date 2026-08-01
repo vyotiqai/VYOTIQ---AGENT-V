@@ -21,10 +21,14 @@ export const CompactRow = memo(function CompactRow({
   interrupted?: boolean
   onToggle: () => void
 }) {
+  const disclosureLabel = hasBody
+    ? `${expanded ? 'Collapse' : 'Expand'} ${title}${subtitle ? `: ${subtitle}` : ''}`
+    : title
   return (
     <button
       type="button"
       className={cn(DISCLOSURE_ROW, 'w-full text-left', !hasBody && 'cursor-default')}
+      aria-label={disclosureLabel}
       aria-expanded={hasBody ? expanded : undefined}
       disabled={!hasBody}
       onClick={onToggle}

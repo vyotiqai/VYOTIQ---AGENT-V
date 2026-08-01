@@ -7,7 +7,7 @@ import {
   type ReactNode
 } from 'react'
 import type { UiItem } from '@shared/transcript'
-import { GitBranchStrip, GitChangePills, useGitChrome, type GitChrome } from './GitChrome'
+import { GitBranchStrip, GitChangePills, type GitChrome } from './GitChrome'
 import type { ChatItemsStore } from '../chatStores'
 
 /** Bumps on workspace change, run end, and (debounced) mid-run mutating tool results. */
@@ -107,19 +107,6 @@ export function useChatLiveItems(
   items: UiItem[]
 ): UiItem[] {
   return useLiveItems(itemsStore, items)
-}
-
-/** One gitStatus fetch shared by change pills + branch strip. */
-export function useChatGitChrome(
-  itemsStore: ChatItemsStore | undefined,
-  items: UiItem[],
-  workspacePath: string | null,
-  running: boolean,
-  enabled: boolean
-): GitChrome {
-  const liveItems = useLiveItems(itemsStore, items)
-  const [revision] = useGitRevision(workspacePath, running, liveItems)
-  return useGitChrome(workspacePath, revision, enabled)
 }
 
 export function ChatGitLeading({

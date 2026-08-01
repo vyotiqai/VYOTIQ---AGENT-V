@@ -28,6 +28,7 @@ const api: VyotiqApi = {
   secretStatus: () => ipcRenderer.invoke(IPC.secretStatus),
   listModels: (payload) => ipcRenderer.invoke(IPC.listModels, payload),
   chatStart: (payload) => ipcRenderer.invoke(IPC.chatStart, payload),
+  chatRewindAndStart: (payload) => ipcRenderer.invoke(IPC.chatRewindAndStart, payload),
   chatCancel: (runId) => ipcRenderer.invoke(IPC.chatCancel, { runId }),
   chatFollowUp: (payload) => ipcRenderer.invoke(IPC.chatFollowUp, payload),
   chatFollowUpRemove: (payload) => ipcRenderer.invoke(IPC.chatFollowUpRemove, payload),

@@ -223,9 +223,12 @@ export const ToolGroup = memo(function ToolGroup({
     })
     const defaultExpanded =
       live || familyDefaultExpanded(item.tool.name, item.tool.status)
-    // Do not let groupExpanded:false hide a running/default-expanded body.
-    // Nested rows already ignore groupExpanded for per-tool expand.
-    const isToolExpanded = item.toolExpanded ?? localOverride ?? defaultExpanded
+    // toolExpanded wins; otherwise keep running/live bodies open even when
+    // groupExpanded is false. Idle tools still honor persisted groupExpanded.
+    const isToolExpanded =
+      item.toolExpanded ??
+      localOverride ??
+      (defaultExpanded || (groupExpanded ?? false))
     const toggleSingle = (): void => {
       if (!hasBody) return
       const next = !isToolExpanded

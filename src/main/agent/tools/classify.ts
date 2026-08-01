@@ -12,7 +12,6 @@ const PARALLEL_SAFE_BUILTIN = new Set([
   'subagent',
   'git_status',
   'git_diff',
-  'diagnostics',
   'mcp_list_tools',
   'request_mcp_tools'
 ])
@@ -41,11 +40,10 @@ const SERIAL_APPROVAL_EXEMPT_BUILTIN = new Set(['ask_question', 'switch_mode'])
 
 /**
  * Built-in tools safe to run in parallel (no workspace mutation).
- * MCP tools with an explicit `readOnlyHint: true` may also run in parallel;
- * the hint is still untrusted for approval exemption.
+ * MCP tools are never parallel-safe here — `readOnlyHint` is untrusted for
+ * both parallelism and approval exemption.
  */
 export function isParallelSafeTool(name: string): boolean {
-  // Do not trust MCP readOnlyHint for parallelism — built-in allowlist only.
   return PARALLEL_SAFE_BUILTIN.has(name)
 }
 

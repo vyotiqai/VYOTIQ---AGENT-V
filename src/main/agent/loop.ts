@@ -47,7 +47,8 @@ import { loadHarness } from './harness'
 import {
   combineLoopHints,
   loopHintForOmittedMcpTools,
-  maxParallelReadToolsForFailureStreak
+  maxParallelReadToolsForFailureStreak,
+  seedKnownPathsFromMessages
 } from './loopPolicy'
 import { MAX_PARALLEL_READ_TOOLS } from './tools/classify'
 import { disposeTerminalSessionsForInvoke } from './tools/terminalSessions'
@@ -109,6 +110,14 @@ import { existsSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
 export { cancelRun, clearRunAbort, registerRunAbort, resetActiveRunsForTests }
+
+/** Index of the last user message in `messages`, or undefined if none. */
+function lastUserMessageIndex(messages: ChatMessage[]): number | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === 'user') return i
+  }
+  return undefined
+}
 
 const INCOMPLETE_MESSAGES: Record<Exclude<IncompleteReason, never>, string> = {
   truncated: 'The model hit its output token limit before finishing this turn.',
@@ -321,6 +330,7 @@ export async function* runAgent(input: {
   // Entire body in try/finally so early returns (missing key, etc.) always clear the abort map.
   let runDir: string | null = null
   let checkpointFlushed = false
+  let messages: ChatMessage[] = []
   const writeStatus = (patch: Parameters<typeof updateStatus>[1]): void => {
     if (!runDir || !isCurrentInvoke(runId, invokeId)) return
     updateStatus(runDir, patch)
@@ -343,7 +353,7 @@ export async function* runAgent(input: {
     }
     if (opts?.reopen) {
       checkpointFlushed = false
-      beginWriteCheckpoint(runDir, workspace)
+      beginWriteCheckpoint(runDir, workspace, lastUserMessageIndex(messages))
     }
   }
   try {
@@ -355,7 +365,6 @@ export async function* runAgent(input: {
     const goal = lastUser
       ? (contentDisplayText(lastUser.content) || contentToText(lastUser.content)).slice(0, 200)
       : 'chat'
-    let messages: ChatMessage[]
     let initialStep = 0
 
     if (input.resume) {
@@ -382,7 +391,7 @@ export async function* runAgent(input: {
     }
 
     writeStatus({ mode: agentMode, invokeId, error: undefined })
-    beginWriteCheckpoint(runDir, workspace)
+    beginWriteCheckpoint(runDir, workspace, lastUserMessageIndex(messages))
 
     if (agentMode === 'plan') {
       const planPath = join(runDir, 'plan.md')
@@ -609,8 +618,8 @@ export async function* runAgent(input: {
     }
 
     await refreshMcpToolsForStep()
-    const failedToolKeys = new Map<string, number>()
     let consecutiveToolFailureSteps = loadStatus(runDir)?.consecutiveToolFailureSteps ?? 0
+    const knownPaths = seedKnownPathsFromMessages(messages)
     let overflowRetryUsed = false
     let truncationContinues = 0
     const MAX_TRUNCATION_CONTINUES = 2
@@ -755,7 +764,8 @@ export async function* runAgent(input: {
         compactionTrigger,
         source: usingProviderMeter ? 'provider' : 'estimate',
         ...(assembled.overflow ? { overflow: true } : {}),
-        layers: assembled.layers
+        // Provider totals are not layer-aligned — omit estimate splits.
+        ...(usingProviderMeter ? {} : { layers: assembled.layers })
       }
       appendEvent(runDir, contextUsageEv)
       yield contextUsageEv
@@ -852,7 +862,7 @@ export async function* runAgent(input: {
             const closeOverflow = tryBeginRunClosing(runId, invokeId)
             if (closeOverflow === 'has_followups') {
               checkpointFlushed = false
-              beginWriteCheckpoint(runDir, workspace)
+              beginWriteCheckpoint(runDir, workspace, lastUserMessageIndex(messages))
               yield* applyDrainedFollowUps(runId, runDir, messages)
               continue
             }
@@ -887,7 +897,7 @@ export async function* runAgent(input: {
           const closeOverflow2 = tryBeginRunClosing(runId, invokeId)
           if (closeOverflow2 === 'has_followups') {
             checkpointFlushed = false
-            beginWriteCheckpoint(runDir, workspace)
+            beginWriteCheckpoint(runDir, workspace, lastUserMessageIndex(messages))
             yield* applyDrainedFollowUps(runId, runDir, messages)
             continue
           }
@@ -1314,6 +1324,12 @@ export async function* runAgent(input: {
           }
           appendEvent(runDir, continueEv)
           yield continueEv
+          const continueUser: ChatMessage = {
+            role: 'user',
+            content: 'Continue from where you left off. Finish without repeating.'
+          }
+          messages.push(continueUser)
+          appendMessage(runDir, continueUser)
           continue
         }
 
@@ -1355,7 +1371,7 @@ export async function* runAgent(input: {
         const closeTurn = tryBeginRunClosing(runId, invokeId)
         if (closeTurn === 'has_followups') {
           checkpointFlushed = false
-          beginWriteCheckpoint(runDir, workspace)
+          beginWriteCheckpoint(runDir, workspace, lastUserMessageIndex(messages))
           yield* applyDrainedFollowUps(runId, runDir, messages)
           continue
         }
@@ -1435,10 +1451,11 @@ export async function* runAgent(input: {
         runId,
         runDir: runDir!,
         workspace,
+        depth: 0,
         signal: streamSignalFor(runId, controller.signal),
         runSignal: controller.signal,
         invokeId,
-        failedToolKeys,
+        knownPaths,
         maxParallelReadTools: maxParallelReadToolsForFailureStreak(
           consecutiveToolFailureSteps,
           MAX_PARALLEL_READ_TOOLS
@@ -1453,6 +1470,8 @@ export async function* runAgent(input: {
           writeStatus({ mode })
         },
         autoModeSwitch: settings.autoModeSwitch,
+        terminalShell: settings.terminalShell,
+        diagnosticsCommand: settings.diagnosticsCommand,
         runEnabledMcpIds,
         mcpToolPolicies,
         stepMcpToolNames,

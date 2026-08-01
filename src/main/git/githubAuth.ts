@@ -248,8 +248,12 @@ export async function logoutGithubAuth(): Promise<GithubAuthStatus> {
 
 /** Prefer app-stored token for `gh` CLI; fall back to ambient env. */
 export function resolveGhTokenForCli(): string | undefined {
-  const stored = getGithubAccessToken()
-  if (stored) return stored
+  try {
+    const stored = getGithubAccessToken()
+    if (stored) return stored
+  } catch {
+    // safeStorage may be unavailable in tests / headless; fall through to ambient env
+  }
   const ambient = process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim()
   return ambient || undefined
 }

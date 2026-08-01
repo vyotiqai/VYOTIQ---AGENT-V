@@ -19,6 +19,7 @@ export function useComposerModels({
   modelsRefreshKey,
   hasWorkspace,
   hasImages,
+  hasAudio = false,
   browsedProvider
 }: {
   provider: ProviderId
@@ -27,6 +28,7 @@ export function useComposerModels({
   modelsRefreshKey?: string | number
   hasWorkspace?: boolean
   hasImages: boolean
+  hasAudio?: boolean
   browsedProvider?: ProviderId
 }) {
   const value = modelSelectionKey(provider, model)
@@ -38,8 +40,8 @@ export function useComposerModels({
   )
 
   const filterOpts: ModelFilterOpts = useMemo(
-    () => ({ hasWorkspace: Boolean(hasWorkspace), hasImages }),
-    [hasWorkspace, hasImages]
+    () => ({ hasWorkspace: Boolean(hasWorkspace), hasImages, hasAudio }),
+    [hasWorkspace, hasImages, hasAudio]
   )
 
   useEffect(() => {

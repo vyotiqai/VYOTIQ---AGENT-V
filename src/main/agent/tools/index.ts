@@ -25,6 +25,7 @@ import { toolDiagnosticsAsync } from './diagnostics'
 import { getSettings } from '@main/settings/settings'
 import { getWriteCheckpoint } from '../checkpoints'
 import { resolveInsideWorkspace } from '@main/workspace/safePath'
+import { clearWorkspaceSnapshotCache } from '../context/workspaceSnapshot'
 import { commitAll } from '@main/git/git'
 import { invalidateGitStatusCache } from '@main/git/gitStatusCache'
 import {
@@ -38,7 +39,8 @@ import type {
   AgentEvent,
   AgentInteractionMode,
   AgentQuestionAnswer,
-  AgentQuestionRequest
+  AgentQuestionRequest,
+  TerminalShell
 } from '../../../shared/ipc'
 import { basename, join } from 'path'
 import { existsSync } from 'fs'
@@ -76,6 +78,10 @@ export type ToolExecutionContext = {
   setAgentMode?: (mode: AgentInteractionMode) => void
   /** Snapshot of settings.autoModeSwitch for this invoke (not live mid-run). */
   autoModeSwitch?: boolean
+  /** Snapshot of settings.terminalShell for this invoke (not live mid-run). */
+  terminalShell?: TerminalShell
+  /** Snapshot of settings.diagnosticsCommand for this invoke (not live mid-run). */
+  diagnosticsCommand?: string
   /** Emit live agent events (e.g. mode_changed) while a tool is running. */
   emitAgentEvent?: (event: AgentEvent) => void
   /** Overridable in tests; defaults to renderer IPC round trip. */
@@ -270,6 +276,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const diff = typeof args.diff === 'string' ? args.diff : undefined
     const content = toolEdit(workspace, path, contents, diff)
     invalidateGitStatusCache(workspace)
+    clearWorkspaceSnapshotCache(workspace)
     return toolOk('edit', path, content)
   },
   search: async (workspace, args, signal) => {
@@ -327,6 +334,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     }
     const content = toolMultiEdit(workspace, edits, signal)
     invalidateGitStatusCache(workspace)
+    clearWorkspaceSnapshotCache(workspace)
     return toolOk('multi_edit', `${edits.length} files`, content)
   },
   str_replace: (workspace, args, signal, context) => {
@@ -343,6 +351,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       args.replace_all === true
     )
     invalidateGitStatusCache(workspace)
+    clearWorkspaceSnapshotCache(workspace)
     return toolOk('str_replace', path, content)
   },
   delete: (workspace, args, signal, context) => {
@@ -352,6 +361,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     getWriteCheckpoint(context.runDir)?.recordPrior(path, 'delete', { recursiveDir: recursive })
     const content = toolDelete(workspace, path, recursive)
     invalidateGitStatusCache(workspace)
+    clearWorkspaceSnapshotCache(workspace)
     return toolOk('delete', path, content)
   },
   todo_write: (_workspace, args, signal, context) => {
@@ -896,7 +906,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
         : typeof args.session_id === 'string' && args.session_id.trim()
           ? args.session_id.trim()
           : ''
-    const shell = getSettings().terminalShell ?? 'auto'
+    const shell = context.terminalShell ?? getSettings().terminalShell ?? 'auto'
     const pattern = typeof args.pattern === 'string' ? args.pattern : undefined
     const useSessionApi = Boolean(sessionId) || typeof args.block_until_ms === 'number'
     const onOutput = context.onTerminalOutput
@@ -939,6 +949,11 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
             blockUntilMs,
             onOutput
           })
+      // New background command may mutate the tree; pure session polls do not.
+      if (!sessionId) {
+        invalidateGitStatusCache(workspace)
+        clearWorkspaceSnapshotCache(workspace)
+      }
       const summary = (command || sessionId).slice(0, 80)
       const ok = terminalResultOk(command || 'session', content)
       if (ok) return toolOk('terminal', summary, content)
@@ -953,6 +968,8 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       cwd,
       onOutput
     })
+    invalidateGitStatusCache(workspace)
+    clearWorkspaceSnapshotCache(workspace)
     const summary = command.slice(0, 80)
     const ok = terminalResultOk(command, content)
     if (ok) return toolOk('terminal', summary, content)
@@ -1003,6 +1020,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     try {
       const outcome = await commitAll(workspace, message, push)
       invalidateGitStatusCache(workspace)
+      clearWorkspaceSnapshotCache(workspace)
       const summary = push ? 'git commit + push' : 'git commit'
       const content = [
         outcome.detail,
@@ -1016,10 +1034,15 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       return toolFail('git_commit', 'git commit', msg)
     }
   },
-  diagnostics: async (workspace, args, signal) => {
+  diagnostics: async (workspace, args, signal, context) => {
     throwIfAborted(signal)
     const kind = args.kind === 'lint' ? 'lint' : 'typecheck'
-    const result = await toolDiagnosticsAsync(workspace, kind, signal)
+    const result = await toolDiagnosticsAsync(
+      workspace,
+      kind,
+      signal,
+      context.diagnosticsCommand
+    )
     throwIfAborted(signal)
     if (!result.ok) return toolFail('diagnostics', kind, result.content)
     return toolOk('diagnostics', kind, result.content)

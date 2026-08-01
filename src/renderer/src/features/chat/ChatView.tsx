@@ -21,7 +21,14 @@ import {
 } from './components/ChatStreamLeaves'
 import { useGitChrome } from './components/GitChrome'
 import type { UiAgentQuestionAnswer, UiItem } from '@shared/transcript'
-import type { AgentInteractionMode, ProviderId, ToolApprovalDecision } from '@shared/ipc'
+import type { AgentInteractionMode, ChatMessage, ProviderId, ToolApprovalDecision } from '@shared/ipc'
+import {
+  contentAudios,
+  contentDisplayText,
+  contentFiles,
+  contentImages,
+  contentNativeFiles
+} from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { Alert, PanelResizeHandle } from '@renderer/lib/ui'
 import { usePersistedBoolean } from '@renderer/lib/hooks/usePersistedBoolean'
@@ -87,7 +94,10 @@ function TranscriptPane({
   onKeepAllWrites,
   resolveBlockedReason,
   onOpenChanges,
-  sideRailPad = true
+  sideRailPad = true,
+  editingUserMessageIndex = null,
+  editComposer,
+  onBeginEditUserMessage
 }: {
   items: UiItem[]
   pendingRun?: boolean
@@ -122,6 +132,9 @@ function TranscriptPane({
   resolveBlockedReason?: string | null
   onOpenChanges?: () => void
   sideRailPad?: boolean
+  editingUserMessageIndex?: number | null
+  editComposer?: React.ReactNode
+  onBeginEditUserMessage?: (messageIndex: number) => void
 }) {
   const runSession = useMemo(
     () => ({
@@ -165,6 +178,9 @@ function TranscriptPane({
         resolveBlockedReason={resolveBlockedReason}
         onOpenChanges={onOpenChanges}
         sideRailPad={sideRailPad}
+        editingUserMessageIndex={editingUserMessageIndex}
+        editComposer={editComposer}
+        onBeginEditUserMessage={onBeginEditUserMessage}
       />
     </RunSessionProvider>
   )
@@ -205,6 +221,8 @@ export function ChatView({
   onContinueInAgent,
   onSend,
   onStop,
+  onEditAndResend,
+  messages = [],
   pendingFollowUps = [],
   onRemoveFollowUp,
   onDismissError,
@@ -275,6 +293,15 @@ export function ChatView({
     files?: import('@shared/ipc').AttachedFile[],
     extras?: import('@shared/ipc').ComposerSendExtras
   ) => boolean | void | Promise<boolean | void>
+  onEditAndResend?: (
+    editMessageIndex: number,
+    text: string,
+    images?: string[],
+    files?: import('@shared/ipc').AttachedFile[],
+    extras?: import('@shared/ipc').ComposerSendExtras
+  ) => boolean | void | Promise<boolean | void>
+  /** Full chat messages for seeding inline edit attachments. */
+  messages?: ChatMessage[]
   onStop: () => void
   pendingFollowUps?: import('@renderer/lib/hooks/createChatStreamController').PendingFollowUpState[]
   onRemoveFollowUp?: (id: string) => void
@@ -729,6 +756,120 @@ export function ChatView({
     return () => ro.disconnect()
   }, [showHero, surfaceKey, dockImmersive, immersiveTab])
 
+  const [editingUserMessageIndex, setEditingUserMessageIndex] = useState<number | null>(null)
+  const [editDraft, setEditDraft] = useState('')
+  const [editSeeds, setEditSeeds] = useState<{
+    images?: string[]
+    files?: import('@shared/ipc').AttachedFile[]
+    audio?: import('@shared/ipc').AttachedAudio[]
+    nativeFiles?: import('@shared/ipc').AttachedNativeFile[]
+  }>({})
+
+  useEffect(() => {
+    setEditingUserMessageIndex(null)
+    setEditDraft('')
+    setEditSeeds({})
+  }, [surfaceKey])
+
+  const cancelPromptEdit = useCallback(() => {
+    setEditingUserMessageIndex(null)
+    setEditDraft('')
+    setEditSeeds({})
+  }, [])
+
+  const beginPromptEdit = useCallback(
+    (messageIndex: number) => {
+      const msg = messages[messageIndex]
+      if (!msg || msg.role !== 'user') return
+      const images = contentImages(msg.content)
+      const files = contentFiles(msg.content)
+      const audio = contentAudios(msg.content)
+      const nativeFiles = contentNativeFiles(msg.content)
+      setEditDraft(contentDisplayText(msg.content))
+      setEditSeeds({
+        images: images.length ? images : undefined,
+        files: files.length ? files : undefined,
+        audio: audio.length ? audio : undefined,
+        nativeFiles: nativeFiles.length ? nativeFiles : undefined
+      })
+      setEditingUserMessageIndex(messageIndex)
+    },
+    [messages]
+  )
+
+  const submitPromptEdit = useCallback(
+    async (
+      text: string,
+      images?: string[],
+      files?: import('@shared/ipc').AttachedFile[],
+      extras?: import('@shared/ipc').ComposerSendExtras
+    ) => {
+      if (editingUserMessageIndex == null || !onEditAndResend) return false
+      const index = editingUserMessageIndex
+      cancelPromptEdit()
+      return onEditAndResend(index, text, images, files, extras)
+    },
+    [editingUserMessageIndex, onEditAndResend, cancelPromptEdit]
+  )
+
+  const editing = editingUserMessageIndex != null
+
+  const editComposer =
+    editing && onEditAndResend ? (
+      <MemoComposer
+        key={`edit-composer:${surfaceKey}:${editingUserMessageIndex}`}
+        provider={provider}
+        model={model}
+        running={running}
+        disabled={!hasWorkspace}
+        hasTranscript
+        hasWorkspace={hasWorkspace}
+        ollamaBaseUrl={ollamaBaseUrl}
+        modelsRefreshKey={modelsRefreshKey}
+        draft={editDraft}
+        onDraftChange={setEditDraft}
+        onProviderModel={onProviderModel}
+        favoriteModels={favoriteModels}
+        recentModels={recentModels}
+        serviceTier={serviceTier}
+        onToggleFavorite={onToggleFavorite}
+        onServiceTierChange={onServiceTierChange}
+        chatSettings={chatSettings}
+        onChatSettingsChange={onChatSettingsChange}
+        agentMode={agentMode}
+        onAgentModeChange={onAgentModeChange}
+        onSend={submitPromptEdit}
+        onStop={onStop}
+        activeRunId={activeRunId}
+        contextUsage={metaStore ? undefined : contextUsage}
+        metaStore={metaStore}
+        onCompactContext={onCompactContext}
+        slashHandlers={slashHandlers}
+        variant="inline"
+        className="w-full"
+        seedImages={editSeeds.images}
+        seedFiles={editSeeds.files}
+        seedAudio={editSeeds.audio}
+        seedNativeFiles={editSeeds.nativeFiles}
+        onCancelEdit={cancelPromptEdit}
+        composerPlaceholder="Edit message…"
+      />
+    ) : null
+
+  const sendFromDock = useCallback(
+    async (
+      text: string,
+      images?: string[],
+      files?: import('@shared/ipc').AttachedFile[],
+      extras?: import('@shared/ipc').ComposerSendExtras
+    ) => {
+      // Dock stays usable while editing; sending a new turn exits edit mode.
+      if (editingUserMessageIndex != null) cancelPromptEdit()
+      return onSend(text, images, files, extras)
+    },
+    [editingUserMessageIndex, cancelPromptEdit, onSend]
+  )
+
   const composerProps = {
     provider,
     model,
@@ -754,7 +895,7 @@ export function ChatView({
     onChatSettingsChange,
     agentMode,
     onAgentModeChange,
-    onSend,
+    onSend: sendFromDock,
     onStop,
     pendingFollowUps,
     onRemoveFollowUp,
@@ -843,6 +984,9 @@ export function ChatView({
             resolveBlockedReason={resolveBlockedReason}
             onOpenChanges={() => openChangesPanel('agent')}
             sideRailPad={agentSideRailPad}
+            editingUserMessageIndex={editingUserMessageIndex}
+            editComposer={editComposer}
+            onBeginEditUserMessage={onEditAndResend ? beginPromptEdit : undefined}
           />
 
           <MemoComposer

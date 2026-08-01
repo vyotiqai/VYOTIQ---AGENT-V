@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, describe, expect, it } from 'vitest'
-import { cleanup, render, screen, fireEvent } from '@testing-library/react'
+import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { ThinkingBlock } from '@renderer/features/chat/components/ThinkingBlock'
 
 afterEach(() => {
@@ -28,10 +28,12 @@ describe('ThinkingBlock', () => {
     expect(screen.getByText('Let me reason about this.')).toBeTruthy()
   })
 
-  it('lets the reader close the reasoning mid-stream', () => {
+  it('lets the reader close the reasoning mid-stream', async () => {
     render(<ThinkingBlock content="Let me reason about this." streaming />)
     fireEvent.click(screen.getByRole('button', { name: /thinking/i }))
-    expect(screen.queryByText('Let me reason about this.')).toBeNull()
+    await waitFor(() => {
+      expect(screen.queryByText('Let me reason about this.')).toBeNull()
+    })
   })
 
   it('honours an explicit expanded state over the stream', () => {

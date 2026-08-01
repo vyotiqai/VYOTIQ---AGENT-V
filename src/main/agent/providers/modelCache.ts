@@ -53,7 +53,6 @@ function resolveDiskPath(): string | null {
   if (diskPathOverride) return diskPathOverride
   try {
     // Lazy require so unit tests without Electron still work when override is set.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { app } = require('electron') as typeof import('electron')
     if (!app?.getPath) return null
     return join(app.getPath('userData'), 'model-catalog-cache.json')

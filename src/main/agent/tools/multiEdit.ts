@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync } from 'fs'
 import { dirname } from 'path'
-import { resolveInsideWorkspace } from '../../workspace/safePath'
+import { resolveInsideWorkspace, assertResolvedInsideWorkspace } from '../../workspace/safePath'
 import { atomicWriteFile } from '@main/storage/atomicWrite'
 import { applyUnifiedDiff } from './edit'
 import { throwIfAborted } from './walk'
@@ -71,7 +71,9 @@ export function toolMultiEdit(
 
   for (const entry of planned) {
     throwIfAborted(signal)
+    assertResolvedInsideWorkspace(workspaceRoot, dirname(entry.resolved))
     mkdirSync(dirname(entry.resolved), { recursive: true })
+    assertResolvedInsideWorkspace(workspaceRoot, entry.resolved)
     atomicWriteFile(entry.resolved, entry.next)
   }
 

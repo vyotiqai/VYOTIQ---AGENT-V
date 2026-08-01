@@ -13,7 +13,6 @@ type TestCtx = Parameters<typeof executeStepToolCalls>[1]
 
 function makeCtx(
   signal: AbortSignal,
-  failedToolKeys = new Map<string, number>(),
   runSignal?: AbortSignal
 ) {
   const events: AgentEvent[] = []
@@ -25,7 +24,6 @@ function makeCtx(
       workspace: '/tmp/ws',
       signal,
       runSignal,
-      failedToolKeys,
       appendMessage: (msg: unknown) => messages.push(msg),
       appendEvent: (ev: AgentEvent) => events.push(ev)
     } as unknown as TestCtx,
@@ -98,7 +96,7 @@ describe('executeStepToolCalls', () => {
       throw new DOMException('Aborted', 'AbortError')
     })
 
-    const { ctx } = makeCtx(signal, undefined, runAc.signal)
+    const { ctx } = makeCtx(signal, runAc.signal)
     const work = executeStepToolCalls(
       [{ id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }],
       ctx
@@ -123,7 +121,7 @@ describe('executeStepToolCalls', () => {
       throw new DOMException('Aborted', 'AbortError')
     })
 
-    const { ctx } = makeCtx(signal, undefined, runAc.signal)
+    const { ctx } = makeCtx(signal, runAc.signal)
     const work = executeStepToolCalls(
       [{ id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }],
       ctx
@@ -240,7 +238,7 @@ describe('executeStepToolCalls', () => {
     }
   })
 
-  it('counts repeated failures silently without injecting recipe text', async () => {
+  it('does not inject recipe text on repeated tool failures', async () => {
     executeTool.mockResolvedValue({
       ok: false,
       summary: 'core/build.gradle.kts',
@@ -248,8 +246,7 @@ describe('executeStepToolCalls', () => {
       failureLogged: true
     })
 
-    const failedToolKeys = new Map<string, number>()
-    const { ctx } = makeCtx(new AbortController().signal, failedToolKeys)
+    const { ctx } = makeCtx(new AbortController().signal)
     const call = { id: 'c1', name: 'read', arguments: '{"path":"core/build.gradle.kts"}' }
 
     await executeStepToolCalls([call], ctx)
@@ -257,7 +254,6 @@ describe('executeStepToolCalls', () => {
 
     expect(second.messages[0]?.content).toMatch(/File not found/)
     expect(String(second.messages[0]?.content)).not.toMatch(/Repeated failure|stop guessing/i)
-    expect(failedToolKeys.size).toBeGreaterThan(0)
   })
 
   it('feeds a denied approval back as a tool failure without running the tool', async () => {

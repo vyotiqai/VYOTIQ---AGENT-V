@@ -6,17 +6,25 @@ import { defaultModelFor, normalizeOllamaHost } from '../../shared/providers'
 import { logger } from '../../shared/logger'
 import { atomicWriteJson } from '../storage/atomicWrite'
 import { sanitizeMcpManifestEnv } from '../marketplace/sanitizeMcpEnv'
+import { getAuthorizationHeader, headersWithoutAuthorization } from '../../shared/utils/mcpAuth'
+import {
+  clearMcpServerSecrets,
+  getMcpServerSecrets,
+  setMcpServerSecrets,
+  type McpServerSecrets
+} from './secrets'
 
 function settingsPath(): string {
   return join(app.getPath('userData'), 'settings.json')
 }
 
 function writeSettings(next: Settings): void {
-  atomicWriteJson(settingsPath(), next)
+  atomicWriteJson(settingsPath(), next, 0o600)
   settingsCache = next
 }
 
 let settingsCache: Settings | null = null
+
 /** Serializes async callers that must await between settings mutations (IPC handlers). */
 let settingsMutationChain: Promise<unknown> = Promise.resolve()
 
@@ -33,67 +41,222 @@ export function enqueueSettingsMutation<T>(fn: () => T | Promise<T>): Promise<T>
   return run
 }
 
-function sanitizeMcpServersInSettings(settings: Settings): Settings {
-  if (!settings.mcpServers?.length) return settings
-  return {
-    ...settings,
-    mcpServers: settings.mcpServers.map((s) => ({
-      ...s,
-      env: sanitizeMcpManifestEnv(s.env)
-    }))
-  }
+export const REDACTED_VALUE = '[redacted]'
+
+function hasMcpSecretValue(value: string): boolean {
+  return typeof value === 'string' && value.trim().length > 0 && value !== REDACTED_VALUE
 }
 
-export const REDACTED_HEADER_VALUE = '[redacted]'
+function extractAndRedactMcpSecrets(settings: Settings): Settings {
+  if (!settings.mcpServers?.length) return settings
 
-/** Strip Authorization header values before sending settings over IPC. */
+  let changed = false
+  const mcpServers = settings.mcpServers.map((s) => {
+    const safeEnv = sanitizeMcpManifestEnv(s.env)
+    const authHeader = getAuthorizationHeader(s.headers)
+    const safeHeaders = headersWithoutAuthorization(s.headers)
+
+    const toStore: McpServerSecrets = { env: {}, headers: {} }
+
+    if (safeEnv) toStore.env = safeEnv
+    if (safeHeaders) toStore.headers = safeHeaders
+
+    const hasSecretsToStore =
+      Object.keys(toStore.env).length > 0 || Object.keys(toStore.headers).length > 0
+
+    if (hasSecretsToStore) {
+      try {
+        setMcpServerSecrets(s.id, toStore)
+      } catch (err) {
+        logger.error('Failed to store MCP server secrets; keeping plaintext in settings', {
+          scope: 'settings',
+          serverId: s.id,
+          err
+        })
+        return s
+      }
+    } else {
+      try {
+        clearMcpServerSecrets(s.id)
+      } catch {
+        // best-effort cleanup
+      }
+    }
+
+    const redactedEnv: Record<string, string> | undefined = safeEnv
+      ? Object.fromEntries(Object.keys(safeEnv).map((k) => [k, REDACTED_VALUE]))
+      : undefined
+    const redactedHeaders: Record<string, string> | undefined = safeHeaders
+      ? Object.fromEntries(Object.keys(safeHeaders).map((k) => [k, REDACTED_VALUE]))
+      : undefined
+    const nextHeaders: Record<string, string> | undefined =
+      redactedHeaders || authHeader
+        ? { ...redactedHeaders, ...(authHeader ? { Authorization: authHeader } : {}) }
+        : undefined
+
+    if (
+      safeEnv === s.env &&
+      nextHeaders === s.headers &&
+      (!safeEnv || Object.keys(safeEnv).length === 0) &&
+      (!safeHeaders || Object.keys(safeHeaders).length === 0)
+    ) {
+      return s
+    }
+    changed = true
+    return {
+      ...s,
+      env: redactedEnv,
+      headers: nextHeaders
+    }
+  })
+
+  return changed ? { ...settings, mcpServers } : settings
+}
+
+function restoreMcpSecrets(settings: Settings): Settings {
+  if (!settings.mcpServers?.length) return settings
+
+  let changed = false
+  const mcpServers = settings.mcpServers.map((s) => {
+    const secret = getMcpServerSecrets(s.id)
+    if (!secret && !s.env && !s.headers) return s
+
+    let nextEnv = s.env
+    let nextHeaders = s.headers
+
+    if (s.env) {
+      const env: Record<string, string> = {}
+      let envChanged = false
+      for (const [key, value] of Object.entries(s.env)) {
+        if (value === REDACTED_VALUE && secret?.env[key] && hasMcpSecretValue(secret.env[key])) {
+          env[key] = secret.env[key]
+          envChanged = true
+        } else {
+          env[key] = value
+        }
+      }
+      if (envChanged) {
+        nextEnv = env
+        changed = true
+      }
+    }
+
+    if (s.headers) {
+      const headers: Record<string, string> = {}
+      let headersChanged = false
+      for (const [key, value] of Object.entries(s.headers)) {
+        if (key.toLowerCase() === 'authorization') {
+          headers[key] = value
+          continue
+        }
+        if (value === REDACTED_VALUE && secret?.headers[key] && hasMcpSecretValue(secret.headers[key])) {
+          headers[key] = secret.headers[key]
+          headersChanged = true
+        } else {
+          headers[key] = value
+        }
+      }
+      if (headersChanged) {
+        nextHeaders = headers
+        changed = true
+      }
+    }
+
+    if (nextEnv === s.env && nextHeaders === s.headers) return s
+    return { ...s, env: nextEnv, headers: nextHeaders }
+  })
+
+  return changed ? { ...settings, mcpServers } : settings
+}
+
+/** Strip env and header values before sending settings over IPC. */
 export function redactSettingsForIpc(settings: Settings): Settings {
   if (!settings.mcpServers?.length) return settings
   let changed = false
   const mcpServers = settings.mcpServers.map((s) => {
-    if (!s.headers) return s
-    const headers: Record<string, string> = {}
+    let envChanged = false
     let headerChanged = false
-    for (const [key, value] of Object.entries(s.headers)) {
-      if (/^authorization$/i.test(key) && value.trim()) {
-        headers[key] = REDACTED_HEADER_VALUE
-        headerChanged = true
-      } else {
-        headers[key] = value
-      }
-    }
-    if (!headerChanged) return s
+    const env: Record<string, string> | undefined = s.env
+      ? Object.fromEntries(
+          Object.entries(s.env).map(([key, value]) => {
+            if (hasMcpSecretValue(value)) {
+              envChanged = true
+              return [key, REDACTED_VALUE]
+            }
+            return [key, value]
+          })
+        )
+      : undefined
+    const headers: Record<string, string> | undefined = s.headers
+      ? Object.fromEntries(
+          Object.entries(s.headers).map(([key, value]) => {
+            if (hasMcpSecretValue(value)) {
+              headerChanged = true
+              return [key, REDACTED_VALUE]
+            }
+            return [key, value]
+          })
+        )
+      : undefined
+    if (!envChanged && !headerChanged) return s
     changed = true
-    return { ...s, headers }
+    return { ...s, env, headers }
   })
   return changed ? { ...settings, mcpServers } : settings
 }
 
 /**
- * Restore Authorization values that the renderer echoed back as `[redacted]`
+ * Restore secret values the renderer echoed back as `[redacted]`
  * after `redactSettingsForIpc`, so toggling MCP settings cannot wipe secrets.
  */
-export function restoreRedactedMcpHeaders(
+export function restoreRedactedMcpSecrets(
   prevServers: NonNullable<Settings['mcpServers']>,
   nextServers: NonNullable<Settings['mcpServers']>
 ): NonNullable<Settings['mcpServers']> {
   const prevById = new Map(prevServers.map((s) => [s.id, s]))
   return nextServers.map((server) => {
-    if (!server.headers) return server
     const prior = prevById.get(server.id)
-    if (!prior?.headers) return server
+    if (!prior) return server
+
+    const priorSecret = getMcpServerSecrets(server.id)
     let changed = false
-    const headers: Record<string, string> = { ...server.headers }
-    for (const [key, value] of Object.entries(headers)) {
-      if (!/^authorization$/i.test(key)) continue
-      if (value !== REDACTED_HEADER_VALUE) continue
-      const priorValue = Object.entries(prior.headers).find(([k]) => /^authorization$/i.test(k))?.[1]
-      if (priorValue && priorValue !== REDACTED_HEADER_VALUE) {
-        headers[key] = priorValue
-        changed = true
+
+    let nextEnv = server.env
+    if (server.env && prior.env) {
+      const env: Record<string, string> = { ...server.env }
+      for (const [key, value] of Object.entries(env)) {
+        if (value !== REDACTED_VALUE) continue
+        const priorValue = prior.env[key]
+        if (hasMcpSecretValue(priorValue)) {
+          env[key] = priorValue
+          changed = true
+        } else if (priorSecret?.env[key] && hasMcpSecretValue(priorSecret.env[key])) {
+          env[key] = priorSecret.env[key]
+          changed = true
+        }
       }
+      nextEnv = env
     }
-    return changed ? { ...server, headers } : server
+
+    let nextHeaders = server.headers
+    if (server.headers && prior.headers) {
+      const headers: Record<string, string> = { ...server.headers }
+      for (const [key, value] of Object.entries(headers)) {
+        if (value !== REDACTED_VALUE) continue
+        const priorValue = prior.headers[key]
+        if (hasMcpSecretValue(priorValue)) {
+          headers[key] = priorValue
+          changed = true
+        } else if (priorSecret?.headers[key] && hasMcpSecretValue(priorSecret.headers[key])) {
+          headers[key] = priorSecret.headers[key]
+          changed = true
+        }
+      }
+      nextHeaders = headers
+    }
+
+    if (!changed) return server
+    return { ...server, env: nextEnv, headers: nextHeaders }
   })
 }
 
@@ -136,11 +299,11 @@ export function readLegacyWorkspacePath(): string | null {
 }
 
 export function getSettings(): Settings {
-  if (settingsCache) return settingsCache
+  if (settingsCache) return restoreMcpSecrets(settingsCache)
   const p = settingsPath()
   if (!existsSync(p)) {
     settingsCache = { ...DEFAULT_SETTINGS }
-    return settingsCache
+    return restoreMcpSecrets(settingsCache)
   }
   try {
     const raw = JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>
@@ -162,7 +325,7 @@ export function getSettings(): Settings {
         }
       }
       settingsCache = normalizeSettings(merged)
-      return settingsCache
+      return restoreMcpSecrets(settingsCache)
     }
     const data = normalizeSettings(parsed.data)
     if (data.ollamaBaseUrl !== parsed.data.ollamaBaseUrl) {
@@ -197,11 +360,11 @@ export function getSettings(): Settings {
       }
     }
     settingsCache = data
-    return settingsCache
+    return restoreMcpSecrets(settingsCache)
   } catch (err) {
     logger.warn('Failed to read settings', { scope: 'settings', code: 'SETTINGS', err })
     settingsCache = { ...DEFAULT_SETTINGS }
-    return settingsCache
+    return restoreMcpSecrets(settingsCache)
   }
 }
 
@@ -312,7 +475,7 @@ export function setSettings(
   }
   let mcpServers = partial.mcpServers
   if (mcpServers !== undefined) {
-    mcpServers = restoreRedactedMcpHeaders(prev.mcpServers ?? [], mcpServers)
+    mcpServers = restoreRedactedMcpSecrets(prev.mcpServers ?? [], mcpServers)
     if (!opts?.skipMcpAck) {
       assertMcpServersAcked(prev, mcpServers)
     }
@@ -329,7 +492,7 @@ export function setSettings(
   if (partial.provider !== undefined && partial.model === undefined) {
     merged.model = defaultModelFor(partial.provider)
   }
-  const next = sanitizeMcpServersInSettings(SettingsSchema.parse(merged))
+  const next = extractAndRedactMcpSecrets(SettingsSchema.parse(merged))
   try {
     writeSettings(next)
   } catch (err) {

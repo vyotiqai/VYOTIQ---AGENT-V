@@ -413,6 +413,19 @@ export const ChatStartRequestSchema = z
   })
 export type ChatStartRequest = z.infer<typeof ChatStartRequestSchema>
 
+/** Edit a past user message: restore write checkpoints, truncate history, re-run. */
+export const ChatRewindAndStartRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  runId: RunIdSchema,
+  /** Index into messages.jsonl of the user message being replaced. */
+  editMessageIndex: z.number().int().min(0),
+  editedUserMessage: ChatMessageSchema.refine((m) => m.role === 'user', {
+    message: 'editedUserMessage must be a user message'
+  }),
+  mode: AgentInteractionModeSchema.optional()
+})
+export type ChatRewindAndStartRequest = z.infer<typeof ChatRewindAndStartRequestSchema>
+
 export const CancelRunRequestSchema = z.object({
   runId: RunIdSchema
 })

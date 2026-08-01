@@ -30,18 +30,29 @@ export function resetDnsLookupForTests(): void {
   resolveHost = dnsLookup
 }
 
-/** Hosts that resolve inside the machine or the local network are never fetched. */
-export async function assertPublicUrl(raw: string): Promise<URL> {
-  const { url } = await resolvePublicUrl(raw)
+/** Resolve a URL with optional allowance for local/private addresses. */
+export async function assertAllowedUrl(raw: string, allowLocal = false): Promise<URL> {
+  const { url } = await resolveAllowedUrl(raw, allowLocal)
   return url
 }
 
+/** Backward-compatible alias that always blocks local/private addresses. */
+export async function assertPublicUrl(raw: string): Promise<URL> {
+  return assertAllowedUrl(raw, false)
+}
+
 /**
- * Resolve a public http(s) URL and return the validated public addresses so
- * callers can pin the TCP connect (DNS-rebinding resistant).
+ * Resolve an http(s) URL and return the validated addresses so callers can pin
+ * the TCP connect (DNS-rebinding resistant).
+ *
+ * @param allowLocal When `true`, loopback and private ranges (127/8, 10/8,
+ *   172.16/12, 192.168/16, 169.254/16, 100.64/10, ::1, fe80::/10, fc00::/7)
+ *   are allowed in addition to public addresses. Used for Ollama and other
+ *   explicitly local endpoints.
  */
-export async function resolvePublicUrl(
-  raw: string
+export async function resolveAllowedUrl(
+  raw: string,
+  allowLocal = false
 ): Promise<{ url: URL; addresses: string[] }> {
   let url: URL
   try {
@@ -54,26 +65,26 @@ export async function resolvePublicUrl(
   }
 
   const host = stripIpv6Brackets(url.hostname).toLowerCase()
-  if (isBlockedHostname(host)) {
+  if (isBlockedHostname(host, allowLocal)) {
     throw new Error(`Refusing to fetch a private or loopback address: ${url.hostname}`)
   }
 
   const literalVersion = isIP(host)
   if (literalVersion === 4) {
-    if (isPrivateIpv4(host)) {
+    if (isBlockedAddress(host, allowLocal)) {
       throw new Error(`Refusing to fetch a private or loopback address: ${url.hostname}`)
     }
     return { url, addresses: [host] }
   }
   if (literalVersion === 6) {
-    if (isPrivateIpv6(host)) {
+    if (isBlockedAddress(host, allowLocal)) {
       throw new Error(`Refusing to fetch a private or loopback address: ${url.hostname}`)
     }
     return { url, addresses: [host] }
   }
 
   // Decimal/hex IPv4 forms that `isIP()` does not classify (e.g. 2130706433 → 127.0.0.1).
-  if (isPrivateIpv4(host) || isPrivateIpv6(host)) {
+  if (isBlockedAddress(host, allowLocal)) {
     throw new Error(`Refusing to fetch a private or loopback address: ${url.hostname}`)
   }
 
@@ -83,7 +94,7 @@ export async function resolvePublicUrl(
   }
   const addresses: string[] = []
   for (const entry of resolved) {
-    if (isPrivateResolvedAddress(entry.address)) {
+    if (isBlockedAddress(entry.address, allowLocal)) {
       throw new Error(`Refusing to fetch a private or loopback address: ${host}`)
     }
     addresses.push(entry.address)
@@ -92,13 +103,20 @@ export async function resolvePublicUrl(
   return { url, addresses }
 }
 
+/** Backward-compatible alias that always blocks local/private addresses. */
+export async function resolvePublicUrl(
+  raw: string
+): Promise<{ url: URL; addresses: string[] }> {
+  return resolveAllowedUrl(raw, false)
+}
+
 /**
  * Sync SSRF gate for Electron navigation events (no DNS).
  * Returns true when the URL must be refused immediately.
  * Hostnames that need DNS resolution return false — callers should
- * still `assertPublicUrl` after the load settles.
+ * still `assertAllowedUrl` after the load settles.
  */
-export function isSyncBlockedUrl(raw: string): boolean {
+export function isSyncBlockedUrl(raw: string, allowLocal = false): boolean {
   let url: URL
   try {
     url = new URL(raw)
@@ -108,21 +126,21 @@ export function isSyncBlockedUrl(raw: string): boolean {
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return true
 
   const host = stripIpv6Brackets(url.hostname).toLowerCase()
-  if (isBlockedHostname(host)) return true
+  if (isBlockedHostname(host, allowLocal)) return true
 
   const literalVersion = isIP(host)
-  if (literalVersion === 4) return isPrivateIpv4(host)
-  if (literalVersion === 6) return isPrivateIpv6(host)
+  if (literalVersion === 4) return isBlockedAddress(host, allowLocal)
+  if (literalVersion === 6) return isBlockedAddress(host, allowLocal)
   // Alternate IPv4 encodings (decimal/hex) that `isIP()` misses.
-  if (isPrivateIpv4(host) || isPrivateIpv6(host)) return true
-  return false
+  return isBlockedAddress(host, allowLocal)
 }
 
 function stripIpv6Brackets(host: string): string {
   return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
 }
 
-function isBlockedHostname(host: string): boolean {
+function isBlockedHostname(host: string, allowLocal = false): boolean {
+  if (allowLocal) return false
   return (
     host === 'localhost' ||
     host.endsWith('.localhost') ||
@@ -194,6 +212,19 @@ function isPrivateIpv4(host: string): boolean {
   return isPrivateIpv4Bytes(...parts)
 }
 
+function isAllowedLocalIpv4(host: string): boolean {
+  const parts = parseIpv4Parts(host)
+  if (!parts) return false
+  const [a, b] = parts
+  if (a === 127) return true
+  if (a === 10) return true
+  if (a === 100 && b >= 64 && b <= 127) return true
+  if (a === 169 && b === 254) return true
+  if (a === 172 && b >= 16 && b <= 31) return true
+  if (a === 192 && b === 168) return true
+  return false
+}
+
 function isPrivateIpv6(host: string): boolean {
   const normalized = host.toLowerCase()
   if (normalized === '::1') return true
@@ -206,11 +237,32 @@ function isPrivateIpv6(host: string): boolean {
   return false
 }
 
-function isPrivateResolvedAddress(address: string): boolean {
+function isAllowedLocalIpv6(host: string): boolean {
+  const normalized = host.toLowerCase()
+  if (normalized === '::1') return true
+  if (normalized.startsWith('fe80:')) return true
+  if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true
+
+  const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)
+  if (mapped) return isAllowedLocalIpv4(mapped[1])
+
+  return false
+}
+
+function isAllowedLocalAddress(address: string): boolean {
+  const version = isIP(address)
+  if (version === 4) return isAllowedLocalIpv4(address)
+  if (version === 6) return isAllowedLocalIpv6(address)
+  return false
+}
+
+function isBlockedAddress(address: string, allowLocal = false): boolean {
+  if (allowLocal && isAllowedLocalAddress(address)) return false
   const version = isIP(address)
   if (version === 4) return isPrivateIpv4(address)
   if (version === 6) return isPrivateIpv6(address)
-  return true
+  // Also catch decimal / hex IPv4 encodings that `isIP()` does not classify.
+  return isPrivateIpv4(address) || isPrivateIpv6(address)
 }
 
 type LookupAddress = { address: string; family: 4 | 6 }
@@ -221,15 +273,18 @@ type LookupCallback = (
 ) => void
 
 /**
- * Custom `http(s).request` lookup that pins to already-validated public IPs.
+ * Custom `http(s).request` lookup that pins to already-validated IPs.
  * Node 20+ Happy Eyeballs calls lookup with `{ all: true }` and expects an
  * array of `{ address, family }` — returning a bare string yields
  * `Invalid IP address: undefined`.
  */
-export function createPinnedLookup(addresses: string[]): NonNullable<RequestOptions['lookup']> {
+export function createPinnedLookup(
+  addresses: string[],
+  allowLocal = false
+): NonNullable<RequestOptions['lookup']> {
   const entries: LookupAddress[] = []
   for (const address of addresses) {
-    if (isPrivateResolvedAddress(address)) continue
+    if (isBlockedAddress(address, allowLocal)) continue
     const version = isIP(address)
     if (version !== 4 && version !== 6) continue
     entries.push({ address, family: version })
@@ -352,16 +407,17 @@ export async function toolWebFetch(
   }
 }
 
-async function fetchWithValidatedRedirects(
+export async function fetchWithValidatedRedirects(
   startUrl: URL,
   signal: AbortSignal,
-  headers?: Record<string, string>
+  headers?: Record<string, string>,
+  allowLocal = false
 ): Promise<{ response: Response; finalUrl: URL }> {
   let currentUrl = startUrl
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    const { url: validated, addresses } = await resolvePublicUrl(currentUrl.href)
-    const res = await publicFetchImpl(validated, addresses, signal, headers)
+    const { url: validated, addresses } = await resolveAllowedUrl(currentUrl.href, allowLocal)
+    const res = await publicFetchImpl(validated, addresses, signal, headers, allowLocal)
 
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get('location')
@@ -385,22 +441,24 @@ type PublicFetchImpl = (
   url: URL,
   addresses: string[],
   signal: AbortSignal,
-  headers?: Record<string, string>
+  headers?: Record<string, string>,
+  allowLocal?: boolean
 ) => Promise<Response>
 
 /**
- * Connect using a DNS result already proven public so a second lookup cannot
+ * Connect using a DNS result already proven safe so a second lookup cannot
  * rebind to a private address mid-request (SNI/Host still use the hostname).
  */
 async function fetchPinnedPublic(
   url: URL,
   addresses: string[],
   signal: AbortSignal,
-  headers?: Record<string, string>
+  headers?: Record<string, string>,
+  allowLocal = false
 ): Promise<Response> {
   let lookup: NonNullable<RequestOptions['lookup']>
   try {
-    lookup = createPinnedLookup(addresses)
+    lookup = createPinnedLookup(addresses, allowLocal)
   } catch {
     throw new Error(`Refusing to fetch a private or loopback address: ${url.hostname}`)
   }

@@ -26,6 +26,7 @@ import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
+import { assertAllowedUrl, fetchWithValidatedRedirects } from '@main/agent/tools/webFetch'
 import {
   formatProviderHttpError,
   parseOpenRouterAffordableOutputTokens,
@@ -257,9 +258,17 @@ async function fetchJson(
   providerId?: ProviderId
 ): Promise<unknown> {
   const logProvider = providerId ?? 'openai-compat'
+  const allowLocal = providerId === 'ollama'
   let res: Response
   try {
-    res = await fetchWithRetry(url, { method: 'GET', headers, signal })
+    res = (
+      await fetchWithValidatedRedirects(
+        new URL(url),
+        signal ?? new AbortController().signal,
+        headers,
+        allowLocal
+      )
+    ).response
   } catch (err) {
     if (signal?.aborted) throw err
     // Local Ollama (or any catalog host) being down is expected — warn, don't ERROR-spam startup.
@@ -536,6 +545,8 @@ export function createOpenAiCompatibleProvider(
       }
       const raw = (req.baseUrl || opts.defaultBaseUrl).replace(/\/$/, '')
       const base = opts.ollamaVision ? `${normalizeOllamaHost(raw)}/v1` : raw
+      const allowLocal = id === 'ollama'
+      await assertAllowedUrl(base, allowLocal)
       const url = `${base}/chat/completions`
 
       const headers: Record<string, string> = {

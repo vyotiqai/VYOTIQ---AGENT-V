@@ -36,12 +36,25 @@ export type ContextUsageState = {
   overflow?: boolean
 }
 
+const EMPTY_LAYERS: ContextLayerBreakdown = {
+  system: 0,
+  history: 0,
+  tools: 0,
+  buffer: 0
+}
+
 export function contextUsageFromEvent(
   event: AgentEvent,
-  stepUsage: StepUsageTotals = emptyStepUsageTotals()
+  stepUsage: StepUsageTotals = emptyStepUsageTotals(),
+  /** Prior estimate-layer split for estimate events that omit layers. */
+  previousLayers?: ContextLayerBreakdown | null
 ): ContextUsageState | null {
   if (event.type !== 'context_usage') return null
   const used = event.inputTokens ?? event.estimatedTokens
+  // Provider totals are not layer-aligned — never reuse estimate splits with them.
+  const layers =
+    event.layers ??
+    (event.source === 'estimate' ? (previousLayers ?? EMPTY_LAYERS) : EMPTY_LAYERS)
   return {
     step: event.step,
     used,
@@ -51,7 +64,7 @@ export function contextUsageFromEvent(
     contentWindow: event.contentWindow ?? event.contextWindow,
     compactionTrigger: event.compactionTrigger,
     source: event.source,
-    layers: event.layers ?? { system: 0, history: 0, tools: 0, buffer: 0 },
+    layers,
     stepUsage,
     updatedAt: new Date().toISOString(),
     ...(event.overflow ? { overflow: true } : {})
@@ -89,7 +102,7 @@ export function summarizeContextUsageFromEvents(
     if (!isAgentEvent(row.event)) continue
     const usage = stepUsageFromEvent(row.event)
     if (usage) stepUsage = mergeStepUsageTotals(stepUsage, usage)
-    const ctx = contextUsageFromEvent(row.event, stepUsage)
+    const ctx = contextUsageFromEvent(row.event, stepUsage, latest?.layers)
     if (ctx) {
       latest = { ...ctx, stepUsage, updatedAt: row.at }
     }

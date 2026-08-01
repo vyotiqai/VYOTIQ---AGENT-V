@@ -35,6 +35,7 @@ const VYOTIQ_INVOKE_MAP: Record<
   secretStatus: IPC.secretStatus,
   listModels: IPC.listModels,
   chatStart: IPC.chatStart,
+  chatRewindAndStart: IPC.chatRewindAndStart,
   chatCancel: IPC.chatCancel,
   chatFollowUp: IPC.chatFollowUp,
   chatFollowUpRemove: IPC.chatFollowUpRemove,
@@ -84,6 +85,16 @@ const VYOTIQ_INVOKE_MAP: Record<
   ptyWrite: IPC.ptyWrite,
   ptyResize: IPC.ptyResize,
   ptyKill: IPC.ptyKill,
+  gitStagePaths: IPC.gitStagePaths,
+  gitUnstagePaths: IPC.gitUnstagePaths,
+  gitBranches: IPC.gitBranches,
+  gitCheckout: IPC.gitCheckout,
+  marketplaceAckRemoteInstall: IPC.marketplaceAckRemoteInstall,
+  githubAuthStatus: IPC.githubAuthStatus,
+  githubAuthStart: IPC.githubAuthStart,
+  githubAuthCancel: IPC.githubAuthCancel,
+  githubAuthLogout: IPC.githubAuthLogout,
+  shellOpenExternal: IPC.shellOpenExternal,
   workspaceSuggestPaths: IPC.workspaceSuggestPaths,
   workspaceReadText: IPC.workspaceReadText,
   workspaceListDocs: IPC.workspaceListDocs,
@@ -163,7 +174,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(false)
     }
-    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(97)
+    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(108)
   })
 
   it('maps every VyotiqApi push listener to a push channel', () => {

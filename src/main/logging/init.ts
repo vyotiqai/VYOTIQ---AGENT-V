@@ -72,6 +72,13 @@ function installProcessHandlers(): void {
   process.stdout?.on?.('error', swallowStreamPipeError)
   process.stderr?.on?.('error', swallowStreamPipeError)
 
+  function exitAfterFlush(): void {
+    // Give the log transport a tick to flush the fatal message, then terminate.
+    setTimeout(() => {
+      process.exit(1)
+    }, 250)
+  }
+
   process.on('uncaughtException', (err) => {
     // Logging an EPIPE via console transport re-triggers write → infinite storm.
     if (isIgnorablePipeError(err)) return
@@ -80,6 +87,7 @@ function installProcessHandlers(): void {
       code: 'UNCAUGHT',
       err
     })
+    exitAfterFlush()
   })
 
   process.on('unhandledRejection', (reason) => {
@@ -89,6 +97,7 @@ function installProcessHandlers(): void {
       code: 'UNCAUGHT',
       err: reason instanceof Error ? reason : new Error(String(reason))
     })
+    exitAfterFlush()
   })
 }
 

@@ -249,7 +249,10 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   resolveBlockedReason = null,
   fileDiffs,
   onDiffExpandChange,
-  onOpenChanges
+  onOpenChanges,
+  editingUserMessageIndex = null,
+  editComposer,
+  onBeginEditUserMessage
 }: {
   row: TranscriptRow
   displayRows: readonly TranscriptRow[]
@@ -277,9 +280,32 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   fileDiffs?: ReadonlyMap<string, import('../toolUi').DiffLine[]>
   onDiffExpandChange?: (hasExpanded: boolean) => void
   onOpenChanges?: () => void
+  editingUserMessageIndex?: number | null
+  editComposer?: ReactNode
+  onBeginEditUserMessage?: (messageIndex: number) => void
 }) {
   if (row.kind === 'user') {
-    return <UserPrompt item={row.item} onImageClick={onImageClick} />
+    return (
+      <UserPrompt
+        item={row.item}
+        onImageClick={onImageClick}
+        editing={editingUserMessageIndex != null && row.item.id === `user-${editingUserMessageIndex}`}
+        editComposer={
+          editingUserMessageIndex != null && row.item.id === `user-${editingUserMessageIndex}`
+            ? editComposer
+            : undefined
+        }
+        onBeginEdit={
+          onBeginEditUserMessage && editingUserMessageIndex == null
+            ? () => {
+                const match = /^user-(\d+)$/.exec(row.item.id)
+                if (!match) return
+                onBeginEditUserMessage(Number(match[1]))
+              }
+            : undefined
+        }
+      />
+    )
   }
 
   if (row.kind === 'turn') {
@@ -408,7 +434,10 @@ export function MessageList({
   onKeepAllWrites,
   resolveBlockedReason = null,
   onOpenChanges,
-  sideRailPad = true
+  sideRailPad = true,
+  editingUserMessageIndex = null,
+  editComposer,
+  onBeginEditUserMessage
 }: {
   items: UiItem[]
   reserveComposerSpace?: boolean
@@ -444,6 +473,9 @@ export function MessageList({
   onOpenChanges?: () => void
   /** When false, use symmetric gutter (immersive Agent — no floating side rail). */
   sideRailPad?: boolean
+  editingUserMessageIndex?: number | null
+  editComposer?: ReactNode
+  onBeginEditUserMessage?: (messageIndex: number) => void
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const appliedRestoreRef = useRef<number | null>(null)
@@ -833,6 +865,9 @@ export function MessageList({
       resolveBlockedReason={resolveBlockedReason}
       fileDiffs={row.kind === 'changes' ? turnFileDiffs.get(row.turnIndex) : undefined}
       onOpenChanges={onOpenChanges}
+      editingUserMessageIndex={editingUserMessageIndex}
+      editComposer={editComposer}
+      onBeginEditUserMessage={onBeginEditUserMessage}
       onDiffExpandChange={
         row.kind === 'changes'
           ? (hasExpanded) => {

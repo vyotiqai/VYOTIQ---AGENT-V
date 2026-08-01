@@ -34,7 +34,7 @@ export {
 } from './memory'
 export { trimToolsToBudget } from './toolsBudget'
 export { trimToolResults } from './toolTrim'
-export { estimateSubagentOverheadTokens, prepareSubagentMessages } from './subagentContext'
+export { estimateSubagentOverheadTokens } from './subagentContext'
 export {
   applyFoldedMessagesWatermark,
   dropOldestTurn,

@@ -8,7 +8,7 @@ import { DEFAULT_SETTINGS } from '@shared/ipc'
 vi.mock('@main/settings/settings', () => ({
   getSettings: () => ({
     ...DEFAULT_SETTINGS,
-    diagnosticsCommand: 'echo src/a.ts:1:1: error boom'
+    diagnosticsCommand: 'node -e "console.log(\'src/a.ts:1:1: error boom\')"'
   })
 }))
 

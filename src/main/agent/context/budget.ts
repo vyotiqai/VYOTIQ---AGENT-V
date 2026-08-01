@@ -7,6 +7,7 @@ import {
   DEFAULT_CONTEXT_WINDOW,
   type BudgetLayerShares
 } from '../../../shared/domain/contextBudget'
+import { COMPACTION_TRIGGER_RATIO } from './types'
 import type { BudgetLayers } from './types'
 
 export function contextWindowFor(model: ModelInfo): number {
@@ -32,7 +33,7 @@ export function contentWindow(model: ModelInfo): number {
 
 export function compactionTriggerTokens(
   model: ModelInfo,
-  triggerRatio = 0.7
+  triggerRatio = COMPACTION_TRIGGER_RATIO
 ): number {
   return compactionTriggerFromRaw(contextWindowFor(model), triggerRatio)
 }

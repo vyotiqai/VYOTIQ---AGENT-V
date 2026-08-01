@@ -67,7 +67,7 @@ export function shouldRetryOpenRouterCompatBody(status: number, body: string): b
 }
 
 const PROVIDER_SECRET_RE =
-  /\b(?:sk-[a-zA-Z0-9_-]+|Bearer\s+[a-zA-Z0-9._\-+=\/]+|api[_-]?key["\s:=]+[a-zA-Z0-9._\-]+)/gi
+  /\b(?:sk-[a-zA-Z0-9_-]+|Bearer\s+[a-zA-Z0-9._/=+-]+|api[_-]?key["\s:=]+[a-zA-Z0-9._-]+)/gi
 
 /** Redact common provider secret shapes from error text. */
 export function scrubProviderErrorText(text: string): string {

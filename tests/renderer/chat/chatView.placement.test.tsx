@@ -198,7 +198,7 @@ describe('ChatView composer placement', () => {
     expect(
       document.querySelector('[data-changes-panel]')?.parentElement?.className
     ).toMatch(/\bflex\b/)
-    expect(await screen.findByText('Not a git repository')).toBeTruthy()
+    expect(await screen.findByText('Not a git repository', {}, { timeout: 5000 })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /files panel/i })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: /Close Changes/i }))

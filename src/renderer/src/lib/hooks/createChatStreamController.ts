@@ -53,7 +53,8 @@ import {
 } from '@shared/utils/contextUsage'
 import {
   compactionTriggerFromRaw,
-  DEFAULT_COMPACTION_TRIGGER_RATIO
+  DEFAULT_COMPACTION_TRIGGER_RATIO,
+  allocateBudgetShares
 } from '@shared/domain/contextBudget'
 import { recordUiResume, recordUiSuspendSkip } from './chatUiPerf'
 
@@ -658,6 +659,14 @@ export type ChatStreamState = {
 export type ChatStreamController = ChatStreamState & {
   workspacePath: string
   send: (
+    text: string,
+    images?: string[],
+    files?: AttachedFile[],
+    extras?: ComposerSendExtras
+  ) => Promise<boolean>
+  /** Replace a past user message, restore write checkpoints, truncate later turns, re-run. */
+  editAndResend: (
+    editMessageIndex: number,
     text: string,
     images?: string[],
     files?: AttachedFile[],
@@ -1735,7 +1744,7 @@ export function createChatStreamController(
         }
       }
     } else if (event.type === 'context_usage') {
-      const ctx = contextUsageFromEvent(event, usageTotals)
+      const ctx = contextUsageFromEvent(event, usageTotals, state.contextUsage?.layers)
       if (ctx) patch({ contextUsage: ctx })
     } else if (event.type === 'status') {
       if (event.status === 'running') {
@@ -1923,7 +1932,15 @@ export function createChatStreamController(
       supersededInvokeIds.add(res.data.invokeId)
       closeRun(res.data.runId)
       runId = null
-      patch({ pendingRun: false, running: false, runStartedAt: null, runId: null })
+      // Clear the pre-run "Stopping…" notice — chatCancel does not emit a
+      // terminal status for a run that never started streaming.
+      patch({
+        pendingRun: false,
+        running: false,
+        runStartedAt: null,
+        runId: null,
+        runNotice: null
+      })
       const cancelRes = await window.vyotiq.chatCancel(res.data.runId)
       if (!cancelRes.ok) {
         logger.warn('chatCancel failed after pending stop', {
@@ -1934,6 +1951,141 @@ export function createChatStreamController(
       }
       return true
     }
+    if (!closedRuns.has(res.data.runId)) {
+      assignRunId(res.data.runId)
+    }
+    activeInvokeId = res.data.invokeId
+    supersededInvokeIds.delete(res.data.invokeId)
+    awaitingRun = false
+    return true
+  }
+
+  const editAndResend = async (
+    editMessageIndex: number,
+    text: string,
+    images?: string[],
+    files?: AttachedFile[],
+    extras?: ComposerSendExtras
+  ): Promise<boolean> => {
+    const trimmed = text.trim()
+    const hasExtras = Boolean(extras?.audio?.length || extras?.nativeFiles?.length)
+    if ((!trimmed && !images?.length && !files?.length && !hasExtras) || state.transcriptLoading) {
+      return false
+    }
+    if (!workspacePath) {
+      patch({ error: 'Pick a workspace before editing a prompt.' })
+      return false
+    }
+    const id = runId ?? contentRunId
+    if (!id) {
+      patch({ error: 'No run to edit. Send a message first.' })
+      return false
+    }
+    if (
+      editMessageIndex < 0 ||
+      editMessageIndex >= state.messages.length ||
+      state.messages[editMessageIndex]?.role !== 'user'
+    ) {
+      patch({ error: 'Cannot edit that message.' })
+      return false
+    }
+
+    const content = buildUserContent(text, images, files, extras)
+    const user: ChatMessage = { role: 'user', content }
+    const priorMessages = state.messages
+    const priorItems = state.items
+    const priorFollowUps = state.pendingFollowUps
+    const priorIncomplete = state.incomplete
+    const priorWriteCheckpoint = state.writeCheckpoint
+    const priorCollapsed = state.collapsedTurnIndices
+    const nextMessages = messagesForNextTurn([...priorMessages.slice(0, editMessageIndex), user])
+    const nextItems = messagesToUiItems(nextMessages)
+
+    patch({
+      error: null,
+      runNotice: null,
+      incomplete: null,
+      writeCheckpoint: null,
+      pendingFollowUps: [],
+      collapsedTurnIndices: priorCollapsed.filter((i) => i <= editMessageIndex),
+      messages: nextMessages,
+      items: nextItems
+    })
+
+    lastRunErrorMessage = null
+    usageTotals = emptyStepUsageTotals()
+    pendingCancel = false
+    ignoreStreamEvents = false
+    if (activeInvokeId != null) supersededInvokeIds.add(activeInvokeId)
+    activeInvokeId = null
+    turnSeq += 1
+    assistantId = null
+    reasoningId = null
+    toolContentCache.clear()
+
+    awaitingRun = true
+    patch({
+      pendingRun: true,
+      running: true,
+      runStartedAt: Date.now(),
+      runId: id
+    })
+
+    const mode = getAgentMode?.() ?? 'agent'
+    const res = await window.vyotiq.chatRewindAndStart({
+      workspacePath,
+      runId: id,
+      editMessageIndex,
+      editedUserMessage: user,
+      mode
+    })
+
+    if (!res.ok) {
+      awaitingRun = false
+      logger.error('chatRewindAndStart failed', {
+        scope: 'chat',
+        correlationId: id,
+        err: toLogErr(res.error)
+      })
+      patch({
+        error: res.error,
+        running: false,
+        runStartedAt: null,
+        pendingRun: false,
+        messages: priorMessages,
+        items: priorItems,
+        pendingFollowUps: priorFollowUps,
+        incomplete: priorIncomplete,
+        writeCheckpoint: priorWriteCheckpoint,
+        collapsedTurnIndices: priorCollapsed
+      })
+      return false
+    }
+
+    if (pendingCancel) {
+      pendingCancel = false
+      awaitingRun = false
+      supersededInvokeIds.add(res.data.invokeId)
+      closeRun(res.data.runId)
+      runId = null
+      patch({
+        pendingRun: false,
+        running: false,
+        runStartedAt: null,
+        runId: null,
+        runNotice: null
+      })
+      const cancelRes = await window.vyotiq.chatCancel(res.data.runId)
+      if (!cancelRes.ok) {
+        logger.warn('chatCancel failed after pending stop (rewind)', {
+          scope: 'chat',
+          correlationId: res.data.runId,
+          err: cancelRes.error
+        })
+      }
+      return true
+    }
+
     if (!closedRuns.has(res.data.runId)) {
       assignRunId(res.data.runId)
     }
@@ -2701,9 +2853,17 @@ export function createChatStreamController(
     if (disposed) return
     const estimated = result.estimatedTokens ?? result.tokenEstimate
     const prev = state.contextUsage
-    // remainingEstimate is kept history + summary; summary lives in system after
-    // compact — attribute to history until the next assembleContext refresh.
-    const compactLayers = { system: 0, history: estimated, tools: 0, buffer: 0 }
+    const summaryTokens = Math.max(0, result.tokenEstimate)
+    const historyTokens = Math.max(0, estimated - summaryTokens)
+    const window = result.contextWindow ?? prev?.window ?? 0
+    const buffer = window > 0 ? allocateBudgetShares(window).buffer : 0
+    // Summary is injected into system on the next assemble; kept turns are history.
+    const compactLayers = {
+      system: summaryTokens,
+      history: historyTokens,
+      tools: 0,
+      buffer
+    }
     patch({
       runNotice: 'Context summarized to stay within the model window.',
       contextUsage: prev
@@ -2841,6 +3001,7 @@ export function createChatStreamController(
     },
     workspacePath,
     send,
+    editAndResend,
     removeFollowUp,
     stop,
     reset,

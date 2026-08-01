@@ -1,5 +1,5 @@
 import type { AgentEvent, AgentInteractionMode, ChatMessage } from '../../shared/ipc'
-import { isAbortError, isExpectedToolError } from '../../shared/errors'
+import { isAbortError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
 import { summarizeToolArgs } from '../../shared/toolSummary'
 import { toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
@@ -8,6 +8,14 @@ import { executeTool } from '@main/agent/tools'
 import { isParallelSafeTool, MAX_PARALLEL_READ_TOOLS, MAX_PARALLEL_SUBAGENTS } from './tools/classify'
 import { repairToolArgs } from './toolArgsRepair'
 import type { ToolApprovalGate } from './toolApproval'
+import type { TerminalShell } from '../../shared/ipc'
+import { existsSync } from 'fs'
+import { resolveInsideWorkspace } from '../workspace/safePath'
+import {
+  applyToolCallToKnownPaths,
+  toolArgsFromCall,
+  unreadExistingEditPaths
+} from './loopPolicy'
 
 export type ToolStepContext = {
   runId: string
@@ -19,8 +27,8 @@ export type ToolStepContext = {
   runSignal?: AbortSignal
   appendMessage: (msg: ChatMessage) => Promise<void>
   appendEvent: (ev: AgentEvent) => void
-  /** Per-run failed tool keys (`tool:summary`) for repeat-failure hints. */
-  failedToolKeys?: Map<string, number>
+  /** Session-scoped paths already inspected or edited (read-before-edit soft warn). */
+  knownPaths?: Set<string>
   /** Override parallel read batch size (e.g. 1 after consecutive failure steps). */
   maxParallelReadTools?: number
   /** Present only when the workspace opted into tool approval. */
@@ -33,6 +41,10 @@ export type ToolStepContext = {
   setAgentMode?: (mode: AgentInteractionMode) => void
   /** Snapshot of settings.autoModeSwitch for this invoke. */
   autoModeSwitch?: boolean
+  /** Snapshot of settings.terminalShell for this invoke. */
+  terminalShell?: TerminalShell
+  /** Snapshot of settings.diagnosticsCommand for this invoke. */
+  diagnosticsCommand?: string
   /** Streams events while a tool is still running (sub-agent progress). */
   emitLiveEvent?: (ev: AgentEvent) => void
   /**
@@ -55,13 +67,6 @@ export type ToolStepContext = {
   /** Nested attribution for approvals / ask_question UI routing. */
   parentToolCallId?: string
   subagentId?: string
-}
-
-/** Count repeated failures silently (no didactic recipe injected into tool results). */
-function recordRepeatFailure(ctx: ToolStepContext, outcome: ToolOutcome): void {
-  const key = outcome.failureKey
-  if (!key || !ctx.failedToolKeys) return
-  ctx.failedToolKeys.set(key, (ctx.failedToolKeys.get(key) ?? 0) + 1)
 }
 
 function isMalformedToolCall(call: ToolCall): string | null {
@@ -102,8 +107,6 @@ type ToolOutcome = {
   ok: boolean
   events: AgentEvent[]
   message: ChatMessage
-  /** `name:summary` when this was an expected failure eligible for a repeat hint. */
-  failureKey?: string
 }
 
 function abortToolContent(ctx: ToolStepContext): string {
@@ -203,6 +206,18 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
       }
     }
 
+    const toolArgs = toolArgsFromCall(call.arguments)
+    const unreadPaths =
+      ctx.knownPaths != null
+        ? unreadExistingEditPaths(ctx.knownPaths, call.name, toolArgs, (rel) => {
+            try {
+              return existsSync(resolveInsideWorkspace(ctx.workspace, rel))
+            } catch {
+              return false
+            }
+          })
+        : []
+
     const result = await executeTool(call.name, call.arguments, ctx.workspace, ctx.signal, {
       runDir: ctx.runDir,
       runId: ctx.runId,
@@ -213,6 +228,8 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
       getAgentMode: ctx.getAgentMode,
       setAgentMode: ctx.setAgentMode,
       autoModeSwitch: ctx.autoModeSwitch,
+      terminalShell: ctx.terminalShell,
+      diagnosticsCommand: ctx.diagnosticsCommand,
       emitAgentEvent: ctx.emitLiveEvent,
       runEnabledMcpIds: ctx.runEnabledMcpIds,
       mcpToolPolicies: ctx.mcpToolPolicies,
@@ -255,7 +272,13 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
             })
         : undefined
     })
-    const content = result.content
+    let content = result.content
+    if (result.ok && unreadPaths.length > 0) {
+      content = `${content}\n\n[Soft warning: edited existing file(s) without a prior read/grep/glob inspect: ${unreadPaths.join(', ')}]`
+    }
+    if (ctx.knownPaths) {
+      applyToolCallToKnownPaths(ctx.knownPaths, call.name, toolArgs, result.ok)
+    }
     const resultSummary = result.summary || summary
     const toolMsg: ChatMessage = {
       role: 'tool',
@@ -284,9 +307,7 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
     return {
       ok: result.ok,
       events,
-      message: toolMsg,
-      failureKey:
-        !result.ok && isExpectedToolError(content) ? `${call.name}:${resultSummary}` : undefined
+      message: toolMsg
     }
   } catch (err) {
     if (isAbortError(err)) {
@@ -434,7 +455,6 @@ export async function executeStepToolCalls(
   flushBatch()
 
   const collect = async (outcome: ToolOutcome): Promise<void> => {
-    recordRepeatFailure(ctx, outcome)
     // Full output must be durable before the truncated live event can be expanded.
     await ctx.appendMessage(outcome.message)
     persistToolResult(ctx, outcome)

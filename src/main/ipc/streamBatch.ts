@@ -111,7 +111,6 @@ let resolveActivePath: ActivePathResolver = defaultActivePathResolver
 function defaultActivePathResolver(): string | null {
   try {
     // Lazy require avoids circular import at module load (workspaces ↔ ipc).
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { getWorkspaces } = require('../workspace/workspaces') as {
       getWorkspaces: () => { activePath: string | null }
     }

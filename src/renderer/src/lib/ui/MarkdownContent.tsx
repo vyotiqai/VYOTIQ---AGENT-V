@@ -36,32 +36,35 @@ export function balanceIncompleteMarkdown(content: string): string {
   return balanceOutsideFences(content)
 }
 
+type MarkdownBlock = { source: string; start: number }
+
 /**
  * Split markdown into stable block units (paragraphs / fences / headings).
  * Finished blocks keep stable identity so React.memo can skip them while the
  * last block streams. Fence boundaries use the same CommonMark rules as
  * {@link closeOpenFence} (variable length, indented openers).
  */
-export function splitMarkdownBlocks(source: string): string[] {
+export function splitMarkdownBlocks(source: string): MarkdownBlock[] {
   if (!source) return []
   const lines = source.split('\n')
-  const blocks: string[] = []
+  const blocks: MarkdownBlock[] = []
   let i = 0
   while (i < lines.length) {
+    const start = i
     const parsed = parseFenceLine(lines[i]!)
     if (parsed) {
       const open = parsed.open
       let j = i + 1
       while (j < lines.length && !isFenceCloser(lines[j]!, open)) j++
       if (j >= lines.length) {
-        blocks.push(lines.slice(i).join('\n'))
+        blocks.push({ start, source: lines.slice(i).join('\n') })
         break
       }
       // Include closer; keep a trailing newline when more content follows so the
       // next block's start index stays stable across streaming ticks.
       const end = j + 1
       const chunk = lines.slice(i, end).join('\n')
-      blocks.push(end < lines.length ? `${chunk}\n` : chunk)
+      blocks.push({ start, source: end < lines.length ? `${chunk}\n` : chunk })
       i = end
       continue
     }
@@ -77,10 +80,10 @@ export function splitMarkdownBlocks(source: string): string[] {
       if (parseFenceLine(lines[j]!)) break
       j++
     }
-    blocks.push(lines.slice(i, j).join('\n'))
+    blocks.push({ start, source: lines.slice(i, j).join('\n') })
     i = j
   }
-  return blocks.filter((b) => b.length > 0)
+  return blocks.filter((b) => b.source.length > 0)
 }
 
 /** Max highlighted fence entries retained across the renderer session. */
@@ -221,8 +224,9 @@ function FencedCodePre({
   }
 
   const className = child.props.className ?? ''
-  const text = String(child.props.children ?? '').replace(/\n$/, '')
-  const unstable = openFenceBody !== null && text.replace(/\n+$/, '') === openFenceBody.replace(/\n+$/, '')
+  const normalize = (s: string) => s.replace(/\n+$/, '')
+  const text = normalize(String(child.props.children ?? ''))
+  const unstable = openFenceBody !== null && text === normalize(openFenceBody)
   return <FencedCodeBlock text={text} className={className} unstable={unstable} />
 }
 
@@ -306,10 +310,9 @@ export function MarkdownContent({
         const isLast = index === blocks.length - 1
         const blockOpenFence = streaming && isLast ? openFenceBody : null
         // Stable keys so streaming deltas update `source` instead of remounting.
-        const key =
-          streaming && isLast ? `md-block-${index}-tail` : `md-block-${index}`
+        const key = `md-block-${block.start}`
         return (
-          <MemoMarkdownBlock key={key} source={block} openFenceBody={blockOpenFence} />
+          <MemoMarkdownBlock key={key} source={block.source} openFenceBody={blockOpenFence} />
         )
       })}
     </div>

@@ -5,8 +5,8 @@
  * inside the data URL, so no decoding library is needed.
  */
 
-/** Enough bytes to reach the SOF marker in a typical JPEG. */
-const HEADER_BYTES = 8 * 1024
+/** Enough bytes to reach the SOF marker in a typical JPEG, even with heavy EXIF. */
+const HEADER_BYTES = 32 * 1024
 
 /** A ~1024x768 screenshot, the common case when dimensions are unavailable. */
 export const DEFAULT_IMAGE_TOKENS = 765

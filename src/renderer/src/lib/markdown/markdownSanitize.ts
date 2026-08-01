@@ -81,7 +81,12 @@ function sanitizeOpenTag(tag: string, attrs: string): string {
  */
 export function sanitizeHighlightedHtml(html: string): string {
   return html
-    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '')
+    .replace(/<script\b[\s\S]*?>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[\s\S]*?>[\s\S]*?<\/style>/gi, '')
+    .replace(/<script\b[^>]*\/?>/gi, '')
+    .replace(/<style\b[^>]*\/?>/gi, '')
     .replace(/<\/([a-z0-9-]+)\s*>/gi, (full, tag: string) =>
       ALLOWED_TAGS.has(tag.toLowerCase()) ? full : ''
     )

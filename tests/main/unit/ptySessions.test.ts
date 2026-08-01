@@ -20,7 +20,8 @@ vi.mock('@main/settings/settings', () => ({
 }))
 
 vi.mock('@main/agent/tools/terminal', () => ({
-  resolveTerminalShell: () => 'cmd'
+  resolveTerminalShell: () => 'cmd',
+  sanitizedTerminalEnv: () => ({ PATH: '/usr/bin' })
 }))
 
 vi.mock('@main/app/window', () => ({

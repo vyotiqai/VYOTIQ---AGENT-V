@@ -26,6 +26,7 @@ import { buildWorkspaceRulesSection } from './rules'
 import { buildWorkspaceSnapshotAsync } from './workspaceSnapshot'
 import { logger } from '../../../shared/logger'
 import { perfLog, perfNow } from './perfDebug'
+import { combineLoopHints, loopHintForCompactionFailure } from '../loopPolicy'
 
 const COMPACTION_MIN_MESSAGES = 4
 const COMPACTION_MIN_TOKENS = 2000
@@ -172,48 +173,64 @@ function buildSystem(parts: {
   }
 
   const sections: string[] = []
-  sections.push(capHarness(parts.harness, parts.budgets.system))
+  let systemTokensLeft = parts.budgets.system
+  function capWithinSystem(
+    text: string,
+    requested: number,
+    capFn: (text: string, maxTokens: number) => string = capText
+  ): string | null {
+    if (systemTokensLeft < 50) return null
+    const allowed = Math.min(requested, systemTokensLeft)
+    const capped = capFn(text, allowed)
+    const used = Math.min(systemTokensLeft, Math.ceil(capped.length / 4))
+    systemTokensLeft -= used
+    return capped
+  }
+
+  const harness = capWithinSystem(parts.harness, parts.budgets.system, capHarness)
+  if (harness) sections.push(harness)
   if (parts.nestedRoleSection?.trim()) {
-    sections.push(
-      capText(parts.nestedRoleSection.trim(), Math.max(300, Math.floor(parts.budgets.system * 0.25)))
+    const nested = capWithinSystem(
+      parts.nestedRoleSection.trim(),
+      Math.max(300, Math.floor(parts.budgets.system * 0.25))
     )
+    if (nested) sections.push(nested)
   }
   if (parts.modeSection?.trim()) {
-    // Mode instructions must survive budget pressure — do not cap aggressively.
-    sections.push(
-      capText(parts.modeSection.trim(), Math.max(400, Math.floor(parts.budgets.system * 0.35)))
+    const mode = capWithinSystem(
+      parts.modeSection.trim(),
+      Math.max(400, Math.floor(parts.budgets.system * 0.35))
     )
+    if (mode) sections.push(mode)
   }
   if (parts.sessionEnv?.trim()) {
-    sections.push(capText(parts.sessionEnv.trim(), Math.floor(parts.budgets.system * 0.15)))
+    const env = capWithinSystem(parts.sessionEnv.trim(), Math.floor(parts.budgets.system * 0.15))
+    if (env) sections.push(env)
   }
   if (parts.skillsSection?.trim()) {
-    sections.push(
-      capText(parts.skillsSection.trim(), Math.floor(parts.budgets.system * 0.35))
-    )
+    const skills = capWithinSystem(parts.skillsSection.trim(), Math.floor(parts.budgets.system * 0.35))
+    if (skills) sections.push(skills)
   }
   if (parts.pluginRulesSection?.trim()) {
-    sections.push(
-      capText(parts.pluginRulesSection.trim(), Math.floor(parts.budgets.system * 0.25))
-    )
+    const plugins = capWithinSystem(parts.pluginRulesSection.trim(), Math.floor(parts.budgets.system * 0.25))
+    if (plugins) sections.push(plugins)
   }
   if (parts.rules.trim()) {
-    // Between the harness and the run contract: project conventions outrank the
-    // generic harness but yield to what the user asked for in this run.
-    sections.push(capText(parts.rules.trim(), Math.floor(parts.budgets.system * 0.5)))
+    const rules = capWithinSystem(parts.rules.trim(), Math.floor(parts.budgets.system * 0.5))
+    if (rules) sections.push(rules)
   }
   if (parts.contract?.trim()) {
-    // createRun used to ship an H1 "# Run contract"; strip so we keep one wrapper heading.
     const contractBody = parts.contract.trim().replace(/^#\s*Run contract\s*\r?\n+/i, '')
-    sections.push(
-      `## Run contract\n${capText(contractBody, Math.floor(parts.budgets.system * 0.4))}`
+    const contract = capWithinSystem(
+      `## Run contract\n${contractBody}`,
+      Math.floor(parts.budgets.system * 0.4)
     )
+    if (contract) sections.push(contract)
   }
   if (parts.plan?.trim()) {
     const planBody = parts.plan.trim().replace(/^#\s*Plan\s*\r?\n+/i, '')
-    sections.push(
-      `## Plan\n${capText(planBody, Math.floor(parts.budgets.system * 0.4))}`
-    )
+    const plan = capWithinSystem(`## Plan\n${planBody}`, Math.floor(parts.budgets.system * 0.4))
+    if (plan) sections.push(plan)
   }
   const mw = Math.floor(parts.budgets.memoryWorkspace / 3)
   sections.push(capText(parts.workspace, mw))
@@ -397,6 +414,11 @@ export async function assembleContext(
         messages = keptForBoundary
         compaction = record
         contextShrunk = true
+      } else {
+        systemParts.loopHint = combineLoopHints(
+          systemParts.loopHint,
+          loopHintForCompactionFailure()
+        )
       }
     }
   }

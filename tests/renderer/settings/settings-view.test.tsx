@@ -399,7 +399,7 @@ describe('settings', () => {
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /^Manage$/i }))
+    fireEvent.click(screen.getByRole('tab', { name: /^Manage$/i }))
     expect(await screen.findByRole('tab', { name: /^Installed$/i })).toBeTruthy()
     await waitFor(() => expect(window.vyotiq.mcpStatus).toHaveBeenCalled())
 
@@ -498,7 +498,7 @@ describe('settings', () => {
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /^Manage$/i }))
+    fireEvent.click(screen.getByRole('tab', { name: /^Manage$/i }))
     expect(await screen.findByRole('tab', { name: /^Installed$/i })).toBeTruthy()
     expect(await screen.findByText(/Connected · 2 tools/i)).toBeTruthy()
   })

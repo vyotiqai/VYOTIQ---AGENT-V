@@ -249,6 +249,19 @@ export function App() {
     []
   )
 
+  const onChatEditAndResend = useCallback(
+    async (
+      editMessageIndex: number,
+      text: string,
+      images?: string[],
+      files?: AttachedFile[],
+      extras?: import('@shared/ipc').ComposerSendExtras
+    ) =>
+      chatActionsRef.current?.editAndResend?.(editMessageIndex, text, images, files, extras) ??
+      false,
+    []
+  )
+
   const onChatStop = useCallback(() => {
     void chatActionsRef.current?.stop()
   }, [])
@@ -769,6 +782,8 @@ export function App() {
               )
             }}
             onSend={onChatSend}
+            onEditAndResend={onChatEditAndResend}
+            messages={chat.messages}
             onStop={onChatStop}
             pendingFollowUps={chat.pendingFollowUps}
             onRemoveFollowUp={onRemoveFollowUp}

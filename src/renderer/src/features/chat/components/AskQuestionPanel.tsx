@@ -156,5 +156,3 @@ export const AskQuestionPanel = memo(function AskQuestionPanel({
   )
 })
 
-/** @deprecated Use AskQuestionPanel */
-export const AskQuestionCard = AskQuestionPanel

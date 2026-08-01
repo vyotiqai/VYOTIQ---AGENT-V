@@ -16,6 +16,7 @@ export const IPC = {
   listModels: 'models:list',
   chatStart: 'chat:start',
   chatCancel: 'chat:cancel',
+  chatRewindAndStart: 'chat:rewindAndStart',
   chatFollowUp: 'chat:followUp',
   chatFollowUpRemove: 'chat:followUpRemove',
   chatEvent: 'chat:event',

@@ -49,7 +49,9 @@ export function trimToolsToBudget(
       estimate += toolEst
       return true
     }
-    const truncated = truncateToolDescription(tool, Math.max(80, budgetTokens - estimate))
+    const overhead = estimateToolDefTokens({ ...tool, description: '' })
+    const availableTokens = Math.max(0, budgetTokens - estimate - overhead)
+    const truncated = truncateToolDescription(tool, Math.max(80, availableTokens))
     const truncEst = estimateToolDefTokens(truncated)
     if (estimate + truncEst <= budgetTokens) {
       kept.push(truncated)
@@ -82,7 +84,8 @@ export function trimToolsToBudget(
       code: 'CONTEXT_TOOLS_BUDGET',
       omittedMcp,
       budgetTokens,
-      estimate
+      estimate,
+      omittedPreview: omittedMcpNames.slice(0, 10).join(', ')
     })
   }
 

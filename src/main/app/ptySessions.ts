@@ -9,7 +9,7 @@ import type { PtySessionInfo } from '../../shared/ipc'
 import { getMainWindow } from './window'
 
 type SessionBackend =
-  | { kind: 'pty'; /* eslint-disable-next-line @typescript-eslint/no-explicit-any */ pty: any }
+  | { kind: 'pty'; pty: any }
   | { kind: 'pipe'; child: ChildProcessWithoutNullStreams }
 
 type PtyHandle = {
@@ -59,7 +59,6 @@ function shellBinAndArgs(): { file: string; args: string[] } {
 
 function tryLoadPty(): typeof import('node-pty') | null {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     return require('node-pty') as typeof import('node-pty')
   } catch {
     return null
