@@ -105,6 +105,8 @@ export function getWriteCheckpointMeta(
   runDir: string,
   checkpointId: string
 ): WriteCheckpointMeta | null {
+  // Soft no-op resolveWrites may pass ''; avoid assert throw → IPC_HANDLER.
+  if (!checkpointId.trim() || !CHECKPOINT_ID_RE.test(checkpointId)) return null
   return loadMeta(runDir, checkpointId)
 }
 

@@ -2,6 +2,11 @@
  * Explicit registry for in-flight subagents (in-process), analogous to
  * terminalSessions dispose-for-invoke ownership. Parent abort links to a
  * per-child AbortController; dispose hard-cancels remaining children.
+ *
+ * Two signals per registration:
+ * - `signal` — aborts on parent abort OR dispose (stops nested work)
+ * - `hardSignal` — aborts on dispose only (combine with parent run cancel so
+ *   nested tools label Cancelled, not Interrupted, on dispose)
  */
 
 export type SubagentRegistration = {
@@ -9,7 +14,10 @@ export type SubagentRegistration = {
   runId: string
   invokeId: number
   parentToolCallId?: string
+  /** Soft+dispose: parent abort or dispose. */
   controller: AbortController
+  /** Dispose-only hard cancel (does not fire on parent soft interrupt). */
+  hardController: AbortController
   /** Resolves when the subagent unregisters (finally). */
   done: Promise<void>
   resolveDone: () => void
@@ -23,6 +31,11 @@ function nextId(): string {
   return `subagent-${seq}-${Date.now().toString(36)}`
 }
 
+function abortRegistration(entry: SubagentRegistration, hard: boolean): void {
+  if (!entry.controller.signal.aborted) entry.controller.abort()
+  if (hard && !entry.hardController.signal.aborted) entry.hardController.abort()
+}
+
 export type RegisterSubagentOpts = {
   runId: string
   invokeId: number
@@ -31,21 +44,25 @@ export type RegisterSubagentOpts = {
 }
 
 /**
- * Register an in-flight subagent. Returns a child AbortSignal linked to the
- * parent: parent abort → child abort. Caller must `unregisterSubagent` in finally.
+ * Register an in-flight subagent. Returns child signals linked to the parent:
+ * parent abort → `signal` abort; dispose → both `signal` and `hardSignal`.
+ * Caller must `unregisterSubagent` in finally.
  */
 export function registerSubagent(opts: RegisterSubagentOpts): {
   id: string
   signal: AbortSignal
+  hardSignal: AbortSignal
 } {
   const id = nextId()
   const controller = new AbortController()
+  const hardController = new AbortController()
   let resolveDone!: () => void
   const done = new Promise<void>((resolve) => {
     resolveDone = resolve
   })
 
   const onParentAbort = (): void => {
+    // Parent soft/hard abort stops the child, but only dispose marks hardSignal.
     if (!controller.signal.aborted) controller.abort()
   }
   if (opts.parentSignal.aborted) {
@@ -60,6 +77,7 @@ export function registerSubagent(opts: RegisterSubagentOpts): {
     invokeId: opts.invokeId,
     parentToolCallId: opts.parentToolCallId,
     controller,
+    hardController,
     done,
     resolveDone: () => {
       opts.parentSignal.removeEventListener('abort', onParentAbort)
@@ -67,7 +85,7 @@ export function registerSubagent(opts: RegisterSubagentOpts): {
     }
   }
   active.set(id, entry)
-  return { id, signal: controller.signal }
+  return { id, signal: controller.signal, hardSignal: hardController.signal }
 }
 
 export function unregisterSubagent(id: string): void {
@@ -100,7 +118,7 @@ async function waitForUnregister(entry: SubagentRegistration): Promise<void> {
   ])
   // Force-clear if the subagent never unregistered (wedged provider).
   if (active.has(entry.id)) {
-    if (!entry.controller.signal.aborted) entry.controller.abort()
+    abortRegistration(entry, true)
     active.delete(entry.id)
     entry.resolveDone()
   }
@@ -116,7 +134,7 @@ export async function disposeSubagentsForInvoke(
     if (entry.runId === runId && entry.invokeId === invokeId) targets.push(entry)
   }
   for (const entry of targets) {
-    if (!entry.controller.signal.aborted) entry.controller.abort()
+    abortRegistration(entry, true)
   }
   if (targets.length > 0) {
     await Promise.allSettled(targets.map((t) => waitForUnregister(t)))
@@ -131,7 +149,7 @@ export async function disposeSubagentsForRun(runId: string): Promise<number> {
     if (entry.runId === runId) targets.push(entry)
   }
   for (const entry of targets) {
-    if (!entry.controller.signal.aborted) entry.controller.abort()
+    abortRegistration(entry, true)
   }
   if (targets.length > 0) {
     await Promise.allSettled(targets.map((t) => waitForUnregister(t)))
@@ -142,7 +160,7 @@ export async function disposeSubagentsForRun(runId: string): Promise<number> {
 /** Test helper. */
 export function resetSubagentRegistryForTests(): void {
   for (const entry of active.values()) {
-    if (!entry.controller.signal.aborted) entry.controller.abort()
+    abortRegistration(entry, true)
     entry.resolveDone()
   }
   active.clear()

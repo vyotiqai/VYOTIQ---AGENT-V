@@ -99,10 +99,21 @@ function ensureDiskLoaded(): void {
     const raw = JSON.parse(readFileSync(path, 'utf8')) as DiskFile
     if (raw?.version !== 1 || !raw.entries) return
     const now = Date.now()
+    const seenCanonical = new Set<string>()
+    let needsCompaction = false
     for (const [rawKey, entry] of Object.entries(raw.entries)) {
-      if (!entry?.models?.length) continue
-      if (now - entry.savedAt > DISK_TTL_MS) continue
+      if (!entry?.models?.length) {
+        needsCompaction = true
+        continue
+      }
+      if (now - entry.savedAt > DISK_TTL_MS) {
+        needsCompaction = true
+        continue
+      }
       const key = migrateDiskCacheKey(rawKey)
+      if (rawKey !== key) needsCompaction = true
+      if (seenCanonical.has(key)) needsCompaction = true
+      else seenCanonical.add(key)
       const existing = cache.get(key)
       if (existing && existing.diskSavedAt >= entry.savedAt) continue
       cache.set(key, {
@@ -111,6 +122,7 @@ function ensureDiskLoaded(): void {
         diskSavedAt: entry.savedAt
       })
     }
+    if (needsCompaction) persistDisk()
   } catch {
     /* corrupt cache — ignore */
   }
@@ -220,4 +232,9 @@ export function resetModelCacheForTests(): void {
   cache.clear()
   inflight.clear()
   listGeneration.clear()
+}
+
+/** Eager load + compact legacy Ollama `/v1` keys and expired entries on app boot. */
+export function compactModelCacheOnBoot(): void {
+  ensureDiskLoaded()
 }

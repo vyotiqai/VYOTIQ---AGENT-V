@@ -78,7 +78,6 @@ import {
   ok,
   fail,
   MAX_ATTACHMENT_BYTES,
-  MAX_IMAGE_BYTES,
   type ExtractAttachmentResult,
   type IpcResult,
   type Settings,
@@ -335,6 +334,8 @@ function persistWriteCheckpointEvent(
   runId: string,
   checkpointId: string
 ): void {
+  // Soft no-op resolveWrites returns checkpointId '' — do not validate/throw.
+  if (!checkpointId.trim()) return
   const meta = getWriteCheckpointMeta(runDir, checkpointId)
   if (!meta) return
   appendEvent(runDir, {
@@ -838,6 +839,11 @@ export function registerIpc(): void {
 
         return ok({ runId, invokeId })
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        // prepareRewind user-state (index/role/missing run) — not IPC_HANDLER.
+        if (/editMessageIndex|run not found/i.test(msg)) {
+          return fail(msg)
+        }
         return failFrom(err, IPC.chatRewindAndStart)
       }
     }
@@ -1039,6 +1045,9 @@ export function registerIpc(): void {
       if (/no undoable write checkpoint/i.test(msg)) {
         return fail('Nothing to undo — no write checkpoint for this run.')
       }
+      if (/already undone|checkpoint not found|invalid checkpoint/i.test(msg)) {
+        return fail(msg)
+      }
       return failFrom(err, IPC.runsUndoWrites)
     }
   })
@@ -1074,6 +1083,10 @@ export function registerIpc(): void {
         })
         return ok(result)
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (/already resolved|checkpoint not found|invalid checkpoint/i.test(msg)) {
+          return fail(msg)
+        }
         return failFrom(err, IPC.runsResolveWrites)
       }
     }
@@ -1137,6 +1150,14 @@ export function registerIpc(): void {
         }
         return ok(previewHarnessApply(req.workspacePath, req.proposalPath))
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (
+          /no harness proposal found|missing a ## Proposed harness body|no editable harness/i.test(
+            msg
+          )
+        ) {
+          return fail(msg)
+        }
         return failFrom(err, IPC.harnessPreviewApply)
       }
     }
@@ -1161,6 +1182,14 @@ export function registerIpc(): void {
           })
         )
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (
+          /no harness proposal found|missing a ## Proposed harness body|requires confirm|no editable harness/i.test(
+            msg
+          )
+        ) {
+          return fail(msg)
+        }
         return failFrom(err, IPC.harnessApply)
       }
     }
@@ -1254,6 +1283,11 @@ export function registerIpc(): void {
         if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
         return ok(renameRun(req.workspacePath, req.runId, req.goal))
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        // Same user-state class as runsDelete result.error (active / missing / corrupt).
+        if (/cancel run first|run not found|invalid run status/i.test(msg)) {
+          return fail(msg)
+        }
         return failFrom(err, IPC.runsRename)
       }
     }

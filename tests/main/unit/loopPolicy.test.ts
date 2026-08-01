@@ -3,6 +3,7 @@ import {
   CONSECUTIVE_TOOL_FAILURE_SERIAL_THRESHOLD,
   applyToolCallToKnownPaths,
   combineLoopHints,
+  deletePathFromToolCall,
   editPathsFromToolCall,
   isInspectToolName,
   loopHintForCompactionFailure,
@@ -58,6 +59,36 @@ describe('loopPolicy', () => {
     expect(known.has('a.ts')).toBe(true)
     applyToolCallToKnownPaths(known, 'edit', { path: 'b.ts' }, true)
     expect(known.has('b.ts')).toBe(true)
+  })
+
+  it('invalidates known paths after successful delete (always clears descendants)', () => {
+    expect(deletePathFromToolCall('delete', { path: 'src\\a.ts' })).toBe('src/a.ts')
+    expect(deletePathFromToolCall('edit', { path: 'src/a.ts' })).toBeNull()
+
+    const known = new Set(['src/a.ts', 'src/dir/b.ts', 'src/dir/c.ts', 'other.ts'])
+    applyToolCallToKnownPaths(known, 'delete', { path: 'src/a.ts' }, true)
+    expect(known.has('src/a.ts')).toBe(false)
+    expect(known.has('src/dir/b.ts')).toBe(true)
+
+    // toolDelete always removes dir trees on success — clear descendants even without recursive arg
+    applyToolCallToKnownPaths(known, 'delete', { path: 'src/dir' }, true)
+    expect(known.has('src/dir/b.ts')).toBe(false)
+    expect(known.has('src/dir/c.ts')).toBe(false)
+    expect(known.has('other.ts')).toBe(true)
+
+    // Failed delete must not clear inspect state.
+    known.add('keep.ts')
+    applyToolCallToKnownPaths(known, 'delete', { path: 'keep.ts' }, false)
+    expect(known.has('keep.ts')).toBe(true)
+  })
+
+  it('treats delete-then-recreate as unread before edit for receipt observation', () => {
+    const known = new Set<string>()
+    applyToolCallToKnownPaths(known, 'read', { path: 'a.ts' }, true)
+    applyToolCallToKnownPaths(known, 'delete', { path: 'a.ts' }, true)
+    expect(known.has('a.ts')).toBe(false)
+    const exists = (p: string) => p === 'a.ts'
+    expect(unreadExistingEditPaths(known, 'edit', { path: 'a.ts' }, exists)).toEqual(['a.ts'])
   })
 
   it('detects existing unread edit paths for receipt observation', () => {

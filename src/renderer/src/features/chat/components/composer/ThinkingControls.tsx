@@ -1,11 +1,11 @@
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 import { cn } from '@renderer/lib/ui/cn'
-import type { ProviderId, ThinkingEffort } from '@shared/ipc'
+import type { ModelInfo, ProviderId, ThinkingEffort } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { modelSupportsThinking } from '@shared/reasoning'
 import { chromePillButton } from './composerChrome'
 
-const EFFORT_OPTIONS: { value: ThinkingEffort; label: string; short: string }[] = [
+const ALL_EFFORT_OPTIONS: { value: ThinkingEffort; label: string; short: string }[] = [
   { value: 'minimal', label: 'Minimal', short: 'Min' },
   { value: 'low', label: 'Low', short: 'Low' },
   { value: 'medium', label: 'Medium', short: 'Med' },
@@ -18,31 +18,56 @@ type ThinkingMode =
   | { enabled: false; effort: ThinkingEffort | null; label: string; short: string }
   | { enabled: true; effort: ThinkingEffort; label: string; short: string }
 
-const THINKING_MODES: ThinkingMode[] = [
-  { enabled: false, effort: null, label: 'Off', short: 'Off' },
-  ...EFFORT_OPTIONS.map((o) => ({
+function buildModes(
+  allowed: readonly ThinkingEffort[] | undefined,
+  canDisable: boolean
+): ThinkingMode[] {
+  const options =
+    allowed && allowed.length > 0
+      ? ALL_EFFORT_OPTIONS.filter((o) => allowed.includes(o.value))
+      : ALL_EFFORT_OPTIONS
+  const effortModes: ThinkingMode[] = options.map((o) => ({
     enabled: true as const,
     effort: o.value,
     label: o.label,
     short: o.short
   }))
-]
-
-function modeIndex(enabled: boolean, effort: ThinkingEffort): number {
-  if (!enabled) return 0
-  const i = THINKING_MODES.findIndex((m) => m.enabled && m.effort === effort)
-  return i >= 0 ? i : 1
+  if (!canDisable) return effortModes
+  return [{ enabled: false, effort: null, label: 'Off', short: 'Off' }, ...effortModes]
 }
 
-function nextMode(index: number, reverse: boolean): ThinkingMode {
-  const len = THINKING_MODES.length
+function modeIndex(modes: ThinkingMode[], enabled: boolean, effort: ThinkingEffort): number {
+  if (!enabled) {
+    const off = modes.findIndex((m) => !m.enabled)
+    return off >= 0 ? off : 0
+  }
+  const i = modes.findIndex((m) => m.enabled && m.effort === effort)
+  if (i >= 0) return i
+  const firstOn = modes.findIndex((m) => m.enabled)
+  return firstOn >= 0 ? firstOn : 0
+}
+
+function nextMode(modes: ThinkingMode[], index: number, reverse: boolean): ThinkingMode {
+  const len = modes.length
   const next = reverse ? (index - 1 + len) % len : (index + 1) % len
-  return THINKING_MODES[next]!
+  return modes[next]!
+}
+
+/** Catalog true wins; explicit false hides; missing meta/field falls back to ID heuristic. */
+export function modelShowsThinkingControls(
+  provider: ProviderId,
+  model: string,
+  modelMeta?: ModelInfo | null
+): boolean {
+  if (modelMeta?.supportsThinking === true) return true
+  if (modelMeta?.supportsThinking === false) return false
+  return modelSupportsThinking(model, provider)
 }
 
 export function ThinkingControls({
   provider,
   model,
+  modelMeta,
   chatSettings,
   onChatSettingsChange,
   disabled,
@@ -51,16 +76,24 @@ export function ThinkingControls({
 }: {
   provider: ProviderId
   model: string
+  /** Catalog ModelInfo when available; drives visibility and allowed efforts. */
+  modelMeta?: ModelInfo | null
   chatSettings: EffectiveChatSettings
   onChatSettingsChange: (patch: ChatSettingsPatch) => void
   disabled?: boolean
   running?: boolean
   className?: string
 }) {
+  const canDisable = modelMeta?.thinkingCanDisable !== false
+  const modes = useMemo(
+    () => buildModes(modelMeta?.supportedThinkingEfforts, canDisable),
+    [modelMeta?.supportedThinkingEfforts, canDisable]
+  )
+
   const advance = useCallback(
     (reverse: boolean) => {
-      const i = modeIndex(chatSettings.thinkingEnabled, chatSettings.thinkingEffort)
-      const next = nextMode(i, reverse)
+      const i = modeIndex(modes, chatSettings.thinkingEnabled, chatSettings.thinkingEffort)
+      const next = nextMode(modes, i, reverse)
       if (!next.enabled) {
         onChatSettingsChange({ thinkingEnabled: false })
         return
@@ -70,15 +103,15 @@ export function ThinkingControls({
         thinkingEffort: next.effort
       })
     },
-    [chatSettings.thinkingEnabled, chatSettings.thinkingEffort, onChatSettingsChange]
+    [modes, chatSettings.thinkingEnabled, chatSettings.thinkingEffort, onChatSettingsChange]
   )
 
-  if (!modelSupportsThinking(model, provider)) return null
+  if (!modelShowsThinkingControls(provider, model, modelMeta)) return null
 
   const locked = Boolean(disabled || running)
-  const index = modeIndex(chatSettings.thinkingEnabled, chatSettings.thinkingEffort)
-  const current = THINKING_MODES[index]!
-  const upcoming = nextMode(index, false)
+  const index = modeIndex(modes, chatSettings.thinkingEnabled, chatSettings.thinkingEffort)
+  const current = modes[index]!
+  const upcoming = nextMode(modes, index, false)
   const on = current.enabled
 
   const ariaLabel = running

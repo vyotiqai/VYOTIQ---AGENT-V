@@ -13,7 +13,8 @@ import {
   harnessGateDirtyCheck,
   HARNESS_EVAL_TESTS,
   HARNESS_GATE_SOURCE_PATHS,
-  RECEIPT_NOTES_HEADING
+  RECEIPT_NOTES_HEADING,
+  workspaceHasEditableHarness
 } from '@main/agent/harnessApply'
 
 describe('harnessApply', () => {
@@ -230,5 +231,20 @@ describe('harnessApply', () => {
     expect(readFileSync(join(workspace, 'resources', 'harness', 'default.md'), 'utf8')).toBe(
       original
     )
+  })
+
+  it('previewHarnessApply throws when workspace has no editable harness', () => {
+    const plain = join(tmpdir(), `vyotiq-happly-plain-${process.pid}-${Date.now()}`)
+    mkdirSync(plain, { recursive: true })
+    expect(() =>
+      previewHarnessApply(plain, '.vyotiq/harness/proposals/missing.md')
+    ).toThrow(/no editable harness/i)
+    rmSync(plain, { recursive: true, force: true })
+  })
+
+  it('workspaceHasEditableHarness returns false for missing workspace roots', () => {
+    const missing = join(tmpdir(), `vyotiq-happly-missing-${process.pid}-${Date.now()}`)
+    expect(existsSync(missing)).toBe(false)
+    expect(workspaceHasEditableHarness(missing)).toBe(false)
   })
 })

@@ -91,5 +91,69 @@ describe('modelCache disk', () => {
     )
     setModelCacheDiskPathForTests(disk)
     expect(getCachedModels(canonicalKey)).toEqual(sample)
+    const onDisk = JSON.parse(readFileSync(disk, 'utf8')) as {
+      entries: Record<string, { models: ModelInfo[] }>
+    }
+    expect(Object.keys(onDisk.entries)).toEqual([canonicalKey])
+  })
+
+  it('compacts duplicate Ollama /v1 and native disk keys on boot', () => {
+    dir = mkdtempSync(join(tmpdir(), 'vyotiq-model-cache-'))
+    const disk = join(dir, 'model-catalog-cache.json')
+    const legacyKey = 'ollama|https://ollama.com/v1|abc123'
+    const canonicalKey = 'ollama|https://ollama.com|abc123'
+    const legacyModels: ModelInfo[] = [
+      { id: 'legacy-only', name: 'legacy-only', provider: 'ollama' }
+    ]
+    const canonicalModels: ModelInfo[] = [
+      { id: 'canonical', name: 'canonical', provider: 'ollama' }
+    ]
+    const now = Date.now()
+    writeFileSync(
+      disk,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [legacyKey]: { models: legacyModels, savedAt: now - 2_000 },
+          [canonicalKey]: { models: canonicalModels, savedAt: now - 1_000 }
+        }
+      })
+    )
+    setModelCacheDiskPathForTests(disk)
+    expect(getCachedModels(canonicalKey)).toEqual(canonicalModels)
+    const onDisk = JSON.parse(readFileSync(disk, 'utf8')) as {
+      entries: Record<string, { models: ModelInfo[]; savedAt: number }>
+    }
+    expect(Object.keys(onDisk.entries)).toEqual([canonicalKey])
+    expect(onDisk.entries[canonicalKey]!.models).toEqual(canonicalModels)
+    expect(onDisk.entries[canonicalKey]!.savedAt).toBe(now - 1_000)
+  })
+
+  it('drops expired disk entries during boot compaction', () => {
+    dir = mkdtempSync(join(tmpdir(), 'vyotiq-model-cache-'))
+    const disk = join(dir, 'model-catalog-cache.json')
+    const freshKey = modelCacheKey('openai', undefined, 'sk-fresh')
+    const staleKey = modelCacheKey('deepseek', undefined, 'sk-stale')
+    const now = Date.now()
+    writeFileSync(
+      disk,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [freshKey]: { models: sample, savedAt: now },
+          [staleKey]: {
+            models: [{ id: 'old', name: 'old', provider: 'deepseek' }],
+            savedAt: now - 8 * 24 * 60 * 60 * 1000
+          }
+        }
+      })
+    )
+    setModelCacheDiskPathForTests(disk)
+    expect(getCachedModels(freshKey)).toEqual(sample)
+    expect(getCachedModels(staleKey)).toBeNull()
+    const onDisk = JSON.parse(readFileSync(disk, 'utf8')) as {
+      entries: Record<string, unknown>
+    }
+    expect(Object.keys(onDisk.entries)).toEqual([freshKey])
   })
 })

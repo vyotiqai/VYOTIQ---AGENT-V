@@ -13,9 +13,14 @@ import { existsSync } from 'fs'
 import { resolveInsideWorkspace } from '../workspace/safePath'
 import {
   applyToolCallToKnownPaths,
+  isFileMutationToolName,
   toolArgsFromCall,
   unreadExistingEditPaths
 } from './loopPolicy'
+
+/** Soft ADW nudge: mutations without diagnostics in the same step are not a hard gate. */
+export const SOFT_WARN_MUTATION_WITHOUT_DIAGNOSTICS =
+  '[Soft warning: this step mutated file(s) without calling diagnostics. Run diagnostics (typecheck/lint) before treating the change as done.]'
 
 export type ToolStepContext = {
   runId: string
@@ -130,7 +135,11 @@ function emitToolResult(ctx: ToolStepContext, event: AgentEvent): void {
   ctx.emitLiveEvent?.(event)
 }
 
-async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<ToolOutcome> {
+async function runSingleTool(
+  rawCall: ToolCall,
+  ctx: ToolStepContext,
+  stepFlags?: { softDiagnosticsNudge: boolean }
+): Promise<ToolOutcome> {
   const events: AgentEvent[] = []
   const call = withRepairedArguments(rawCall, ctx)
   const malformed = isMalformedToolCall(call)
@@ -231,6 +240,8 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
       toolCallId: call.id,
       invokeId: ctx.invokeId,
       depth: ctx.depth ?? 0,
+      /** Hard run cancel only — soft stream interrupt stays on `signal`. */
+      runSignal: ctx.runSignal,
       agentMode: ctx.getAgentMode?.() ?? ctx.agentMode,
       getAgentMode: ctx.getAgentMode,
       setAgentMode: ctx.setAgentMode,
@@ -282,6 +293,13 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
     let content = result.content
     if (result.ok && unreadPaths.length > 0) {
       content = `${content}\n\n[Soft warning: edited existing file(s) without a prior read/grep/glob inspect: ${unreadPaths.join(', ')}]`
+    }
+    if (
+      result.ok &&
+      stepFlags?.softDiagnosticsNudge &&
+      isFileMutationToolName(call.name)
+    ) {
+      content = `${content}\n\n${SOFT_WARN_MUTATION_WITHOUT_DIAGNOSTICS}`
     }
     if (ctx.knownPaths) {
       applyToolCallToKnownPaths(ctx.knownPaths, call.name, toolArgs, result.ok)
@@ -401,7 +419,8 @@ function abortedToolResult(
 async function runParallelBatch(
   calls: ToolCall[],
   ctx: ToolStepContext,
-  parallelLimit: number
+  parallelLimit: number,
+  stepFlags?: { softDiagnosticsNudge: boolean }
 ): Promise<Map<string, ToolOutcome>> {
   const results = new Map<string, ToolOutcome>()
   const startedIds = new Set<string>()
@@ -413,7 +432,7 @@ async function runParallelBatch(
       const call = calls[i]
       if (!call) break
       startedIds.add(call.id)
-      const result = await runSingleTool(call, ctx)
+      const result = await runSingleTool(call, ctx, stepFlags)
       results.set(call.id, result)
     }
   })
@@ -443,6 +462,10 @@ export async function executeStepToolCalls(
   let stepToolsOk = true
   // Approval gates individual tools; do not force all reads serial.
   const parallelLimit = ctx.maxParallelReadTools ?? MAX_PARALLEL_READ_TOOLS
+  const softDiagnosticsNudge =
+    calls.some((c) => isFileMutationToolName(c.name)) &&
+    !calls.some((c) => c.name === 'diagnostics')
+  const stepFlags = softDiagnosticsNudge ? { softDiagnosticsNudge: true } : undefined
 
   const groups: ToolCall[][] = []
   let batch: ToolCall[] = []
@@ -492,7 +515,7 @@ export async function executeStepToolCalls(
       group.length > 1 && group.every((c) => isParallelSafeTool(c.name))
     if (parallel) {
       const batchLimit = batchLimitFor(group[0]!.name)
-      const batch = await runParallelBatch(group, ctx, batchLimit)
+      const batch = await runParallelBatch(group, ctx, batchLimit, stepFlags)
       for (const call of group) {
         await collect(batch.get(call.id) ?? abortedToolResult(call, ctx))
       }
@@ -502,7 +525,7 @@ export async function executeStepToolCalls(
           await collect(abortedToolResult(call, ctx))
           continue
         }
-        await collect(await runSingleTool(call, ctx))
+        await collect(await runSingleTool(call, ctx, stepFlags))
       }
     }
   }

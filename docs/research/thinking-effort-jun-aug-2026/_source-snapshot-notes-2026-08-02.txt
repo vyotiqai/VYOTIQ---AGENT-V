@@ -1,0 +1,28 @@
+Thinking-effort research snapshot notes — 2026-08-02
+
+OpenRouter GET /api/v1/models reasoning object (S9):
+- supported_efforts, default_effort, default_enabled, mandatory, supports_max_tokens
+- Request body: reasoning: { effort | max_tokens, enabled?, exclude? }
+- none disables; mandatory models reject none
+
+Anthropic (S2):
+- output_config.effort: low|medium|high|xhigh|max (model-dependent)
+- high ≡ omit; adaptive thinking + effort preferred
+- budget_tokens rejected on newer 4.7+ models
+
+OpenAI (S1):
+- reasoning.effort includes none for off on Responses
+
+Gemini (S5):
+- thinking_level per-model sets; Interactions recommended
+
+xAI (S6):
+- grok-4.5 low|medium|high default high; cannot disable
+
+DeepSeek (S7):
+- thinking enabled/disabled + reasoning_effort; replay reasoning_content on tools
+
+Groq (S8):
+- family-specific effort enums and exclusive fields
+
+VYOTIQ gap: normalize ignores catalog reasoning; UI uses modelSupportsThinking regex.

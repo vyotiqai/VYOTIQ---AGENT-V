@@ -121,7 +121,13 @@ export function workspaceHarnessPath(workspacePath: string): string {
 }
 
 export function workspaceHasEditableHarness(workspacePath: string): boolean {
-  return existsSync(workspaceHarnessPath(workspacePath))
+  try {
+    const root = canonicalizeWorkspacePath(workspacePath)
+    if (!existsSync(root)) return false
+    return existsSync(resolveInsideWorkspace(workspacePath, WORKSPACE_HARNESS_REL))
+  } catch {
+    return false
+  }
 }
 
 /** Strip an existing Receipt review notes section through end of file. */

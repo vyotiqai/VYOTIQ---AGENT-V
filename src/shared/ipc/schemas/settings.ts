@@ -1,10 +1,17 @@
 import { z } from 'zod'
-import { ProviderIdSchema, ServiceTierSchema } from './providers'
+import {
+  ProviderIdSchema,
+  ServiceTierSchema,
+  ThinkingEffortSchema,
+  type ThinkingEffort
+} from './providers'
 import {
   DEFAULT_MARKETPLACE_SETTINGS,
   MarketplaceSettingsSchema,
   McpTransportSchema
 } from './marketplace'
+
+export type { ThinkingEffort }
 
 export const ImageGenProviderIdSchema = z.enum([
   'openai',
@@ -21,16 +28,6 @@ export const ImageProviderSettingSchema = z.union([
   ImageGenProviderIdSchema
 ])
 export type ImageProviderSetting = z.infer<typeof ImageProviderSettingSchema>
-
-export const ThinkingEffortSchema = z.enum([
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max'
-])
-export type ThinkingEffort = z.infer<typeof ThinkingEffortSchema>
 
 export const ThemeIdSchema = z.enum(['system', 'light', 'dark'])
 export type ThemeId = z.infer<typeof ThemeIdSchema>

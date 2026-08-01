@@ -73,6 +73,31 @@ export function editPathsFromToolCall(
   return []
 }
 
+/** Concrete path targeted by a successful `delete` tool call. */
+export function deletePathFromToolCall(
+  name: string,
+  args: Record<string, unknown>
+): string | null {
+  if (name !== 'delete') return null
+  const path = typeof args.path === 'string' ? normalizeWorkspaceRelPath(args.path) : ''
+  return path || null
+}
+
+/**
+ * Drop a deleted path and any descendant paths from the inspect/edit set.
+ * Always clears descendants: `toolDelete` removes directory trees on success
+ * (empty dirs or `recursive=true`), so stale child inspects must not survive.
+ */
+export function invalidateKnownPathsAfterDelete(known: Set<string>, deletedPath: string): void {
+  const path = normalizeWorkspaceRelPath(deletedPath)
+  if (!path) return
+  known.delete(path)
+  const prefix = path.endsWith('/') ? path : `${path}/`
+  for (const entry of [...known]) {
+    if (entry.startsWith(prefix)) known.delete(entry)
+  }
+}
+
 export function readPathFromToolCall(
   name: string,
   args: Record<string, unknown>
@@ -135,6 +160,11 @@ export function applyToolCallToKnownPaths(
   ok: boolean
 ): void {
   if (!ok) return
+  const deleted = deletePathFromToolCall(name, args)
+  if (deleted) {
+    invalidateKnownPathsAfterDelete(known, deleted)
+    return
+  }
   for (const path of inspectPathsFromToolCall(name, args)) {
     known.add(path)
   }

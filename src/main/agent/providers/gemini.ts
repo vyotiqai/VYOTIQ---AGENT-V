@@ -1,7 +1,7 @@
 import type { ChatMessage, MessageContent, ModelInfo } from '../../../shared/ipc'
 import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
-import { baseModelInfo, looksLikeChatModel, parseDataUrl } from './normalize'
+import { baseModelInfo, looksLikeChatModel, parseDataUrl, thinkingPartialFromCatalogRow } from './normalize'
 import type {
   LlmProvider,
   ListModelsRequest,
@@ -256,7 +256,8 @@ export const geminiProvider: LlmProvider = {
             maxOutputTokens:
               typeof row.outputTokenLimit === 'number' ? row.outputTokenLimit : undefined,
             supportsTools: true,
-            supportsVision: /gemini|vision|flash|pro/i.test(id)
+            supportsVision: /gemini|vision|flash|pro/i.test(id),
+            ...thinkingPartialFromCatalogRow(row, 'gemini')
           },
           'gemini'
         )

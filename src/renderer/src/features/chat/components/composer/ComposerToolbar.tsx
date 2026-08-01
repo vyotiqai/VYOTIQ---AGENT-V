@@ -258,6 +258,7 @@ export function ComposerToolbar({
         <ThinkingControls
           provider={provider}
           model={model}
+          modelMeta={modelMeta}
           chatSettings={chatSettings}
           onChatSettingsChange={onChatSettingsChange}
           disabled={locked}

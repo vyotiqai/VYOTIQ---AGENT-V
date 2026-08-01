@@ -35,15 +35,33 @@ describe('subagentRegistry', () => {
 
   it('aborts child when parent aborts', async () => {
     const parent = new AbortController()
-    const { id, signal } = registerSubagent({
+    const { id, signal, hardSignal } = registerSubagent({
       runId: 'run-1',
       invokeId: 2,
       parentSignal: parent.signal
     })
     expect(signal.aborted).toBe(false)
+    expect(hardSignal.aborted).toBe(false)
     parent.abort()
     expect(signal.aborted).toBe(true)
+    // Soft/parent abort must not look like hard cancel for nested tools.
+    expect(hardSignal.aborted).toBe(false)
     unregisterSubagent(id)
+  })
+
+  it('dispose aborts soft and hard signals', async () => {
+    const parent = new AbortController()
+    const reg = registerSubagent({
+      runId: 'run-1',
+      invokeId: 4,
+      parentSignal: parent.signal
+    })
+    expect(reg.hardSignal.aborted).toBe(false)
+    const disposePromise = disposeSubagentsForInvoke('run-1', 4)
+    expect(reg.signal.aborted).toBe(true)
+    expect(reg.hardSignal.aborted).toBe(true)
+    queueMicrotask(() => unregisterSubagent(reg.id))
+    await disposePromise
   })
 
   it('disposeSubagentsForInvoke aborts parallel children and waits for unregister', async () => {

@@ -26,12 +26,14 @@ import { toolGitDiffAsync, toolGitStatusAsync } from './gitHelpers'
 import { toolDiagnosticsAsync } from './diagnostics'
 import { toolGenerateImage } from './generateImage'
 import { toolEditImage } from './editImage'
+import { normalizeOutputFormat } from '../providers/imageGen/mime'
 import { getSettings } from '@main/settings/settings'
 import { getWriteCheckpoint } from '../checkpoints'
 import { resolveInsideWorkspace } from '@main/workspace/safePath'
 import { clearWorkspaceSnapshotCache } from '../context/workspaceSnapshot'
 import { commitAll } from '@main/git/git'
 import { invalidateGitStatusCache } from '@main/git/gitStatusCache'
+import { clearGitignoreMatcherCache } from './gitignore'
 import {
   assertToolAllowedInMode,
   isPlanArtifactPath,
@@ -76,6 +78,11 @@ export type ToolExecutionContext = {
   invokeId?: number
   /** Nesting level of the caller: 0 for the top-level run, 1 inside a sub-agent. */
   depth?: number
+  /**
+   * Hard run-cancel signal only (not soft stream / follow-up interrupt).
+   * Nested agents use this so Interrupted vs Cancelled matches the main loop.
+   */
+  runSignal?: AbortSignal
   /** Ask / Plan / Agent mode for this invoke (prefer getAgentMode when mutable). */
   agentMode?: AgentInteractionMode
   getAgentMode?: () => AgentInteractionMode
@@ -217,6 +224,13 @@ function resolveAgentMode(context: ToolExecutionContext): AgentInteractionMode {
   return context.getAgentMode?.() ?? context.agentMode ?? 'agent'
 }
 
+/** Drop short-lived FS views that mutate with writes/git (git status, snapshot, gitignore). */
+function invalidateAfterWorkspaceMutation(workspace: string): void {
+  invalidateGitStatusCache(workspace)
+  clearWorkspaceSnapshotCache(workspace)
+  clearGitignoreMatcherCache(workspace)
+}
+
 function optionalMcpServerId(args: Record<string, unknown>): string | undefined {
   const value = args.serverId ?? args.server_id
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
@@ -279,8 +293,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const contents = typeof args.contents === 'string' ? args.contents : undefined
     const diff = typeof args.diff === 'string' ? args.diff : undefined
     const content = toolEdit(workspace, path, contents, diff)
-    invalidateGitStatusCache(workspace)
-    clearWorkspaceSnapshotCache(workspace)
+    invalidateAfterWorkspaceMutation(workspace)
     return toolOk('edit', path, content)
   },
   search: async (workspace, args, signal) => {
@@ -337,8 +350,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       }
     }
     const content = toolMultiEdit(workspace, edits, signal)
-    invalidateGitStatusCache(workspace)
-    clearWorkspaceSnapshotCache(workspace)
+    invalidateAfterWorkspaceMutation(workspace)
     return toolOk('multi_edit', `${edits.length} files`, content)
   },
   str_replace: (workspace, args, signal, context) => {
@@ -354,8 +366,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       typeof args.new_string === 'string' ? args.new_string : '',
       args.replace_all === true
     )
-    invalidateGitStatusCache(workspace)
-    clearWorkspaceSnapshotCache(workspace)
+    invalidateAfterWorkspaceMutation(workspace)
     return toolOk('str_replace', path, content)
   },
   delete: (workspace, args, signal, context) => {
@@ -366,8 +377,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       getWriteCheckpoint(context.runDir)?.recordPrior(path, 'delete', { recursiveDir: recursive })
     }
     const content = toolDelete(workspace, path, recursive)
-    invalidateGitStatusCache(workspace)
-    clearWorkspaceSnapshotCache(workspace)
+    invalidateAfterWorkspaceMutation(workspace)
     return toolOk('delete', path, content)
   },
   todo_write: (_workspace, args, signal, context) => {
@@ -842,6 +852,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
         context: typeof args.context === 'string' ? args.context : undefined,
         workspace,
         signal,
+        runSignal: context.runSignal,
         depth: context.depth ?? 0,
         parentMode: resolveAgentMode(context),
         runDir: context.runDir,
@@ -979,8 +990,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
           })
       // New background command may mutate the tree; pure session polls do not.
       if (!sessionId) {
-        invalidateGitStatusCache(workspace)
-        clearWorkspaceSnapshotCache(workspace)
+        invalidateAfterWorkspaceMutation(workspace)
       }
       const summary = (command || sessionId).slice(0, 80)
       const ok = terminalResultOk(command || 'session', content)
@@ -996,8 +1006,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       cwd,
       onOutput
     })
-    invalidateGitStatusCache(workspace)
-    clearWorkspaceSnapshotCache(workspace)
+    invalidateAfterWorkspaceMutation(workspace)
     const summary = command.slice(0, 80)
     const ok = terminalResultOk(command, content)
     if (ok) return toolOk('terminal', summary, content)
@@ -1060,8 +1069,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const push = args.push === true
     try {
       const outcome = await commitAll(workspace, message, push)
-      invalidateGitStatusCache(workspace)
-      clearWorkspaceSnapshotCache(workspace)
+      invalidateAfterWorkspaceMutation(workspace)
       const summary = push ? 'git commit + push' : 'git commit'
       const content = [
         outcome.detail,
@@ -1110,12 +1118,9 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
         resolution: typeof args.resolution === 'string' ? args.resolution : undefined,
         preset: args.preset === 'draft' || args.preset === 'final' ? args.preset : undefined,
         n: typeof args.n === 'number' && Number.isFinite(args.n) ? args.n : undefined,
-        output_format:
-          args.output_format === 'png' ||
-          args.output_format === 'jpeg' ||
-          args.output_format === 'webp'
-            ? args.output_format
-            : undefined,
+        output_format: normalizeOutputFormat(
+          typeof args.output_format === 'string' ? args.output_format : undefined
+        ),
         output_compression:
           typeof args.output_compression === 'number' && Number.isFinite(args.output_compression)
             ? args.output_compression
@@ -1138,8 +1143,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     throwIfAborted(signal)
     if (!result.ok) return toolFail('generate_image', result.summary, result.content)
     if (agentMode === 'agent') {
-      clearWorkspaceSnapshotCache(workspace)
-      invalidateGitStatusCache(workspace)
+      invalidateAfterWorkspaceMutation(workspace)
     }
     return toolOk('generate_image', result.summary, result.content)
   },
@@ -1170,12 +1174,9 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
         resolution: typeof args.resolution === 'string' ? args.resolution : undefined,
         preset: args.preset === 'draft' || args.preset === 'final' ? args.preset : undefined,
         n: typeof args.n === 'number' && Number.isFinite(args.n) ? args.n : undefined,
-        output_format:
-          args.output_format === 'png' ||
-          args.output_format === 'jpeg' ||
-          args.output_format === 'webp'
-            ? args.output_format
-            : undefined,
+        output_format: normalizeOutputFormat(
+          typeof args.output_format === 'string' ? args.output_format : undefined
+        ),
         output_compression:
           typeof args.output_compression === 'number' && Number.isFinite(args.output_compression)
             ? args.output_compression
@@ -1198,8 +1199,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     throwIfAborted(signal)
     if (!result.ok) return toolFail('edit_image', result.summary, result.content)
     if (agentMode === 'agent') {
-      clearWorkspaceSnapshotCache(workspace)
-      invalidateGitStatusCache(workspace)
+      invalidateAfterWorkspaceMutation(workspace)
     }
     return toolOk('edit_image', result.summary, result.content)
   }

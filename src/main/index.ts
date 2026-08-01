@@ -15,6 +15,7 @@ import { getSettings } from '@main/settings/settings'
 import { migrateLegacySessions } from '@main/storage/migrations/migrateSessions'
 import { migrateWorkspaceRuns } from './storage/migrateWorkspaceRuns'
 import { purgeLegacyProjectHarness } from '@main/agent/harness'
+import { compactModelCacheOnBoot } from '@main/agent/providers/modelCache'
 import {
   flushEventAppends,
   flushMessageAppends,
@@ -96,6 +97,7 @@ if (!gotLock) {
       if (n > 0) {
         logger.info(`Interrupted ${n} orphan run(s)`, { scope: 'main' })
       }
+      compactModelCacheOnBoot()
     } catch (err) {
       logger.warn('Failed startup workspace maintenance', { scope: 'main', err })
     }

@@ -120,7 +120,7 @@ Finish the image capability so it is **fully wired** for:
 
 ## 4. Global acceptance checklist
 
-- [ ] Manual smoke: OpenAI / Gemini / xAI / OpenRouter live keys (still open from Slice C)
+- [ ] Manual smoke: OpenAI / Gemini / xAI / OpenRouter live keys (2026-08-02: script `scripts/image-live-smoke.cjs`; only OpenAI key present → HTTP 401 invalid_api_key; Gemini/xAI/OpenRouter skipped — no saved keys)
 - [x] F0 HQ params + size validation tests green
 - [x] F1 Anthropic-chat + other-provider-image path documented + tested
 - [x] F2 OpenRouter path (if approved)

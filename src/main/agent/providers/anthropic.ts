@@ -2,7 +2,7 @@ import type { ChatMessage, MessageContent, ModelInfo } from '../../../shared/ipc
 import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
 import type { AnthropicThinkingBlock } from '../../../shared/reasoning'
-import { baseModelInfo, parseDataUrl, wireSupportedInputModalities } from './normalize'
+import { baseModelInfo, parseDataUrl, thinkingPartialFromCatalogRow, wireSupportedInputModalities } from './normalize'
 import type {
   LlmProvider,
   ListModelsRequest,
@@ -354,6 +354,7 @@ export const anthropicProvider: LlmProvider = {
         caps?.vision === true ||
         (inputMods?.includes('image') ?? false) ||
         /claude|vision/i.test(id)
+      const thinkingPartial = thinkingPartialFromCatalogRow(row, 'anthropic')
       out.push(
         baseModelInfo(id, {
           displayName: typeof row.display_name === 'string' ? row.display_name : id,
@@ -365,7 +366,8 @@ export const anthropicProvider: LlmProvider = {
             ? wireSupportedInputModalities(inputMods, supportsVision, 'anthropic')
             : undefined,
           supportsTools: caps?.tools !== false,
-          supportsVision
+          supportsVision,
+          ...thinkingPartial
         }, 'anthropic')
       )
     }

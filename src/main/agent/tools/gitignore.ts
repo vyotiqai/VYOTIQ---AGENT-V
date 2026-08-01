@@ -86,6 +86,18 @@ const EMPTY_MATCHER: GitignoreMatcher = {
 
 const matcherCache = new Map<string, GitignoreMatcher>()
 
+/** Drop cached matchers after `.gitignore` (or tree) mutations so walks see fresh rules. */
+export function clearGitignoreMatcherCache(workspaceRoot?: string): void {
+  if (!workspaceRoot) {
+    matcherCache.clear()
+    return
+  }
+  const prefix = `${workspaceRoot}::`
+  for (const key of matcherCache.keys()) {
+    if (key.startsWith(prefix)) matcherCache.delete(key)
+  }
+}
+
 /** Matcher for a directory path relative to workspace root (empty string = root). */
 export function gitignoreMatcherForDir(
   workspaceRoot: string,

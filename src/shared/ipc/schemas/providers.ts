@@ -25,6 +25,20 @@ export const ThinkingApiSchema = z.enum([
 ])
 export type ThinkingApi = z.infer<typeof ThinkingApiSchema>
 
+/** Single source of truth for product thinking effort levels. */
+export const ThinkingEffortSchema = z.enum([
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max'
+])
+export type ThinkingEffort = z.infer<typeof ThinkingEffortSchema>
+
+export const ThinkingModeSchema = z.enum(['adaptive', 'manual', 'effort', 'boolean'])
+export type ThinkingMode = z.infer<typeof ThinkingModeSchema>
+
 export const ServiceTierSchema = z.enum(['default', 'flex', 'priority'])
 export type ServiceTier = z.infer<typeof ServiceTierSchema>
 
@@ -40,6 +54,13 @@ export const ModelInfoSchema = z.object({
   supportsStructuredOutput: z.boolean().optional(),
   supportsThinking: z.boolean().optional(),
   thinkingApi: ThinkingApiSchema.optional(),
+  /** Catalog-backed allowed effort levels (excludes Off). */
+  supportedThinkingEfforts: z.array(ThinkingEffortSchema).optional(),
+  /** False when the model rejects disable / effort none (e.g. mandatory reasoning). */
+  thinkingCanDisable: z.boolean().optional(),
+  thinkingDefaultEffort: ThinkingEffortSchema.optional(),
+  thinkingSupportsTokenBudget: z.boolean().optional(),
+  thinkingMode: ThinkingModeSchema.optional(),
   supportedServiceTiers: z.array(ServiceTierSchema).optional()
 })
 export type ModelInfo = z.infer<typeof ModelInfoSchema>

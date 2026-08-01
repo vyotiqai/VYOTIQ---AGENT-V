@@ -19,6 +19,9 @@ This package is **documentation only**. It does not change product behavior. Mod
 | [image-generation/](./image-generation/README.md) | Jun–Aug 2026 image-gen APIs / Slice A–C research (product now ships) |
 | [image-capability-finish/](./image-capability-finish/README.md) | **Jun–Aug 2026** audit-finish: HQ, OpenRouter/custom, code-native/motion (F0–F5 shipped; `generate_video` deferred) |
 | [system-prompts/](./system-prompts/README.md) | System-prompt / harness instruction research (docs only) |
+| [agentic-adw-jun-aug-2026/](./agentic-adw-jun-aug-2026/README.md) | ADW framing (≈ Jul 2026) + still-governing earlier-2026 labs; [tool-loop](./agentic-adw-jun-aug-2026/11-tool-use-loop-behaviours.md); [source integrity](./agentic-adw-jun-aug-2026/10-source-integrity.md) — **freeze-ready** (2026-08-02); VYOTIQ mapping + audit |
+| [caching-jun-aug-2026/](./caching-jun-aug-2026/README.md) | **Jun–Aug 2026** provider prompt-cache + **existing** app caches map; harden-only (no new tiers) — freeze-ready 2026-08-02 |
+| [thinking-effort-jun-aug-2026/](./thinking-effort-jun-aug-2026/README.md) | **Jun–Aug 2026** thinking/reasoning effort contracts, catalog discovery, VYOTIQ gaps — freeze-ready 2026-08-02; Phase B = catalog-driven `ModelInfo` |
 
 ## How to use
 

@@ -270,4 +270,16 @@ describe('write checkpoints', () => {
     expect(persisted?.files.find((f) => f.path === 'a.txt')?.resolved).toBeUndefined()
     expect(persisted?.files.find((f) => f.path === 'b.txt')?.resolved).toBe('discarded')
   })
+
+  it('getWriteCheckpointMeta returns null for empty/invalid ids without throwing', () => {
+    expect(getWriteCheckpointMeta(runDir, '')).toBeNull()
+    expect(getWriteCheckpointMeta(runDir, 'not-a-uuid')).toBeNull()
+  })
+
+  it('resolveWrites soft no-op with no checkpoint returns empty id safely', () => {
+    const result = resolveWrites(runDir, workspace, { action: 'keep' })
+    expect(result.checkpointId).toBe('')
+    expect(result.fullyResolved).toBe(true)
+    expect(getWriteCheckpointMeta(runDir, result.checkpointId)).toBeNull()
+  })
 })

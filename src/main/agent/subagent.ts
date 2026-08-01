@@ -86,6 +86,11 @@ export type SubagentOptions = {
   context?: string
   workspace: string
   signal: AbortSignal
+  /**
+   * Hard run-cancel only (parent `controller.signal`). Soft interrupts stay on `signal`.
+   * When omitted, nested tools cannot distinguish Interrupted vs Cancelled.
+   */
+  runSignal?: AbortSignal
   /** Nesting level of the caller: 0 for the top-level run. */
   depth: number
   /** Parent Ask/Plan/Agent mode. */
@@ -155,6 +160,27 @@ export class SubagentDepthError extends Error {
   }
 }
 
+/** Combine abort signals (AbortSignal.any with a mirror fallback). */
+function combineAbortSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
+  if (typeof AbortSignal.any === 'function') {
+    return AbortSignal.any([a, b])
+  }
+  if (a.aborted || b.aborted) {
+    const done = new AbortController()
+    done.abort()
+    return done.signal
+  }
+  const combined = new AbortController()
+  const onAbort = (): void => {
+    a.removeEventListener('abort', onAbort)
+    b.removeEventListener('abort', onAbort)
+    if (!combined.signal.aborted) combined.abort()
+  }
+  a.addEventListener('abort', onAbort, { once: true })
+  b.addEventListener('abort', onAbort, { once: true })
+  return combined.signal
+}
+
 /**
  * Run a nested agent (shared main-agent loop) and return its report.
  *
@@ -166,6 +192,8 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 
   let registryId: string | undefined
   let signal = options.signal
+  /** Hard cancel: parent run cancel and/or registry dispose (not soft interrupt). */
+  let runSignal = options.runSignal
   if (typeof options.runId === 'string' && typeof options.invokeId === 'number') {
     const reg = registerSubagent({
       runId: options.runId,
@@ -175,6 +203,10 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
     })
     registryId = reg.id
     signal = reg.signal
+    // Dispose must look like Cancelled for nested tools; soft parent abort must not.
+    runSignal = options.runSignal
+      ? combineAbortSignals(options.runSignal, reg.hardSignal)
+      : reg.hardSignal
   }
 
   const subagentId = allocateNestedAgentId()
@@ -185,6 +217,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
       context: options.context,
       workspace: options.workspace,
       signal,
+      runSignal,
       depth: options.depth,
       parentMode: options.parentMode,
       runDir: options.runDir,

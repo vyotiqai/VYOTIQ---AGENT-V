@@ -110,6 +110,11 @@ export type NestedAgentOptions = {
   context?: string
   workspace: string
   signal: AbortSignal
+  /**
+   * Hard run-cancel only. Soft stream / follow-up aborts stay on `signal` so nested
+   * tool results can say Interrupted vs Cancelled like the main loop.
+   */
+  runSignal?: AbortSignal
   depth: number
   parentMode?: AgentInteractionMode
   /** Parent run directory — write checkpoints + report live under this run. */
@@ -213,6 +218,13 @@ async function flushChildTranscript(childDir: string | null): Promise<void> {
   if (!childDir) return
   await flushMessageAppends(childDir)
   await flushEventAppends(childDir)
+}
+
+/** Match executeStepTools abortToolContent: hard cancel vs soft interrupt. */
+function nestedAbortReport(options: NestedAgentOptions): string {
+  const hardCancel = options.runSignal?.aborted ?? options.signal.aborted
+  if (hardCancel) return 'Nested agent was cancelled before it reported anything.'
+  return 'Nested agent was interrupted before it reported anything.'
 }
 
 async function finalizeNested(
@@ -995,7 +1007,7 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
         return await finalizeNested(options, {
           ok: false,
           report: options.signal.aborted
-            ? 'Nested agent was cancelled before it reported anything.'
+            ? nestedAbortReport(options)
             : incomplete && report
               ? `Nested agent stopped early (${stepStopReason ?? 'incomplete'}): ${report}`
               : lastText.trim()
@@ -1103,6 +1115,7 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
 
     const toolRunDir = parentRunDir ?? childDir ?? options.workspace
     const liveEvents: AgentEvent[] = []
+    const liveToolResultsEmitted = new Set<string>()
     let wakeLiveEvents: (() => void) | null = null
     let toolsSettled = false
 
@@ -1111,7 +1124,8 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
       runDir: toolRunDir,
       workspace: options.workspace,
       signal: options.signal,
-      runSignal: options.signal,
+      // Prefer parent hard-cancel; fall back only when caller omitted runSignal.
+      runSignal: options.runSignal ?? options.signal,
       invokeId: options.invokeId,
       depth: options.depth + 1,
       knownPaths,
@@ -1142,6 +1156,7 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
       subagentId: options.subagentId,
       emitLiveEvent: (ev: AgentEvent) => {
         liveEvents.push(ev)
+        if (ev.type === 'tool_result') liveToolResultsEmitted.add(ev.toolCallId)
         wakeLiveEvents?.()
       }
     }
@@ -1160,13 +1175,14 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
       }
     )
 
+    // Main-loop parity: wait for tools to settle so Interrupted/Cancelled
+    // results are forwarded — do not bail early on signal.aborted mid-drain.
     for (;;) {
       while (liveEvents.length) {
         const ev = liveEvents.shift()!
         emitParent(ev.type === 'tool_result' ? toolResultEventForIpc(ev) : ev)
       }
       if (toolsSettled) break
-      if (options.signal.aborted) break
       await new Promise<void>((resolve) => {
         wakeLiveEvents = resolve
         if (toolsSettled || liveEvents.length) resolve()
@@ -1176,6 +1192,11 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
 
     try {
       const result = await settledWork
+      for (const ev of result.events) {
+        if (ev.type !== 'tool_result') continue
+        if (liveToolResultsEmitted.has(ev.toolCallId)) continue
+        emitParent(toolResultEventForIpc(ev))
+      }
       if (allowedCalls.length > 0) {
         if (result.stepToolsOk) consecutiveToolFailureSteps = 0
         else consecutiveToolFailureSteps++
@@ -1193,7 +1214,7 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
   return await finalizeNested(options, {
     ok: false,
     report: options.signal.aborted
-      ? 'Nested agent was cancelled before it reported anything.'
+      ? nestedAbortReport(options)
       : 'Nested agent finished without producing a report.',
     steps: step
   }, childDir)

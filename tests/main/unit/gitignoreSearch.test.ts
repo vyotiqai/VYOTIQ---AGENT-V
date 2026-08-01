@@ -1,13 +1,27 @@
-import { describe, expect, it } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'fs'
+import { afterEach, describe, expect, it } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { gitignoreMatcherForDir, loadGitignore } from '@main/agent/tools/gitignore'
+import {
+  clearGitignoreMatcherCache,
+  gitignoreMatcherForDir,
+  loadGitignore
+} from '@main/agent/tools/gitignore'
 import { toolSearch } from '@main/agent/tools/search'
 
 describe('gitignore-aware search', () => {
+  const dirs: string[] = []
+
+  afterEach(() => {
+    clearGitignoreMatcherCache()
+    for (const dir of dirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('skips paths matched by root .gitignore', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'vyotiq-gitignore-'))
+    dirs.push(dir)
     mkdirSync(join(dir, 'src'))
     mkdirSync(join(dir, 'ignored'))
     writeFileSync(join(dir, 'src', 'keep.ts'), 'export const keep = true\n', 'utf8')
@@ -24,6 +38,7 @@ describe('gitignore-aware search', () => {
 
   it('applies nested .gitignore files relative to their directory', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'vyotiq-gitignore-nested-'))
+    dirs.push(dir)
     mkdirSync(join(dir, 'src', 'generated'), { recursive: true })
     mkdirSync(join(dir, 'src', 'lib'))
     writeFileSync(join(dir, 'src', 'generated', 'auto.ts'), 'export const auto = 1\n', 'utf8')
@@ -37,5 +52,23 @@ describe('gitignore-aware search', () => {
     const hits = await toolSearch(dir, 'export', 40)
     expect(hits).toMatch(/hand\.ts/)
     expect(hits).not.toMatch(/auto\.ts/)
+  })
+
+  it('clearGitignoreMatcherCache reloads rules after .gitignore changes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-gitignore-cache-'))
+    dirs.push(dir)
+    mkdirSync(join(dir, 'secret'))
+    writeFileSync(join(dir, 'secret', 'x.ts'), 'export const x = 1\n', 'utf8')
+    writeFileSync(join(dir, '.gitignore'), '', 'utf8')
+
+    const before = loadGitignore(dir)
+    expect(before.shouldIgnoreEntry('secret', true)).toBe(false)
+
+    writeFileSync(join(dir, '.gitignore'), 'secret/\n', 'utf8')
+    // Stale without clear:
+    expect(loadGitignore(dir).shouldIgnoreEntry('secret', true)).toBe(false)
+
+    clearGitignoreMatcherCache(dir)
+    expect(loadGitignore(dir).shouldIgnoreEntry('secret', true)).toBe(true)
   })
 })

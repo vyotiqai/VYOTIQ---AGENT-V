@@ -1,9 +1,8 @@
 import { z } from 'zod'
-import { ProviderIdSchema } from './providers'
+import { ProviderIdSchema, ThinkingEffortSchema } from './providers'
 import { MarketplaceOverridesSchema } from './marketplace'
 import {
   AgentInteractionModeSchema,
-  ThinkingEffortSchema,
   ToolApprovalSettingsSchema
 } from './settings'
 

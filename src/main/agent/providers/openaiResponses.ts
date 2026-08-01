@@ -156,7 +156,9 @@ export async function* streamOpenAiResponses(
 
   const priorState =
     req.reasoningState?.kind === 'openai_responses' ? req.reasoningState : undefined
-  const thinkingEnabled = req.thinking?.enabled !== false
+  const thinkingOn = req.thinking?.enabled !== false
+  const thinkingOff = req.thinking?.enabled === false
+  const supportsThinking = req.modelInfo?.supportsThinking !== false
   const explicitCache = supportsExplicitPromptCache(req.model)
 
   const body: Record<string, unknown> = {
@@ -173,7 +175,7 @@ export async function* streamOpenAiResponses(
           parallel_tool_calls: req.parallelToolCalls ?? true
         }
       : {}),
-    ...(thinkingEnabled
+    ...(thinkingOn
       ? {
           reasoning: {
             effort: normalizeEffortForOpenAiResponses(req.thinking?.effort, true),
@@ -181,7 +183,15 @@ export async function* streamOpenAiResponses(
             context: 'all_turns'
           }
         }
-      : {}),
+      : thinkingOff && supportsThinking
+        ? {
+            reasoning: {
+              effort: 'none',
+              summary: 'auto',
+              context: 'all_turns'
+            }
+          }
+        : {}),
     ...(priorState?.responseId ? { previous_response_id: priorState.responseId } : {}),
     ...(req.promptCacheKey ? { prompt_cache_key: req.promptCacheKey } : {}),
     ...(explicitCache

@@ -155,6 +155,83 @@ describe('ThinkingControls', () => {
     expect(thinkingButton()).toBeTruthy()
   })
 
+  it('shows control when catalog marks supportsThinking even if id heuristic would miss', () => {
+    const { container } = render(
+      <ThinkingControls
+        provider="openrouter"
+        model="some-vendor/custom-reasoner-v2"
+        modelMeta={{
+          id: 'some-vendor/custom-reasoner-v2',
+          inputModalities: ['text'],
+          outputModalities: ['text'],
+          supportsTools: true,
+          supportsVision: false,
+          supportsThinking: true,
+          supportedThinkingEfforts: ['low', 'medium', 'high'],
+          thinkingCanDisable: true
+        }}
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+      />
+    )
+    expect(container.firstChild).not.toBeNull()
+  })
+
+  it('hides Off when thinkingCanDisable is false', () => {
+    const onChatSettingsChange = vi.fn()
+    render(
+      <ThinkingControls
+        provider="xai"
+        model="grok-4.5"
+        modelMeta={{
+          id: 'grok-4.5',
+          inputModalities: ['text'],
+          outputModalities: ['text'],
+          supportsTools: true,
+          supportsVision: false,
+          supportsThinking: true,
+          supportedThinkingEfforts: ['low', 'medium', 'high'],
+          thinkingCanDisable: false,
+          thinkingDefaultEffort: 'high'
+        }}
+        chatSettings={{ ...chatSettings, thinkingEffort: 'high', provider: 'xai', model: 'grok-4.5' }}
+        onChatSettingsChange={onChatSettingsChange}
+      />
+    )
+    fireEvent.click(thinkingButton())
+    // Cycles high → low (no Off); first after high in [low, medium, high] wrap is low
+    expect(onChatSettingsChange).toHaveBeenCalledWith({
+      thinkingEnabled: true,
+      thinkingEffort: 'low'
+    })
+  })
+
+  it('cycles only catalog-supported efforts', () => {
+    const onChatSettingsChange = vi.fn()
+    render(
+      <ThinkingControls
+        provider="openrouter"
+        model="google/gemini-3-pro"
+        modelMeta={{
+          id: 'google/gemini-3-pro',
+          inputModalities: ['text'],
+          outputModalities: ['text'],
+          supportsTools: true,
+          supportsVision: false,
+          supportsThinking: true,
+          supportedThinkingEfforts: ['low', 'high']
+        }}
+        chatSettings={{ ...chatSettings, thinkingEffort: 'low' }}
+        onChatSettingsChange={onChatSettingsChange}
+      />
+    )
+    fireEvent.click(thinkingButton())
+    expect(onChatSettingsChange).toHaveBeenCalledWith({
+      thinkingEnabled: true,
+      thinkingEffort: 'high'
+    })
+  })
+
   it('does not clip short Think label with overflow-hidden', () => {
     render(
       <ThinkingControls

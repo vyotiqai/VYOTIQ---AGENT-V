@@ -475,4 +475,103 @@ describe('executeStepToolCalls', () => {
     expect(live.map((ev) => (ev.type === 'tool_result' ? ev.toolCallId : ''))).toEqual(['c1', 'c2'])
     expect(finished.indexOf('a.ts')).toBeLessThan(finished.indexOf('b.ts'))
   })
+
+  it('soft-warns when editing an existing file never inspected in knownPaths', async () => {
+    const { mkdtempSync, writeFileSync, mkdirSync } = await import('fs')
+    const { join } = await import('path')
+    const { tmpdir } = await import('os')
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-known-paths-'))
+    mkdirSync(join(dir, 'src'))
+    writeFileSync(join(dir, 'src', 'a.ts'), ' const x = 1\n', 'utf8')
+
+    executeTool.mockResolvedValue({ ok: true, summary: 'edited', content: 'ok' })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    ctx.workspace = dir
+    ctx.knownPaths = new Set()
+
+    const outcome = await executeStepToolCalls(
+      [{ id: 'c1', name: 'edit', arguments: '{"path":"src/a.ts","contents":"x"}' }],
+      ctx
+    )
+
+    expect(outcome.messages[0]?.content).toContain(
+      'Soft warning: edited existing file(s) without a prior read/grep/glob inspect: src/a.ts'
+    )
+    expect(outcome.messages[0]?.content).toContain('mutated file(s) without calling diagnostics')
+  })
+
+  it('soft-warns on file mutation without diagnostics in the same step', async () => {
+    executeTool.mockResolvedValue({ ok: true, summary: 'edited', content: 'ok' })
+    const { ctx } = makeCtx(new AbortController().signal)
+    const outcome = await executeStepToolCalls(
+      [{ id: 'c1', name: 'str_replace', arguments: '{"path":"new.ts","old":"a","new":"b"}' }],
+      ctx
+    )
+    expect(outcome.messages[0]?.content).toContain('mutated file(s) without calling diagnostics')
+  })
+
+  it('forwards runSignal into tool execution context for nested abort semantics', async () => {
+    const runAc = new AbortController()
+    const softAc = new AbortController()
+    executeTool.mockResolvedValue({ ok: true, summary: 'ok', content: 'ok' })
+    const { ctx } = makeCtx(combinedSignal(runAc.signal, softAc.signal), runAc.signal)
+    await executeStepToolCalls(
+      [{ id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }],
+      ctx
+    )
+    expect(executeTool.mock.calls[0]?.[4]).toMatchObject({ runSignal: runAc.signal })
+  })
+
+  it('soft-warns after delete clears prior inspect so recreate-edit is unread', async () => {
+    const { mkdtempSync, writeFileSync, mkdirSync, unlinkSync } = await import('fs')
+    const { join } = await import('path')
+    const { tmpdir } = await import('os')
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-delete-known-'))
+    mkdirSync(join(dir, 'src'))
+    writeFileSync(join(dir, 'src', 'a.ts'), 'const x = 1\n', 'utf8')
+
+    executeTool.mockImplementation(async (name: string) => {
+      if (name === 'delete') {
+        unlinkSync(join(dir, 'src', 'a.ts'))
+        return { ok: true, summary: 'deleted', content: 'ok' }
+      }
+      return { ok: true, summary: name, content: 'ok' }
+    })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    ctx.workspace = dir
+    ctx.knownPaths = new Set(['src/a.ts'])
+
+    await executeStepToolCalls(
+      [{ id: 'd1', name: 'delete', arguments: '{"path":"src/a.ts"}' }],
+      ctx
+    )
+    expect(ctx.knownPaths.has('src/a.ts')).toBe(false)
+
+    // File reappears (user/other tool) without a new inspect.
+    writeFileSync(join(dir, 'src', 'a.ts'), 'const x = 2\n', 'utf8')
+
+    const outcome = await executeStepToolCalls(
+      [{ id: 'e1', name: 'edit', arguments: '{"path":"src/a.ts","contents":"x"}' }],
+      ctx
+    )
+    expect(outcome.messages[0]?.content).toContain(
+      'Soft warning: edited existing file(s) without a prior read/grep/glob inspect: src/a.ts'
+    )
+  })
+
+  it('skips diagnostics soft-nudge when diagnostics is in the same step', async () => {
+    executeTool.mockResolvedValue({ ok: true, summary: 'ok', content: 'ok' })
+    const { ctx } = makeCtx(new AbortController().signal)
+    const outcome = await executeStepToolCalls(
+      [
+        { id: 'c1', name: 'edit', arguments: '{"path":"a.ts","contents":"x"}' },
+        { id: 'c2', name: 'diagnostics', arguments: '{}' }
+      ],
+      ctx
+    )
+    const editMsg = outcome.messages.find((m) => m.toolCallId === 'c1')
+    expect(editMsg?.content).not.toContain('mutated file(s) without calling diagnostics')
+  })
 })

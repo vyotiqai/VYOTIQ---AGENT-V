@@ -1,5 +1,10 @@
-import type { ModelInfo, ProviderId } from '../../../shared/ipc'
-import { modelSupportsThinking, thinkingApiFor } from '../../../shared/reasoning'
+import type { ModelInfo, ProviderId, ThinkingEffort } from '../../../shared/ipc'
+import { ThinkingEffortSchema } from '../../../shared/ipc'
+import {
+  modelSupportsThinking,
+  thinkingApiFor,
+  anthropicUsesAdaptiveThinking
+} from '../../../shared/reasoning'
 import { inferSupportedServiceTiers } from '../../../shared/domain/serviceTier'
 
 const NON_CHAT =
@@ -84,6 +89,145 @@ export function inferStructuredOutputSupport(id: string, providerId?: ProviderId
   return looksLikeChatModel(id)
 }
 
+const PRODUCT_EFFORTS = new Set(ThinkingEffortSchema.options)
+
+function parseEffortList(raw: unknown): ThinkingEffort[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const out: ThinkingEffort[] = []
+  for (const item of raw) {
+    if (typeof item !== 'string') continue
+    if (item === 'none') continue
+    if (PRODUCT_EFFORTS.has(item as ThinkingEffort)) out.push(item as ThinkingEffort)
+  }
+  return out.length > 0 ? out : undefined
+}
+
+function supportedParamsList(row: Record<string, unknown>): string[] | undefined {
+  const supported = row.supported_parameters
+  if (Array.isArray(supported)) return supported.filter((p): p is string => typeof p === 'string')
+  if (supported && typeof supported === 'object') return Object.keys(supported as Record<string, unknown>)
+  return undefined
+}
+
+/**
+ * Extract thinking capability fields from a provider catalog row.
+ * Prefer OpenRouter-style `reasoning` object and `supported_parameters`.
+ */
+export function thinkingPartialFromCatalogRow(
+  row: Record<string, unknown>,
+  providerId?: ProviderId
+): Partial<ModelInfo> {
+  const partial: Partial<ModelInfo> = {}
+  const reasoning = row.reasoning
+  const params = supportedParamsList(row)
+
+  if (reasoning && typeof reasoning === 'object') {
+    const r = reasoning as Record<string, unknown>
+    partial.supportsThinking = true
+    const efforts = parseEffortList(r.supported_efforts)
+    if (efforts) partial.supportedThinkingEfforts = efforts
+    if (r.mandatory === true) partial.thinkingCanDisable = false
+    else if (r.mandatory === false) partial.thinkingCanDisable = true
+    if (typeof r.default_effort === 'string' && r.default_effort !== 'none') {
+      const d = ThinkingEffortSchema.safeParse(r.default_effort)
+      if (d.success) partial.thinkingDefaultEffort = d.data
+    }
+    if (r.supports_max_tokens === true) partial.thinkingSupportsTokenBudget = true
+    partial.thinkingMode = r.supports_max_tokens === true ? 'manual' : 'effort'
+  } else if (
+    params &&
+    (params.includes('reasoning') ||
+      params.includes('reasoning_effort') ||
+      params.includes('include_reasoning') ||
+      params.includes('thinking'))
+  ) {
+    partial.supportsThinking = true
+    partial.thinkingMode = 'effort'
+  }
+
+  const caps = row.capabilities as Record<string, unknown> | undefined
+  if (caps) {
+    if (caps.thinking === true || caps.extended_thinking === true || caps.adaptive_thinking === true) {
+      partial.supportsThinking = true
+    }
+    if (caps.thinking === false && caps.extended_thinking === false) {
+      partial.supportsThinking = false
+    }
+  }
+
+  if (providerId === 'anthropic' && partial.supportsThinking !== false) {
+    // Generation-band fallback applied later in baseModelInfo via model id when still unset.
+  }
+
+  if (providerId === 'xai' && partial.supportsThinking) {
+    // grok-4.5 cannot disable; if catalog didn't say, leave undefined for heuristic.
+  }
+
+  return partial
+}
+
+function providerThinkingDefaults(
+  id: string,
+  providerId: ProviderId | undefined,
+  supportsThinking: boolean
+): Pick<
+  ModelInfo,
+  | 'thinkingApi'
+  | 'thinkingMode'
+  | 'thinkingCanDisable'
+  | 'supportedThinkingEfforts'
+  | 'thinkingDefaultEffort'
+> {
+  if (!supportsThinking || !providerId) return {}
+  const thinkingApi = thinkingApiFor(id, providerId)
+  let thinkingMode: ModelInfo['thinkingMode']
+  let thinkingCanDisable: boolean | undefined
+  let supportedThinkingEfforts: ThinkingEffort[] | undefined
+  let thinkingDefaultEffort: ThinkingEffort | undefined
+
+  switch (providerId) {
+    case 'anthropic':
+      thinkingMode = anthropicUsesAdaptiveThinking(id) ? 'adaptive' : 'manual'
+      break
+    case 'openai':
+      thinkingMode = 'effort'
+      thinkingCanDisable = true
+      supportedThinkingEfforts = ['minimal', 'low', 'medium', 'high', 'xhigh']
+      break
+    case 'gemini':
+      thinkingMode = 'effort'
+      supportedThinkingEfforts = ['minimal', 'low', 'medium', 'high']
+      break
+    case 'xai':
+      thinkingMode = 'effort'
+      thinkingCanDisable = /grok-4\.5/i.test(id) ? false : true
+      supportedThinkingEfforts = ['low', 'medium', 'high']
+      thinkingDefaultEffort = 'high'
+      break
+    case 'deepseek':
+      thinkingMode = 'effort'
+      supportedThinkingEfforts = ['low', 'high', 'max']
+      thinkingDefaultEffort = 'high'
+      break
+    case 'ollama':
+      thinkingMode = 'boolean'
+      break
+    case 'groq':
+      thinkingMode = 'effort'
+      break
+    default:
+      thinkingMode = 'effort'
+  }
+
+  return {
+    thinkingApi,
+    thinkingMode,
+    thinkingCanDisable,
+    supportedThinkingEfforts,
+    thinkingDefaultEffort
+  }
+}
+
 export function baseModelInfo(
   id: string,
   partial?: Partial<ModelInfo>,
@@ -93,6 +237,12 @@ export function baseModelInfo(
   const supportsThinking = partial?.supportsThinking ?? modelSupportsThinking(id, providerId)
   const supportedServiceTiers =
     partial?.supportedServiceTiers ?? inferSupportedServiceTiers(id, providerId)
+  const defaults = providerThinkingDefaults(id, providerId, supportsThinking)
+
+  const thinkingApi = supportsThinking
+    ? (partial?.thinkingApi ?? defaults.thinkingApi)
+    : undefined
+
   return {
     id,
     displayName: partial?.displayName ?? id,
@@ -109,7 +259,13 @@ export function baseModelInfo(
     supportsStructuredOutput:
       partial?.supportsStructuredOutput ?? inferStructuredOutputSupport(id, providerId),
     supportsThinking,
-    thinkingApi: partial?.thinkingApi ?? (providerId ? thinkingApiFor(id, providerId) : undefined),
+    thinkingApi,
+    supportedThinkingEfforts:
+      partial?.supportedThinkingEfforts ?? defaults.supportedThinkingEfforts,
+    thinkingCanDisable: partial?.thinkingCanDisable ?? defaults.thinkingCanDisable,
+    thinkingDefaultEffort: partial?.thinkingDefaultEffort ?? defaults.thinkingDefaultEffort,
+    thinkingSupportsTokenBudget: partial?.thinkingSupportsTokenBudget,
+    thinkingMode: partial?.thinkingMode ?? defaults.thinkingMode,
     supportedServiceTiers:
       supportedServiceTiers.length > 0 ? supportedServiceTiers : undefined
   }
@@ -130,8 +286,7 @@ export function normalizeOpenAiStyleModels(
     const id = typeof row.id === 'string' ? row.id : typeof row.name === 'string' ? row.name : null
     if (!id || !looksLikeChatModel(id)) continue
 
-    const supported = row.supported_parameters
-    const supportedParams = Array.isArray(supported) ? (supported as string[]) : undefined
+    const supportedParams = supportedParamsList(row)
     if (opts?.requireToolsParam && supportedParams && !supportedParams.includes('tools')) {
       continue
     }
@@ -163,6 +318,7 @@ export function normalizeOpenAiStyleModels(
           : undefined
 
     const serviceTiers = inferSupportedServiceTiers(id, providerId, supportedParams)
+    const thinkingPartial = thinkingPartialFromCatalogRow(row, providerId)
 
     out.push(
       baseModelInfo(
@@ -176,7 +332,8 @@ export function normalizeOpenAiStyleModels(
           outputModalities: wireSupportedOutputModalities(outputMods),
           supportsTools,
           supportsVision,
-          supportedServiceTiers: serviceTiers.length > 0 ? serviceTiers : undefined
+          supportedServiceTiers: serviceTiers.length > 0 ? serviceTiers : undefined,
+          ...thinkingPartial
         },
         providerId
       )

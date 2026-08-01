@@ -2,13 +2,14 @@ import type { ChatMessage, ContentPart, MessageContent, ModelInfo, ProviderId } 
 import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
 import { isOllamaCloudHost, ollamaNativeHost } from '../../../shared/providers'
-import { parseProviderReasoningState, normalizeEffortForOpenAiCompatReasoning } from '../../../shared/reasoning'
+import { parseProviderReasoningState, normalizeEffortForOpenAiCompatReasoning, normalizeEffortForDeepSeek, coerceEffortToAllowed } from '../../../shared/reasoning'
 import { serviceTierForApiBody } from '../../../shared/domain/serviceTier'
 import {
   baseModelInfo,
   looksLikeChatModel,
   normalizeOpenAiStyleModels,
   parseDataUrl,
+  thinkingPartialFromCatalogRow,
   wireSupportedInputModalities,
   wireSupportedOutputModalities
 } from './normalize'
@@ -352,10 +353,14 @@ function modelsFromOllamaTags(data: unknown): ModelInfo[] {
     .map((m) => m.name)
     .filter((n): n is string => Boolean(n))
   return names.map((name) =>
-    baseModelInfo(name, {
-      supportsTools: true,
-      supportsVision: /llava|vision/i.test(name)
-    })
+    baseModelInfo(
+      name,
+      {
+        supportsTools: true,
+        supportsVision: /llava|vision/i.test(name)
+      },
+      'ollama'
+    )
   )
 }
 
@@ -365,10 +370,14 @@ function mergeOllamaTagNames(models: ModelInfo[], names: string[]): ModelInfo[] 
   for (const name of names) {
     if (seen.has(name)) continue
     out.push(
-      baseModelInfo(name, {
-        supportsTools: true,
-        supportsVision: /llava|vision/i.test(name)
-      })
+      baseModelInfo(
+        name,
+        {
+          supportsTools: true,
+          supportsVision: /llava|vision/i.test(name)
+        },
+        'ollama'
+      )
     )
     seen.add(name)
   }
@@ -398,6 +407,7 @@ function normalizeXaiLanguageModels(data: unknown): ModelInfo[] {
       ? (row.input_modalities as string[])
       : ['text']
     const supportsVision = inputMods.includes('image')
+    const thinkingPartial = thinkingPartialFromCatalogRow(row, 'xai')
     out.push(
       baseModelInfo(id, {
         displayName: typeof row.name === 'string' ? row.name : id,
@@ -410,7 +420,8 @@ function normalizeXaiLanguageModels(data: unknown): ModelInfo[] {
         inputModalities: wireSupportedInputModalities(inputMods, supportsVision, 'xai'),
         outputModalities: wireSupportedOutputModalities(outputMods),
         supportsTools: true,
-        supportsVision
+        supportsVision,
+        ...thinkingPartial
       }, 'xai')
     )
   }
@@ -557,23 +568,47 @@ export function buildOpenAiCompatBody(
   }
 
   if (req.thinking?.enabled && !overrides?.omitReasoning) {
+    const allowed = req.modelInfo?.supportedThinkingEfforts
+    const effort = coerceEffortToAllowed(req.thinking.effort, allowed)
     if (opts.deepseekThinking || providerId === 'deepseek') {
       body.thinking = { type: 'enabled' }
-      if (req.thinking.effort) body.reasoning_effort = req.thinking.effort
+      body.reasoning_effort = normalizeEffortForDeepSeek(effort)
     } else if (opts.openRouterReasoning || providerId === 'openrouter') {
-      body.reasoning = {
-        effort: req.thinking.effort ?? 'medium',
-        ...(req.thinking.maxTokens ? { max_tokens: req.thinking.maxTokens } : {})
+      const reasoning: Record<string, unknown> = { effort }
+      if (
+        req.thinking.maxTokens &&
+        (req.modelInfo?.thinkingSupportsTokenBudget || req.thinking.maxTokens)
+      ) {
+        reasoning.max_tokens = req.thinking.maxTokens
       }
+      body.reasoning = reasoning
     } else if (providerId === 'groq') {
-      body.reasoning_effort = normalizeEffortForOpenAiCompatReasoning(req.thinking.effort, 'groq')
-      body.include_reasoning = true
-      body.reasoning_format = req.thinking.display === 'omitted' ? 'hidden' : 'parsed'
+      body.reasoning_effort = normalizeEffortForOpenAiCompatReasoning(effort, 'groq')
+      // include_reasoning and reasoning_format are mutually exclusive (Groq docs).
+      if (req.thinking.display === 'omitted') {
+        body.reasoning_format = 'hidden'
+      } else {
+        body.include_reasoning = true
+      }
     } else if (providerId === 'xai') {
-      body.reasoning_effort = normalizeEffortForOpenAiCompatReasoning(req.thinking.effort, 'xai')
+      body.reasoning_effort = normalizeEffortForOpenAiCompatReasoning(effort, 'xai')
     } else if (providerId === 'ollama') {
       body.think = true
     }
+  } else if (req.thinking?.enabled === false && providerId === 'ollama') {
+    body.think = false
+  } else if (
+    req.thinking?.enabled === false &&
+    (opts.deepseekThinking || providerId === 'deepseek')
+  ) {
+    body.thinking = { type: 'disabled' }
+  } else if (
+    req.thinking?.enabled === false &&
+    (opts.openRouterReasoning || providerId === 'openrouter') &&
+    req.modelInfo?.thinkingCanDisable !== false &&
+    req.modelInfo?.supportsThinking
+  ) {
+    body.reasoning = { effort: 'none' }
   }
 
   const tier = serviceTierForApiBody(req.serviceTier)
