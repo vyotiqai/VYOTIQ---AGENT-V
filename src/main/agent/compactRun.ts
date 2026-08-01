@@ -9,6 +9,7 @@ import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/worksp
 import { allocateBudget, contentWindow, contextWindowFor } from './context/budget'
 import { compactMessages, preserveRecentMessagesAsync } from './context/compact'
 import { estimateMessagesTokensAsync } from './context/estimate'
+import { applyFoldedMessagesWatermark } from './context/historyTrim'
 import { isTrimWatermarkCompaction, KEEP_RECENT_TURNS } from './context/types'
 import { resolveModelInfo } from './modelResolve'
 import { getProvider } from './providers'
@@ -61,7 +62,10 @@ export async function compactRunNow(input: {
   const existing = loadCompaction(runDir)
   const folded = existing?.foldedMessages ?? 0
   const all = loadMessages(input.workspacePath, input.runId)
-  const working: ChatMessage[] = folded > 0 && folded < all.length ? all.slice(folded) : all
+  // Same watermark helper as resume — avoids orphan leading tool rows.
+  const applied = applyFoldedMessagesWatermark(all, folded)
+  const working = applied.messages
+  const baseFolded = applied.foldedMessages
 
   if (working.length < MIN_MESSAGES_TO_COMPACT) {
     throw new CompactionUnavailableError('Not enough history to compact yet.')
@@ -100,9 +104,11 @@ export async function compactRunNow(input: {
 
   if (!record) throw new CompactionUnavailableError('The model returned no summary.')
 
-  const foldedMessages = folded + toSummarize.length
+  const foldedMessages = baseFolded + toSummarize.length
   const compactionRecord = { ...record, foldedMessages }
-  saveCompaction(runDir, compactionRecord)
+  if (!saveCompaction(runDir, compactionRecord)) {
+    throw new CompactionUnavailableError('Failed to persist compaction record.')
+  }
 
   logger.info('Manual compaction complete', {
     scope: 'agent',

@@ -29,7 +29,7 @@ describe('contextUsage', () => {
     })
   })
 
-  it('does not reuse estimate layers for provider context_usage', () => {
+  it('reuses prior estimate layers when provider context_usage omits them', () => {
     const prior = { system: 100, history: 900, tools: 200, buffer: 19200 }
     const state = contextUsageFromEvent(
       {
@@ -46,7 +46,7 @@ describe('contextUsage', () => {
       undefined,
       prior
     )
-    expect(state?.layers).toEqual({ system: 0, history: 0, tools: 0, buffer: 0 })
+    expect(state?.layers).toEqual(prior)
     expect(state?.source).toBe('provider')
     expect(state?.used).toBe(1100)
   })
@@ -119,7 +119,7 @@ describe('contextUsage', () => {
     expect(state?.stepUsage.cachedInputTokens).toBe(300)
   })
 
-  it('clears layers when provider events omit them during replay', () => {
+  it('keeps prior estimate layers when provider events omit them during replay', () => {
     const state = summarizeContextUsageFromEvents([
       {
         at: '2026-01-01T00:00:00.000Z',
@@ -151,7 +151,7 @@ describe('contextUsage', () => {
     ])
     expect(state?.used).toBe(900)
     expect(state?.source).toBe('provider')
-    expect(state?.layers).toEqual({ system: 0, history: 0, tools: 0, buffer: 0 })
+    expect(state?.layers).toEqual({ system: 50, history: 600, tools: 150, buffer: 4800 })
   })
 
   it('realigns stale 128k events to the real model window', () => {

@@ -924,6 +924,46 @@ describe('transcriptRowFingerprint / stabilizeTranscriptRows', () => {
     expect(stable[0]).not.toBe(prev[0])
   })
 
+  it('invalidates activity identity when nestedAgent leaves update', () => {
+    const base: UiItem = {
+      kind: 'tool',
+      id: 'sub-1',
+      tool: {
+        id: 'sub-1',
+        name: 'subagent',
+        summary: 'audit',
+        status: 'running',
+        presentation: 'prominent'
+      },
+      nestedAgent: {
+        subagentId: 'n1',
+        leaves: [{ kind: 'text', id: 'text-1', text: 'hi', streaming: true }]
+      }
+    }
+    const grown: UiItem = {
+      ...base,
+      nestedAgent: {
+        subagentId: 'n1',
+        leaves: [
+          { kind: 'text', id: 'text-1', text: 'hi there', streaming: true },
+          {
+            kind: 'tool',
+            id: 't1',
+            tool: { id: 't1', name: 'read', summary: 'a.ts', status: 'running' }
+          }
+        ]
+      }
+    }
+    const prev = buildTranscriptRows([base])
+    const next = buildTranscriptRows([grown])
+    expect(prev[0]?.kind).toBe('activity')
+    expect(next[0]?.kind).toBe('activity')
+    if (prev[0]?.kind !== 'activity' || next[0]?.kind !== 'activity') return
+    expect(transcriptRowFingerprint(prev[0])).not.toBe(transcriptRowFingerprint(next[0]))
+    const stable = stabilizeTranscriptRows(prev, next)
+    expect(stable[0]).not.toBe(prev[0])
+  })
+
   it('reuses activity row identity when only unrelated fields are unchanged', () => {
     const item: UiItem = {
       kind: 'tool',

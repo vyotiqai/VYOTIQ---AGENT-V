@@ -990,6 +990,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const path = String(args.path ?? '')
     const contents = typeof args.contents === 'string' ? args.contents : ''
     const content = toolMemoryWrite(workspace, path, contents)
+    clearWorkspaceSnapshotCache(workspace)
     return toolOk('memory_write', path, content)
   },
   git_status: async (workspace, _args, signal) => {

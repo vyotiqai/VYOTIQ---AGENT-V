@@ -23,7 +23,7 @@ export function combineLoopHints(...hints: Array<string | undefined>): string | 
 /** When auto-compaction runs but produces no summary (provider error / empty). */
 export function loopHintForCompactionFailure(): string {
   return [
-    'Automatic history compaction produced no summary this step; older turns may still be large.',
+    'Automatic history compaction produced no summary; older turns were trimmed to keep recent context.',
     'Move durable facts into memory, or ask the user to run /compact.'
   ].join(' ')
 }

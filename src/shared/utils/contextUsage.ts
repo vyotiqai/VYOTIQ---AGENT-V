@@ -46,15 +46,14 @@ const EMPTY_LAYERS: ContextLayerBreakdown = {
 export function contextUsageFromEvent(
   event: AgentEvent,
   stepUsage: StepUsageTotals = emptyStepUsageTotals(),
-  /** Prior estimate-layer split for estimate events that omit layers. */
+  /** Prior layer split when the event omits layers (estimate or provider). */
   previousLayers?: ContextLayerBreakdown | null
 ): ContextUsageState | null {
   if (event.type !== 'context_usage') return null
   const used = event.inputTokens ?? event.estimatedTokens
-  // Provider totals are not layer-aligned — never reuse estimate splits with them.
-  const layers =
-    event.layers ??
-    (event.source === 'estimate' ? (previousLayers ?? EMPTY_LAYERS) : EMPTY_LAYERS)
+  // Prefer event layers; otherwise keep prior estimate split for display when
+  // provider events omit layers (provider totals are not layer-aligned).
+  const layers = event.layers ?? previousLayers ?? EMPTY_LAYERS
   return {
     step: event.step,
     used,

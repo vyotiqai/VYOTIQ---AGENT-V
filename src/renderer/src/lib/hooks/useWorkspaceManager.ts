@@ -66,6 +66,19 @@ const ORPHAN_QUESTION_BUFFER_MAX = 16
 const ORPHAN_USAGE_TYPES = new Set<AgentEvent['type']>(['step_usage', 'context_usage'])
 
 const ORPHAN_DELTA_TYPES = new Set<AgentEvent['type']>(['text_delta', 'thinking_delta'])
+/** Never FIFO-drop these under backpressure while a non-critical remains (or incoming). */
+const ORPHAN_CRITICAL_TYPES = new Set<AgentEvent['type']>([
+  'tool_start',
+  'tool_result',
+  'status',
+  'writes_checkpoint',
+  'incomplete',
+  'error',
+  'subagent_event',
+  'subagent_update',
+  'compaction',
+  'mode_changed'
+])
 const UI_PERSIST_DEBOUNCE_MS = 300
 const LIST_RUNS_DEBOUNCE_MS = 300
 
@@ -457,7 +470,16 @@ export function useWorkspaceManager() {
         else {
           const usageIdx = buffered.findIndex((ev) => ORPHAN_USAGE_TYPES.has(ev.type))
           if (usageIdx >= 0) buffered.splice(usageIdx, 1)
-          else buffered.shift()
+          else {
+            const nonCriticalIdx = buffered.findIndex((ev) => !ORPHAN_CRITICAL_TYPES.has(ev.type))
+            if (nonCriticalIdx >= 0) buffered.splice(nonCriticalIdx, 1)
+            else if (!ORPHAN_CRITICAL_TYPES.has(event.type)) {
+              // Buffer is all critical — drop the incoming non-critical instead.
+              return
+            } else {
+              buffered.shift()
+            }
+          }
         }
       }
     }

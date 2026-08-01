@@ -263,6 +263,24 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
           const sub = t.subagent?.length ?? 0
           const subLast = t.subagent?.[t.subagent.length - 1]
           const usage = t.subagentContextUsage
+          const nested = t.nestedAgent
+          const nestedSig = nested
+            ? [
+                nested.subagentId,
+                nested.leaves.length,
+                nested.leaves
+                  .map((leaf) => {
+                    if (leaf.kind === 'text' || leaf.kind === 'thinking') {
+                      return `${leaf.kind}:${leaf.id}:${leaf.text.length}:${leaf.streaming ? 1 : 0}`
+                    }
+                    return `tool:${leaf.id}:${leaf.tool.status}:${leaf.tool.content?.length ?? 0}:${leaf.approval?.requestId ?? ''}`
+                  })
+                  .join(','),
+                nested.contextUsage
+                  ? `${nested.contextUsage.step}:${nested.contextUsage.used}:${nested.contextUsage.updatedAt}`
+                  : ''
+              ].join(';')
+            : ''
           return [
             t.id,
             t.tool.status,
@@ -274,7 +292,8 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
             t.toolExpanded ?? '',
             sub,
             subLast ? `${subLast.kind}:${subLast.text.length}` : '',
-            usage ? `${usage.step}:${usage.used}:${usage.updatedAt}` : ''
+            usage ? `${usage.step}:${usage.used}:${usage.updatedAt}` : '',
+            nestedSig
           ].join(':')
         })
         .join('|')}`

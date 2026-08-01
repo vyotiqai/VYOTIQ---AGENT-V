@@ -415,6 +415,11 @@ export async function assembleContext(
         compaction = record
         contextShrunk = true
       } else {
+        // Summarize failed — keep recent turns and shrink so the next step does
+        // not re-invoke the same compaction LLM call. The loop persists a trim
+        // watermark from contextShrunk + dropped count.
+        messages = keptForBoundary
+        contextShrunk = true
         systemParts.loopHint = combineLoopHints(
           systemParts.loopHint,
           loopHintForCompactionFailure()

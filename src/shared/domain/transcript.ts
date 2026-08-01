@@ -64,6 +64,8 @@ export type UiNestedAgentState = {
   subagentId: string
   leaves: UiNestedAgentLeaf[]
   contextUsage?: UiSubagentContextUsage
+  /** Monotonic id counter so stream_reset cannot reuse leaf React keys. */
+  leafSeq?: number
 }
 
 /** A document the user attached, shown as a chip instead of its extracted text. */
@@ -740,16 +742,21 @@ export function reduceNestedAgentEvent(
 ): UiNestedAgentState {
   const state: UiNestedAgentState = prev?.subagentId === subagentId
     ? { ...prev, leaves: [...prev.leaves] }
-    : { subagentId, leaves: [] }
+    : { subagentId, leaves: [], leafSeq: 0 }
 
   const leaves = state.leaves
+  const nextLeafId = (prefix: string): string => {
+    const seq = (state.leafSeq ?? leaves.length) + 1
+    state.leafSeq = seq
+    return `${prefix}-${seq}`
+  }
 
   if (event.type === 'text_delta' && event.text) {
     const last = leaves[leaves.length - 1]
     if (last?.kind === 'text' && last.streaming) {
       leaves[leaves.length - 1] = { ...last, text: last.text + event.text }
     } else {
-      leaves.push({ kind: 'text', id: `text-${leaves.length}`, text: event.text, streaming: true })
+      leaves.push({ kind: 'text', id: nextLeafId('text'), text: event.text, streaming: true })
     }
   } else if (event.type === 'thinking_delta' && event.text) {
     const last = leaves[leaves.length - 1]
@@ -758,7 +765,7 @@ export function reduceNestedAgentEvent(
     } else {
       leaves.push({
         kind: 'thinking',
-        id: `think-${leaves.length}`,
+        id: nextLeafId('think'),
         text: event.text,
         streaming: true
       })
@@ -772,7 +779,7 @@ export function reduceNestedAgentEvent(
         streaming: false
       }
     } else if (event.text) {
-      leaves.push({ kind: 'thinking', id: `think-${leaves.length}`, text: event.text })
+      leaves.push({ kind: 'thinking', id: nextLeafId('think'), text: event.text })
     }
   } else if (event.type === 'assistant_message') {
     // Finalize streaming text; replace with complete assistant content.
@@ -784,10 +791,10 @@ export function reduceNestedAgentEvent(
       }
     }
     if (event.content && !leaves.some((l) => l.kind === 'text' && l.text === event.content)) {
-      leaves.push({ kind: 'text', id: `msg-${leaves.length}`, text: event.content })
+      leaves.push({ kind: 'text', id: nextLeafId('msg'), text: event.content })
     }
     if (event.thinking) {
-      leaves.push({ kind: 'thinking', id: `think-${leaves.length}`, text: event.thinking })
+      leaves.push({ kind: 'thinking', id: nextLeafId('think'), text: event.thinking })
     }
   } else if (event.type === 'tool_call_delta' || event.type === 'tool_start') {
     const toolCallId =

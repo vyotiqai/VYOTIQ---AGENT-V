@@ -106,7 +106,7 @@ export async function readPlanAsync(runDir: string): Promise<string> {
   }
 }
 
-export function saveCompaction(runDir: string, record: CompactionRecord): void {
+export function saveCompaction(runDir: string, record: CompactionRecord): boolean {
   const parsed = CompactionRecordSchema.safeParse(record)
   if (!parsed.success) {
     logger.warn('Invalid compaction record; not saved', {
@@ -114,9 +114,19 @@ export function saveCompaction(runDir: string, record: CompactionRecord): void {
       correlationId: basename(runDir),
       err: parsed.error
     })
-    return
+    return false
   }
-  atomicWriteJson(join(runDir, 'compaction.json'), parsed.data)
+  try {
+    atomicWriteJson(join(runDir, 'compaction.json'), parsed.data)
+    return true
+  } catch (err) {
+    logger.warn('Failed to write compaction.json', {
+      scope: 'state',
+      correlationId: basename(runDir),
+      err
+    })
+    return false
+  }
 }
 
 export function loadCompaction(runDir: string): CompactionRecord | null {

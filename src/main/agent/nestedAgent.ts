@@ -58,7 +58,8 @@ import {
   flushEventAppends,
   flushMessageAppends,
   readContractAsync,
-  readPlanAsync
+  readPlanAsync,
+  saveCompaction
 } from './state'
 import { AGENT_TOOLS } from './types'
 import { listMcpToolDefinitions, parseMcpToolName, syncMcpServers } from './mcp'
@@ -504,7 +505,17 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
         }
       }
     }
-    if (compactionWithWatermark) compactionState.current = compactionWithWatermark
+    if (compactionWithWatermark) {
+      if (childDir && !saveCompaction(childDir, compactionWithWatermark)) {
+        logger.warn('Nested compaction not persisted; keeping prior in-memory record', {
+          scope: 'agent',
+          correlationId: runId,
+          subagentId: options.subagentId
+        })
+      } else {
+        compactionState.current = compactionWithWatermark
+      }
+    }
     if (assembled.contextShrunk || compactionState.current?.summary !== priorCompactionSummary) {
       lastUsage = { inputTokens: assembled.estimatedTokens }
     }
@@ -852,10 +863,15 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
     if (scrubbed.trim()) lastText = scrubbed
 
     if (!uniqueToolCalls.length) {
+      // Mirror main-loop classifyIncompleteTurn: length/tool_calls/content_filter/
+      // unknown/error and empty responses are truncated — not finished reports.
       const incomplete =
         stepStopReason === 'length' ||
         stepStopReason === 'tool_calls' ||
-        (stepStopReason === 'error' && !scrubbed.trim())
+        stepStopReason === 'content_filter' ||
+        stepStopReason === 'unknown' ||
+        stepStopReason === 'error' ||
+        (!scrubbed.trim() && !thinkingText.trim())
       if (incomplete && truncationContinues < MAX_TRUNCATION_CONTINUES) {
         truncationContinues++
         persistMsg({
@@ -872,14 +888,16 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
       }
 
       const report = scrubbed.trim()
-      if (!report) {
+      if (!report || incomplete) {
         return await finalizeNested(options, {
           ok: false,
           report: options.signal.aborted
             ? 'Nested agent was cancelled before it reported anything.'
-            : lastText.trim()
-              ? 'Nested agent stopped without a final report after using tools.'
-              : 'Nested agent finished without producing a report.',
+            : incomplete && report
+              ? `Nested agent stopped early (${stepStopReason ?? 'incomplete'}): ${report}`
+              : lastText.trim()
+                ? 'Nested agent stopped without a final report after using tools.'
+                : 'Nested agent finished without producing a report.',
           steps: step
         }, childDir)
       }

@@ -492,8 +492,14 @@ export async function* runAgent(input: {
       }
       const summaryChanged =
         compaction?.summary !== record.summary || compaction?.createdAt !== record.createdAt
+      if (!saveCompaction(runDir, record)) {
+        logger.warn('Compaction not persisted; keeping prior in-memory record', {
+          scope: 'agent',
+          correlationId: runId
+        })
+        return null
+      }
       compaction = record
-      saveCompaction(runDir, record)
       // UI notice only when a real summary changed, not trim watermarks / folded bumps
       if (!summaryChanged || isTrimWatermarkCompaction(record)) {
         return null
