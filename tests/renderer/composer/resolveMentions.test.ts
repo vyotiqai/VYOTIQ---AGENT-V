@@ -168,6 +168,28 @@ describe('resolveComposerMentions', () => {
     expect(result.error).toBeNull()
   })
 
+  it('pointers auto-injected rules instead of re-pasting the body', async () => {
+    window.vyotiq.workspaceReadText = vi.fn(async ({ path }: { path: string }) => ({
+      ok: true as const,
+      data: {
+        name: path,
+        mime: 'text/plain',
+        text: path === 'AGENTS.md' ? '# Agents\nAlways do X.' : `content of ${path}`,
+        truncated: false
+      }
+    }))
+    const draft = mentionMarker({ kind: 'rule', path: 'AGENTS.md' })
+    const result = await resolveComposerMentions({
+      workspacePath: '/ws',
+      draft,
+      existingFiles: []
+    })
+    expect(result.text).toContain('Referenced rule: AGENTS.md')
+    expect(result.text).toContain('Already included in the system prompt')
+    expect(result.text).not.toContain('Always do X')
+    expect(result.error).toBeNull()
+  })
+
   it('resolves lint diagnostics mentions', async () => {
     const draft = mentionMarker({ kind: 'lints', diagnosticsKind: 'lint' })
     const result = await resolveComposerMentions({

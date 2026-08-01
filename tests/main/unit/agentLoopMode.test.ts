@@ -247,4 +247,34 @@ describe('runAgent mode and API key', () => {
     expect(err?.message).toMatch(/API key for openai is not set/i)
     expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
   })
+
+  it('exits early with PROVIDER_AUTH when Ollama Cloud API key is missing', async () => {
+    getSettings.mockImplementation(() => ({
+      ...DEFAULT_SETTINGS,
+      provider: 'ollama' as const,
+      model: 'gpt-oss:120b',
+      ollamaBaseUrl: 'https://ollama.com'
+    }))
+    getSecret.mockReturnValue(null)
+    hasStoredSecretBlob.mockReturnValue(false)
+    secretStatus.mockReturnValue({
+      encryptionAvailable: true,
+      providers: {} as Record<string, never>
+    })
+
+    const events: Array<{ type: string; status?: string; code?: string; message?: string }> = []
+    for await (const ev of runAgent({
+      runId: 'ollama-cloud-missing-key',
+      messages: [{ role: 'user', content: 'hi' }],
+      workspacePath: workspace
+    })) {
+      events.push(ev)
+    }
+
+    expect(streamChat).not.toHaveBeenCalled()
+    const err = events.find((e) => e.type === 'error')
+    expect(err?.code).toBe('PROVIDER_AUTH')
+    expect(err?.message).toMatch(/API key for ollama is not set/i)
+    expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
+  })
 })

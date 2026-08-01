@@ -20,6 +20,7 @@ import { toolWebSearch } from './webSearch'
 import { isFindstrNoMatchContent, isDirMissingPathContent, toolTerminal, TERMINAL_MAX_TIMEOUT_MS } from './terminal'
 import { runSubagent, SubagentDepthError, type SubagentContextUsage } from '../subagent'
 import { toolMemoryList, toolMemoryRead, toolMemoryWrite } from './memory'
+import { toolSkill, summarizeSkillArgs } from './skill'
 import { toolGitDiffAsync, toolGitStatusAsync } from './gitHelpers'
 import { toolDiagnosticsAsync } from './diagnostics'
 import { getSettings } from '@main/settings/settings'
@@ -358,7 +359,9 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     throwIfAborted(signal)
     const path = String(args.path ?? '')
     const recursive = args.recursive === true
-    getWriteCheckpoint(context.runDir)?.recordPrior(path, 'delete', { recursiveDir: recursive })
+    if (!context.skipWriteCheckpoint) {
+      getWriteCheckpoint(context.runDir)?.recordPrior(path, 'delete', { recursiveDir: recursive })
+    }
     const content = toolDelete(workspace, path, recursive)
     invalidateGitStatusCache(workspace)
     clearWorkspaceSnapshotCache(workspace)
@@ -992,6 +995,18 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const content = toolMemoryWrite(workspace, path, contents)
     clearWorkspaceSnapshotCache(workspace)
     return toolOk('memory_write', path, content)
+  },
+  Skill: (workspace, args, signal) => {
+    throwIfAborted(signal)
+    const name = String(args.name ?? '')
+    const path = typeof args.path === 'string' ? args.path : undefined
+    try {
+      const content = toolSkill(workspace, name, path)
+      return toolOk('Skill', summarizeSkillArgs(name, path), content.slice(0, READ_CONTENT_CAP))
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return toolFail('Skill', summarizeSkillArgs(name, path), msg)
+    }
   },
   git_status: async (workspace, _args, signal) => {
     throwIfAborted(signal)

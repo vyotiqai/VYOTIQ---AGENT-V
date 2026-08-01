@@ -31,44 +31,41 @@ import { combineLoopHints, loopHintForCompactionFailure } from '../loopPolicy'
 const COMPACTION_MIN_MESSAGES = 4
 const COMPACTION_MIN_TOKENS = 2000
 
-type SystemCacheEntry = { fingerprint: string; system: string }
+/** In-process cache for the stable instruction prefix only (not the volatile tail). */
+type SystemCacheEntry = { fingerprint: string; stable: string }
 let systemPromptCache: SystemCacheEntry | null = null
 
-function systemFingerprint(parts: {
+/** @internal — clear stable system-prefix cache (tests). */
+export function clearSystemPromptCache(): void {
+  systemPromptCache = null
+}
+
+/**
+ * Fingerprint of durable instruction layers only. Volatile data (clock, snapshot,
+ * memory, loop hints, compaction summary) must not appear here or the cache
+ * never hits across steps.
+ */
+function stableSystemFingerprint(parts: {
   harness: string
-  workspace: string
   rules: string
   skillsSection: string
   pluginRulesSection: string
-  memoryIndex: string
-  memoryState: string
   contract: string
   plan: string
   modeSection?: string
-  sessionEnv?: string
   nestedRoleSection?: string
-  compactionSummary?: string
-  loopHint?: string
-  historyBudget: number
-  toolsBudget: number
+  systemBudget: number
 }): string {
   return [
     parts.harness,
-    parts.workspace,
     parts.rules,
     parts.skillsSection,
     parts.pluginRulesSection,
-    parts.memoryIndex,
-    parts.memoryState,
     parts.contract,
     parts.plan,
     parts.modeSection ?? '',
-    parts.sessionEnv ?? '',
     parts.nestedRoleSection ?? '',
-    parts.compactionSummary ?? '',
-    parts.loopHint ?? '',
-    String(parts.historyBudget),
-    String(parts.toolsBudget)
+    String(parts.systemBudget)
   ].join('\0')
 }
 
@@ -78,14 +75,20 @@ function capText(text: string, maxTokens: number): string {
   return text.slice(0, maxChars) + '\n…'
 }
 
-/** Lower priority = drop first when capping. Tool policy / work style kept longest. */
+/**
+ * Lower priority = drop first when capping. Core instruction sections kept longest.
+ * All core instruction headings are >= 95 so capHarness never discards them.
+ */
 function harnessSectionPriority(heading: string): number {
   const h = heading.toLowerCase()
-  if (h.includes('tool')) return 100
-  if (h.includes('work style') || h.includes('workstyle')) return 90
-  if (h.includes('context')) return 80
-  if (h.includes('safety')) return 70
-  if (h.includes('memory')) return 40
+  if (h.includes('role')) return 100
+  if (h.includes('tool')) return 99
+  if (h.includes('constraints')) return 98
+  if (h.includes('output format')) return 97
+  if (h.includes('capabilities')) return 96
+  if (h.includes('work style') || h.includes('workstyle')) return 95
+  if (h.includes('memory')) return 50
+  if (h.includes('context')) return 40
   return 20
 }
 
@@ -121,7 +124,7 @@ function capHarness(text: string, maxTokens: number): string {
     (a, b) => sections[a].priority - sections[b].priority
   )
   for (const idx of dropOrder) {
-    if (sections[idx].priority >= 100) continue
+    if (sections[idx].priority >= 95) continue
     sections[idx].keep = false
     out = joined()
     if (out.length <= maxChars) return out
@@ -130,6 +133,156 @@ function capHarness(text: string, maxTokens: number): string {
   return capText(out || text, maxTokens)
 }
 
+function buildStableSystem(parts: {
+  harness: string
+  rules: string
+  skillsSection?: string
+  pluginRulesSection?: string
+  contract?: string
+  plan?: string
+  modeSection?: string
+  nestedRoleSection?: string
+  budgets: ReturnType<typeof allocateBudget>
+  model: ModelInfo
+}): string {
+  const fingerprint = stableSystemFingerprint({
+    harness: parts.harness,
+    rules: parts.rules,
+    skillsSection: parts.skillsSection ?? '',
+    pluginRulesSection: parts.pluginRulesSection ?? '',
+    contract: parts.contract ?? '',
+    plan: parts.plan ?? '',
+    modeSection: parts.modeSection,
+    nestedRoleSection: parts.nestedRoleSection,
+    systemBudget: parts.budgets.system
+  })
+  if (systemPromptCache?.fingerprint === fingerprint) {
+    return systemPromptCache.stable
+  }
+
+  const sections: string[] = []
+  let systemTokensLeft = parts.budgets.system
+  function capWithinSystem(
+    text: string,
+    requested: number,
+    capFn: (text: string, maxTokens: number) => string = capText
+  ): string | null {
+    if (systemTokensLeft < 50) return null
+    const allowed = Math.min(requested, systemTokensLeft)
+    const capped = capFn(text, allowed)
+    const used = estimateTextTokens(capped, parts.model)
+    systemTokensLeft -= used
+    return capped
+  }
+
+  const harness = capWithinSystem(
+    parts.harness,
+    Math.floor(parts.budgets.system * 0.75),
+    capHarness
+  )
+  if (harness) sections.push(harness)
+
+  // Mode and nested role are high-authority session directives. Mode is placed
+  // before the nested role so the more specific subagent role can override mode
+  // statements when the two conflict.
+  if (parts.modeSection?.trim()) {
+    const mode = capWithinSystem(
+      parts.modeSection.trim(),
+      Math.max(400, Math.floor(parts.budgets.system * 0.35))
+    )
+    if (mode) sections.push(mode)
+  }
+  if (parts.nestedRoleSection?.trim()) {
+    const nested = capWithinSystem(
+      parts.nestedRoleSection.trim(),
+      Math.max(300, Math.floor(parts.budgets.system * 0.25))
+    )
+    if (nested) sections.push(nested)
+  }
+
+  // Run directives come before rules/skills so they are not buried.
+  if (parts.contract?.trim()) {
+    // Strip an existing `# Run contract` or `## Run contract` heading so we
+    // don't duplicate the wrapper we prepend.
+    const contractBody = parts.contract.trim().replace(/^#+\s*Run contract\s*(?:\r?\n)*/i, '')
+    const contract = capWithinSystem(
+      `## Run contract\n${contractBody}`,
+      Math.floor(parts.budgets.system * 0.4)
+    )
+    if (contract) sections.push(contract)
+  }
+  if (parts.plan?.trim()) {
+    const planBody = parts.plan.trim().replace(/^#+\s*Plan\s*(?:\r?\n)*/i, '')
+    const plan = capWithinSystem(`## Plan\n${planBody}`, Math.floor(parts.budgets.system * 0.4))
+    if (plan) sections.push(plan)
+  }
+
+  // Workspace conventions and add-on rules (metadata for skills / plugin rules).
+  if (parts.skillsSection?.trim()) {
+    const skills = capWithinSystem(parts.skillsSection.trim(), Math.floor(parts.budgets.system * 0.35))
+    if (skills) sections.push(skills)
+  }
+  if (parts.pluginRulesSection?.trim()) {
+    const plugins = capWithinSystem(parts.pluginRulesSection.trim(), Math.floor(parts.budgets.system * 0.25))
+    if (plugins) sections.push(plugins)
+  }
+  if (parts.rules.trim()) {
+    const rules = capWithinSystem(parts.rules.trim(), Math.floor(parts.budgets.system * 0.5))
+    if (rules) sections.push(rules)
+  }
+
+  const stable = sections.join('\n\n')
+  systemPromptCache = { fingerprint, stable }
+  return stable
+}
+
+/** Per-step data layers: clock, snapshot, notices, memory, compaction summary. */
+function buildVolatileSystem(parts: {
+  workspace: string
+  memoryIndex: string
+  memoryState: string
+  sessionEnv?: string
+  compaction?: CompactionRecord | null
+  budgets: ReturnType<typeof allocateBudget>
+  loopHint?: string
+}): string {
+  const sections: string[] = []
+  const mw = Math.floor(parts.budgets.memoryWorkspace / 3)
+  const envCap = Math.max(200, Math.floor(parts.budgets.system * 0.15))
+
+  // Session env and workspace snapshot are data, not instructions.
+  if (parts.sessionEnv?.trim()) {
+    sections.push(capText(parts.sessionEnv.trim(), envCap))
+  }
+  if (parts.workspace.trim()) {
+    sections.push(capText(parts.workspace, mw))
+  }
+  if (parts.loopHint?.trim()) {
+    sections.push(`## Run notice\n${capText(parts.loopHint.trim(), Math.floor(mw * 0.5))}`)
+  }
+  if (parts.memoryIndex.trim()) {
+    sections.push(`## Memory index\n${capText(parts.memoryIndex, mw)}`)
+  }
+  if (parts.memoryState.trim()) {
+    sections.push(`## Memory state\n${capText(parts.memoryState, mw)}`)
+  }
+  if (parts.compaction?.summary && !isTrimWatermarkCompaction(parts.compaction)) {
+    sections.push(
+      [
+        '## Prior session summary',
+        // Summaries accumulate across compact, so this needs a cap like every
+        // other section or it can crowd out the harness it sits beside.
+        capText(parts.compaction.summary, mw)
+      ].join('\n')
+    )
+  }
+  return sections.join('\n\n')
+}
+
+/**
+ * Two-zone system string: stable instruction prefix + volatile data tail.
+ * Providers still receive a single `system` channel.
+ */
 function buildSystem(parts: {
   harness: string
   workspace: string
@@ -148,115 +301,30 @@ function buildSystem(parts: {
   loopHint?: string
   model: ModelInfo
 }): string {
-  const fingerprint = systemFingerprint({
+  const stable = buildStableSystem({
     harness: parts.harness,
-    workspace: parts.workspace,
     rules: parts.rules,
-    skillsSection: parts.skillsSection ?? '',
-    pluginRulesSection: parts.pluginRulesSection ?? '',
+    skillsSection: parts.skillsSection,
+    pluginRulesSection: parts.pluginRulesSection,
+    contract: parts.contract,
+    plan: parts.plan,
+    modeSection: parts.modeSection,
+    nestedRoleSection: parts.nestedRoleSection,
+    budgets: parts.budgets,
+    model: parts.model
+  })
+  const volatile = buildVolatileSystem({
+    workspace: parts.workspace,
     memoryIndex: parts.memoryIndex,
     memoryState: parts.memoryState,
-    contract: parts.contract ?? '',
-    plan: parts.plan ?? '',
-    modeSection: parts.modeSection,
     sessionEnv: parts.sessionEnv,
-    nestedRoleSection: parts.nestedRoleSection,
-    compactionSummary:
-      parts.compaction?.summary && !isTrimWatermarkCompaction(parts.compaction)
-        ? parts.compaction.summary
-        : undefined,
-    loopHint: parts.loopHint,
-    historyBudget: parts.budgets.history,
-    toolsBudget: parts.budgets.tools
+    compaction: parts.compaction,
+    budgets: parts.budgets,
+    loopHint: parts.loopHint
   })
-  if (systemPromptCache?.fingerprint === fingerprint) {
-    return systemPromptCache.system
-  }
-
-  const sections: string[] = []
-  let systemTokensLeft = parts.budgets.system
-  function capWithinSystem(
-    text: string,
-    requested: number,
-    capFn: (text: string, maxTokens: number) => string = capText
-  ): string | null {
-    if (systemTokensLeft < 50) return null
-    const allowed = Math.min(requested, systemTokensLeft)
-    const capped = capFn(text, allowed)
-    const used = estimateTextTokens(capped, parts.model)
-    systemTokensLeft -= used
-    return capped
-  }
-
-  const harness = capWithinSystem(parts.harness, parts.budgets.system, capHarness)
-  if (harness) sections.push(harness)
-  if (parts.nestedRoleSection?.trim()) {
-    const nested = capWithinSystem(
-      parts.nestedRoleSection.trim(),
-      Math.max(300, Math.floor(parts.budgets.system * 0.25))
-    )
-    if (nested) sections.push(nested)
-  }
-  if (parts.modeSection?.trim()) {
-    const mode = capWithinSystem(
-      parts.modeSection.trim(),
-      Math.max(400, Math.floor(parts.budgets.system * 0.35))
-    )
-    if (mode) sections.push(mode)
-  }
-  if (parts.sessionEnv?.trim()) {
-    const env = capWithinSystem(parts.sessionEnv.trim(), Math.floor(parts.budgets.system * 0.15))
-    if (env) sections.push(env)
-  }
-  if (parts.skillsSection?.trim()) {
-    const skills = capWithinSystem(parts.skillsSection.trim(), Math.floor(parts.budgets.system * 0.35))
-    if (skills) sections.push(skills)
-  }
-  if (parts.pluginRulesSection?.trim()) {
-    const plugins = capWithinSystem(parts.pluginRulesSection.trim(), Math.floor(parts.budgets.system * 0.25))
-    if (plugins) sections.push(plugins)
-  }
-  if (parts.rules.trim()) {
-    const rules = capWithinSystem(parts.rules.trim(), Math.floor(parts.budgets.system * 0.5))
-    if (rules) sections.push(rules)
-  }
-  if (parts.contract?.trim()) {
-    const contractBody = parts.contract.trim().replace(/^#\s*Run contract\s*\r?\n+/i, '')
-    const contract = capWithinSystem(
-      `## Run contract\n${contractBody}`,
-      Math.floor(parts.budgets.system * 0.4)
-    )
-    if (contract) sections.push(contract)
-  }
-  if (parts.plan?.trim()) {
-    const planBody = parts.plan.trim().replace(/^#\s*Plan\s*\r?\n+/i, '')
-    const plan = capWithinSystem(`## Plan\n${planBody}`, Math.floor(parts.budgets.system * 0.4))
-    if (plan) sections.push(plan)
-  }
-  const mw = Math.floor(parts.budgets.memoryWorkspace / 3)
-  sections.push(capText(parts.workspace, mw))
-  if (parts.loopHint?.trim()) {
-    sections.push(`## Run notice\n${capText(parts.loopHint.trim(), Math.floor(mw * 0.5))}`)
-  }
-  if (parts.memoryIndex.trim()) {
-    sections.push(`## Memory index\n${capText(parts.memoryIndex, mw)}`)
-  }
-  if (parts.memoryState.trim()) {
-    sections.push(`## Memory state\n${capText(parts.memoryState, mw)}`)
-  }
-  if (parts.compaction?.summary && !isTrimWatermarkCompaction(parts.compaction)) {
-    sections.push(
-      [
-        '## Prior session summary',
-        // Summaries accumulate across compactions, so this needs a cap like every
-        // other section or it can crowd out the harness it sits beside.
-        capText(parts.compaction.summary, mw)
-      ].join('\n')
-    )
-  }
-  const system = sections.join('\n\n')
-  systemPromptCache = { fingerprint, system }
-  return system
+  if (!volatile) return stable
+  if (!stable) return volatile
+  return `${stable}\n\n${volatile}`
 }
 
 async function computeLayers(
@@ -408,9 +476,7 @@ export async function assembleContext(
         messages: stripThinkingForCompaction(toSummarize),
         supportsStructuredOutput: input.model.supportsStructuredOutput,
         contextWindow: window,
-        priorSummary: isTrimWatermarkCompaction(input.priorCompaction)
-          ? undefined
-          : input.priorCompaction?.summary
+        priorSummary: isTrimWatermarkCompaction(compaction) ? undefined : compaction?.summary
       })
       if (record) {
         messages = keptForBoundary
@@ -470,12 +536,7 @@ export async function assembleContext(
           messages: stripThinkingForCompaction(toSummarize),
           supportsStructuredOutput: input.model.supportsStructuredOutput,
           contextWindow: window,
-          priorSummary: isTrimWatermarkCompaction(compaction)
-            ? undefined
-            : (compaction?.summary ??
-              (isTrimWatermarkCompaction(input.priorCompaction)
-                ? undefined
-                : input.priorCompaction?.summary))
+          priorSummary: isTrimWatermarkCompaction(compaction) ? undefined : compaction?.summary
         })
         if (record) {
           messages = await preserveRecentMessagesAsync(

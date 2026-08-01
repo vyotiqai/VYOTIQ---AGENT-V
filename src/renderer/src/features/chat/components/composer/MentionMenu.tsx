@@ -1,4 +1,4 @@
-import { useEffect, useRef, type RefObject } from 'react'
+import { useEffect, useMemo, useRef, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { FileTypeIcon } from '@renderer/lib/fileIcons'
 import { Icon, type IconName } from '@renderer/lib/icons'
@@ -17,9 +17,15 @@ import {
   type MentionMenuItem,
   type MentionMenuView
 } from './mentionModel'
+import { buildMentionRootSections } from './mentionPresentation'
 
-const MENTION_MAX_PX = 320
+const MENTION_MAX_PX = 340
 const MENTION_TREE_MAX_PX = 480
+
+const stickySectionHeader = cn(
+  composerDropdownSectionHeader,
+  'sticky top-0 z-[1] bg-card'
+)
 
 function itemIcon(item: MentionMenuItem): IconName {
   switch (item.kind) {
@@ -81,26 +87,6 @@ function PathTree({ path }: { path: string }) {
   )
 }
 
-function rootSectionLabel(item: MentionMenuItem, index: number, items: MentionMenuItem[]): string | null {
-  if (index === 0) return 'Suggested'
-  const prev = items[index - 1]
-  if (!prev) return null
-  const isFileish = item.kind === 'file'
-  const prevFileish = prev.kind === 'file'
-  if (isFileish && !prevFileish) return 'Files'
-  const isNav = item.kind === 'nav' || item.kind === 'lints'
-  const prevNav =
-    prev.kind === 'nav' ||
-    prev.kind === 'lints' ||
-    prev.kind === 'branch' ||
-    prev.kind === 'browser'
-  if (isNav && prevFileish) return 'More'
-  if (item.kind === 'nav' && prev.kind !== 'nav' && !prevFileish && index > 0 && !prevNav) {
-    return null
-  }
-  return null
-}
-
 function emptyCopy(view: MentionMenuView): string {
   switch (view) {
     case 'files':
@@ -114,6 +100,55 @@ function emptyCopy(view: MentionMenuView): string {
     default:
       return 'No matches'
   }
+}
+
+function MentionRow({
+  item,
+  selected,
+  optionId,
+  onActive,
+  onPick,
+  optionRef
+}: {
+  item: MentionMenuItem
+  selected: boolean
+  optionId: string
+  onActive: () => void
+  onPick: () => void
+  optionRef: (el: HTMLElement | null) => void
+}) {
+  return (
+    <button
+      type="button"
+      id={optionId}
+      role="option"
+      aria-selected={selected}
+      ref={optionRef}
+      className={cn(composerDropdownRow, selected && 'bg-surface-2 text-fg')}
+      onMouseDown={(e) => e.preventDefault()}
+      onMouseEnter={onActive}
+      onClick={onPick}
+    >
+      {item.kind === 'file' || item.kind === 'docs' ? (
+        <FileTypeBadge path={item.path} />
+      ) : (
+        <Icon name={itemIcon(item)} size={16} className="shrink-0 text-muted" />
+      )}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-medium leading-snug" title={item.label}>
+          {item.label}
+        </span>
+        {'subtitle' in item && item.subtitle ? (
+          <span className="block truncate text-[11px] text-secondary" title={item.subtitle}>
+            {item.subtitle}
+          </span>
+        ) : null}
+      </span>
+      {item.kind === 'nav' || item.kind === 'show-more' ? (
+        <Icon name="chevronRight" size={14} className="shrink-0 text-muted" />
+      ) : null}
+    </button>
+  )
 }
 
 export function MentionMenu({
@@ -158,6 +193,11 @@ export function MentionMenu({
     align: 'start',
     disabled: !open
   })
+
+  const rootSections = useMemo(
+    () => (view === 'root' ? buildMentionRootSections(items) : null),
+    [view, items]
+  )
 
   useEffect(() => {
     if (!open || activeIndex < 0) return
@@ -247,58 +287,44 @@ export function MentionMenu({
             <p className="m-0 px-2.5 py-2 text-xs text-secondary">Searching…</p>
           ) : items.length === 0 ? (
             <p className="m-0 px-2.5 py-2 text-xs text-secondary">{emptyCopy(view)}</p>
+          ) : rootSections ? (
+            rootSections.map((section) => (
+              <div key={section.id} role="group" aria-label={section.label}>
+                <p className={stickySectionHeader}>{section.label}</p>
+                <ul className="m-0 list-none p-0">
+                  {section.entries.map(({ item, flatIndex }) => (
+                    <li key={item.id} className="m-0">
+                      <MentionRow
+                        item={item}
+                        selected={flatIndex === activeIndex}
+                        optionId={`${listId}-opt-${item.id}`}
+                        onActive={() => onActiveIndexChange(flatIndex)}
+                        onPick={() => onPick(item)}
+                        optionRef={(el) => {
+                          optionRefs.current[flatIndex] = el
+                        }}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))
           ) : (
-            <ul className="m-0 list-none p-0" role={view === 'root' ? 'group' : undefined}>
-              {items.map((item, index) => {
-                const selected = index === activeIndex
-                const optionId = `${listId}-opt-${item.id}`
-                const section =
-                  view === 'root' ? rootSectionLabel(item, index, items) : null
-                return (
-                  <li key={item.id} className="m-0">
-                    {section ? <p className={composerDropdownSectionHeader}>{section}</p> : null}
-                    <button
-                      type="button"
-                      id={optionId}
-                      role="option"
-                      aria-selected={selected}
-                      ref={(el) => {
-                        optionRefs.current[index] = el
-                      }}
-                      className={cn(composerDropdownRow, selected && 'bg-surface-2 text-fg')}
-                      onMouseDown={(e) => e.preventDefault()}
-                      onMouseEnter={() => onActiveIndexChange(index)}
-                      onClick={() => onPick(item)}
-                    >
-                      {item.kind === 'file' || item.kind === 'docs' ? (
-                        <FileTypeBadge path={item.path} />
-                      ) : (
-                        <Icon
-                          name={itemIcon(item)}
-                          size={16}
-                          className="shrink-0 text-muted"
-                        />
-                      )}
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate font-medium leading-snug" title={item.label}>
-                          {item.label}
-                        </span>
-                        {'subtitle' in item && item.subtitle ? (
-                          <span
-                            className="block truncate text-[11px] text-secondary"
-                            title={item.subtitle}
-                          >
-                            {item.subtitle}
-                          </span>
-                        ) : null}
-                      </span>
-                      {item.kind === 'nav' || item.kind === 'show-more' ? (
-                        <Icon name="chevronRight" size={14} className="shrink-0 text-muted" />
-                      ) : null}
-                    </button>
-                  </li>
-                )
-              })}
+            <ul className="m-0 list-none p-0">
+              {items.map((item, index) => (
+                <li key={item.id} className="m-0">
+                  <MentionRow
+                    item={item}
+                    selected={index === activeIndex}
+                    optionId={`${listId}-opt-${item.id}`}
+                    onActive={() => onActiveIndexChange(index)}
+                    onPick={() => onPick(item)}
+                    optionRef={(el) => {
+                      optionRefs.current[index] = el
+                    }}
+                  />
+                </li>
+              ))}
             </ul>
           )}
         </div>

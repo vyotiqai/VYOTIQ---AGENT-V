@@ -22,12 +22,17 @@ export const DEFAULT_CONTEXT_WINDOW = 128_000
 export const DEFAULT_COMPACTION_TRIGGER_RATIO = 0.7
 
 export function allocateBudgetShares(window: number): Record<keyof BudgetLayerShares, number> {
+  const system = Math.floor(window * BUDGET_SHARES.system)
+  const tools = Math.floor(window * BUDGET_SHARES.tools)
+  const memoryWorkspace = Math.floor(window * BUDGET_SHARES.memoryWorkspace)
+  const history = Math.floor(window * BUDGET_SHARES.history)
+  const buffer = Math.floor(window * BUDGET_SHARES.buffer)
   return {
-    system: Math.floor(window * BUDGET_SHARES.system),
-    tools: Math.floor(window * BUDGET_SHARES.tools),
-    memoryWorkspace: Math.floor(window * BUDGET_SHARES.memoryWorkspace),
-    history: Math.floor(window * BUDGET_SHARES.history),
-    buffer: Math.floor(window * BUDGET_SHARES.buffer)
+    system,
+    tools,
+    memoryWorkspace,
+    history,
+    buffer: buffer + (window - (system + tools + memoryWorkspace + history + buffer))
   }
 }
 

@@ -12,7 +12,7 @@ import { collectWritingChanges } from '../toolUi/parsers/edit'
 import { parseDeleteData } from '../toolUi/parsers/delete'
 import { deriveRunActivity, type RunActivityPhase } from './runActivity'
 import { mapToolGroupProps } from './toolGroupAdapter'
-import { WRITING_TOOLS } from './turnFileDiffs'
+import { normalizeRelPath } from './turnFileDiffs'
 
 export type { RunActivityPhase } from './runActivity'
 
@@ -446,12 +446,13 @@ function withChangeSummaries(
 
     for (const item of turnToolItems(row)) {
       for (const change of writingToolChanges(item)) {
-        const existing = totals.get(change.path)
+        const key = normalizeRelPath(change.path)
+        const existing = totals.get(key)
         if (existing) {
           existing.added += change.added
           existing.removed += change.removed
         } else {
-          totals.set(change.path, { ...change })
+          totals.set(key, { ...change, path: key })
         }
       }
     }

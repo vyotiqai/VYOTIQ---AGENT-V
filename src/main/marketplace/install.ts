@@ -26,7 +26,8 @@ import {
   VyotiqPluginManifestSchema,
   type McpServer
 } from '../../shared/ipc'
-import { parseSkillFrontmatter } from '../agent/skills/parse'
+import { parseSkillFrontmatter, skillPackageVersion } from '../agent/skills/parse'
+import { resolveSkillMdPath } from '../agent/skills/paths'
 import { getSettings, setSettings } from '../settings/settings'
 import { formatError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
@@ -56,10 +57,14 @@ export type DetectedPackage = {
   root: string
 }
 
+function hasSkillPackageMarker(dir: string): boolean {
+  return resolveSkillMdPath(dir) != null
+}
+
 export function detectPackageAt(root: string): DetectedPackage {
   const mcpPath = join(root, 'vyotiq.mcp.json')
   const pluginPath = join(root, 'vyotiq.plugin.json')
-  const skillPath = join(root, 'skill.md')
+  const skillPath = resolveSkillMdPath(root)
 
   if (existsSync(mcpPath)) {
     const manifest = VyotiqMcpManifestSchema.parse(JSON.parse(readFileSync(mcpPath, 'utf8')))
@@ -83,18 +88,20 @@ export function detectPackageAt(root: string): DetectedPackage {
       root
     }
   }
-  if (existsSync(skillPath)) {
+  if (skillPath) {
     const skill = parseSkillFrontmatter(readFileSync(skillPath, 'utf8'))
     return {
       kind: 'skill',
       id: skill.name,
       name: skill.name,
-      version: skill.version ?? '1.0.0',
+      version: skillPackageVersion(skill),
       description: skill.description,
       root
     }
   }
-  throw new Error('Not a Vyotiq package (need vyotiq.mcp.json, vyotiq.plugin.json, or skill.md)')
+  throw new Error(
+    'Not a Vyotiq package (need vyotiq.mcp.json, vyotiq.plugin.json, or SKILL.md)'
+  )
 }
 
 /**
@@ -104,6 +111,34 @@ export function detectPackageAt(root: string): DetectedPackage {
 export function isContainmentOrSymlinkError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err)
   return /symlink|escaped destination|extract rejected|Archive extract/i.test(msg)
+}
+
+/**
+ * Allowlist git clone targets for marketplace installs.
+ * Rejects file://, ext::, and bare local paths that could turn install into arbitrary I/O.
+ */
+export function assertSafeGitCloneUrl(target: string): string {
+  const t = target.trim()
+  if (!t) throw new Error('Git clone URL is required')
+  const lower = t.toLowerCase()
+  if (lower.startsWith('file:') || lower.startsWith('ext::') || lower.startsWith('ext:')) {
+    throw new Error('Git clone URL scheme is not allowed (file/ext)')
+  }
+  // SCP-like: git@host:path or user@host:path (no scheme)
+  if (/^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+[:/]/.test(t) && !t.includes('://')) {
+    return t
+  }
+  let parsed: URL
+  try {
+    parsed = new URL(t)
+  } catch {
+    throw new Error('Git clone URL must be https://, http://, ssh://, or git@host:path')
+  }
+  const protocol = parsed.protocol.toLowerCase()
+  if (protocol !== 'https:' && protocol !== 'http:' && protocol !== 'ssh:' && protocol !== 'git:') {
+    throw new Error(`Git clone URL scheme not allowed: ${parsed.protocol}`)
+  }
+  return t
 }
 
 /** @internal Exported for unit tests — zip-slip / symlink post-extract gate. */
@@ -144,7 +179,7 @@ function findPackageRoot(extractedDir: string): string {
   if (
     existsSync(join(extractedDir, 'vyotiq.mcp.json')) ||
     existsSync(join(extractedDir, 'vyotiq.plugin.json')) ||
-    existsSync(join(extractedDir, 'skill.md'))
+    hasSkillPackageMarker(extractedDir)
   ) {
     return extractedDir
   }
@@ -154,7 +189,7 @@ function findPackageRoot(extractedDir: string): string {
     if (
       existsSync(join(candidate, 'vyotiq.mcp.json')) ||
       existsSync(join(candidate, 'vyotiq.plugin.json')) ||
-      existsSync(join(candidate, 'skill.md'))
+      hasSkillPackageMarker(candidate)
     ) {
       return candidate
     }
@@ -394,10 +429,15 @@ async function materializeToTemp(req: MarketplaceInstallRequest): Promise<{
   }
 
   if (source === 'git') {
+    const cloneUrl = assertSafeGitCloneUrl(target)
     const cloneDir = join(tmp, 'repo')
-    await execFileAsync('git', ['clone', '--depth', '1', target, cloneDir], {
-      timeout: 120_000
-    })
+    await execFileAsync(
+      'git',
+      ['-c', 'protocol.file.allow=never', 'clone', '--depth', '1', cloneUrl, cloneDir],
+      {
+        timeout: 120_000
+      }
+    )
     try {
       assertExtractContained(cloneDir)
     } catch (err) {

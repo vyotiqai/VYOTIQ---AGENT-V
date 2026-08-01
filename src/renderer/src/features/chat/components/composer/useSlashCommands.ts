@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SlashCommandDescriptor } from '@shared/ipc'
 import { fuzzyMatchCommands, findActiveSlashToken } from '@shared/slashCommands'
+import {
+  SLASH_GROUP_ORDER,
+  clusterMcpByServer,
+  partitionSlashGroupByAvailability
+} from './slashCommandPresentation'
 
-const GROUP_ORDER = ['App', 'Commands', 'Skills', 'Rules', 'MCP']
-
-/** Fuzzy-filter then flatten in GROUP_ORDER so highlight index matches accept. */
+/** Fuzzy-filter then flatten in SLASH_GROUP_ORDER so highlight index matches accept. */
 export function buildSlashDisplayList(
   query: string,
   commands: SlashCommandDescriptor[]
@@ -17,13 +20,17 @@ export function buildSlashDisplayList(
     byGroup.set(cmd.group, list)
   }
   const out: SlashCommandDescriptor[] = []
-  for (const g of GROUP_ORDER) {
+  for (const g of SLASH_GROUP_ORDER) {
     const items = byGroup.get(g)
-    if (items?.length) out.push(...items)
+    if (items?.length) {
+      const partitioned = partitionSlashGroupByAvailability(items)
+      out.push(...(g === 'MCP' ? clusterMcpByServer(partitioned) : partitioned))
+    }
     byGroup.delete(g)
   }
-  for (const items of byGroup.values()) {
-    out.push(...items)
+  for (const [g, items] of byGroup) {
+    const partitioned = partitionSlashGroupByAvailability(items)
+    out.push(...(g === 'MCP' ? clusterMcpByServer(partitioned) : partitioned))
   }
   return out
 }

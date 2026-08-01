@@ -21,7 +21,7 @@ export function ApiKeyEditor({
   onClearKey
 }: {
   secrets: Record<SecretProvider, boolean>
-  settingsProvider: SecretProvider | 'ollama'
+  settingsProvider: SecretProvider
   encryptionAvailable: boolean
   keyProvider: SecretProvider
   keyDraft: string

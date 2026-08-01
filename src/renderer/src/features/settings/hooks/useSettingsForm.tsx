@@ -8,7 +8,7 @@ import {
   type WorkspaceSettingsOverride,
   DEFAULT_TOOL_APPROVAL
 } from '@shared/ipc'
-import { PROVIDER_DEFAULTS, defaultModelFor, providerLabel, normalizeOllamaHost } from '@shared/providers'
+import { PROVIDER_DEFAULTS, defaultModelFor, providerLabel, ollamaNativeHost, providerNeedsKey } from '@shared/providers'
 import { findByWorkspacePath } from '@shared/workspacePathMatch'
 import { useEscapeToClose } from '@renderer/lib/hooks/useEscapeToClose'
 import { useModelCatalog } from '@renderer/lib/hooks/useModelCatalog'
@@ -190,7 +190,8 @@ export function useSettingsForm({
   const busy = savingKey || clearingKey || savingField || refreshingModels
   const formLocked = savingKey || clearingKey || savingField
   const activeNeedsKey =
-    settings.provider !== 'ollama' && !secrets[settings.provider as SecretProvider]
+    providerNeedsKey(settings.provider, settings.ollamaBaseUrl) &&
+    !secrets[settings.provider as SecretProvider]
   const savedKeyProviders = useMemo(
     () => SECRET_PROVIDERS.filter((p) => secrets[p]),
     [secrets]
@@ -231,12 +232,8 @@ export function useSettingsForm({
   }, [])
 
   useEffect(() => {
-    if (settings.provider !== 'ollama') {
-      setKeyProvider(settings.provider)
-      return
-    }
-    setKeyProvider(defaultKeyProvider('ollama', secrets))
-  }, [settings.provider, secrets])
+    setKeyProvider(settings.provider)
+  }, [settings.provider])
 
   useEscapeToClose(onClose, true, { deferToMenus: true })
 
@@ -258,9 +255,7 @@ export function useSettingsForm({
     settings.keepRecentTurns
 
   const setActiveProvider = async (provider: ProviderId): Promise<boolean> => {
-    setKeyProvider(
-      provider !== 'ollama' ? provider : defaultKeyProvider('ollama', secrets)
-    )
+    setKeyProvider(provider)
     setKeyDraft('')
     if (provider === settings.provider) return true
     const prefs = settings.thinkingPrefsByProvider[provider] ?? {
@@ -290,7 +285,7 @@ export function useSettingsForm({
       setFieldError('ollama', 'Ollama base URL must be a valid http(s) URL.')
       return null
     }
-    const normalized = normalizeOllamaHost(trimmed)
+    const normalized = ollamaNativeHost(trimmed)
     if (normalized !== ollamaUrl) setOllamaUrl(normalized)
     if (normalized === settings.ollamaBaseUrl) return normalized
     const ok = await runUpdate({ ollamaBaseUrl: normalized })
@@ -309,7 +304,8 @@ export function useSettingsForm({
     setModelsInfo(null)
     setRefreshingModels(true)
     try {
-      if (provider !== 'ollama' && !opts?.skipKeyCheck) {
+      const baseForKeyCheck = provider === 'ollama' ? ollamaUrl : undefined
+      if (providerNeedsKey(provider, baseForKeyCheck) && !opts?.skipKeyCheck) {
         const hasKey = Boolean(secrets[provider as SecretProvider])
         if (!hasKey) {
           const label = providerLabel(provider)

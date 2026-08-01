@@ -60,7 +60,10 @@ export function ProvidersSection({
         </p>
       ) : null}
 
-      <SettingsRow title="Ollama base URL" description="Local OpenAI-compatible endpoint.">
+      <SettingsRow
+        title="Ollama base URL"
+        description="Local daemon (http://127.0.0.1:11434) or Ollama Cloud (https://ollama.com). Cloud requires an Ollama API key below."
+      >
         <Input
           id="ollama"
           className="w-[240px] max-w-[46vw]"

@@ -37,4 +37,25 @@ describe('buildSlashDisplayList', () => {
     const display = buildSlashDisplayList('code', items)
     expect(display[0]?.trigger).toBe('code-review')
   })
+
+  it('lists ready commands before unavailable ones inside a group', () => {
+    const items = [
+      cmd({
+        id: 'skill:b',
+        trigger: 'beta',
+        group: 'Skills',
+        kind: 'skill',
+        availability: 'not_installed'
+      }),
+      cmd({
+        id: 'skill:a',
+        trigger: 'alpha',
+        group: 'Skills',
+        kind: 'skill',
+        availability: 'ready'
+      })
+    ]
+    const display = buildSlashDisplayList('', items)
+    expect(display.map((c) => c.id)).toEqual(['skill:a', 'skill:b'])
+  })
 })

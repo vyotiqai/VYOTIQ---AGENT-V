@@ -339,16 +339,23 @@ export async function* streamOpenAiResponses(
       if (usage) {
         const outputDetails = usage.output_tokens_details as Record<string, unknown> | undefined
         const inputDetails = usage.input_tokens_details as Record<string, unknown> | undefined
+        const cachedInputTokens =
+          inputDetails && typeof inputDetails.cached_tokens === 'number'
+            ? inputDetails.cached_tokens
+            : typeof usage.prompt_cache_hit_tokens === 'number'
+              ? usage.prompt_cache_hit_tokens
+              : typeof usage.cached_tokens === 'number'
+                ? usage.cached_tokens
+                : inputDetails && typeof inputDetails.prompt_cache_hit_tokens === 'number'
+                  ? inputDetails.prompt_cache_hit_tokens
+                  : undefined
         lastUsage = {
           inputTokens:
             typeof usage.input_tokens === 'number' ? usage.input_tokens : undefined,
           outputTokens:
             typeof usage.output_tokens === 'number' ? usage.output_tokens : undefined,
           totalTokens: typeof usage.total_tokens === 'number' ? usage.total_tokens : undefined,
-          cachedInputTokens:
-            inputDetails && typeof inputDetails.cached_tokens === 'number'
-              ? inputDetails.cached_tokens
-              : undefined,
+          cachedInputTokens,
           reasoningTokens:
             outputDetails && typeof outputDetails.reasoning_tokens === 'number'
               ? outputDetails.reasoning_tokens

@@ -35,6 +35,7 @@ export const ASK_SAFE_BUILTIN = new Set([
   'mcp_get_prompt',
   'memory_list',
   'memory_read',
+  'Skill',
   'subagent',
   'git_status',
   'git_diff'

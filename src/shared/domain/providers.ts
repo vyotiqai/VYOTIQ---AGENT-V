@@ -1,5 +1,6 @@
 import type { ModelInfo, ProviderId } from '../ipc/schemas/providers'
 import { knownContextWindow } from './modelContextWindows'
+import { modelSupportsThinking, thinkingApiFor } from '../reasoning'
 
 export type ProviderDefault = {
   id: ProviderId
@@ -11,7 +12,7 @@ const SEED_MODEL_IDS: Record<ProviderId, string[]> = {
   openai: ['gpt-4o', 'gpt-4.1', 'o3-mini'],
   anthropic: ['claude-sonnet-4', 'claude-haiku-4-5'],
   gemini: ['gemini-2.0-flash', 'gemini-2.5-pro-preview'],
-  ollama: ['qwen2.5', 'llama3.2', 'deepseek-r1'],
+  ollama: ['qwen2.5', 'llama3.2', 'deepseek-r1', 'gpt-oss:120b', 'deepseek-v4-flash'],
   deepseek: ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-reasoner'],
   groq: ['llama-3.3-70b-versatile'],
   openrouter: ['openrouter/auto'],
@@ -21,7 +22,7 @@ const SEED_MODEL_IDS: Record<ProviderId, string[]> = {
 
 function seedModelInfo(id: string, providerId: ProviderId): ModelInfo {
   const supportsVision = /gpt-4o|gpt-5|claude|gemini|grok|llava|vision|pixtral/i.test(id)
-  const supportsThinking = /reasoner|r1|o3|thinking|v4-pro/i.test(id)
+  const supportsThinking = modelSupportsThinking(id, providerId)
   const known = knownContextWindow(id, providerId)
   return {
     id,
@@ -33,6 +34,7 @@ function seedModelInfo(id: string, providerId: ProviderId): ModelInfo {
     supportsStructuredOutput:
       providerId === 'ollama' ? /json|qwen|llama|deepseek/i.test(id) : true,
     supportsThinking,
+    thinkingApi: supportsThinking ? thinkingApiFor(id, providerId) : undefined,
     contextWindow: known ?? (providerId === 'ollama' ? 32_768 : 128_000)
   }
 }
@@ -61,8 +63,13 @@ export function providerLabel(provider: ProviderId): string {
   return PROVIDER_DEFAULTS.find((entry) => entry.id === provider)?.label ?? provider
 }
 
-export function providerNeedsKey(provider: ProviderId): boolean {
-  return provider !== 'ollama'
+/**
+ * Whether a provider requires an API key for live catalog/chat.
+ * Local Ollama does not; Ollama Cloud (`ollama.com`) does.
+ */
+export function providerNeedsKey(provider: ProviderId, baseUrl?: string): boolean {
+  if (provider !== 'ollama') return true
+  return isOllamaCloudHost(baseUrl ?? '')
 }
 
 export function normalizeOllamaHost(url: string): string {
@@ -72,10 +79,25 @@ export function normalizeOllamaHost(url: string): string {
   return trimmed
 }
 
+/** Native Ollama host (no trailing `/v1`) — safe to append `/v1` or `/api/...`. */
+export function ollamaNativeHost(url: string): string {
+  return normalizeOllamaHost(url).replace(/\/v1$/i, '')
+}
+
+/** True when the host is Ollama's cloud API (`ollama.com`). */
+export function isOllamaCloudHost(url: string): boolean {
+  try {
+    const hostname = new URL(ollamaNativeHost(url || 'http://127.0.0.1:11434')).hostname.toLowerCase()
+    return hostname === 'ollama.com' || hostname.endsWith('.ollama.com')
+  } catch {
+    return false
+  }
+}
+
 export function ollamaOpenAiBaseUrl(url: string): string {
-  return `${normalizeOllamaHost(url)}/v1`
+  return `${ollamaNativeHost(url)}/v1`
 }
 
 export function resolveOllamaListBaseUrl(reqBase?: string, settingsBase?: string): string {
-  return normalizeOllamaHost(reqBase ?? settingsBase ?? 'http://127.0.0.1:11434')
+  return ollamaNativeHost(reqBase ?? settingsBase ?? 'http://127.0.0.1:11434')
 }

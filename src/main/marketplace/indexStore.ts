@@ -8,7 +8,7 @@ import {
   type MarketplaceIndex,
   type MarketplaceInstalledItem
 } from '../../shared/ipc'
-import { clearMcpAuthToken, clearMcpOAuthState } from '../settings/secrets'
+import { clearMcpAuthToken, clearMcpOAuthState, clearMcpServerSecrets } from '../settings/secrets'
 import { marketplaceIndexPath, marketplacePackageDir, marketplaceRoot, resolveInstalledPackageRoot } from './paths'
 import { resolveInsidePackageRoot } from './safePath'
 import { logger } from '../../shared/logger'
@@ -77,11 +77,12 @@ export function setInstalledEnabled(id: string, enabled: boolean): MarketplaceIn
   return next
 }
 
-/** Clear Bearer + OAuth secrets for an MCP server id (best-effort). */
+/** Clear Bearer + OAuth + env/header secrets for an MCP server id (best-effort). */
 function clearMcpSecrets(serverId: string): void {
   try {
     clearMcpAuthToken(serverId)
     clearMcpOAuthState(serverId)
+    clearMcpServerSecrets(serverId)
   } catch {
     // ignore
   }

@@ -48,7 +48,7 @@ export function UserPrompt({
           cn(
             'group/prompt cursor-text vy-transition',
             'hover:border-border-strong hover:bg-surface/40',
-            'focus-visible:vy-focus-ring'
+            'focus-within:vy-focus-ring'
           )
       )}
       onClick={
@@ -60,34 +60,26 @@ export function UserPrompt({
             }
           : undefined
       }
-      role={editable ? 'button' : undefined}
-      tabIndex={editable ? 0 : undefined}
-      onKeyDown={
-        editable
-          ? (e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                onBeginEdit?.()
-              }
-            }
-          : undefined
-      }
-      aria-label={editable ? 'Edit message' : undefined}
       title={editable ? 'Click to edit' : undefined}
     >
       {editable ? (
-        <span
+        <button
+          type="button"
           className={cn(
-            'pointer-events-none absolute right-2 top-2 z-[1] inline-grid size-6 place-items-center rounded-md',
+            'absolute right-2 top-2 z-[1] inline-grid size-6 place-items-center rounded-md',
             'border border-border/70 bg-card/90 text-muted shadow-sm backdrop-blur-sm',
             'opacity-0 vy-transition',
-            'group-hover/prompt:opacity-100 group-focus-visible/prompt:opacity-100',
-            'group-focus-within/prompt:opacity-100'
+            'group-hover/prompt:opacity-100 group-focus-within/prompt:opacity-100',
+            'focus-visible:opacity-100 focus-visible:vy-focus-ring'
           )}
-          aria-hidden
+          aria-label="Edit message"
+          onClick={(e) => {
+            e.stopPropagation()
+            onBeginEdit?.()
+          }}
         >
           <Icon name="edit" size={12} />
-        </span>
+        </button>
       ) : null}
 
       {content ? (

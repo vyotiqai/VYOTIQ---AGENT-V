@@ -66,9 +66,9 @@ export type AssembleInput = {
   priorCompaction?: CompactionRecord | null
   /** Injected when the agent loop detects repeated tool-failure steps (generic, not workspace-specific). */
   loopHint?: string
-  /** Eager marketplace skills section (pre-built markdown). */
+  /** Skills Level-1 metadata (name + description); full body via Skill tool or slash. */
   skillsSection?: string
-  /** Enabled plugin rules section (pre-built markdown). */
+  /** Plugin rules Level-1 metadata; full body via Skill tool with the rule id. */
   pluginRulesSection?: string
   /** Ask / Plan / Agent mode overlay. */
   modeSection?: string

@@ -2,6 +2,7 @@ import { createHash } from 'crypto'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import type { ModelInfo, ProviderId } from '../../../shared/ipc'
+import { logger } from '../../../shared/logger'
 import { atomicWriteJson } from '../../storage/atomicWrite'
 
 type CacheEntry = {
@@ -116,6 +117,11 @@ export function getCachedModels(key: string): ModelInfo[] | null {
 
 export function setCachedModels(key: string, models: ModelInfo[], generation?: number): void {
   if (generation !== undefined && generation !== currentModelListGeneration(key)) {
+    logger.debug('Model cache update skipped due to stale generation', {
+      key,
+      generation,
+      current: currentModelListGeneration(key)
+    })
     return
   }
   ensureDiskLoaded()

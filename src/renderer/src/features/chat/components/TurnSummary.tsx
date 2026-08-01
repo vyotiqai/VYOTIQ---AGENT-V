@@ -13,12 +13,10 @@ const MIN_REPORTABLE_MS = 1000
 export const TurnSummary = memo(function TurnSummary({
   span,
   collapsed,
-  panelId,
   onToggle
 }: {
   span: TurnSpan
   collapsed: boolean
-  panelId?: string
   onToggle: () => void
 }) {
   const { startedAt, endedAt, active, activity, phaseStartedAt } = span
@@ -80,7 +78,6 @@ export const TurnSummary = memo(function TurnSummary({
       type="button"
       className={cn(DISCLOSURE_ROW, 'w-full text-left text-tertiary')}
       aria-expanded={!collapsed}
-      aria-controls={!collapsed ? panelId : undefined}
       aria-label={accessibleName}
       onClick={onToggle}
     >

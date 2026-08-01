@@ -20,4 +20,15 @@ describe('formatTokens', () => {
     expect(formatTokens(1_500_000)).toBe('1.5M')
     expect(formatTokens(10_000_000)).toBe('10M')
   })
+
+  it('clamps negative values to 0 by default', () => {
+    expect(formatTokens(-1500)).toBe('0')
+    expect(formatTokens(-42)).toBe('0')
+  })
+
+  it('formats negative values when allowed', () => {
+    expect(formatTokens(-1500, true)).toBe('-1.5k')
+    expect(formatTokens(-42, true)).toBe('-42')
+    expect(formatTokens(-1_500_000, true)).toBe('-1.5M')
+  })
 })

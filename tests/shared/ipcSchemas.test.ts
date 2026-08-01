@@ -103,11 +103,12 @@ describe('ipc schemas', () => {
     expect(IPC.listModels).toBe('models:list')
   })
 
-  it('lists eight secret providers without ollama', () => {
-    expect(SECRET_PROVIDERS).toHaveLength(8)
-    expect(SECRET_PROVIDERS).not.toContain('ollama')
-    expect(SecretProviderSchema.safeParse('ollama').success).toBe(false)
+  it('lists nine secret providers including ollama', () => {
+    expect(SECRET_PROVIDERS).toHaveLength(9)
+    expect(SECRET_PROVIDERS).toContain('ollama')
+    expect(SecretProviderSchema.safeParse('ollama').success).toBe(true)
     expect(emptySecretStatus().openai).toBe(false)
+    expect(emptySecretStatus().ollama).toBe(false)
   })
 
   it('keeps SecretsStatus shape (encryptionAvailable + keys)', () => {

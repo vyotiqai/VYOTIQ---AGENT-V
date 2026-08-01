@@ -1,5 +1,5 @@
 import type { ChatMessage, CompactRunResult, ProviderId } from '../../shared/ipc'
-import { ollamaOpenAiBaseUrl } from '../../shared/domain/providers'
+import { ollamaOpenAiBaseUrl, providerNeedsKey } from '../../shared/domain/providers'
 import { DEFAULT_SETTINGS } from '../../shared/ipc'
 import { logger } from '../../shared/logger'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
@@ -47,8 +47,8 @@ export async function compactRunNow(input: {
   }
 
   const providerId: ProviderId = settings.provider
-  const apiKey = providerId === 'ollama' ? null : getSecret(providerId)
-  if (providerId !== 'ollama' && !apiKey) {
+  const apiKey = getSecret(providerId)
+  if (providerNeedsKey(providerId, settings.ollamaBaseUrl) && !apiKey) {
     const status = secretStatus()
     const storedBlob = hasStoredSecretBlob(providerId)
     const message = !status.encryptionAvailable

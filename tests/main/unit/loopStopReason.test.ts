@@ -402,6 +402,20 @@ describe('runAgent partial persistence', () => {
     expect(messages).toContain('streamed before the failure')
   })
 
+  it('emits PROVIDER_STREAM when a retriable thrown stream error exhausts attempts', async () => {
+    const { RetriableStreamError } = await import('@main/agent/providers/fetchWithRetry')
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'partial before disconnect' }
+      throw new RetriableStreamError('stream ended')
+    })
+
+    const events = await collect('thrown-stream-exhausted', workspace)
+
+    expect(events.some((e) => e.type === 'error' && e.code === 'PROVIDER_STREAM')).toBe(true)
+    expect(events.some((e) => e.type === 'error' && e.code === 'AGENT_LOOP')).toBe(false)
+    expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
+  })
+
   it('emits stream_reset so the UI drops output from a retried attempt', async () => {
     let attempt = 0
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {

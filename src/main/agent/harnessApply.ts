@@ -56,7 +56,7 @@ export const HARNESS_GATE_SOURCE_PATHS = [
 ] as const
 
 const GIT_ENV = {
-  ...process.env,
+  ...sanitizedTerminalEnv(),
   GIT_TERMINAL_PROMPT: '0',
   GIT_OPTIONAL_LOCKS: '0',
   GCM_INTERACTIVE: 'never'

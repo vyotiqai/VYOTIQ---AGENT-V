@@ -21,7 +21,7 @@ export async function runHarnessReviewWithSettings(
         summary: WeaknessSummary
       }) => {
         const provider = getProvider(settings.provider)
-        const apiKey = settings.provider === 'ollama' ? null : getSecret(settings.provider)
+        const apiKey = getSecret(settings.provider)
         const baseUrl =
           settings.provider === 'ollama' ? ollamaOpenAiBaseUrl(settings.ollamaBaseUrl) : undefined
         return rewriteHarnessProposalBody({

@@ -8,8 +8,14 @@ import {
   type ContextUsageState
 } from '@shared/utils/contextUsage'
 import type { StepUsageTotals } from '@shared/utils/runTelemetry'
+import {
+  clampComposerDropdownPanel,
+  composerDropdownSectionHeader
+} from './composerDropdownLayout'
 
 export type { ContextUsageState }
+
+const CONTEXT_METER_MAX_PX = 320
 
 function formatPct(n: number, total: number): string {
   if (total <= 0) return '0%'
@@ -28,6 +34,12 @@ function usageFill(ratio: number): string {
   return 'bg-fg'
 }
 
+/** Telemetry only when estimate-only, or when estimate and provider disagree. */
+export function shouldShowContextTelemetry(usage: ContextUsageState): boolean {
+  if (usage.inputTokens == null) return usage.source === 'estimate'
+  return usage.inputTokens !== usage.estimatedTokens
+}
+
 function PanelSection({
   title,
   children,
@@ -39,11 +51,7 @@ function PanelSection({
 }) {
   return (
     <section className={cn('px-3 py-2.5', className)}>
-      {title ? (
-        <h3 className="mb-2 text-[10px] font-medium uppercase tracking-[var(--vy-tracking)] text-muted">
-          {title}
-        </h3>
-      ) : null}
+      {title ? <h3 className={cn(composerDropdownSectionHeader, 'mb-2 px-0')}>{title}</h3> : null}
       {children}
     </section>
   )
@@ -62,11 +70,11 @@ function StatCard({
 }) {
   return (
     <div className="flex min-w-0 flex-col gap-0.5 rounded-xl bg-surface/50 px-2.5 py-2">
-      <span className="text-[10px] text-muted">{label}</span>
+      <span className="text-[10px] text-secondary">{label}</span>
       <span className={cn('truncate text-sm font-semibold tabular-nums leading-tight', tone ?? 'text-fg')}>
         {value}
       </span>
-      {detail ? <span className="truncate text-[10px] text-tertiary">{detail}</span> : null}
+      {detail ? <span className="truncate text-[10px] text-secondary">{detail}</span> : null}
     </div>
   )
 }
@@ -74,7 +82,7 @@ function StatCard({
 function MetricRow({ label, value, tone }: { label: string; value: string; tone?: string }) {
   return (
     <div className="flex items-baseline justify-between gap-3 text-[11px]">
-      <span className="shrink-0 text-muted">{label}</span>
+      <span className="shrink-0 text-secondary">{label}</span>
       <span className={cn('min-w-0 truncate text-right tabular-nums', tone ?? 'text-fg')}>{value}</span>
     </div>
   )
@@ -93,8 +101,8 @@ function LayerRow({
 }) {
   const ratio = total > 0 ? Math.min(1, tokens / total) : 0
   return (
-    <div className="grid grid-cols-[4.5rem_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1">
-      <span className="truncate text-[11px] text-muted">
+    <div className="grid grid-cols-[4.5rem_minmax(0,1fr)_5.5rem] items-center gap-x-2">
+      <span className="truncate text-[11px] text-secondary">
         {label}
         {hint ? <span className="sr-only"> {hint}</span> : null}
       </span>
@@ -106,7 +114,7 @@ function LayerRow({
       </div>
       <span className="shrink-0 text-right text-[11px] tabular-nums text-fg">
         {formatTokens(tokens)}
-        <span className="text-muted"> · {formatPct(tokens, total)}</span>
+        <span className="text-secondary"> · {formatPct(tokens, total)}</span>
       </span>
     </div>
   )
@@ -133,9 +141,7 @@ function StepUsageSection({ totals }: { totals: StepUsageTotals }) {
   return (
     <PanelSection title="Step usage" className="border-t border-border">
       <div className="flex flex-col gap-1.5">
-        {totals.steps > 0 ? (
-          <MetricRow label="Steps" value={String(totals.steps)} />
-        ) : null}
+        {totals.steps > 0 ? <MetricRow label="Steps" value={String(totals.steps)} /> : null}
         {totals.outputTokens > 0 ? (
           <MetricRow label="Output" value={formatTokens(totals.outputTokens)} />
         ) : null}
@@ -149,6 +155,33 @@ function StepUsageSection({ totals }: { totals: StepUsageTotals }) {
           <MetricRow
             label="Prompt cache"
             value={`${cachePct}% · ${formatTokens(totals.cachedInputTokens)} / ${formatTokens(totals.inputTokens)}`}
+          />
+        ) : null}
+      </div>
+    </PanelSection>
+  )
+}
+
+function TelemetrySection({ usage }: { usage: ContextUsageState }) {
+  if (!shouldShowContextTelemetry(usage)) return null
+
+  const estimateDelta =
+    usage.inputTokens != null && usage.inputTokens !== usage.estimatedTokens
+      ? usage.inputTokens - usage.estimatedTokens
+      : null
+
+  return (
+    <PanelSection title="Telemetry" className="border-t border-border">
+      <div className="flex flex-col gap-1.5">
+        <MetricRow label="Estimate" value={formatTokens(usage.estimatedTokens)} />
+        {usage.inputTokens != null ? (
+          <MetricRow label="Provider input" value={formatTokens(usage.inputTokens)} />
+        ) : null}
+        {estimateDelta != null ? (
+          <MetricRow
+            label="Delta"
+            value={`${estimateDelta > 0 ? '+' : ''}${formatTokens(estimateDelta, true)}`}
+            tone={estimateDelta > 0 ? 'text-warning' : 'text-success'}
           />
         ) : null}
       </div>
@@ -178,11 +211,8 @@ function ContextMeterPanel({
     100,
     Math.round((usage.compactionTrigger / denominator) * 100)
   )
-  const estimateDelta =
-    usage.inputTokens != null && usage.inputTokens !== usage.estimatedTokens
-      ? usage.inputTokens - usage.estimatedTokens
-      : null
-  const consumedLayers = usage.layers.system + usage.layers.history + usage.layers.tools
+  const hasLayers =
+    usage.layers.system + usage.layers.history + usage.layers.tools > 0 || usage.layers.buffer > 0
   const fill = usageFill(ratio)
   const tone = usageTone(ratio)
 
@@ -191,12 +221,9 @@ function ContextMeterPanel({
       <header className="shrink-0 border-b border-border px-3 py-2.5">
         <div className="mb-2 flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <p className="text-xs font-medium text-fg">Context window</p>
-            <p className="mt-0.5 text-[10px] text-muted">
-              Step {usage.step} · {formatTokens(usage.window)} model
-              {usage.layers.buffer > 0
-                ? ` · ${formatTokens(usage.layers.buffer)} buffer`
-                : ''}
+            <p className="m-0 text-xs font-medium text-fg">Context window</p>
+            <p className="m-0 mt-0.5 text-[10px] text-secondary">
+              Step {usage.step} · {formatTokens(usage.window)} window
             </p>
           </div>
           <span
@@ -226,7 +253,7 @@ function ContextMeterPanel({
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto @container/panel">
+      <div className="sidebar-scroll @container/panel min-h-0 flex-1 overflow-y-auto">
         <PanelSection>
           <div className="relative h-1.5 overflow-hidden rounded-full bg-surface-2">
             <div
@@ -242,7 +269,7 @@ function ContextMeterPanel({
             ) : null}
           </div>
           <div className="mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
-            <p className="min-w-0 flex-1 text-[10px] leading-snug text-muted">
+            <p className="m-0 min-w-0 flex-1 text-[10px] leading-snug text-secondary">
               Compaction at {formatTokens(usage.compactionTrigger)} ·{' '}
               {formatPct(usage.compactionTrigger, denominator)} of budget
             </p>
@@ -266,60 +293,48 @@ function ContextMeterPanel({
           </div>
           {compactMessage ? (
             <p
-              className={cn('mt-2 text-[10px] leading-snug', compactFailed ? 'text-danger' : 'text-secondary')}
+              className={cn(
+                'm-0 mt-2 text-[10px] leading-snug',
+                compactFailed ? 'text-danger' : 'text-secondary'
+              )}
               role={compactFailed ? 'alert' : 'status'}
             >
               {compactMessage}
             </p>
           ) : null}
           {usage.overflow ? (
-            <p className="mt-2 text-[10px] leading-snug text-danger" role="alert">
+            <p className="m-0 mt-2 text-[10px] leading-snug text-danger" role="alert">
               Context still exceeds the model window after compaction. Older turns may need manual
               compacting, or start a new chat.
             </p>
           ) : null}
         </PanelSection>
 
-        {consumedLayers > 0 || usage.layers.buffer > 0 ? (
-        <PanelSection title="Layers" className="border-t border-border pt-2.5">
-          <div className="flex flex-col gap-2">
-            <LayerRow label="System" tokens={usage.layers.system} total={denominator} />
-            <LayerRow label="History" tokens={usage.layers.history} total={denominator} />
-            <LayerRow label="Tools" tokens={usage.layers.tools} total={denominator} />
-            <LayerRow
-              label="Buffer"
-              tokens={usage.layers.buffer}
-              total={usage.window}
-              hint="reserved allocation, not counted in usage bar"
-            />
-          </div>
-          <p className="mt-2 text-[10px] leading-snug text-muted">
-            Consumed {formatTokens(consumedLayers)} · buffer is reserved, not usage
-          </p>
-        </PanelSection>
+        {hasLayers ? (
+          <PanelSection title="Layers" className="border-t border-border pt-2.5">
+            <div className="flex flex-col gap-2">
+              <LayerRow label="System" tokens={usage.layers.system} total={denominator} />
+              <LayerRow label="History" tokens={usage.layers.history} total={denominator} />
+              <LayerRow label="Tools" tokens={usage.layers.tools} total={denominator} />
+              <LayerRow
+                label="Buffer"
+                tokens={usage.layers.buffer}
+                total={usage.window}
+                hint="reserved allocation, not counted in usage bar"
+              />
+            </div>
+            <p className="m-0 mt-2 text-[10px] leading-snug text-secondary">
+              Buffer is reserved, not counted in usage
+            </p>
+          </PanelSection>
         ) : null}
 
-        <PanelSection title="Telemetry" className="border-t border-border">
-          <div className="flex flex-col gap-1.5">
-            <MetricRow label="Estimate" value={formatTokens(usage.estimatedTokens)} />
-            {usage.inputTokens != null ? (
-              <MetricRow label="Provider input" value={formatTokens(usage.inputTokens)} />
-            ) : null}
-            {estimateDelta != null ? (
-              <MetricRow
-                label="Delta"
-                value={`${estimateDelta > 0 ? '+' : ''}${formatTokens(estimateDelta)}`}
-                tone={estimateDelta > 0 ? 'text-warning' : 'text-success'}
-              />
-            ) : null}
-          </div>
-        </PanelSection>
-
+        <TelemetrySection usage={usage} />
         <StepUsageSection totals={usage.stepUsage} />
       </div>
 
       <footer className="shrink-0 border-t border-border px-3 py-1.5">
-        <p className="text-[10px] text-muted">
+        <p className="m-0 text-[10px] text-secondary">
           Updated {new Date(usage.updatedAt).toLocaleTimeString()}
         </p>
       </footer>
@@ -383,8 +398,10 @@ export function ContextMeter({
 
   if (!alignedUsage || alignedUsage.window <= 0) return null
 
-  const denominator =
+  const denominator = Math.max(
+    1,
     alignedUsage.contentWindow > 0 ? alignedUsage.contentWindow : alignedUsage.window
+  )
   const ratio = Math.min(1, alignedUsage.used / denominator)
   const pct = Math.round(ratio * 100)
   const estimate = alignedUsage.source === 'estimate'
@@ -392,6 +409,26 @@ export function ContextMeter({
   const windowLabel = formatTokens(denominator)
   const fillTone = usageFill(ratio)
   const usedTone = usageTone(ratio)
+
+  const panelLayout =
+    open && position
+      ? (() => {
+          const desired = Math.min(
+            CONTEXT_METER_MAX_PX,
+            Math.max(0, (typeof window !== 'undefined' ? window.innerWidth : 1024) - 16)
+          )
+          // align:end → position.left is the trigger's right edge
+          const unclampedLeft = position.left - desired
+          return clampComposerDropdownPanel({
+            position: {
+              left: unclampedLeft,
+              top: position.top,
+              placement: position.placement
+            },
+            maxWidthPx: CONTEXT_METER_MAX_PX
+          })
+        })()
+      : null
 
   return (
     <div className={cn('relative flex h-7 shrink-0 items-center', className)}>
@@ -428,28 +465,24 @@ export function ContextMeter({
         </span>
       </button>
 
-      {open && position
+      {open && position && panelLayout
         ? createPortal(
             <div
               ref={panelRef}
               id={panelId}
               role="dialog"
               aria-label="Context window breakdown"
-              className={cn(
-                '@container/panel fixed z-dropdown flex max-h-[min(70vh,32rem)] w-[min(calc(100vw-1.5rem),20rem)] flex-col overflow-hidden',
-                'rounded-xl border border-border bg-card shadow-menu animate-fade-in'
-              )}
+              className="fixed z-dropdown flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-menu animate-fade-in"
               style={{
                 top: position.placement === 'up' ? undefined : position.top,
                 bottom:
                   position.placement === 'up'
                     ? window.innerHeight - position.top
                     : undefined,
-                right: Math.max(
-                  12,
-                  window.innerWidth - position.left
-                ),
-                maxWidth: 'min(calc(100vw - 1.5rem), 20rem)'
+                left: panelLayout.left,
+                width: panelLayout.width,
+                maxWidth: panelLayout.width,
+                maxHeight: panelLayout.maxHeight
               }}
             >
               <ContextMeterPanel

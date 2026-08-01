@@ -3,7 +3,11 @@ import type {
   SlashCommandDescriptor,
   SlashCommandResolveResult
 } from '../../../shared/ipc'
-import { formatMcpToolInvocation, normalizeTrigger } from '../../../shared/slashCommands'
+import {
+  formatMcpToolInvocation,
+  humanizeSlashToken,
+  normalizeTrigger
+} from '../../../shared/slashCommands'
 import {
   getMcpServerStatus,
   listMcpToolDefinitions,
@@ -48,7 +52,8 @@ export function listMcpCommands(
     out.push({
       id: `mcp:${tool.name}`,
       trigger,
-      label: `${parsed.toolName} (${server.name || parsed.serverId})`,
+      // Server name belongs in a section header — keep the row label clean.
+      label: humanizeSlashToken(parsed.toolName),
       description: tool.description || `MCP tool ${parsed.toolName}`,
       kind: 'mcp',
       group: 'MCP',
@@ -84,7 +89,12 @@ export function listMcpCommands(
     })
   }
 
-  return out.sort((a, b) => a.trigger.localeCompare(b.trigger))
+  return out.sort((a, b) => {
+    const sa = a.mcpServerId ?? ''
+    const sb = b.mcpServerId ?? ''
+    if (sa !== sb) return sa.localeCompare(sb)
+    return a.trigger.localeCompare(b.trigger)
+  })
 }
 
 export function resolveMcpCommand(

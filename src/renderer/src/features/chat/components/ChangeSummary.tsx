@@ -53,14 +53,14 @@ export const ChangeSummary = memo(function ChangeSummary({
 }) {
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set())
 
-  if (files.length === 0) return null
-
-  const resolveDisabled = Boolean(resolveBusy || resolveBlockedReason)
-
   const normalizedResolvablePaths = useMemo(() => {
     if (!resolvablePaths) return null
     return new Set(Array.from(resolvablePaths).map((p) => normalizeRelPath(p)))
   }, [resolvablePaths])
+
+  if (files.length === 0) return null
+
+  const resolveDisabled = Boolean(resolveBusy || resolveBlockedReason)
 
   const isResolvablePath = (path: string): boolean => {
     if (!resolvablePaths || !normalizedResolvablePaths) return true

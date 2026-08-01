@@ -1,4 +1,4 @@
-import { readFile, writeFile, rename, mkdir } from 'fs/promises'
+import { readFile, writeFile, rename, mkdir, unlink } from 'fs/promises'
 import { dirname, join, basename } from 'path'
 import { existsSync } from 'fs'
 import { RunStatusSchema, type RunStatus } from '../../shared/ipc'
@@ -87,8 +87,13 @@ async function atomicWriteJsonAsync(target: string, data: unknown): Promise<void
   const dir = dirname(target)
   if (!existsSync(dir)) await mkdir(dir, { recursive: true })
   const temp = `${target}.tmp`
-  await writeFile(temp, JSON.stringify(data, null, 2), 'utf8')
-  await rename(temp, target)
+  try {
+    await writeFile(temp, JSON.stringify(data, null, 2), 'utf8')
+    await rename(temp, target)
+  } catch (err) {
+    try { await unlink(temp) } catch { /* ignore */ }
+    throw err
+  }
 }
 
 async function flushDir(dir: string): Promise<void> {

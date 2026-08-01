@@ -37,7 +37,7 @@ import { MarkdownContent } from '@renderer/lib/ui'
 import { shouldRenderThinking } from '@shared/transcript'
 import { toolHasBody } from '../toolUi'
 
-/** One aria-controls target per turn — only the first work row gets the id. */
+/** Stable id on the first work row of a turn (region landmark / tests). */
 function turnWorkPanelId(
   row: TranscriptRow,
   rows: readonly TranscriptRow[],
@@ -49,10 +49,6 @@ function turnWorkPanelId(
     if (isTurnWorkRow(prior) && prior.turnIndex === row.turnIndex) return undefined
   }
   return `turn-work-${row.turnIndex}`
-}
-
-function turnHasWorkPanel(rows: readonly TranscriptRow[], turnIndex: number): boolean {
-  return rows.some((row) => row.turnIndex === turnIndex && isTurnWorkRow(row))
 }
 
 /** ~chars per visual line in the 840px chat column at text-sm. */
@@ -329,11 +325,6 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
       <TurnSummary
         span={row.span}
         collapsed={turnCollapsed}
-        panelId={
-          turnHasWorkPanel(displayRows, row.turnIndex)
-            ? `turn-work-${row.turnIndex}`
-            : undefined
-        }
         onToggle={() => onTurnToggle?.(row.turnIndex)}
       />
     )

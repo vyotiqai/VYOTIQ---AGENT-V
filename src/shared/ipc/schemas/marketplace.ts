@@ -82,13 +82,33 @@ export const VyotiqMcpManifestSchema = z
   })
 export type VyotiqMcpManifest = z.infer<typeof VyotiqMcpManifestSchema>
 
-/** Frontmatter fields for `skill.md` (Vyotiq-native). */
+/** Agent Skills (agentskills.io) frontmatter for `SKILL.md`. */
+const SkillNameSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, {
+    message: 'name must be lowercase alphanumeric with single hyphens (no leading/trailing/--)'
+  })
+  .refine((n) => !/(?:^|-)(?:anthropic|claude)(?:-|$)/i.test(n), {
+    message: 'name must not contain reserved words anthropic or claude'
+  })
+
 export const SkillFrontmatterSchema = z.object({
-  name: z.string().min(1),
-  description: z.string().min(1),
-  version: z.string().min(1).optional()
+  name: SkillNameSchema,
+  description: z.string().min(1).max(1024),
+  license: z.string().min(1).optional(),
+  compatibility: z.string().min(1).max(500).optional(),
+  metadata: z.record(z.string(), z.string()).optional(),
+  'allowed-tools': z.string().min(1).optional()
 })
 export type SkillFrontmatter = z.infer<typeof SkillFrontmatterSchema>
+
+/** Marketplace package version from skill metadata (defaults to 1.0.0). */
+export function skillPackageVersion(fm: Pick<SkillFrontmatter, 'metadata'>): string {
+  const v = fm.metadata?.version?.trim()
+  return v && v.length > 0 ? v : '1.0.0'
+}
 
 export const VyotiqPluginManifestSchema = z.object({
   schemaVersion: z.literal(1),

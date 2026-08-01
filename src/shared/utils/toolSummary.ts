@@ -50,6 +50,7 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   memory_list: { running: 'Listing memory', done: 'Listed memory' },
   memory_read: { running: 'Reading memory', done: 'Read memory' },
   memory_write: { running: 'Writing memory', done: 'Wrote memory' },
+  Skill: { running: 'Loading skill', done: 'Loaded skill' },
   git_status: { running: 'Checking git', done: 'Git status' },
   git_diff: { running: 'Diffing', done: 'Git diff' },
   git_commit: { running: 'Committing', done: 'Git commit' },
@@ -224,6 +225,12 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
   if (name === 'memory_read' || name === 'memory_write' || name === 'memory_list') {
     const path = args.path ?? args.note
     if (typeof path === 'string') return truncate(path)
+  }
+  if (name === 'Skill') {
+    const skillName = typeof args.name === 'string' ? args.name.trim() : ''
+    const path = typeof args.path === 'string' ? args.path.trim() : ''
+    if (skillName && path) return truncate(`${skillName}:${path}`)
+    if (skillName) return truncate(skillName)
   }
 
   const mcp = parseMcpToolDisplay(name)

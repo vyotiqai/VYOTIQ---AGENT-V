@@ -256,6 +256,20 @@ export async function* streamGeminiInteractions(
         (eventType === 'interaction.incomplete' ? 'unknown' : 'stop')
       const usage = interaction?.usage as Record<string, unknown> | undefined
       if (usage) {
+        const cachedInputTokens =
+          typeof usage.total_cached_tokens === 'number'
+            ? usage.total_cached_tokens
+            : typeof usage.totalCachedTokens === 'number'
+              ? usage.totalCachedTokens
+              : typeof usage.cached_content_token_count === 'number'
+                ? usage.cached_content_token_count
+                : typeof usage.cachedContentTokenCount === 'number'
+                  ? usage.cachedContentTokenCount
+                  : typeof usage.cached_input_tokens === 'number'
+                    ? usage.cached_input_tokens
+                    : typeof usage.cachedInputTokens === 'number'
+                      ? usage.cachedInputTokens
+                      : undefined
         lastUsage = {
           inputTokens:
             typeof usage.total_input_tokens === 'number' ? usage.total_input_tokens : undefined,
@@ -263,6 +277,7 @@ export async function* streamGeminiInteractions(
             typeof usage.total_output_tokens === 'number' ? usage.total_output_tokens : undefined,
           totalTokens:
             typeof usage.total_tokens === 'number' ? usage.total_tokens : undefined,
+          cachedInputTokens,
           reasoningTokens:
             typeof usage.total_thought_tokens === 'number' ? usage.total_thought_tokens : undefined
         }

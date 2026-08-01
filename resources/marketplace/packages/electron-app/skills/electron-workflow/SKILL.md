@@ -1,13 +1,13 @@
 ---
 name: electron-workflow
-description: Use when changing Electron main/renderer code, IPC, packaging, or desktop UX in this stack.
-version: 1.0.0
+description: Work safely across Electron main, preload, renderer, IPC, and packaging. Use when changing Electron processes, IPC, preload bridges, desktop UX, or packaging/dev vs packaged paths.
+metadata:
+  version: "1.0.0"
 ---
 
 # Electron workflow
 
-When working on an Electron + Vite app:
-
+## Instructions
 1. Confirm whether the change belongs in main, preload, renderer, or shared.
 2. Update IPC schemas and handlers together; keep types in sync.
 3. Avoid Node APIs in the renderer; go through preload bridges.

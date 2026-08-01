@@ -1,7 +1,8 @@
 import { z } from 'zod'
 import { ProviderIdSchema } from '../schemas/providers'
 
-export const SecretProviderSchema = ProviderIdSchema.exclude(['ollama'])
+/** All providers may store an API key (Ollama optional locally; required for ollama.com). */
+export const SecretProviderSchema = ProviderIdSchema
 export type SecretProvider = z.infer<typeof SecretProviderSchema>
 
 export const SECRET_PROVIDERS = SecretProviderSchema.options as [

@@ -19,6 +19,8 @@ import {
 import { useGitChrome, type GitChrome } from './GitChrome'
 import { CommitComposer, defaultCommitMessage } from './CommitComposer'
 import {
+  collectLastTurnChangedFiles,
+  collectLastTurnFileDiffs,
   collectSessionChangedFiles,
   collectSessionFileDiffs
 } from '../utils/turnFileDiffs'
@@ -172,8 +174,12 @@ export function ChangesPanel({
     0
   )
   const chrome = chromeProp ?? localChrome
-  const agentFiles = useMemo(() => collectSessionChangedFiles(items), [items])
-  const agentDiffs = useMemo(() => collectSessionFileDiffs(items), [items])
+  // Agent scope = last user turn only (matches “Last Agent Turn” label).
+  const agentFiles = useMemo(() => collectLastTurnChangedFiles(items), [items])
+  const agentDiffs = useMemo(() => collectLastTurnFileDiffs(items), [items])
+  // Session-wide rollup under git scopes.
+  const sessionAgentFiles = useMemo(() => collectSessionChangedFiles(items), [items])
+  const sessionAgentDiffs = useMemo(() => collectSessionFileDiffs(items), [items])
 
   const [scope, setScope] = useState<ChangeScope>(preferredScope)
   const [scopeOpen, setScopeOpen] = useState(false)
@@ -1037,14 +1043,14 @@ export function ChangesPanel({
           </div>
         )}
 
-        {workspacePath && scope !== 'agent' && agentFiles.length > 0 ? (
+        {workspacePath && scope !== 'agent' && sessionAgentFiles.length > 0 ? (
           <div className="mt-3">
             <p className="m-0 mb-1.5 px-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
               Agent edits
             </p>
             <ChangeSummary
-              files={agentFiles}
-              fileDiffs={agentDiffs}
+              files={sessionAgentFiles}
+              fileDiffs={sessionAgentDiffs}
               fileResolutions={writeFileResolutions}
               resolvablePaths={resolvablePaths}
               canResolve={canResolve}

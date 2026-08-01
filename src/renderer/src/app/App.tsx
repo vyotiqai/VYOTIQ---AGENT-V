@@ -611,7 +611,7 @@ export function App() {
   const chatError = chat.error
   const modelsRefreshKey = `${
     settings.provider === 'ollama'
-      ? `ollama:${settings.ollamaBaseUrl}`
+      ? `ollama:${settings.ollamaBaseUrl}:${secrets.ollama ? '1' : '0'}`
       : `${settings.provider}:${secrets[settings.provider as SecretProvider] ? '1' : '0'}`
   }:${modelsRefreshNonce}`
 

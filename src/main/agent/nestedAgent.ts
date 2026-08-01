@@ -14,7 +14,7 @@ import type {
   ProviderId
 } from '../../shared/ipc'
 import { DEFAULT_SETTINGS } from '../../shared/ipc'
-import { defaultModelFor, ollamaOpenAiBaseUrl } from '../../shared/providers'
+import { defaultModelFor, ollamaOpenAiBaseUrl, providerNeedsKey } from '../../shared/providers'
 import { resolveServiceTier } from '../../shared/domain/modelSelection'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
 import { formatError, isAbortError } from '../../shared/errors'
@@ -47,6 +47,7 @@ import { parseProviderReasoningState } from '../../shared/reasoning'
 import type { StopReason, TokenUsage, ToolCall } from './providers/types'
 import {
   MAX_STREAM_ATTEMPTS,
+  isRetriableStreamFailure,
   shouldRetryProviderStreamError,
   shouldRetryThrownStreamError,
   sleepStreamRetryBackoff
@@ -256,8 +257,8 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
       : parentModel)
 
   const provider = getProvider(providerId)
-  const apiKey = providerId === 'ollama' ? null : getSecret(providerId)
-  if (providerId !== 'ollama' && !apiKey) {
+  const apiKey = getSecret(providerId)
+  if (providerNeedsKey(providerId, settings.ollamaBaseUrl) && !apiKey) {
     const status = secretStatus()
     const storedBlob = hasStoredSecretBlob(providerId)
     const message = !status.encryptionAvailable
@@ -301,10 +302,7 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
   const harness = loadHarness(options.workspace)
   const marketplaceOverrides = override?.marketplaceOverrides
   const enabledSkills = loadEnabledSkills(marketplaceOverrides)
-  const skillsSection = buildSkillsSection(
-    enabledSkills,
-    Math.floor(allocateBudget(modelInfo).system * 4 * 0.35)
-  )
+  const skillsSection = buildSkillsSection(enabledSkills)
   const pluginRulesSection = loadPluginRules(marketplaceOverrides)
 
   const approvalSettings = settings.toolApproval ?? DEFAULT_SETTINGS.toolApproval
@@ -515,14 +513,22 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
         })
       } else {
         compactionState.current = compactionWithWatermark
+        if (assembled.contextShrunk) {
+          foldedMessages += droppedThisStep
+          messages = assembled.messages
+        }
+        if (assembled.contextShrunk || compactionState.current?.summary !== priorCompactionSummary) {
+          lastUsage = { inputTokens: assembled.estimatedTokens }
+        }
       }
-    }
-    if (assembled.contextShrunk || compactionState.current?.summary !== priorCompactionSummary) {
-      lastUsage = { inputTokens: assembled.estimatedTokens }
-    }
-    if (assembled.contextShrunk) {
-      foldedMessages += droppedThisStep
-      messages = assembled.messages
+    } else {
+      if (assembled.contextShrunk) {
+        foldedMessages += droppedThisStep
+        messages = assembled.messages
+      }
+      if (assembled.contextShrunk || compactionState.current?.summary !== priorCompactionSummary) {
+        lastUsage = { inputTokens: assembled.estimatedTokens }
+      }
     }
 
     const window = contextWindowFor(modelInfo)
@@ -599,21 +605,52 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
         })
         if (retry.contextShrunk) {
           const retryDropped = Math.max(0, messages.length - retry.messages.length)
-          foldedMessages += retryDropped
-          messages = retry.messages
+          const nextFolded = foldedMessages + retryDropped
+          let retryWatermark: CompactionRecord | null = null
           if (retry.compaction) {
-            compactionState.current = {
+            retryWatermark = {
               ...retry.compaction,
-              foldedMessages
+              foldedMessages: nextFolded
             }
-            emitParent({
-              type: 'compaction',
-              runId,
-              summary: retry.compaction.summary,
-              tokenEstimate: retry.compaction.tokenEstimate
-            })
+          } else if (retryDropped > 0) {
+            const prior = compactionState.current
+            if (prior) {
+              retryWatermark = { ...prior, foldedMessages: nextFolded }
+            } else {
+              retryWatermark = {
+                summary: CONTEXT_TRIM_WATERMARK_SUMMARY,
+                createdAt: new Date().toISOString(),
+                tokenEstimate: retry.estimatedTokens,
+                foldedMessages: nextFolded
+              }
+            }
           }
-          lastUsage = { inputTokens: retry.estimatedTokens }
+          if (retryWatermark) {
+            if (childDir && !saveCompaction(childDir, retryWatermark)) {
+              logger.warn('Nested overflow-retry compaction not persisted; keeping prior in-memory record', {
+                scope: 'agent',
+                correlationId: runId,
+                subagentId: options.subagentId
+              })
+            } else {
+              compactionState.current = retryWatermark
+              foldedMessages = nextFolded
+              messages = retry.messages
+              lastUsage = { inputTokens: retry.estimatedTokens }
+              if (retry.compaction) {
+                emitParent({
+                  type: 'compaction',
+                  runId,
+                  summary: retry.compaction.summary,
+                  tokenEstimate: retry.compaction.tokenEstimate
+                })
+              }
+            }
+          } else {
+            foldedMessages = nextFolded
+            messages = retry.messages
+            lastUsage = { inputTokens: retry.estimatedTokens }
+          }
         }
         if (!retry.overflow) {
           Object.assign(assembled, retry)
@@ -798,17 +835,14 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
                 modelInfo
               )
               const dropped = Math.max(0, beforeLen - kept.length)
-              if (dropped > 0) {
-                foldedMessages += dropped
-                messages = kept
-              }
+              const nextFoldedAnthropic = foldedMessages + dropped
               const prior = compactionState.current
               const record: CompactionRecord = {
                 summary,
                 createdAt: new Date().toISOString(),
                 tokenEstimate: await estimateTextTokensAsync(summary),
-                ...(foldedMessages > 0
-                  ? { foldedMessages }
+                ...(nextFoldedAnthropic > 0
+                  ? { foldedMessages: nextFoldedAnthropic }
                   : prior?.foldedMessages != null
                     ? { foldedMessages: prior.foldedMessages }
                     : {})
@@ -822,15 +856,18 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
                 })
               } else {
                 compactionState.current = nextRecord
+                if (dropped > 0) {
+                  foldedMessages = nextFoldedAnthropic
+                  messages = kept
+                }
+                emitParent({
+                  type: 'compaction',
+                  runId,
+                  summary: record.summary,
+                  tokenEstimate: record.tokenEstimate
+                })
+                lastUsage = { inputTokens: assembled.estimatedTokens }
               }
-              emitParent({
-                type: 'compaction',
-                runId,
-                summary: record.summary,
-                tokenEstimate: record.tokenEstimate
-              })
-              lastUsage = { inputTokens: assembled.estimatedTokens }
-            }
           } else if (chunk.type === 'error') {
             const message = chunk.error ?? 'Provider error'
             if (shouldRetryProviderStreamError(message, streamAttempt)) {
@@ -861,6 +898,9 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
         }
         if (shouldRetryThrownStreamError(err, streamAttempt)) {
           retryStream = true
+        } else if (isRetriableStreamFailure(err)) {
+          // Exhausted retriable attempts — leave streamFinished false for terminal path.
+          break
         } else {
           throw err
         }
@@ -871,6 +911,14 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
         continue
       }
       streamFinished = true
+    }
+
+    if (!streamFinished && !options.signal.aborted) {
+      return await finalizeNested(options, {
+        ok: false,
+        report: `Nested agent failed: provider stream failed after ${MAX_STREAM_ATTEMPTS} attempts`,
+        steps: step
+      }, childDir)
     }
 
     if (options.signal.aborted) break

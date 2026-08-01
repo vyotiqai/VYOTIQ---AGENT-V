@@ -105,9 +105,8 @@ function parseSafeCommand(command: string): { bin: string; args: string[] } {
       continue
     }
 
-    // Reject common shell metacharacters that would only be useful with a shell.
-    // Wildcards (*, ?) are allowed inside quoted arguments; otherwise they are treated
-    // as shell metacharacters and rejected.
+    // Reject common shell metacharacters. cross-spawn runs without a shell so
+    // there is no glob expansion; * and ? are passed literally and are safe.
     if (/[;|&$`()<>!~[\]{}#\n\r%^]/.test(ch)) {
       throw new Error(`Disallowed character in diagnostics command: ${ch}`)
     }

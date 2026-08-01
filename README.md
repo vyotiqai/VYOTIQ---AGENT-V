@@ -39,7 +39,7 @@ Project paths with spaces are fine when using prebuilds; if a source rebuild fai
 
 ## Smoke test
 
-1. Start [Ollama](https://ollama.com) and `ollama pull qwen2.5` (or set an API key in Settings).
+1. Start [Ollama](https://ollama.com) and `ollama pull qwen2.5`, **or** set the Ollama base URL to `https://ollama.com` and save an [Ollama Cloud API key](https://ollama.com/settings/keys) in Settings (or use another provider’s API key).
 2. `pnpm dev` → pick a workspace → send a message.
 3. Confirm tool rows (`read` / `search` / `memory_*` / …), streaming text, and **Stop** cancels the run.
 
@@ -47,6 +47,7 @@ Project paths with spaces are fine when using prebuilds; if a source rebuild fai
 
 OpenAI · Anthropic · Gemini · Ollama · DeepSeek · Groq · OpenRouter · xAI · Mistral
 
+- **Ollama:** Local daemon (`http://127.0.0.1:11434`, no key) or **Ollama Cloud** (`https://ollama.com` + API key via OpenAI-compatible `/v1`).
 - **Extended thinking:** Reasoning-capable models stream a separate thinking channel (collapsed in chat). Configure in the composer **model picker** (thinking on/off, effort, show/hide), along with compaction.
 - **OpenAI** reasoning models use the **Responses API** (`/v1/responses`) with reasoning summaries and tool-loop continuity.
 - **Gemini** thinking models use the **Interactions API** (`/v1beta/interactions`) with stateful `previous_interaction_id`.
@@ -60,7 +61,7 @@ OpenAI · Anthropic · Gemini · Ollama · DeepSeek · Groq · OpenRouter · xAI
 
 - Universal client context pipeline: budget layers, tool-result trimming, structured compaction, workspace snapshot, always-on memory index + state injection, live context-window meter in the composer.
 - Read-only built-in tools may run in parallel when the model requests multiple calls in one step. MCP tools always run serially and are not auto-exempt from approval via `readOnlyHint` (session/workspace allowlists can still skip prompts).
-- **Marketplace** (sidebar): Discover / Featured catalog for MCP servers, skills, and plugins; Manage installs and configures them (stdio / HTTP / SSE). Settings → Registry holds the optional remote catalog URL. Enabled skills inject into the system prompt; plugins expand nested MCP + skills + rules.
+- **Marketplace** (sidebar): Discover / Featured catalog for MCP servers, skills, and plugins; Manage installs and configures them (stdio / HTTP / SSE). Settings → Registry holds the optional remote catalog URL. Enabled skills contribute name/description metadata to the system prompt (full `SKILL.md` loads via the `Skill` tool or `/slash`); plugins expand nested MCP + skills + rules.
 - Anthropic also sends server `cache_control` + `context_management` (`clear_tool_uses` / `compact`) when available.
 - Long-term memory lives at `{workspace}/.vyotiq/memory/` (`index.md`, `notes/*.md`, optional `state.md`) with tools `memory_list` / `memory_read` / `memory_write`.
 

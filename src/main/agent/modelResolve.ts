@@ -4,7 +4,7 @@ import {
   withResolvedContextWindow
 } from '../../shared/domain/modelContextWindows'
 import { seedModelsFor } from '../../shared/providers'
-import { idSuggestsVision } from './providers/normalize'
+import { baseModelInfo } from './providers/normalize'
 import { listProviderModels } from './providers'
 
 /**
@@ -40,14 +40,12 @@ export async function resolveModelInfo(
   }
   const seed = seedModelsFor(providerId).find((m) => m.id === modelId)
   if (seed) return withResolvedContextWindow(seed, providerId)
-  return {
-    id: modelId,
-    displayName: modelId,
-    contextWindow: knownContextWindow(modelId, providerId) ?? 128_000,
-    inputModalities: ['text'],
-    outputModalities: ['text'],
-    supportsTools: providerId !== 'ollama' || /tool|coder|qwen|llama3|mistral/i.test(modelId),
-    supportsVision: idSuggestsVision(modelId),
-    supportsStructuredOutput: providerId !== 'ollama'
-  }
+  return baseModelInfo(
+    modelId,
+    {
+      contextWindow: knownContextWindow(modelId, providerId) ?? 128_000,
+      supportsTools: providerId !== 'ollama' || /tool|coder|qwen|llama3|mistral/i.test(modelId)
+    },
+    providerId
+  )
 }

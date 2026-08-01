@@ -30,6 +30,7 @@ The graph auto-updates on file changes when hooks are configured.
 ## Build and verification
 
 - `pnpm typecheck` — `tsc` for main + renderer.
+- `pnpm lint` — ESLint for the whole project. The current baseline has warnings but should pass (exit 0).
 - `pnpm test` — full Vitest suite (main, renderer, shared; can take several minutes).
 - `pnpm build` — `pnpm sync:file-icons && pnpm typecheck && electron-vite build`.
 - `pnpm start` / `pnpm dev` — `electron-vite preview` / dev. In this environment `pnpm start` currently fails during Electron launch with `TypeError: Cannot read properties of undefined (reading 'isPackaged')` inside `@electron-toolkit/utils`; the production `pnpm build` succeeds.

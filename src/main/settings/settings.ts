@@ -2,14 +2,15 @@ import { app } from 'electron'
 import { readFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { DEFAULT_SETTINGS, SettingsSchema, type Settings } from '../../shared/ipc'
-import { defaultModelFor, normalizeOllamaHost } from '../../shared/providers'
+import { defaultModelFor, ollamaNativeHost } from '../../shared/providers'
 import { logger } from '../../shared/logger'
 import { atomicWriteJson } from '../storage/atomicWrite'
 import { sanitizeMcpManifestEnv } from '../marketplace/sanitizeMcpEnv'
-import { getAuthorizationHeader, headersWithoutAuthorization } from '../../shared/utils/mcpAuth'
+import { getAuthorizationHeader, getBearerToken, headersWithoutAuthorization } from '../../shared/utils/mcpAuth'
 import {
   clearMcpServerSecrets,
   getMcpServerSecrets,
+  setMcpAuthToken,
   setMcpServerSecrets,
   type McpServerSecrets
 } from './secrets'
@@ -61,7 +62,11 @@ function extractAndRedactMcpSecrets(settings: Settings): Settings {
     const toStore: McpServerSecrets = { env: {}, headers: {} }
 
     if (safeEnv) toStore.env = safeEnv
-    if (safeHeaders) toStore.headers = safeHeaders
+    if (safeHeaders) toStore.headers = { ...safeHeaders }
+    // Never persist Authorization in settings.json — store in secrets (and Bearer token store).
+    if (authHeader && hasMcpSecretValue(authHeader)) {
+      toStore.headers.Authorization = authHeader
+    }
 
     const hasSecretsToStore =
       Object.keys(toStore.env).length > 0 || Object.keys(toStore.headers).length > 0
@@ -70,12 +75,14 @@ function extractAndRedactMcpSecrets(settings: Settings): Settings {
       try {
         setMcpServerSecrets(s.id, toStore)
       } catch (err) {
-        logger.error('Failed to store MCP server secrets; keeping plaintext in settings', {
+        logger.error('Failed to store MCP server secrets; refusing plaintext fallback', {
           scope: 'settings',
           serverId: s.id,
           err
         })
-        return s
+        throw new Error(
+          `Cannot save MCP secrets for "${s.id}" to secure storage. Fix OS keychain/safeStorage and retry.`
+        )
       }
     } else {
       try {
@@ -85,30 +92,51 @@ function extractAndRedactMcpSecrets(settings: Settings): Settings {
       }
     }
 
+    const bearer = getBearerToken(authHeader ? { Authorization: authHeader } : undefined)
+    if (bearer) {
+      try {
+        setMcpAuthToken(s.id, bearer)
+      } catch (err) {
+        logger.error('Failed to store MCP auth token; refusing plaintext fallback', {
+          scope: 'settings',
+          serverId: s.id,
+          err
+        })
+        throw new Error(
+          `Cannot save MCP auth token for "${s.id}" to secure storage. Fix OS keychain/safeStorage and retry.`
+        )
+      }
+    }
+
     const redactedEnv: Record<string, string> | undefined = safeEnv
       ? Object.fromEntries(Object.keys(safeEnv).map((k) => [k, REDACTED_VALUE]))
       : undefined
-    const redactedHeaders: Record<string, string> | undefined = safeHeaders
+    let redactedHeaders: Record<string, string> | undefined = safeHeaders
       ? Object.fromEntries(Object.keys(safeHeaders).map((k) => [k, REDACTED_VALUE]))
       : undefined
-    const nextHeaders: Record<string, string> | undefined =
-      redactedHeaders || authHeader
-        ? { ...redactedHeaders, ...(authHeader ? { Authorization: authHeader } : {}) }
-        : undefined
-
-    if (
-      safeEnv === s.env &&
-      nextHeaders === s.headers &&
-      (!safeEnv || Object.keys(safeEnv).length === 0) &&
-      (!safeHeaders || Object.keys(safeHeaders).length === 0)
-    ) {
-      return s
+    if (authHeader && hasMcpSecretValue(authHeader)) {
+      redactedHeaders = { ...(redactedHeaders ?? {}), Authorization: REDACTED_VALUE }
     }
+
+    const envSame =
+      (redactedEnv == null && s.env == null) ||
+      (redactedEnv != null &&
+        s.env != null &&
+        Object.keys(redactedEnv).length === Object.keys(s.env).length &&
+        Object.keys(redactedEnv).every((k) => s.env![k] === redactedEnv[k]))
+    const headersSame =
+      (redactedHeaders == null && s.headers == null) ||
+      (redactedHeaders != null &&
+        s.headers != null &&
+        Object.keys(redactedHeaders).length === Object.keys(s.headers).length &&
+        Object.keys(redactedHeaders).every((k) => s.headers![k] === redactedHeaders![k]))
+
+    if (envSame && headersSame) return s
     changed = true
     return {
       ...s,
       env: redactedEnv,
-      headers: nextHeaders
+      headers: redactedHeaders
     }
   })
 
@@ -147,21 +175,38 @@ function restoreMcpSecrets(settings: Settings): Settings {
       const headers: Record<string, string> = {}
       let headersChanged = false
       for (const [key, value] of Object.entries(s.headers)) {
-        if (key.toLowerCase() === 'authorization') {
-          headers[key] = value
-          continue
-        }
         if (value === REDACTED_VALUE && secret?.headers[key] && hasMcpSecretValue(secret.headers[key])) {
           headers[key] = secret.headers[key]
+          headersChanged = true
+        } else if (
+          key.toLowerCase() === 'authorization' &&
+          value === REDACTED_VALUE &&
+          secret?.headers.Authorization &&
+          hasMcpSecretValue(secret.headers.Authorization)
+        ) {
+          // Case-insensitive Authorization key in secrets blob
+          headers[key] = secret.headers.Authorization
           headersChanged = true
         } else {
           headers[key] = value
         }
       }
+      // Also inject Authorization from secrets when settings omitted it entirely
+      if (
+        !Object.keys(headers).some((k) => k.toLowerCase() === 'authorization') &&
+        secret?.headers.Authorization &&
+        hasMcpSecretValue(secret.headers.Authorization)
+      ) {
+        headers.Authorization = secret.headers.Authorization
+        headersChanged = true
+      }
       if (headersChanged) {
         nextHeaders = headers
         changed = true
       }
+    } else if (secret?.headers.Authorization && hasMcpSecretValue(secret.headers.Authorization)) {
+      nextHeaders = { Authorization: secret.headers.Authorization }
+      changed = true
     }
 
     if (nextEnv === s.env && nextHeaders === s.headers) return s
@@ -268,7 +313,7 @@ export function clearSettingsCacheForTests(): void {
 }
 
 function normalizeSettings(data: Settings): Settings {
-  const host = normalizeOllamaHost(data.ollamaBaseUrl)
+  const host = ollamaNativeHost(data.ollamaBaseUrl)
   return host === data.ollamaBaseUrl ? data : { ...data, ollamaBaseUrl: host }
 }
 
@@ -300,6 +345,31 @@ export function readLegacyWorkspacePath(): string | null {
   }
 }
 
+function migrateLegacyMcpSecretsOnLoad(data: Settings): Settings {
+  if (!data.mcpServers?.length) return data
+  try {
+    const redacted = extractAndRedactMcpSecrets(data)
+    const before = JSON.stringify(data.mcpServers)
+    const after = JSON.stringify(redacted.mcpServers)
+    if (before !== after) {
+      writeSettings(redacted)
+      logger.info('Migrated legacy plaintext MCP secrets out of settings.json', {
+        scope: 'settings',
+        code: 'SETTINGS_MCP_MIGRATE'
+      })
+      return redacted
+    }
+    return redacted
+  } catch (err) {
+    logger.warn('Failed to migrate legacy MCP secrets on load; leaving disk as-is', {
+      scope: 'settings',
+      code: 'SETTINGS_MCP_MIGRATE',
+      err
+    })
+    return data
+  }
+}
+
 export function getSettings(): Settings {
   if (settingsCache) return restoreMcpSecrets(settingsCache)
   const p = settingsPath()
@@ -326,10 +396,10 @@ export function getSettings(): Settings {
           ;(merged as Record<string, unknown>)[key] = field.data
         }
       }
-      settingsCache = normalizeSettings(merged)
+      settingsCache = migrateLegacyMcpSecretsOnLoad(normalizeSettings(merged))
       return restoreMcpSecrets(settingsCache)
     }
-    const data = normalizeSettings(parsed.data)
+    const data = migrateLegacyMcpSecretsOnLoad(normalizeSettings(parsed.data))
     if (data.ollamaBaseUrl !== parsed.data.ollamaBaseUrl) {
       try {
         writeSettings(data)
@@ -489,7 +559,7 @@ export function setSettings(
     ...(mcpServers !== undefined ? { mcpServers } : {})
   }
   if (typeof merged.ollamaBaseUrl === 'string') {
-    merged.ollamaBaseUrl = normalizeOllamaHost(merged.ollamaBaseUrl)
+    merged.ollamaBaseUrl = ollamaNativeHost(merged.ollamaBaseUrl)
   }
   if (partial.provider !== undefined && partial.model === undefined) {
     merged.model = defaultModelFor(partial.provider)
@@ -502,6 +572,16 @@ export function setSettings(
     throw err
   }
   if (partial.mcpServers !== undefined) {
+    const nextIds = new Set((next.mcpServers ?? []).map((s) => s.id))
+    for (const s of prev.mcpServers ?? []) {
+      if (!nextIds.has(s.id)) {
+        try {
+          clearMcpServerSecrets(s.id)
+        } catch {
+          // best-effort orphan cleanup
+        }
+      }
+    }
     try {
       // Lazy require avoids circular import with marketplace/resolve → settings.
       const { invalidateMcpResolveCache } = require('../marketplace/resolve') as {

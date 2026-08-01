@@ -989,19 +989,21 @@ export function ChatView({
             onBeginEditUserMessage={onEditAndResend ? beginPromptEdit : undefined}
           />
 
-          <MemoComposer
-            key={`composer:${surfaceKey}`}
-            {...composerProps}
-            variant="dock"
-            bannerError={bannerError}
-            onDismissError={onDismissError}
-            leading={
-              <ChatGitLeading chrome={gitChrome} onOpenChanges={() => openChangesPanel('uncommitted')} />
-            }
-            trailing={
-              <ChatGitTrailing chrome={gitChrome} />
-            }
-          />
+          {!editing ? (
+            <MemoComposer
+              key={`composer:${surfaceKey}`}
+              {...composerProps}
+              variant="dock"
+              bannerError={bannerError}
+              onDismissError={onDismissError}
+              leading={
+                <ChatGitLeading chrome={gitChrome} onOpenChanges={() => openChangesPanel('uncommitted')} />
+              }
+              trailing={
+                <ChatGitTrailing chrome={gitChrome} />
+              }
+            />
+          ) : null}
         </div>
       )}
     </>

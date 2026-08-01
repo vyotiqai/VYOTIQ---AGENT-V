@@ -8,6 +8,7 @@ import {
   type PackageContents
 } from '../../shared/ipc'
 import { parseSkillFrontmatter } from '../agent/skills/parse'
+import { resolveSkillMdPath, SKILL_MD } from '../agent/skills/paths'
 import { loadBundledCatalog, loadCachedRemoteCatalog, mergeCatalogs } from './catalog'
 import { getInstalledItem } from './indexStore'
 import { bundledPackagePath, resolveInstalledPackageRoot } from './paths'
@@ -94,13 +95,13 @@ export function describePackageAt(
   }
 
   if (item.kind === 'skill') {
-    const skillPath = join(root, 'skill.md')
-    if (existsSync(skillPath)) {
+    const skillPath = resolveSkillMdPath(root)
+    if (skillPath) {
       const skill = parseSkillFrontmatter(readFileSync(skillPath, 'utf8'))
       out.skills.push({
         name: skill.name,
         description: skill.description,
-        path: 'skill.md'
+        path: SKILL_MD
       })
     }
     return out
@@ -132,13 +133,14 @@ export function describePackageAt(
     }
   }
   for (const rel of plugin.skills) {
-    let skillPath: string
+    let skillDir: string
     try {
-      skillPath = join(resolveInsidePackageRoot(root, rel), 'skill.md')
+      skillDir = resolveInsidePackageRoot(root, rel)
     } catch {
       continue
     }
-    if (!existsSync(skillPath)) continue
+    const skillPath = resolveSkillMdPath(skillDir)
+    if (!skillPath) continue
     try {
       const skill = parseSkillFrontmatter(readFileSync(skillPath, 'utf8'))
       out.skills.push({ name: skill.name, description: skill.description, path: rel })

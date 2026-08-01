@@ -1,5 +1,6 @@
 import { app } from 'electron'
-import { join, isAbsolute, relative, resolve } from 'path'
+import { existsSync, lstatSync, realpathSync } from 'fs'
+import { basename, dirname, join, isAbsolute, relative, resolve } from 'path'
 import { isSafeWorkspaceRelPath } from '../../shared/utils/workspacePath'
 import { userDataRoot } from '../storage/paths'
 
@@ -15,6 +16,17 @@ function bundledRoot(): string {
     return join(process.resourcesPath, 'marketplace')
   }
   return join(app.getAppPath(), 'resources', 'marketplace')
+}
+
+function pathKey(path: string): string {
+  return process.platform === 'win32' ? path.toLowerCase() : path
+}
+
+function isInsideRoot(resolved: string, realRoot: string): boolean {
+  const rootKey = pathKey(realRoot)
+  const resolvedKey = pathKey(resolved)
+  const sep = process.platform === 'win32' ? '\\' : '/'
+  return resolvedKey === rootKey || resolvedKey.startsWith(rootKey + sep)
 }
 
 export function isSafeMarketplaceSegment(segment: string): boolean {
@@ -48,9 +60,11 @@ export function resolveInsideMarketplacePackages(...segments: string[]): string 
 
 /**
  * Resolve a relative path under an installed package root (plugin mcp/skills/rules).
+ * Rejects string escapes and symlink targets outside the package root.
  */
 export function resolveInsidePackageRoot(packageRoot: string, relPath: string): string {
   const root = resolve(packageRoot)
+  const realRoot = existsSync(root) ? realpathSync(root) : root
   const rel = relPath.trim().replace(/\\/g, '/')
   if (!isSafeWorkspaceRelPath(rel)) {
     throw new Error(`Unsafe package-relative path: ${relPath}`)
@@ -60,7 +74,38 @@ export function resolveInsidePackageRoot(packageRoot: string, relPath: string): 
   if (!outRel || outRel.startsWith('..') || isAbsolute(outRel)) {
     throw new Error(`Path escapes package root: ${relPath}`)
   }
-  return abs
+
+  if (existsSync(abs)) {
+    if (lstatSync(abs).isSymbolicLink()) {
+      throw new Error(`Symlinks are not allowed in package paths: ${relPath}`)
+    }
+    const real = realpathSync(abs)
+    if (!isInsideRoot(real, realRoot)) {
+      throw new Error(`Path escapes package root: ${relPath}`)
+    }
+    return real
+  }
+
+  // New / missing file — walk up to nearest existing ancestor (Skill tool only reads existing).
+  const tail: string[] = []
+  let probe = abs
+  while (!existsSync(probe)) {
+    tail.unshift(basename(probe))
+    const parent = dirname(probe)
+    if (parent === probe) break
+    probe = parent
+  }
+  if (!existsSync(probe)) {
+    return abs
+  }
+  if (lstatSync(probe).isSymbolicLink()) {
+    throw new Error(`Symlinks are not allowed in package paths: ${relPath}`)
+  }
+  const realBase = realpathSync(probe)
+  if (!isInsideRoot(realBase, realRoot)) {
+    throw new Error(`Path escapes package root: ${relPath}`)
+  }
+  return tail.length ? join(realBase, ...tail) : realBase
 }
 
 /** Resolve under bundled resources/marketplace with containment. */

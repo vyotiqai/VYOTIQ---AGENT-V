@@ -1,9 +1,10 @@
-import { existsSync, readFileSync } from 'fs'
-import { join } from 'path'
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'fs'
+import { dirname, join, relative } from 'path'
 import type { MarketplaceOverrides } from '../../../shared/ipc'
 import { VyotiqPluginManifestSchema } from '../../../shared/ipc'
 import { effectiveMarketplaceEnabled } from '../../../shared/domain/marketplaceEnablement'
 import { parseSkillFrontmatter } from './parse'
+import { isSkillMdFilename, resolveSkillMdPath } from './paths'
 import { readMarketplaceIndex } from '../../marketplace/indexStore'
 import { resolveInstalledPackageRoot } from '../../marketplace/paths'
 import { resolveInsidePackageRoot } from '../../marketplace/safePath'
@@ -13,12 +14,48 @@ export type LoadedSkill = {
   name: string
   description: string
   body: string
+  /** Absolute directory containing SKILL.md */
+  root: string
+  /** Absolute path to the resolved SKILL.md (or legacy skill.md) */
+  skillPath: string
   source: 'skill' | 'plugin'
 }
 
-function loadSkillMd(path: string): { name: string; description: string; body: string } {
-  const parsed = parseSkillFrontmatter(readFileSync(path, 'utf8'))
-  return { name: parsed.name, description: parsed.description, body: parsed.body }
+function loadSkillFromDir(
+  skillDir: string
+): { name: string; description: string; body: string; skillPath: string } | null {
+  const skillPath = resolveSkillMdPath(skillDir)
+  if (!skillPath) return null
+  try {
+    const parsed = parseSkillFrontmatter(readFileSync(skillPath, 'utf8'))
+    return {
+      name: parsed.name,
+      description: parsed.description,
+      body: parsed.body,
+      skillPath
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Resolve a plugin-listed skill path to a skill directory (or the file's parent). */
+function resolvePluginSkillDir(root: string, rel: string): string | null {
+  try {
+    const asDir = resolveInsidePackageRoot(root, rel)
+    if (resolveSkillMdPath(asDir)) return asDir
+    if (existsSync(asDir) && isSkillMdFilename(asDir)) {
+      // rel pointed at the markdown file itself
+      return dirname(asDir)
+    }
+    const mdAlt = resolveInsidePackageRoot(root, `${rel}.md`)
+    if (existsSync(mdAlt) && isSkillMdFilename(mdAlt)) {
+      return dirname(mdAlt)
+    }
+    return asDir
+  } catch {
+    return null
+  }
 }
 
 /** Load all effectively enabled skills (standalone + plugin-bundled). */
@@ -33,20 +70,18 @@ export function loadEnabledSkills(
     if (!effectiveMarketplaceEnabled(item.id, item.enabled, marketplaceOverrides, 'skills')) {
       continue
     }
-    const skillPath = join(resolveInstalledPackageRoot(item.packagePath), 'skill.md')
-    if (!existsSync(skillPath)) continue
-    try {
-      const loaded = loadSkillMd(skillPath)
-      skills.push({
-        id: item.id,
-        name: loaded.name,
-        description: loaded.description,
-        body: loaded.body,
-        source: 'skill'
-      })
-    } catch {
-      // skip
-    }
+    const root = resolveInstalledPackageRoot(item.packagePath)
+    const loaded = loadSkillFromDir(root)
+    if (!loaded) continue
+    skills.push({
+      id: item.id,
+      name: loaded.name,
+      description: loaded.description,
+      body: loaded.body,
+      root,
+      skillPath: loaded.skillPath,
+      source: 'skill'
+    })
   }
 
   for (const item of index.items) {
@@ -62,30 +97,17 @@ export function loadEnabledSkills(
         JSON.parse(readFileSync(manifestPath, 'utf8'))
       )
       for (const rel of plugin.skills) {
-        let skillPath: string
-        let alt: string
-        let mdAlt: string
-        try {
-          skillPath = join(resolveInsidePackageRoot(root, rel), 'skill.md')
-          alt = resolveInsidePackageRoot(root, rel)
-          mdAlt = resolveInsidePackageRoot(root, `${rel}.md`)
-        } catch {
-          continue
-        }
-        const path = existsSync(skillPath)
-          ? skillPath
-          : existsSync(alt) && alt.endsWith('skill.md')
-            ? alt
-            : existsSync(mdAlt)
-              ? mdAlt
-              : skillPath
-        if (!existsSync(path)) continue
-        const loaded = loadSkillMd(path)
+        const skillDir = resolvePluginSkillDir(root, rel)
+        if (!skillDir) continue
+        const loaded = loadSkillFromDir(skillDir)
+        if (!loaded) continue
         skills.push({
           id: `${plugin.id}/${loaded.name}`,
           name: loaded.name,
           description: loaded.description,
           body: loaded.body,
+          root: skillDir,
+          skillPath: loaded.skillPath,
           source: 'plugin'
         })
       }
@@ -97,35 +119,138 @@ export function loadEnabledSkills(
   return skills
 }
 
-/** Format skills for system prompt (eager injection). */
-export function buildSkillsSection(skills: LoadedSkill[], maxChars: number): string {
-  if (skills.length === 0) return ''
-  const blocks: string[] = ['## Marketplace skills']
-  let used = blocks[0].length
+/**
+ * Prefer one entry per skill name (standalone over plugin duplicates).
+ */
+export function dedupeSkillsByName(skills: LoadedSkill[]): LoadedSkill[] {
+  const byName = new Map<string, LoadedSkill>()
   for (const skill of skills) {
-    const block = [
-      '',
-      `### ${skill.name}`,
-      `_${skill.description}_`,
-      '',
-      skill.body.trim()
-    ].join('\n')
-    if (used + block.length > maxChars) {
+    const key = skill.name.trim().toLowerCase()
+    if (!key) continue
+    const existing = byName.get(key)
+    if (!existing) {
+      byName.set(key, skill)
+      continue
+    }
+    if (existing.source === 'plugin' && skill.source === 'skill') {
+      byName.set(key, skill)
+    }
+  }
+  return [...byName.values()]
+}
+
+/**
+ * Level-1 progressive disclosure: name + description only.
+ * Full SKILL.md body is loaded on demand via the Skill tool or slash invocation.
+ */
+export function buildSkillsSection(skills: LoadedSkill[], maxChars = 12_000): string {
+  const unique = dedupeSkillsByName(skills)
+  if (unique.length === 0) return ''
+  const header = [
+    '## Available skills',
+    '',
+    'When a user request matches a skill description, call the `Skill` tool with that',
+    'skill `name` before proceeding, then follow its instructions. To load bundled',
+    '`references/`, `scripts/`, or `assets/` files, call `Skill` again with the same',
+    '`name` and a relative `path`. Users may also invoke a skill explicitly with `/name`.',
+    ''
+  ].join('\n')
+
+  const blocks: string[] = [header]
+  let used = header.length
+  for (const skill of unique) {
+    const line = `- **${skill.name}**: ${skill.description}\n`
+    if (used + line.length > maxChars) {
       blocks.push('\n_Additional skills omitted to fit context budget._')
       break
     }
-    blocks.push(block)
-    used += block.length
+    blocks.push(line)
+    used += line.length
   }
-  return blocks.join('\n').trim()
+  return blocks.join('').trim()
 }
 
-/** Load plugin rule markdown files for enabled plugins. */
-export function loadPluginRules(
+/** List shallow relative files under a skill root (for Skill tool discovery). */
+export function listSkillBundledFiles(skillRoot: string, cap = 40): string[] {
+  const out: string[] = []
+  const walk = (dir: string, prefix: string, depth: number): void => {
+    if (out.length >= cap || depth > 3) return
+    let entries: string[]
+    try {
+      entries = readdirSync(dir)
+    } catch {
+      return
+    }
+    for (const name of entries) {
+      if (out.length >= cap) return
+      if (name === '.git' || name === 'node_modules') continue
+      const abs = join(dir, name)
+      let st
+      try {
+        // lstat: do not follow symlinks (containment — mirrors resolveInsidePackageRoot).
+        st = lstatSync(abs)
+      } catch {
+        continue
+      }
+      if (st.isSymbolicLink()) continue
+      const rel = prefix ? `${prefix}/${name}` : name
+      if (st.isDirectory()) {
+        walk(abs, rel, depth + 1)
+      } else if (!isSkillMdFilename(name) || prefix) {
+        out.push(rel.replace(/\\/g, '/'))
+      }
+    }
+  }
+  walk(skillRoot, '', 0)
+  return out
+}
+
+/** Resolve a relative path under a skill root with containment. */
+export function resolveSkillResourcePath(skillRoot: string, relPath: string): string {
+  return resolveInsidePackageRoot(skillRoot, relPath)
+}
+
+/** Find an enabled skill by name (case-insensitive). Prefer standalone over plugin. */
+export function findEnabledSkillByName(
+  name: string,
   marketplaceOverrides?: MarketplaceOverrides | null
-): string {
+): LoadedSkill | undefined {
+  const key = name.trim().toLowerCase()
+  if (!key) return undefined
+  const skills = loadEnabledSkills(marketplaceOverrides)
+  const standalone = skills.find((s) => s.source === 'skill' && s.name.toLowerCase() === key)
+  if (standalone) return standalone
+  return skills.find((s) => s.name.toLowerCase() === key)
+}
+
+export type LoadedPluginRule = {
+  /** Stable id for the Skill tool: `plugin-rule:<pluginId>/<relPath>`. */
+  id: string
+  pluginId: string
+  pluginName: string
+  relPath: string
+  description: string
+  absPath: string
+}
+
+function pluginRuleId(pluginId: string, relPath: string): string {
+  return `plugin-rule:${pluginId}/${relPath.replace(/\\/g, '/')}`
+}
+
+function oneLineRuleDescription(text: string, fallback: string): string {
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/^#+\s*/, '').trim()
+    if (line) return line.slice(0, 160)
+  }
+  return fallback.slice(0, 160)
+}
+
+/** Enumerate enabled plugin rule files (marketplace packages; outside workspace). */
+export function listEnabledPluginRules(
+  marketplaceOverrides?: MarketplaceOverrides | null
+): LoadedPluginRule[] {
   const index = readMarketplaceIndex()
-  const parts: string[] = []
+  const out: LoadedPluginRule[] = []
   for (const item of index.items) {
     if (item.kind !== 'plugin') continue
     if (!effectiveMarketplaceEnabled(item.id, item.enabled, marketplaceOverrides, 'plugins')) {
@@ -139,21 +264,91 @@ export function loadPluginRules(
         JSON.parse(readFileSync(manifestPath, 'utf8'))
       )
       for (const rel of plugin.rules) {
-        let rulePath: string
+        const relNorm = rel.replace(/\\/g, '/')
+        let absPath: string
         try {
-          rulePath = resolveInsidePackageRoot(root, rel)
+          absPath = resolveInsidePackageRoot(root, relNorm)
         } catch {
           continue
         }
-        if (!existsSync(rulePath)) continue
-        const text = readFileSync(rulePath, 'utf8').trim()
+        if (!existsSync(absPath)) continue
+        let text = ''
+        try {
+          text = readFileSync(absPath, 'utf8').trim()
+        } catch {
+          continue
+        }
         if (!text) continue
-        parts.push(`### Plugin rule: ${plugin.name} (${rel})\n${text}`)
+        out.push({
+          id: pluginRuleId(plugin.id, relNorm),
+          pluginId: plugin.id,
+          pluginName: plugin.name,
+          relPath: relNorm,
+          description: oneLineRuleDescription(text, plugin.name),
+          absPath
+        })
       }
     } catch {
       // skip
     }
   }
-  if (parts.length === 0) return ''
-  return `## Plugin rules\n\n${parts.join('\n\n')}`
+  return out
+}
+
+/**
+ * Level-1 progressive disclosure for plugin rules: id + one-line description.
+ * Full rule body loads via the Skill tool with the listed `id` (marketplace paths
+ * are outside the workspace `read` sandbox).
+ */
+export function loadPluginRules(
+  marketplaceOverrides?: MarketplaceOverrides | null,
+  maxChars = 12_000
+): string {
+  const rules = listEnabledPluginRules(marketplaceOverrides)
+  if (rules.length === 0) return ''
+  const header = [
+    '## Plugin rules',
+    '',
+    'Enabled plugin convention files (metadata only). When a rule matches the task,',
+    'call the `Skill` tool with that rule `id` before proceeding, then follow its body.',
+    'Plugin rules live outside the workspace; do not use `read` for these paths.',
+    ''
+  ].join('\n')
+
+  const blocks: string[] = [header]
+  let used = header.length
+  for (const rule of rules) {
+    const line = `- **${rule.id}** (${rule.pluginName}): ${rule.description}\n`
+    if (used + line.length > maxChars) {
+      blocks.push('\n_Additional plugin rules omitted to fit context budget._')
+      break
+    }
+    blocks.push(line)
+    used += line.length
+  }
+  return blocks.join('').trim()
+}
+
+/** Resolve a plugin-rule id (case-insensitive) from enabled plugins. */
+export function findPluginRuleById(
+  id: string,
+  marketplaceOverrides?: MarketplaceOverrides | null
+): LoadedPluginRule | undefined {
+  const key = id.trim().toLowerCase()
+  if (!key) return undefined
+  return listEnabledPluginRules(marketplaceOverrides).find((r) => r.id.toLowerCase() === key)
+}
+
+const PLUGIN_RULE_CONTENT_CAP = 120_000
+
+/** Load full plugin rule markdown (sanctioned path outside workspace). */
+export function loadPluginRuleBody(rule: LoadedPluginRule): string {
+  const raw = readFileSync(rule.absPath, 'utf8').trim()
+  const out = [`# Plugin rule: ${rule.pluginName}`, `Path: ${rule.relPath}`, '', raw].join('\n')
+  return out.slice(0, PLUGIN_RULE_CONTENT_CAP)
+}
+
+/** @internal for tests — relative path helper */
+export function skillRelFromRoot(skillRoot: string, absPath: string): string {
+  return relative(skillRoot, absPath).replace(/\\/g, '/')
 }

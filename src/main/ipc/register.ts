@@ -412,7 +412,7 @@ export function registerIpc(): void {
       if (!senderOk(event)) return fail('Invalid sender')
       try {
         const { path } = WorkspacesSetActiveRequestSchema.parse(raw)
-        return ok(setActiveWorkspace(path))
+        return ok(await enqueueWorkspaceMutation(() => setActiveWorkspace(path)))
       } catch (err) {
         return failFrom(err, IPC.workspacesSetActive)
       }
@@ -547,7 +547,7 @@ export function registerIpc(): void {
       try {
         const req = ListModelsRequestSchema.parse(raw ?? {})
         const settings = getSettings()
-        const apiKey = req.provider === 'ollama' ? null : getSecret(req.provider)
+        const apiKey = getSecret(req.provider)
         const baseUrl =
           req.provider === 'ollama'
             ? resolveOllamaListBaseUrl(req.baseUrl, settings.ollamaBaseUrl)

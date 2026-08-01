@@ -613,6 +613,21 @@ const diagnosticsArgs = z.object({
     .optional()
 })
 
+const skillArgs = z.object({
+  name: z
+    .string()
+    .min(1)
+    .describe(
+      'Skill name from Available skills, or plugin-rule id from Plugin rules (e.g. plugin-rule:quality/rules/quality.md)'
+    ),
+  path: z
+    .string()
+    .describe(
+      'Optional relative path under the skill root (default: SKILL.md). Use for references/, scripts/, or assets/. Ignored for plugin-rule ids.'
+    )
+    .optional()
+})
+
 const TOOL_REGISTRY = {
   read: {
     description:
@@ -793,6 +808,11 @@ const TOOL_REGISTRY = {
     description:
       'Create or update a memory file (index.md, state.md, or notes/<name>.md).',
     schema: memoryWriteArgs
+  },
+  Skill: {
+    description:
+      'Load an enabled Marketplace skill (SKILL.md) or plugin rule (`plugin-rule:…` id), or a relative file under a skill. Call when an Available skills or Plugin rules entry matches the task.',
+    schema: skillArgs
   },
   git_status: {
     description: 'Structured git status for the workspace (branch, changed files, +/- counts).',

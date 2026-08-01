@@ -10,6 +10,7 @@ import {
   findActiveMentionToken,
   insertMentionAtToken,
   isSafeWorkspaceRelPath,
+  isAutoInjectedWorkspaceRule,
   mentionMarker,
   parseComposerDocument,
   serializeComposerDocument,
@@ -132,9 +133,31 @@ describe('mentionModel', () => {
         kind: 'file',
         path: 'ok.ts',
         label: 'ok.ts',
-        subtitle: ''
+        subtitle: 'Workspace root'
       }
     ])
+  })
+
+  it('orders root as Context then Files then Browse', () => {
+    const items = buildRootMentionItems({
+      query: '',
+      recentFiles: ['src/a.ts'],
+      matchingFiles: [],
+      includeCodebase: true,
+      branchName: 'main'
+    })
+    const kinds = items.map((i) => i.kind)
+    const firstFile = kinds.indexOf('file')
+    const firstNav = kinds.indexOf('nav')
+    expect(kinds[0]).toBe('branch')
+    expect(firstFile).toBeGreaterThan(0)
+    expect(firstNav).toBeGreaterThan(firstFile)
+    expect(items.find((i) => i.kind === 'browser')?.subtitle).toBe(
+      'Prefer browser tools this turn'
+    )
+    expect(items.find((i) => i.kind === 'nav' && i.view === 'files')?.subtitle).toBe(
+      'Browse the workspace'
+    )
   })
 
   it('filters root by query', () => {
@@ -150,5 +173,22 @@ describe('mentionModel', () => {
     const items = buildFileMentionItems(['a.ts', 'b.ts'], 50, 2)
     expect(items).toHaveLength(3)
     expect(items[2]).toMatchObject({ kind: 'show-more', remaining: 48 })
+  })
+
+  it('detects auto-injected vs requestable workspace rules', () => {
+    expect(isAutoInjectedWorkspaceRule('AGENTS.md', '# hi')).toBe(true)
+    expect(isAutoInjectedWorkspaceRule('.cursor/rules/x.mdc', 'plain body')).toBe(true)
+    expect(
+      isAutoInjectedWorkspaceRule(
+        '.cursor/rules/x.mdc',
+        '---\nalwaysApply: false\n---\nbody'
+      )
+    ).toBe(false)
+    expect(
+      isAutoInjectedWorkspaceRule(
+        '.cursor/rules/y.mdc',
+        '---\nalwaysApply: true\n---\nbody'
+      )
+    ).toBe(true)
   })
 })

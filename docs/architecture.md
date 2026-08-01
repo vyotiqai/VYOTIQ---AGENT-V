@@ -96,7 +96,7 @@ Typing `/` in the composer opens a fuzzy-filtered autocomplete menu (`SlashComma
 | Source | Examples | Resolve behavior |
 |--------|----------|------------------|
 | Built-ins | `/compact`, `/marketplace`, `/settings`, `/create-rule`, `/help`, `/undo`, `/ask`, `/plan`, `/agent` | Client actions (navigate / compact / create rule file / undo writes / mode switch) or send help text |
-| Marketplace skills | `/code-review` | Inject skill body + trailing text, then send (eager system-prompt skills unchanged) |
+| Marketplace skills | `/code-review` | Inject skill body + trailing text for this turn (explicit Level-2 activate). System prompt lists skill metadata only; the agent loads full `SKILL.md` via the `Skill` tool when relevant. |
 | Workspace commands | `.vyotiq/commands/*.md`, `.cursor/commands/*.md` | Template send (`{{input}}` supported); Vyotiq wins collisions |
 | Workspace rules | existing `.vyotiq/rules` / `.cursor/rules` stems | Open file in the system editor |
 | MCP tools | connected `mcp__…` tools | Agent-mediated send hint (no direct JSON arg forms in v1) |
@@ -137,16 +137,17 @@ flowchart TB
 
 ### Context assembly (`src/main/agent/context/`)
 
-`assembleContext()` builds the wire payload each agent step:
+`assembleContext()` builds the wire payload each agent step as a **two-zone** system string (stable instruction prefix + volatile data tail; see [harness-handbook.md](./harness-handbook.md) and [system-prompt-best-practices-2026.md](./system-prompt-best-practices-2026.md)):
 
-| Layer | Source |
-|-------|--------|
-| Harness | `resources/harness/default.md` — `loadHarness(workspace)` prefers the workspace copy when present (e.g. after `/harness-apply`), else the bundled app copy (context, tool policy, memory, work style / safety). Applied text is seen on the next invoke / new run, not mid-step. |
-| Tool definitions | `AGENT_TOOLS` from `schemas/tools.ts` (short capability descriptions) + MCP |
-| Contract | `sessions/{runId}/contract.md` (auto-injected) |
-| Workspace snapshot | Manifest detection + capped `git status` |
-| Memory index | `.vyotiq/memory/index.md` + `state.md` |
-| Compaction summary | `sessions/{runId}/compaction.json` (persisted) |
+| Zone | Layer | Source |
+|------|-------|--------|
+| Stable | Harness | `resources/harness/default.md` — `loadHarness(workspace)` prefers the workspace copy when present (e.g. after `/harness-apply`), else the bundled app copy. Applied text is seen on the next invoke / new run, not mid-step. |
+| Stable | Mode / nested role / contract / plan | Mode overlay; nested-agent role; `contract.md` / `plan.md` |
+| Stable | Skills + plugin rules (metadata) | Name/description (+ `plugin-rule:…` ids); full bodies via `Skill` tool or slash |
+| Stable | Workspace rules | `AGENTS.md` / `.cursorrules` / `.cursor/rules` / `.vyotiq/rules` |
+| Volatile | Session env + workspace snapshot | Clock/OS/shell; manifest list + capped `git status` |
+| Volatile | Memory + notices + compaction | `.vyotiq/memory/*`; loop hints; `compaction.json` summary |
+| (separate) | Tool definitions | `AGENT_TOOLS` from `schemas/tools.ts` + MCP (not in the system string) |
 
 Compaction triggers at `compactionTriggerRatio` of the model content window (15% buffer reserved). Text tokens are counted with `gpt-tokenizer` (BPE); large blobs fall back to `chars/4`. From step 2 onward, compaction and the context meter prefer provider-reported `inputTokens` when available (`Math.max(estimate, provider)` with a guard against inflated early readings). The composer shows a live context-window meter via `context_usage` events. Durable facts are written with `memory_write` when the agent chooses (no auto-promote on compaction).
 
@@ -174,7 +175,7 @@ User-configured MCP servers expose namespaced tools: `mcp__{serverId}__{toolName
 
 **Diagnostics:** The `diagnostics` tool runs a project-aware check; Settings `diagnosticsCommand` overrides the auto-detected command when set.
 
-**Marketplace** (sidebar footer storefront → top-level Marketplace view): sole UI for MCP servers (stdio / HTTP / SSE), skills, and plugins. Home shows Discover / Featured / category sections from a **curated** catalog of installable packages only (official MCP reference servers — filesystem, memory, sequential-thinking via `npx`; fetch, git, time via `uvx` with `mcp<2` pinned for fetch/time SDK compatibility; plus code-review-graph via `uvx` — and Vyotiq skills such as code-review, docs, test-writing, refactor, commit-message, debug, pr-description, security-review, frontend-design, accessibility, api-design, and plugins such as devtools, shipping, quality, electron-app). Empty search results point users to Manage → Add for external MCPs outside the curated list. Cards highlight the package being viewed and show Enabled / Connected / Disabled from install + MCP status (not just “Installed”). Package detail lists nested MCP/skills and links installed packages into Manage. Manage installs, enables, and configures MCP. **Add** supports universal paste (GitHub URL, npm name, `npx`/`uvx` command, remote MCP URL, or Cursor-style `mcpServers` JSON) via detect → preview → add & connect (`src/main/marketplace/mcpImport.ts`), plus import from Cursor/Claude local configs; advanced forms remain for stdio/remote/git/npm/path. Git/npm installs of non-Vyotiq MCP repos synthesize a `vyotiq.mcp.json` when a launch command can be detected. Settings → **Registry** holds only the optional registry URL and remote-install acknowledgement. Packages install into `{userData}/marketplace/`. Marketplace MCP packages use `vyotiq.mcp.json`. Remote MCP supports Bearer tokens in OS secure storage and **Sign in with OAuth** (Authorization Code + PKCE). Per-server `allowedTools` / `deniedTools` filter which tools are exposed and invokable. When enabled, the local MCP client connects and tools load into the agent. Skills use `skill.md` (eager system-prompt injection). Plugins (`vyotiq.plugin.json`) atomically expand nested MCP + skills + rules when enabled.
+**Marketplace** (sidebar footer storefront → top-level Marketplace view): sole UI for MCP servers (stdio / HTTP / SSE), skills, and plugins. Home shows Discover / Featured / category sections from a **curated** catalog of installable packages only (official MCP reference servers — filesystem, memory, sequential-thinking via `npx`; fetch, git, time via `uvx` with `mcp<2` pinned for fetch/time SDK compatibility; plus code-review-graph via `uvx` — and Vyotiq skills such as code-review, docs, test-writing, refactor, commit-message, debug, pr-description, security-review, frontend-design, accessibility, api-design, and plugins such as devtools, shipping, quality, electron-app). Empty search results point users to Manage → Add for external MCPs outside the curated list. Cards highlight the package being viewed and show Enabled / Connected / Disabled from install + MCP status (not just “Installed”). Package detail lists nested MCP/skills and links installed packages into Manage. Manage installs, enables, and configures MCP. **Add** supports universal paste (GitHub URL, npm name, `npx`/`uvx` command, remote MCP URL, or Cursor-style `mcpServers` JSON) via detect → preview → add & connect (`src/main/marketplace/mcpImport.ts`), plus import from Cursor/Claude local configs; advanced forms remain for stdio/remote/git/npm/path. Git/npm installs of non-Vyotiq MCP repos synthesize a `vyotiq.mcp.json` when a launch command can be detected. Settings → **Registry** holds only the optional registry URL and remote-install acknowledgement. Packages install into `{userData}/marketplace/`. Marketplace MCP packages use `vyotiq.mcp.json`. Remote MCP supports Bearer tokens in OS secure storage and **Sign in with OAuth** (Authorization Code + PKCE). Per-server `allowedTools` / `deniedTools` filter which tools are exposed and invokable. When enabled, the local MCP client connects and tools load into the agent. Skills use `SKILL.md` (Level-1 metadata in the system prompt; full body via the `Skill` tool or `/slash`). Plugins (`vyotiq.plugin.json`) expand nested MCP + skills + rules when enabled; plugin rules use the same progressive-disclosure pattern (`plugin-rule:<id>/<path>` metadata, body via `Skill`).
 
 Effective MCP set for a run = configured (manual) entries + marketplace MCP packages + plugin-nested MCP, after workspace enable overrides (`src/main/marketplace/resolve.ts`).
 

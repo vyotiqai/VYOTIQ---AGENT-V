@@ -1,7 +1,7 @@
 import type { ChatMessage, ContentPart, MessageContent, ModelInfo, ProviderId } from '../../../shared/ipc'
 import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
-import { normalizeOllamaHost } from '../../../shared/providers'
+import { isOllamaCloudHost, ollamaNativeHost } from '../../../shared/providers'
 import { parseProviderReasoningState, normalizeEffortForOpenAiCompatReasoning } from '../../../shared/reasoning'
 import { serviceTierForApiBody } from '../../../shared/domain/serviceTier'
 import {
@@ -74,6 +74,7 @@ export function compatStreamOptions(
   return { stream_options: { include_usage: true } }
 }
 
+// eslint-disable-next-line no-control-regex
 const URL_CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F]/
 const URL_HOST_CHARS = /^[\da-zA-Z\-_.:]+$/
 
@@ -433,9 +434,10 @@ async function listOpenAiCompatModels(
 
   // Ollama: prefer OpenAI /v1/models, fall back to native /api/tags when unreachable.
   if (opts.ollamaVision) {
-    const host = normalizeOllamaHost(base)
+    const host = ollamaNativeHost(base)
     const openAiBase = `${host}/v1`
     const ollamaId = catalogProvider ?? 'ollama'
+    const cloud = isOllamaCloudHost(host)
     let openAiErr: unknown
     try {
       const data = await fetchJson(`${openAiBase}/models`, headers, signal, ollamaId)
@@ -444,7 +446,7 @@ async function listOpenAiCompatModels(
         providerId: ollamaId
       })
       try {
-        const tags = await fetchJson(`${host}/api/tags`, {}, signal, ollamaId)
+        const tags = await fetchJson(`${host}/api/tags`, headers, signal, ollamaId)
         const names = modelsFromOllamaTags(tags).map((m) => m.id)
         models = mergeOllamaTagNames(models, names)
       } catch {
@@ -456,18 +458,22 @@ async function listOpenAiCompatModels(
     }
 
     try {
-      const tags = await fetchJson(`${host}/api/tags`, {}, signal, ollamaId)
+      const tags = await fetchJson(`${host}/api/tags`, headers, signal, ollamaId)
       const models = modelsFromOllamaTags(tags)
       if (models.length) return models
       throw new Error('Ollama /api/tags returned no models')
     } catch (tagsErr) {
       if (openAiErr) {
         throw new Error(
-          `Cannot reach Ollama at ${host} (${formatError(openAiErr)}). Start the Ollama app or check the base URL.`
+          cloud
+            ? `Cannot reach Ollama Cloud at ${host} (${formatError(openAiErr)}). Check the base URL and API key.`
+            : `Cannot reach Ollama at ${host} (${formatError(openAiErr)}). Start the Ollama app or check the base URL.`
         )
       }
       throw new Error(
-        `Ollama at ${host} returned no models (${formatError(tagsErr)}). Pull a model with \`ollama pull\`.`
+        cloud
+          ? `Ollama Cloud at ${host} returned no models (${formatError(tagsErr)}). Verify your API key at ollama.com/settings/keys.`
+          : `Ollama at ${host} returned no models (${formatError(tagsErr)}). Pull a model with \`ollama pull\`.`
       )
     }
   }
@@ -582,18 +588,24 @@ export function createOpenAiCompatibleProvider(
   return {
     id,
     async listModels(req: ListModelsRequest): Promise<ModelInfo[]> {
-      // Ollama is local and must never send Bearer auth (some proxies reject it).
-      // Cloud OpenAI-compat providers need a key; calling without one yields opaque 401s
-      // (e.g. DeepSeek "Authentication Fails (governor)").
+      // Local Ollama: no key required (Bearer can break some local proxies).
+      // Ollama Cloud / other OpenAI-compat: require a key; omit Bearer only when unset.
       if (!opts.ollamaVision && !req.apiKey?.trim()) {
         throw new Error(`${id} API key not set`)
       }
+      if (
+        opts.ollamaVision &&
+        isOllamaCloudHost(req.baseUrl || opts.defaultBaseUrl) &&
+        !req.apiKey?.trim()
+      ) {
+        throw new Error('Ollama Cloud API key not set')
+      }
       const raw = (req.baseUrl || opts.defaultBaseUrl).replace(/\/$/, '')
-      const base = opts.ollamaVision ? `${normalizeOllamaHost(raw)}/v1` : raw
+      const base = opts.ollamaVision ? `${ollamaNativeHost(raw)}/v1` : raw
       await validateProviderBaseUrl(base, id === 'ollama')
       const headers: Record<string, string> = { ...(opts.extraHeaders ?? {}) }
-      if (!opts.ollamaVision && req.apiKey) {
-        headers.Authorization = `Bearer ${req.apiKey}`
+      if (req.apiKey?.trim()) {
+        headers.Authorization = `Bearer ${req.apiKey.trim()}`
       }
       return listOpenAiCompatModels(base, headers, opts, req.signal, id)
     },
@@ -602,8 +614,16 @@ export function createOpenAiCompatibleProvider(
         yield { type: 'error', error: `${id} API key not set` }
         return
       }
+      if (
+        opts.ollamaVision &&
+        isOllamaCloudHost(req.baseUrl || opts.defaultBaseUrl) &&
+        !req.apiKey?.trim()
+      ) {
+        yield { type: 'error', error: 'Ollama Cloud API key not set' }
+        return
+      }
       const raw = (req.baseUrl || opts.defaultBaseUrl).replace(/\/$/, '')
-      const base = opts.ollamaVision ? `${normalizeOllamaHost(raw)}/v1` : raw
+      const base = opts.ollamaVision ? `${ollamaNativeHost(raw)}/v1` : raw
       const allowLocal = id === 'ollama'
       await validateProviderBaseUrl(base, allowLocal)
       const url = `${base}/chat/completions`
@@ -612,8 +632,8 @@ export function createOpenAiCompatibleProvider(
         'Content-Type': 'application/json',
         ...(opts.extraHeaders ?? {})
       }
-      if (!opts.ollamaVision && req.apiKey) {
-        headers.Authorization = `Bearer ${req.apiKey}`
+      if (req.apiKey?.trim()) {
+        headers.Authorization = `Bearer ${req.apiKey.trim()}`
       }
 
       let maxOutputTokens = req.maxOutputTokens
@@ -846,7 +866,8 @@ export const openaiProvider: LlmProvider = {
   async *streamChat(req: ProviderChatRequest): AsyncGenerator<StreamChunk> {
     const useResponses =
       req.thinking?.enabled === true &&
-      (req.modelInfo?.thinkingApi === 'responses' || /^(o[34]|gpt-5)/i.test(req.model))
+      (req.modelInfo?.thinkingApi === 'responses' ||
+        /^(o[34](?:-|$)|gpt-5(?:\.|-|$))/i.test(req.model))
     if (useResponses) {
       yield* streamOpenAiResponses(req)
       return

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ollamaOpenAiBaseUrl } from '@shared/providers'
+import { ollamaNativeHost } from '@shared/providers'
 import type { ModelInfo, ProviderId } from '@shared/ipc'
 
 type CacheEntry = {
@@ -66,7 +66,7 @@ export function useProviderCatalogCache(
           provider,
           baseUrl:
             provider === 'ollama' && ollamaBaseUrl
-              ? ollamaOpenAiBaseUrl(ollamaBaseUrl)
+              ? ollamaNativeHost(ollamaBaseUrl)
               : undefined,
           forceRefresh: opts?.forceRefresh
         })

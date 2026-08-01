@@ -533,6 +533,8 @@ export function Composer({
 
   const isDock = variant === 'dock'
   const isInline = variant === 'inline'
+  const slashListId = `slash-command-menu-${variant}`
+  const mentionListId = `composer-mention-menu-${variant}`
 
   return (
     <div
@@ -668,17 +670,17 @@ export function Composer({
               aria-expanded={slash.open || mentions.open}
               aria-controls={
                 slash.open
-                  ? 'slash-command-menu'
+                  ? slashListId
                   : mentions.open
-                    ? 'composer-mention-menu'
+                    ? mentionListId
                     : undefined
               }
               aria-autocomplete={slash.open || mentions.open ? 'list' : undefined}
               aria-activedescendant={
                 slash.open && slash.activeCommand
-                  ? `slash-command-menu-opt-${slash.activeCommand.id}`
+                  ? `${slashListId}-opt-${slash.activeCommand.id}`
                   : mentions.open && mentions.activeItem
-                    ? `composer-mention-menu-opt-${mentions.activeItem.id}`
+                    ? `${mentionListId}-opt-${mentions.activeItem.id}`
                     : undefined
               }
             />
@@ -692,7 +694,7 @@ export function Composer({
             onPick={onSlashAccept}
             onDismiss={slash.dismiss}
             anchorRef={mentionAnchorRef}
-            listId="slash-command-menu"
+            listId={slashListId}
             loading={slash.loading}
             listError={slash.listError}
           />
@@ -707,6 +709,7 @@ export function Composer({
             onDismiss={mentions.dismiss}
             onBack={mentions.goBack}
             anchorRef={mentionAnchorRef}
+            listId={mentionListId}
             loading={mentions.loading}
           />
 

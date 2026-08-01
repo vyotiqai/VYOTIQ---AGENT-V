@@ -1,4 +1,5 @@
 import { isSafeWorkspaceRelPath, isCuratedDocPath } from '@shared/workspacePath'
+import { basename } from '@shared/utils/path'
 
 /** Private-use markers so chips survive draft persistence as plain strings. */
 export const MENTION_START = '\uFFF9'
@@ -94,10 +95,38 @@ export function parseRuleFrontmatterBody(raw: string): string {
   return trimmed.slice(end + 4).replace(/^\r?\n/, '').trim()
 }
 
-export function basenamePath(path: string): string {
+const AUTO_INJECT_ROOT_RULES = new Set(['AGENTS.md', 'CLAUDE.md', '.cursorrules'])
+
+/**
+ * True when this rule path is already injected into the system prompt
+ * (root instruction files, or Cursor rules without `alwaysApply: false`).
+ */
+export function isAutoInjectedWorkspaceRule(path: string, raw: string): boolean {
   const norm = path.replace(/\\/g, '/')
-  const i = norm.lastIndexOf('/')
-  return i >= 0 ? norm.slice(i + 1) : norm
+  if (AUTO_INJECT_ROOT_RULES.has(norm) || AUTO_INJECT_ROOT_RULES.has(basenamePath(norm))) {
+    return true
+  }
+  const trimmed = raw.replace(/^\uFEFF/, '')
+  if (!trimmed.startsWith('---')) {
+    // No frontmatter in rule dirs ⇒ treated as auto-inject (matches main rules.ts).
+    return true
+  }
+  const end = trimmed.indexOf('\n---', 3)
+  if (end < 0) return true
+  const fmBlock = trimmed.slice(3, end)
+  for (const line of fmBlock.split(/\r?\n/)) {
+    const m = line.match(/^alwaysApply\s*:\s*(.*)$/i)
+    if (!m) continue
+    const value = m[1]!.trim()
+    if (/^(false|no|0)$/i.test(value)) return false
+    return true
+  }
+  return true
+}
+
+/** @deprecated Prefer `@shared/utils/path` `basename` — kept as a stable export for callers. */
+export function basenamePath(path: string): string {
+  return basename(path)
 }
 
 export function parentPath(path: string): string {
@@ -364,13 +393,14 @@ export function buildRootMentionItems(opts: {
     includeCodebase && (!q || 'rules'.includes(q) || 'rule'.includes(q) || 'agents'.includes(q))
   const chatsNavOk = !q || 'past'.includes(q) || 'chats'.includes(q) || 'chat'.includes(q)
 
+  // Context → Files → Browse (see buildMentionRootSections).
   if (branchOk) {
     const branch = opts.branchName?.trim()
     items.push({
       id: 'branch',
       kind: 'branch',
       label: 'Branch',
-      subtitle: branch ? `Diff for ${branch}` : 'Reference the current branch diff'
+      subtitle: branch ? `Diff for ${branch}` : 'Current branch diff'
     })
   }
   if (browserOk) {
@@ -378,7 +408,7 @@ export function buildRootMentionItems(opts: {
       id: 'browser',
       kind: 'browser',
       label: 'Browser',
-      subtitle: 'Prefer browser_* tools this turn'
+      subtitle: 'Prefer browser tools this turn'
     })
   }
   if (lintsOk) {
@@ -387,14 +417,14 @@ export function buildRootMentionItems(opts: {
       kind: 'lints',
       diagnosticsKind: 'typecheck',
       label: 'Typecheck',
-      subtitle: 'Run typecheck and inject errors'
+      subtitle: 'Attach typecheck errors'
     })
     items.push({
       id: 'lints-lint',
       kind: 'lints',
       diagnosticsKind: 'lint',
       label: 'Lint',
-      subtitle: 'Run lint and inject errors'
+      subtitle: 'Attach lint errors'
     })
   }
 
@@ -409,12 +439,13 @@ export function buildRootMentionItems(opts: {
         continue
       }
       seen.add(norm)
+      const parent = parentPath(norm)
       items.push({
         id: `file:${norm}`,
         kind: 'file',
         path: norm,
         label: basenamePath(norm),
-        subtitle: parentPath(norm)
+        subtitle: parent || 'Workspace root'
       })
       if (seen.size >= 3) break
     }
@@ -425,7 +456,8 @@ export function buildRootMentionItems(opts: {
       id: 'files',
       kind: 'nav',
       view: 'files',
-      label: 'Files & Folders'
+      label: 'Files & Folders',
+      subtitle: 'Browse the workspace'
     })
   }
   if (docsNavOk) {
@@ -433,7 +465,8 @@ export function buildRootMentionItems(opts: {
       id: 'docs',
       kind: 'nav',
       view: 'docs',
-      label: 'Docs'
+      label: 'Docs',
+      subtitle: 'README and project docs'
     })
   }
   if (rulesNavOk) {
@@ -441,7 +474,8 @@ export function buildRootMentionItems(opts: {
       id: 'rules',
       kind: 'nav',
       view: 'rules',
-      label: 'Rules'
+      label: 'Rules',
+      subtitle: 'Agent rules'
     })
   }
   if (chatsNavOk) {
@@ -449,7 +483,8 @@ export function buildRootMentionItems(opts: {
       id: 'chats',
       kind: 'nav',
       view: 'chats',
-      label: 'Past Chats'
+      label: 'Past Chats',
+      subtitle: 'Earlier conversations'
     })
   }
 
@@ -464,13 +499,16 @@ export function buildFileMentionItems(
   const safe = paths
     .map((path) => path.replace(/\\/g, '/'))
     .filter(isSafeWorkspaceRelPath)
-  const items: MentionMenuItem[] = safe.map((norm) => ({
-    id: `file:${norm}`,
-    kind: 'file' as const,
-    path: norm,
-    label: basenamePath(norm),
-    subtitle: parentPath(norm)
-  }))
+  const items: MentionMenuItem[] = safe.map((norm) => {
+    const parent = parentPath(norm)
+    return {
+      id: `file:${norm}`,
+      kind: 'file' as const,
+      path: norm,
+      label: basenamePath(norm),
+      subtitle: parent || 'Workspace root'
+    }
+  })
   const remaining = Math.max(0, total - shown)
   if (remaining > 0) {
     items.push({
@@ -487,13 +525,16 @@ export function buildDocsMentionItems(paths: string[]): MentionMenuItem[] {
   return paths
     .map((path) => path.replace(/\\/g, '/'))
     .filter(isSafeWorkspaceRelPath)
-    .map((norm) => ({
-      id: `docs:${norm}`,
-      kind: 'docs' as const,
-      path: norm,
-      label: basenamePath(norm),
-      subtitle: parentPath(norm)
-    }))
+    .map((norm) => {
+      const parent = parentPath(norm)
+      return {
+        id: `docs:${norm}`,
+        kind: 'docs' as const,
+        path: norm,
+        label: basenamePath(norm),
+        subtitle: parent || 'Workspace root'
+      }
+    })
 }
 
 export function buildRuleMentionItems(

@@ -102,10 +102,10 @@ describe('VyotiqMcpManifestSchema', () => {
 })
 
 describe('parseSkillFrontmatter', () => {
-  it('parses skill.md', () => {
+  it('parses SKILL.md with nested metadata and legacy version', () => {
     const raw = `---
 name: code-review
-description: Review code carefully.
+description: Review code carefully when asked for a structured review.
 version: 1.0.0
 ---
 
@@ -115,8 +115,35 @@ Do a thorough review.
 `
     const parsed = parseSkillFrontmatter(raw)
     expect(parsed.name).toBe('code-review')
-    expect(parsed.description).toBe('Review code carefully.')
+    expect(parsed.description).toBe('Review code carefully when asked for a structured review.')
+    expect(parsed.metadata?.version).toBe('1.0.0')
     expect(parsed.body).toContain('thorough review')
+  })
+
+  it('parses metadata.version and rejects invalid names', () => {
+    const raw = `---
+name: pdf-processing
+description: Extract PDF text. Use when handling PDFs.
+metadata:
+  version: "2.0.0"
+  author: example
+---
+
+Instructions.
+`
+    const parsed = parseSkillFrontmatter(raw)
+    expect(parsed.metadata?.version).toBe('2.0.0')
+    expect(parsed.metadata?.author).toBe('example')
+
+    expect(() =>
+      parseSkillFrontmatter(`---
+name: Bad_Name
+description: x
+---
+
+y
+`)
+    ).toThrow()
   })
 })
 
@@ -131,13 +158,14 @@ describe('detectPackageAt', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('detects skill packages', () => {
+  it('detects skill packages from SKILL.md and legacy skill.md', () => {
     writeFileSync(
-      join(dir, 'skill.md'),
+      join(dir, 'SKILL.md'),
       `---
 name: my-skill
-description: A skill
-version: 1.2.0
+description: A skill for testing install detection.
+metadata:
+  version: "1.2.0"
 ---
 
 Instructions.
@@ -147,6 +175,24 @@ Instructions.
     expect(detected.kind).toBe('skill')
     expect(detected.id).toBe('my-skill')
     expect(detected.version).toBe('1.2.0')
+  })
+
+  it('detects legacy skill.md packages', () => {
+    writeFileSync(
+      join(dir, 'skill.md'),
+      `---
+name: legacy-skill
+description: Legacy lowercase skill.md still installs.
+version: 1.3.0
+---
+
+Instructions.
+`
+    )
+    const detected = detectPackageAt(dir)
+    expect(detected.kind).toBe('skill')
+    expect(detected.id).toBe('legacy-skill')
+    expect(detected.version).toBe('1.3.0')
   })
 
   it('detects mcp packages', () => {
@@ -188,27 +234,65 @@ Instructions.
 })
 
 describe('buildSkillsSection', () => {
-  it('injects skill bodies and respects budget', () => {
+  it('lists metadata only and respects budget', () => {
     const skills: LoadedSkill[] = [
       {
         id: 'a',
-        name: 'Alpha',
-        description: 'First',
+        name: 'alpha',
+        description: 'First skill description for discovery.',
         body: 'Do alpha things.',
+        root: '/tmp/alpha',
+        skillPath: '/tmp/alpha/SKILL.md',
         source: 'skill'
       },
       {
         id: 'b',
-        name: 'Beta',
+        name: 'beta',
         description: 'Second',
         body: 'x'.repeat(500),
+        root: '/tmp/beta',
+        skillPath: '/tmp/beta/SKILL.md',
         source: 'skill'
       }
     ]
-    const section = buildSkillsSection(skills, 80)
-    expect(section).toContain('## Marketplace skills')
-    expect(section).toContain('Alpha')
-    expect(section).toMatch(/omitted|Beta|Alpha/)
+    const section = buildSkillsSection(skills)
+    expect(section).toContain('## Available skills')
+    expect(section).toContain('Skill')
+    expect(section).toContain('alpha')
+    expect(section).toContain('beta')
+    expect(section).not.toContain('Do alpha things.')
+
+    const tight = buildSkillsSection(skills, 80)
+    expect(tight).toContain('## Available skills')
+    expect(tight).toMatch(/omitted/)
+    expect(tight).not.toContain('Do alpha things.')
+  })
+
+  it('dedupes duplicate skill names preferring standalone', () => {
+    const skills: LoadedSkill[] = [
+      {
+        id: 'plugin/code-review',
+        name: 'code-review',
+        description: 'Plugin copy',
+        body: 'plugin body',
+        root: '/tmp/p',
+        skillPath: '/tmp/p/SKILL.md',
+        source: 'plugin'
+      },
+      {
+        id: 'code-review',
+        name: 'code-review',
+        description: 'Standalone copy',
+        body: 'standalone body',
+        root: '/tmp/s',
+        skillPath: '/tmp/s/SKILL.md',
+        source: 'skill'
+      }
+    ]
+    const section = buildSkillsSection(skills)
+    expect(section).toContain('Standalone copy')
+    expect(section).not.toContain('Plugin copy')
+    expect(section.match(/\*\*code-review\*\*/g)?.length).toBe(1)
   })
 })
 
@@ -240,10 +324,10 @@ describe('describePackageAt', () => {
       })
     )
     writeFileSync(
-      join(root, 'skills', 'review', 'skill.md'),
+      join(root, 'skills', 'review', 'SKILL.md'),
       `---
 name: review
-description: Review skill
+description: Review skill for plugin package contents tests.
 ---
 
 Body
@@ -327,7 +411,9 @@ describe('bundled marketplace catalog', () => {
       if (entry.kind === 'mcp') {
         expect(existsSync(join(pkgRoot, 'vyotiq.mcp.json'))).toBe(true)
       } else if (entry.kind === 'skill') {
-        expect(existsSync(join(pkgRoot, 'skill.md'))).toBe(true)
+        expect(
+          existsSync(join(pkgRoot, 'SKILL.md')) || existsSync(join(pkgRoot, 'skill.md'))
+        ).toBe(true)
       } else if (entry.kind === 'plugin') {
         expect(existsSync(join(pkgRoot, 'vyotiq.plugin.json'))).toBe(true)
       } else {

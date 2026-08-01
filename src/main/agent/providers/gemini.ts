@@ -247,23 +247,28 @@ export const geminiProvider: LlmProvider = {
       const id = name.replace(/^models\//, '')
       if (!looksLikeChatModel(id)) continue
       out.push(
-        baseModelInfo(id, {
-          displayName: typeof row.displayName === 'string' ? row.displayName : id,
-          contextWindow:
-            typeof row.inputTokenLimit === 'number' ? row.inputTokenLimit : undefined,
-          maxOutputTokens:
-            typeof row.outputTokenLimit === 'number' ? row.outputTokenLimit : undefined,
-          supportsTools: true,
-          supportsVision: /gemini|vision|flash|pro/i.test(id)
-        })
+        baseModelInfo(
+          id,
+          {
+            displayName: typeof row.displayName === 'string' ? row.displayName : id,
+            contextWindow:
+              typeof row.inputTokenLimit === 'number' ? row.inputTokenLimit : undefined,
+            maxOutputTokens:
+              typeof row.outputTokenLimit === 'number' ? row.outputTokenLimit : undefined,
+            supportsTools: true,
+            supportsVision: /gemini|vision|flash|pro/i.test(id)
+          },
+          'gemini'
+        )
       )
     }
     return out
   },
   async *streamChat(req: ProviderChatRequest): AsyncGenerator<StreamChunk> {
     const useInteractions =
-      req.modelInfo?.thinkingApi === 'interactions' ||
-      (req.thinking?.enabled && /gemini-(2\.5|3)/i.test(req.model))
+      req.thinking?.enabled === true &&
+      (req.modelInfo?.thinkingApi === 'interactions' ||
+        /(?:^|\/)gemini-(2\.5|3(?:\.\d+)?)(?:-|$)/i.test(req.model))
     if (useInteractions) {
       yield* streamGeminiInteractions(req)
       return
@@ -379,7 +384,7 @@ export const geminiProvider: LlmProvider = {
         const fc = part.functionCall as { name?: string; args?: unknown; id?: string } | undefined
         if (fc?.name) {
           const id =
-            typeof fc.id === 'string' && fc.id ? fc.id : `gemini_${fc.name}_${toolIndex}`
+            typeof fc.id === 'string' && fc.id ? fc.id : `gemini_${toolIndex++}`
           const argsJson = JSON.stringify(fc.args ?? {})
           const existing = pendingCalls.get(id)
           if (existing) {
@@ -387,11 +392,7 @@ export const geminiProvider: LlmProvider = {
             // Mid-stream update: live-forward so chrome/args appear before stream end.
             yield { type: 'tool_call', toolCall: { ...existing } }
           } else {
-            const call = {
-              id: typeof fc.id === 'string' && fc.id ? fc.id : `gemini_${toolIndex++}`,
-              name: fc.name,
-              arguments: argsJson
-            }
+            const call = { id, name: fc.name, arguments: argsJson }
             pendingCalls.set(id, call)
             yield { type: 'tool_call', toolCall: { ...call } }
           }

@@ -46,6 +46,22 @@ describe('marketplace safePath', () => {
     expect(() => resolveInsidePackageRoot(root, '/etc/passwd')).toThrow(/Unsafe/)
   })
 
+  it('rejects symlinks that escape the package root', async () => {
+    const { symlinkSync } = await import('fs')
+    const { resolveInsidePackageRoot } = await import('@main/marketplace/safePath')
+    const root = join(userData, 'marketplace', 'packages', 'demo-link', '1.0.0')
+    mkdirSync(root, { recursive: true })
+    const outside = join(userData, 'outside-secret.txt')
+    writeFileSync(outside, 'secret')
+    try {
+      symlinkSync(outside, join(root, 'leak.md'))
+    } catch {
+      // Windows without symlink privilege — skip
+      return
+    }
+    expect(() => resolveInsidePackageRoot(root, 'leak.md')).toThrow(/Symlink|escapes/i)
+  })
+
   it('rejects unsafe packagePath shapes', async () => {
     const { assertSafePackagePath } = await import('@main/marketplace/safePath')
     expect(assertSafePackagePath('demo/1.0.0')).toBe('demo/1.0.0')
@@ -147,6 +163,18 @@ describe('isContainmentOrSymlinkError', () => {
       true
     )
     expect(isContainmentOrSymlinkError(new Error('tar: Error opening archive'))).toBe(false)
+  })
+})
+
+describe('assertSafeGitCloneUrl', () => {
+  it('allows https/ssh/git@ and rejects file/ext/local', async () => {
+    const { assertSafeGitCloneUrl } = await import('@main/marketplace/install')
+    expect(assertSafeGitCloneUrl('https://github.com/org/repo.git')).toContain('https://')
+    expect(assertSafeGitCloneUrl('git@github.com:org/repo.git')).toContain('git@')
+    expect(assertSafeGitCloneUrl('ssh://git@github.com/org/repo.git')).toContain('ssh://')
+    expect(() => assertSafeGitCloneUrl('file:///tmp/repo')).toThrow(/not allowed/i)
+    expect(() => assertSafeGitCloneUrl('ext::sh -c evil')).toThrow(/not allowed/i)
+    expect(() => assertSafeGitCloneUrl('/tmp/local-repo')).toThrow(/must be/i)
   })
 })
 

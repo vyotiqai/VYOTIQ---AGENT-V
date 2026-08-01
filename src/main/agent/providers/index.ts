@@ -74,6 +74,26 @@ function enrichCatalogModels(provider: ProviderId, models: ModelInfo[]): ModelIn
   return models.map((m) => withResolvedContextWindow(m, provider))
 }
 
+/** Combine a user abort signal with a timeout, even when AbortSignal.any is unavailable. */
+function combinedListSignal(userSignal: AbortSignal | undefined, timeout: AbortSignal): AbortSignal {
+  if (!userSignal) return timeout
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any([userSignal, timeout])
+  if (userSignal.aborted || timeout.aborted) {
+    const done = new AbortController()
+    done.abort()
+    return done.signal
+  }
+  const combined = new AbortController()
+  const onAbort = (): void => {
+    userSignal.removeEventListener('abort', onAbort)
+    timeout.removeEventListener('abort', onAbort)
+    if (!combined.signal.aborted) combined.abort()
+  }
+  userSignal.addEventListener('abort', onAbort, { once: true })
+  timeout.addEventListener('abort', onAbort, { once: true })
+  return combined.signal
+}
+
 export async function listProviderModels(input: {
   provider: ProviderId
   apiKey?: string | null
@@ -113,7 +133,7 @@ async function listProviderModelsUncached(
   key: string,
   generation: number
 ): Promise<{ models: ModelInfo[]; warning?: string }> {
-  if (providerNeedsKey(input.provider) && !input.apiKey?.trim()) {
+  if (providerNeedsKey(input.provider, input.baseUrl) && !input.apiKey?.trim()) {
     const seeds = seedModelsFor(input.provider)
     return {
       models: enrichCatalogModels(input.provider, seeds),
@@ -126,10 +146,7 @@ async function listProviderModelsUncached(
 
   const provider = getProvider(input.provider)
   const timeout = AbortSignal.timeout(10_000)
-  const signal =
-    input.signal && typeof AbortSignal.any === 'function'
-      ? AbortSignal.any([input.signal, timeout])
-      : input.signal ?? timeout
+  const signal = combinedListSignal(input.signal, timeout)
   const req: ListModelsRequest = {
     apiKey: input.apiKey,
     baseUrl: input.baseUrl,

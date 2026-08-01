@@ -328,13 +328,13 @@ function restoreOneFile(
 }
 
 function markCheckpointFullyResolved(runDir: string, meta: WriteCheckpointMeta): void {
-  meta.resolved = true
-  meta.undone = true
-  saveMeta(runDir, meta)
   const idx = loadIndex(runDir)
   const entry = idx.checkpoints.find((c) => c.id === meta.id)
   if (entry) entry.undone = true
   saveIndex(runDir, idx)
+  meta.resolved = true
+  meta.undone = true
+  saveMeta(runDir, meta)
 }
 
 /**

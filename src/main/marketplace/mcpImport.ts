@@ -707,6 +707,7 @@ export async function detectMcpInput(rawInput: unknown): Promise<McpDetectResult
       }
       if (
         existsSync(join(cloned.root, 'vyotiq.plugin.json')) ||
+        existsSync(join(cloned.root, 'SKILL.md')) ||
         existsSync(join(cloned.root, 'skill.md'))
       ) {
         return withDuplicateFlag({

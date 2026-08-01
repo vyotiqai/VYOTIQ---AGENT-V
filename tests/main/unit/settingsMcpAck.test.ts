@@ -10,6 +10,11 @@ vi.mock('electron', () => ({
     getPath: (name: string) => (name === 'userData' ? userData : join(tmpdir(), name)),
     getAppPath: () => join(tmpdir(), 'vyotiq-app'),
     isPackaged: false
+  },
+  safeStorage: {
+    isEncryptionAvailable: () => true,
+    encryptString: (s: string) => Buffer.from(s, 'utf8'),
+    decryptString: (b: Buffer) => b.toString('utf8')
   }
 }))
 
@@ -118,6 +123,8 @@ describe('setSettings mcpServers ack gate', () => {
       REDACTED_VALUE,
       setMarketplaceRemoteInstallAcked
     } = await import('@main/settings/settings')
+    const { readFileSync } = await import('fs')
+    const { join: pathJoin } = await import('path')
     clearSettingsCacheForTests()
     setMarketplaceRemoteInstallAcked(true)
     setSettings({
@@ -133,6 +140,13 @@ describe('setSettings mcpServers ack gate', () => {
         }
       ]
     })
+    // Disk must not keep plaintext Authorization
+    const onDisk = JSON.parse(readFileSync(pathJoin(userData, 'settings.json'), 'utf8')) as {
+      mcpServers: Array<{ headers?: Record<string, string> }>
+    }
+    expect(onDisk.mcpServers[0]?.headers?.Authorization).toBe(REDACTED_VALUE)
+    expect(JSON.stringify(onDisk)).not.toContain('secret-token')
+
     const redacted = redactSettingsForIpc(getSettings())
     const server = redacted.mcpServers.find((s) => s.id === 'http-mcp')
     expect(server?.headers?.Authorization).toBe(REDACTED_VALUE)
@@ -142,8 +156,13 @@ describe('setSettings mcpServers ack gate', () => {
         s.id === 'http-mcp' ? { ...s, enabled: false } : s
       )
     })
-    const stored = next.mcpServers.find((s) => s.id === 'http-mcp')
-    expect(stored?.enabled).toBe(false)
-    expect(stored?.headers?.Authorization).toBe('Bearer secret-token')
+    expect(next.mcpServers.find((s) => s.id === 'http-mcp')?.enabled).toBe(false)
+    // Persisted shape stays redacted; getSettings restores from secure storage.
+    expect(next.mcpServers.find((s) => s.id === 'http-mcp')?.headers?.Authorization).toBe(
+      REDACTED_VALUE
+    )
+    expect(getSettings().mcpServers.find((s) => s.id === 'http-mcp')?.headers?.Authorization).toBe(
+      'Bearer secret-token'
+    )
   })
 })

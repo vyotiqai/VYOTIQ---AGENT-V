@@ -214,7 +214,7 @@ export function createRun(workspacePath: string, runId: string, goal: string): s
   ensureWorkspaceStorage(workspacePath)
   mkdirSync(dir, { recursive: true })
   const goalText = goal.trim() || 'chat'
-  writeFileSync(
+  atomicWriteFile(
     join(dir, 'contract.md'),
     [
       '## Goal',
@@ -227,8 +227,7 @@ export function createRun(workspacePath: string, runId: string, goal: string): s
       '- Or blockers are explained clearly and no further narrow retry will help.',
       '- Update this file if scope or done-when changes.',
       ''
-    ].join('\n'),
-    'utf8'
+    ].join('\n')
   )
   const status: RunStatus = {
     status: 'running',
@@ -239,9 +238,9 @@ export function createRun(workspacePath: string, runId: string, goal: string): s
     mode: 'agent',
     consecutiveToolFailureSteps: 0
   }
-  writeFileSync(join(dir, 'status.json'), JSON.stringify(status, null, 2), 'utf8')
-  writeFileSync(join(dir, 'messages.jsonl'), '', 'utf8')
-  writeFileSync(join(dir, 'events.jsonl'), '', 'utf8')
+  atomicWriteJson(join(dir, 'status.json'), status)
+  atomicWriteFile(join(dir, 'messages.jsonl'), '')
+  atomicWriteFile(join(dir, 'events.jsonl'), '')
   invalidateListRunsCache(workspacePath)
   return dir
 }

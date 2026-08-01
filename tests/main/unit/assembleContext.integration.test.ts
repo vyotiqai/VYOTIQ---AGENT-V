@@ -152,4 +152,79 @@ describe('assembleContext integration', () => {
     expect(result.system).toContain('## Session')
     expect(result.system).toContain('OS: Windows')
   })
+
+  it('places stable instruction layers before volatile data', async () => {
+    const result = await assembleContext({
+      harness: '## Role\nAgent',
+      contract: '## Goal\nShip',
+      modeSection: '## Mode: Agent\nFull tools.',
+      skillsSection: '## Available skills\n- **x**: y',
+      pluginRulesSection: '## Plugin rules\n- **plugin-rule:a/b**: c',
+      sessionEnv: '## Session\nDate (UTC): 2026-08-01T12:00:00.000Z',
+      loopHint: 'tool failures',
+      priorCompaction: {
+        summary: 'Earlier work',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        tokenEstimate: 10
+      },
+      messages: [{ role: 'user', content: 'hi' }],
+      workspacePath: null,
+      goal: 'hi',
+      model,
+      toolsJsonEstimate: 50,
+      providerId: 'ollama',
+      provider: mockProvider,
+      signal: new AbortController().signal
+    })
+    const role = result.system.indexOf('## Role')
+    const mode = result.system.indexOf('## Mode: Agent')
+    const contract = result.system.indexOf('## Run contract')
+    const skills = result.system.indexOf('## Available skills')
+    const plugins = result.system.indexOf('## Plugin rules')
+    const session = result.system.indexOf('## Session')
+    const notice = result.system.indexOf('## Run notice')
+    const prior = result.system.indexOf('## Prior session summary')
+    expect(role).toBeGreaterThanOrEqual(0)
+    expect(mode).toBeGreaterThan(role)
+    expect(contract).toBeGreaterThan(mode)
+    expect(skills).toBeGreaterThan(contract)
+    expect(plugins).toBeGreaterThan(skills)
+    expect(session).toBeGreaterThan(plugins)
+    expect(notice).toBeGreaterThan(session)
+    expect(prior).toBeGreaterThan(notice)
+  })
+
+  it('reuses stable prefix cache when only volatile session env changes', async () => {
+    const { clearSystemPromptCache } = await import('@main/agent/context/assemble')
+    clearSystemPromptCache()
+    const base = {
+      harness: '## Role\nStable agent',
+      contract: '## Goal\nShip',
+      messages: [{ role: 'user' as const, content: 'hi' }],
+      workspacePath: null as string | null,
+      goal: 'hi',
+      model,
+      toolsJsonEstimate: 50,
+      providerId: 'ollama' as const,
+      provider: mockProvider,
+      signal: new AbortController().signal
+    }
+    const first = await assembleContext({
+      ...base,
+      sessionEnv: '## Session\nDate (UTC): 2026-08-01T12:00:00.000Z'
+    })
+    const second = await assembleContext({
+      ...base,
+      sessionEnv: '## Session\nDate (UTC): 2026-08-01T12:00:01.000Z'
+    })
+    const stableMarker = '## Role\nStable agent'
+    expect(first.system).toContain(stableMarker)
+    expect(second.system).toContain(stableMarker)
+    expect(first.system).toContain('12:00:00.000Z')
+    expect(second.system).toContain('12:00:01.000Z')
+    // Stable contract block is identical across clock ticks.
+    const firstStable = first.system.slice(0, first.system.indexOf('## Session'))
+    const secondStable = second.system.slice(0, second.system.indexOf('## Session'))
+    expect(firstStable).toBe(secondStable)
+  })
 })

@@ -26,9 +26,9 @@ import { useDocumentTheme } from './useDocumentTheme'
 
 export { trailingOpenFenceBody } from '@renderer/lib/markdown/fenceUtils'
 
-/** Close an unclosed fence so streaming partials still parse as code. */
+/** Close an unclosed fence and balance incomplete inline markdown for streaming. */
 export function prepareStreamingMarkdown(content: string): string {
-  return closeOpenFence(content)
+  return balanceOutsideFences(closeOpenFence(content))
 }
 
 /** Balance unclosed inline markdown when a stream completes. */

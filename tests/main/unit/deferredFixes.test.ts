@@ -38,6 +38,24 @@ describe('validateAgainstJsonSchema', () => {
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error).toMatch(/string/)
   })
+
+  it('rejects malformed patterns without crashing', () => {
+    const result = validateAgainstJsonSchema(
+      { type: 'string', pattern: '[invalid' },
+      'hello'
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toMatch(/Invalid pattern/)
+  })
+
+  it('applies type before enum so a contradictory enum does not bypass type', () => {
+    const result = validateAgainstJsonSchema(
+      { type: 'string', enum: [null] },
+      null
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toMatch(/Expected a string/)
+  })
 })
 
 describe('omitted MCP tools hint', () => {

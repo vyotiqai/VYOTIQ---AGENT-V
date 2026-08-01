@@ -4,6 +4,7 @@ import { MAX_FILES } from './useComposerFiles'
 import {
   extractMentions,
   isSafeWorkspaceRelPath,
+  isAutoInjectedWorkspaceRule,
   parseComposerDocument,
   parseRuleFrontmatterBody,
   type ComposerMention
@@ -143,7 +144,14 @@ async function resolveRuleBlock(workspacePath: string, path: string): Promise<st
   }
   const res = await window.vyotiq.workspaceReadText({ workspacePath, path })
   if (!res.ok) return { error: res.error }
-  const body = parseRuleFrontmatterBody(res.data.text)
+  const raw = res.data.text
+  if (isAutoInjectedWorkspaceRule(path, raw)) {
+    return [
+      `## Referenced rule: ${path}`,
+      'Already included in the system prompt (auto-injected workspace rule). Follow it there; this mention does not re-paste the body.'
+    ].join('\n')
+  }
+  const body = parseRuleFrontmatterBody(raw)
   return [`## Referenced rule: ${path}`, body || '(empty rule)'].join('\n')
 }
 

@@ -9,12 +9,13 @@ import type {
 } from '../../shared/ipc'
 import { DEFAULT_SETTINGS } from '../../shared/ipc'
 import { contentDisplayText, contentToText } from '../../shared/ipc'
-import { ollamaOpenAiBaseUrl, seedModelsFor } from '../../shared/providers'
+import { ollamaOpenAiBaseUrl, providerNeedsKey, seedModelsFor } from '../../shared/providers'
 import { formatError, isAbortError } from '../../shared/errors'
 import { logger, logErrorSummary } from '../../shared/logger'
 import { workspaceIdFromPath } from '../../shared/workspaceId'
 import {
   MAX_STREAM_ATTEMPTS,
+  isRetriableStreamFailure,
   shouldRetryProviderStreamError,
   shouldRetryThrownStreamError,
   sleepStreamRetryBackoff
@@ -226,14 +227,17 @@ function* applyDrainedFollowUps(
   yield ev
 }
 
-/** Surface the first mid-run messages.jsonl append failure as a run error event. */
+/**
+ * Surface the first mid-run messages.jsonl append failure as a run error event.
+ * @returns true when a failure was emitted (caller should stop the run).
+ */
 function* emitMessageAppendFailureNotice(
   runId: string,
   runDir: string,
   invokeId: number
-): Generator<AgentEvent> {
+): Generator<AgentEvent, boolean> {
   const err = takeMessageAppendFailureNotice(runDir)
-  if (!err) return
+  if (!err) return false
   const message = `Failed to persist a chat message: ${formatError(err)}`
   logger.error(message, {
     scope: 'agent',
@@ -244,6 +248,7 @@ function* emitMessageAppendFailureNotice(
   const ev: AgentEvent = { type: 'error', runId, invokeId, message, code: 'PERSIST' }
   appendEvent(runDir, ev)
   yield ev
+  return true
 }
 
 function* flushPartialAssistant(
@@ -412,11 +417,31 @@ export async function* runAgent(input: {
       // Persist the clamped watermark so a corrupt/stale resume value does not
       // fold away the latest turn on the next restart.
       if (compaction && compaction.foldedMessages !== foldedMessages) {
-        compaction = { ...compaction, foldedMessages }
-        if (runDir) saveCompaction(runDir, compaction)
+        const clamped = { ...compaction, foldedMessages }
+        if (runDir && !saveCompaction(runDir, clamped)) {
+          logger.warn('Resume watermark clamp not persisted; keeping prior disk record', {
+            scope: 'agent',
+            correlationId: runId
+          })
+        } else {
+          compaction = clamped
+        }
       }
     } else {
+      // Empty transcript + stale watermark: zero both counter and in-memory record
+      // so later nextFolded math cannot under-count relative to disk.
       foldedMessages = 0
+      if (compaction && (compaction.foldedMessages ?? 0) > 0) {
+        const cleared = { ...compaction, foldedMessages: 0 }
+        if (runDir && !saveCompaction(runDir, cleared)) {
+          logger.warn('Stale resume watermark clear not persisted', {
+            scope: 'agent',
+            correlationId: runId
+          })
+        } else {
+          compaction = cleared
+        }
+      }
     }
 
     logger.info('Agent run started', {
@@ -436,36 +461,33 @@ export async function* runAgent(input: {
     const providerId: ProviderId = settings.provider
     const provider = getProvider(providerId)
 
-    let apiKey: string | null = null
-    if (providerId !== 'ollama') {
-      apiKey = getSecret(providerId)
-      if (!apiKey) {
-        const status = secretStatus()
-        const storedBlob = hasStoredSecretBlob(providerId)
-        const message = !status.encryptionAvailable
-          ? 'OS secure storage is unavailable. API keys cannot be decrypted on this system.'
-          : storedBlob
-            ? `API key for ${providerId} is stored but cannot be decrypted. Re-enter it in Settings or restore OS keychain access.`
-            : `API key for ${providerId} is not set. Add it in Settings.`
-        const code = !status.encryptionAvailable
-          ? 'PROVIDER_KEYCHAIN'
-          : storedBlob
-            ? 'PROVIDER_KEY_DECRYPT'
-            : 'PROVIDER_AUTH'
-        logger.warn(message, {
-          scope: 'agent',
-          code,
-          correlationId: runId,
-          provider: providerId
-        })
-        yield { type: 'error', runId, invokeId, message, code }
-        yield* flushWriteCheckpoint()
-        yield { type: 'status', runId, invokeId, status: 'error' }
-        writeStatus({ status: 'error', error: message })
-        appendEvent(runDir, { type: 'error', runId, invokeId, message, code })
-        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
-        return
-      }
+    let apiKey: string | null = getSecret(providerId)
+    if (providerNeedsKey(providerId, settings.ollamaBaseUrl) && !apiKey) {
+      const status = secretStatus()
+      const storedBlob = hasStoredSecretBlob(providerId)
+      const message = !status.encryptionAvailable
+        ? 'OS secure storage is unavailable. API keys cannot be decrypted on this system.'
+        : storedBlob
+          ? `API key for ${providerId} is stored but cannot be decrypted. Re-enter it in Settings or restore OS keychain access.`
+          : `API key for ${providerId} is not set. Add it in Settings.`
+      const code = !status.encryptionAvailable
+        ? 'PROVIDER_KEYCHAIN'
+        : storedBlob
+          ? 'PROVIDER_KEY_DECRYPT'
+          : 'PROVIDER_AUTH'
+      logger.warn(message, {
+        scope: 'agent',
+        code,
+        correlationId: runId,
+        provider: providerId
+      })
+      yield { type: 'error', runId, invokeId, message, code }
+      yield* flushWriteCheckpoint()
+      yield { type: 'status', runId, invokeId, status: 'error' }
+      writeStatus({ status: 'error', error: message })
+      appendEvent(runDir, { type: 'error', runId, invokeId, message, code })
+      appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+      return
     }
 
     let step = initialStep
@@ -487,14 +509,17 @@ export async function* runAgent(input: {
             persistAlways: (toolName) => persistAlwaysAllow(workspace, toolName)
           })
 
-    const emitCompaction = (record: CompactionRecord | null): AgentEvent | null => {
-      if (!record || !runDir) return null
+    /** Persist compaction; `saved` is false only when a write was required and failed. */
+    const emitCompaction = (
+      record: CompactionRecord | null
+    ): { saved: boolean; event: AgentEvent | null } => {
+      if (!record || !runDir) return { saved: true, event: null }
       if (
         compaction?.summary === record.summary &&
         compaction?.createdAt === record.createdAt &&
         (compaction?.foldedMessages ?? 0) === (record.foldedMessages ?? 0)
       ) {
-        return null
+        return { saved: true, event: null }
       }
       const summaryChanged =
         compaction?.summary !== record.summary || compaction?.createdAt !== record.createdAt
@@ -503,12 +528,12 @@ export async function* runAgent(input: {
           scope: 'agent',
           correlationId: runId
         })
-        return null
+        return { saved: false, event: null }
       }
       compaction = record
       // UI notice only when a real summary changed, not trim watermarks / folded bumps
       if (!summaryChanged || isTrimWatermarkCompaction(record)) {
-        return null
+        return { saved: true, event: null }
       }
       const ev: AgentEvent = {
         type: 'compaction',
@@ -517,7 +542,7 @@ export async function* runAgent(input: {
         tokenEstimate: record.tokenEstimate
       }
       appendEvent(runDir, ev)
-      return ev
+      return { saved: true, event: ev }
     }
 
     const baseUrl =
@@ -546,10 +571,7 @@ export async function* runAgent(input: {
     const marketplaceOverrides = override?.marketplaceOverrides
 
     const enabledSkills = loadEnabledSkills(marketplaceOverrides)
-    const skillsSection = buildSkillsSection(
-      enabledSkills,
-      Math.floor(allocateBudget(modelInfo).system * 4 * 0.35)
-    )
+    const skillsSection = buildSkillsSection(enabledSkills)
     const pluginRulesSection = loadPluginRules(marketplaceOverrides)
 
     let runEnabledMcpIds = new Set<string>()
@@ -643,7 +665,14 @@ export async function* runAgent(input: {
       if (controller.signal.aborted) break
       // Inject any queued user follow-ups before the next model call.
       yield* applyDrainedFollowUps(runId, runDir, messages)
-      yield* emitMessageAppendFailureNotice(runId, runDir, invokeId)
+      if (yield* emitMessageAppendFailureNotice(runId, runDir, invokeId)) {
+        yield* flushWriteCheckpoint()
+        const message = 'Failed to persist a chat message'
+        yield { type: 'status', runId, invokeId, status: 'error' }
+        writeStatus({ status: 'error', error: message })
+        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+        return
+      }
       step++
       const stepSoftAbort = new AbortController()
       setStreamInterrupt(runId, stepSoftAbort)
@@ -735,20 +764,19 @@ export async function* runAgent(input: {
           }
         }
       }
-      const compactionEv = emitCompaction(compactionWithWatermark)
+      const { saved: watermarkSaved, event: compactionEv } = emitCompaction(compactionWithWatermark)
       if (compactionEv) yield compactionEv
-      // Keep the watermark on in-memory state so Anthropic server compaction
-      // and later steps do not lose foldedMessages.
-      compaction = compactionWithWatermark ?? compaction
-      if (assembled.contextShrunk || compaction?.summary !== priorSummary) {
-        lastUsage = { inputTokens: assembled.estimatedTokens }
-      }
-      if (assembled.contextShrunk) {
+      // Working-set / foldedMessages advance only after a successful watermark save
+      // (or when there was nothing to persist).
+      if (assembled.contextShrunk && watermarkSaved) {
         // Adopt the reduced set as the working history. Without this the loop keeps
         // handing the full transcript back to assembleContext, which re-summarizes
         // the same prefix on every remaining step.
         foldedMessages += droppedThisStep
         messages = assembled.messages
+      }
+      if ((assembled.contextShrunk && watermarkSaved) || compaction?.summary !== priorSummary) {
+        lastUsage = { inputTokens: assembled.estimatedTokens }
       }
 
       const contextWindow = contextWindowFor(modelInfo)
@@ -821,14 +849,30 @@ export async function* runAgent(input: {
           })
           if (retry.contextShrunk) {
             const retryDropped = Math.max(0, messages.length - retry.messages.length)
-            foldedMessages += retryDropped
-            messages = retry.messages
+            const nextFolded = foldedMessages + retryDropped
+            let retryWatermark: CompactionRecord | null = null
             if (retry.compaction) {
-              compaction = { ...retry.compaction, foldedMessages }
-              const retryEv = emitCompaction(compaction)
-              if (retryEv) yield retryEv
+              retryWatermark = { ...retry.compaction, foldedMessages: nextFolded }
+            } else if (retryDropped > 0) {
+              // Trim-only / failed-compaction path still needs a durable watermark.
+              if (compaction) {
+                retryWatermark = { ...compaction, foldedMessages: nextFolded }
+              } else {
+                retryWatermark = {
+                  summary: CONTEXT_TRIM_WATERMARK_SUMMARY,
+                  createdAt: new Date().toISOString(),
+                  tokenEstimate: retry.estimatedTokens,
+                  foldedMessages: nextFolded
+                }
+              }
             }
-            lastUsage = { inputTokens: retry.estimatedTokens }
+            const { saved: retrySaved, event: retryEv } = emitCompaction(retryWatermark)
+            if (retryEv) yield retryEv
+            if (retrySaved) {
+              foldedMessages = nextFolded
+              messages = retry.messages
+              lastUsage = { inputTokens: retry.estimatedTokens }
+            }
           }
           if (!retry.overflow) {
             // Continue the step with the retried assembly by mutating local state
@@ -1094,26 +1138,28 @@ export async function* runAgent(input: {
                 modelInfo
               )
               const dropped = Math.max(0, beforeLen - kept.length)
-              if (dropped > 0) {
-                foldedMessages += dropped
-                messages = kept
-              }
+              const nextFoldedAnthropic = foldedMessages + dropped
               const record: CompactionRecord = {
                 summary,
                 createdAt: new Date().toISOString(),
                 tokenEstimate: await estimateTextTokensAsync(summary),
-                ...(foldedMessages > 0
-                  ? { foldedMessages }
+                ...(nextFoldedAnthropic > 0
+                  ? { foldedMessages: nextFoldedAnthropic }
                   : compaction?.foldedMessages != null
                     ? { foldedMessages: compaction.foldedMessages }
                     : {})
               }
-              const anthropicCompactionEv = emitCompaction(record)
+              const { saved: anthropicSaved, event: anthropicCompactionEv } = emitCompaction(record)
               if (anthropicCompactionEv) yield anthropicCompactionEv
-              compaction = { ...(compaction ?? {}), ...record }
+              if (anthropicSaved && dropped > 0) {
+                foldedMessages = nextFoldedAnthropic
+                messages = kept
+              }
               // Server-side compaction means prior inputTokens no longer describe the wire payload.
-              lastUsage = {
-                inputTokens: assembled.estimatedTokens
+              if (anthropicSaved) {
+                lastUsage = {
+                  inputTokens: assembled.estimatedTokens
+                }
               }
             }
           } else if (chunk.type === 'error') {
@@ -1217,6 +1263,11 @@ export async function* runAgent(input: {
             await sleepStreamRetryBackoff(streamSignalFor(runId, controller.signal))
             continue
           }
+          // Exhausted retriable thrown failures → fall through to terminal PROVIDER_STREAM
+          // (same as inline chunk.error path), not outer AGENT_LOOP.
+          if (!isAbortError(err) && isRetriableStreamFailure(err)) {
+            break
+          }
           // Providers rethrow AbortError from SSE readers — treat like an in-loop cancel.
           if (!isAbortError(err)) {
             // Save what already streamed before the throw unwinds to the outer handler,
@@ -1248,6 +1299,35 @@ export async function* runAgent(input: {
           continue
         }
         streamFinished = true
+      }
+
+      // Exhausted retriable stream attempts — do not treat as a normal empty turn.
+      if (!streamFinished && !controller.signal.aborted && !streamSteered) {
+        const message = `Provider stream failed after ${MAX_STREAM_ATTEMPTS} attempts`
+        logger.error(message, {
+          scope: 'agent',
+          code: 'PROVIDER_STREAM',
+          correlationId: runId,
+          provider: providerId,
+          step
+        })
+        yield* flushPartialAssistant(
+          runId,
+          runDir,
+          messages,
+          assistantText,
+          thinkingText,
+          stepReasoningState,
+          dedupeToolCalls(toolCalls),
+          'interrupted'
+        )
+        yield* flushWriteCheckpoint()
+        yield { type: 'error', runId, invokeId, message, code: 'PROVIDER_STREAM' }
+        yield { type: 'status', runId, invokeId, status: 'error' }
+        writeStatus({ status: 'error', error: message })
+        appendEvent(runDir, { type: 'error', runId, invokeId, message, code: 'PROVIDER_STREAM' })
+        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+        return
       }
 
       if (controller.signal.aborted) {
@@ -1428,6 +1508,17 @@ export async function* runAgent(input: {
       }
       messages.push(assistantWithTools)
       appendMessage(runDir, assistantWithTools)
+      await flushMessageAppends(runDir)
+      if (yield* emitMessageAppendFailureNotice(runId, runDir, invokeId)) {
+        yield* flushWriteCheckpoint()
+        yield { type: 'status', runId, invokeId, status: 'error' }
+        writeStatus({
+          status: 'error',
+          error: 'Failed to persist assistant message before tool execution'
+        })
+        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+        return
+      }
       if (thinkingText && !thinkingDoneEmitted) {
         thinkingDoneEmitted = true
         const thinkingDoneEv: AgentEvent = {

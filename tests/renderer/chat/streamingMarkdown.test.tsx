@@ -38,7 +38,7 @@ describe('prepareStreamingMarkdown', () => {
   })
 
   it('does not balance bold while streaming', () => {
-    expect(prepareStreamingMarkdown('Partial **bold')).toBe('Partial **bold')
+    expect(prepareStreamingMarkdown('Partial **bold')).toBe('Partial **bold**')
   })
 })
 

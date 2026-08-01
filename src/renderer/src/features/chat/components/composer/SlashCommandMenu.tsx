@@ -9,8 +9,19 @@ import {
   composerDropdownSectionHeader
 } from './composerDropdownLayout'
 import { availabilityCtaLabel } from './slashCommandExecute'
+import {
+  buildSlashMenuSections,
+  slashCommandRowCopy,
+  slashGroupDisplayName,
+  truncateSlashDescription
+} from './slashCommandPresentation'
 
-const SLASH_MAX_PX = 360
+const SLASH_MAX_PX = 380
+
+const stickyCategoryHeader = cn(composerDropdownSectionHeader, 'sticky top-0 z-[2] bg-card')
+
+const stickyServerHeader =
+  'sticky top-6 z-[1] m-0 border-b border-border/60 bg-card px-2.5 py-1 text-[11px] font-medium text-secondary'
 
 export function SlashCommandMenu({
   open,
@@ -51,23 +62,7 @@ export function SlashCommandMenu({
     disabled: !open
   })
 
-  const sections = useMemo(() => {
-    const out: Array<{ group: string; items: SlashCommandDescriptor[]; startIndex: number }> = []
-    let i = 0
-    while (i < commands.length) {
-      const group = commands[i]!.group
-      const startIndex = i
-      const items: SlashCommandDescriptor[] = []
-      while (i < commands.length && commands[i]!.group === group) {
-        items.push(commands[i]!)
-        i += 1
-      }
-      out.push({ group, items, startIndex })
-    }
-    return out
-  }, [commands])
-
-  const showGroupHeaders = sections.length > 1
+  const sections = useMemo(() => buildSlashMenuSections(commands), [commands])
 
   useEffect(() => {
     if (!open || activeIndex < 0) return
@@ -84,6 +79,9 @@ export function SlashCommandMenu({
   const hovered = hoveredId ? commands.find((c) => c.id === hoveredId) : null
   const active = commands[activeIndex] ?? null
   const tooltipCmd = hovered ?? active
+  const footerDescription = tooltipCmd?.description
+    ? truncateSlashDescription(tooltipCmd.description)
+    : ''
   const activeDescendant =
     activeIndex >= 0 && commands[activeIndex]
       ? `${listId}-opt-${commands[activeIndex]!.id}`
@@ -122,73 +120,94 @@ export function SlashCommandMenu({
         {loading && commands.length > 0 ? (
           <div className="px-2.5 py-1 text-[10px] text-secondary">Refreshing…</div>
         ) : null}
-        {sections.map(({ group, items, startIndex }) => (
-          <div
-            key={`${group}:${startIndex}`}
-            className="mb-1"
-            role="group"
-            aria-label={group}
-          >
-            {showGroupHeaders ? (
-              <div className={composerDropdownSectionHeader}>{group}</div>
-            ) : null}
-            <ul className="m-0 list-none p-0">
-              {items.map((cmd, offset) => {
-                const index = startIndex + offset
-                const selected = index === activeIndex
-                const cta = availabilityCtaLabel(cmd.availability)
-                const optionId = `${listId}-opt-${cmd.id}`
-                return (
-                  <li key={cmd.id} role="presentation">
-                    <button
-                      type="button"
-                      id={optionId}
-                      role="option"
-                      aria-selected={selected}
-                      ref={(el) => {
-                        optionRefs.current[index] = el
-                      }}
-                      className={cn(composerDropdownRow, selected && 'bg-surface-2 text-fg')}
-                      onMouseEnter={() => {
-                        onActiveIndexChange(index)
-                        setHoveredId(cmd.id)
-                      }}
-                      onMouseLeave={() => setHoveredId(null)}
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => onPick(cmd)}
-                    >
-                      <span className="min-w-0 flex-1">
-                        <span
-                          className="block truncate font-medium leading-snug"
-                          title={`/${cmd.trigger}`}
-                        >
-                          /{cmd.trigger}
-                        </span>
-                        {cmd.label ? (
-                          <span
-                            className="block truncate text-[11px] text-secondary"
-                            title={cmd.label}
+        {sections.map(({ group, startIndex, blocks }, sectionIndex) => {
+          const heading = slashGroupDisplayName(group)
+          const showServerLabels = blocks.some((b) => b.serverLabel)
+          return (
+            <div
+              key={`${group}:${startIndex}`}
+              className={cn(sectionIndex > 0 && 'mt-0.5 border-t border-border pt-0.5')}
+              role="group"
+              aria-label={heading}
+            >
+              <div className={stickyCategoryHeader}>{heading}</div>
+              {blocks.map((block) => (
+                <div
+                  key={`${block.startIndex}:${block.serverLabel ?? 'all'}`}
+                  role={block.serverLabel ? 'group' : undefined}
+                  aria-label={block.serverLabel ?? undefined}
+                >
+                  {showServerLabels && block.serverLabel ? (
+                    <div className={stickyServerHeader}>{block.serverLabel}</div>
+                  ) : null}
+                  <ul className="m-0 list-none p-0">
+                    {block.items.map((cmd, offset) => {
+                      const index = block.startIndex + offset
+                      const selected = index === activeIndex
+                      const cta = availabilityCtaLabel(cmd.availability)
+                      const optionId = `${listId}-opt-${cmd.id}`
+                      const { primary, secondary, title } = slashCommandRowCopy(cmd)
+                      return (
+                        <li key={cmd.id} role="presentation">
+                          <button
+                            type="button"
+                            id={optionId}
+                            role="option"
+                            aria-selected={selected}
+                            aria-label={title}
+                            ref={(el) => {
+                              optionRefs.current[index] = el
+                            }}
+                            className={cn(
+                              composerDropdownRow,
+                              selected && 'bg-surface-2 text-fg'
+                            )}
+                            onMouseEnter={() => {
+                              onActiveIndexChange(index)
+                              setHoveredId(cmd.id)
+                            }}
+                            onMouseLeave={() => setHoveredId(null)}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => onPick(cmd)}
                           >
-                            {cmd.label}
-                          </span>
-                        ) : null}
-                      </span>
-                      {cta ? (
-                        <span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-secondary">
-                          {cta}
-                        </span>
-                      ) : null}
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
-          </div>
-        ))}
+                            <span className="min-w-0 flex-1">
+                              <span
+                                className="block truncate font-medium leading-snug"
+                                title={title}
+                              >
+                                {primary}
+                              </span>
+                              {secondary ? (
+                                <span
+                                  className="block truncate font-mono text-[11px] leading-snug text-secondary"
+                                  title={secondary}
+                                >
+                                  {secondary}
+                                </span>
+                              ) : null}
+                            </span>
+                            {cta ? (
+                              <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-secondary">
+                                {cta}
+                              </span>
+                            ) : null}
+                          </button>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          )
+        })}
       </div>
-      {tooltipCmd?.description ? (
-        <div className="shrink-0 border-t border-border px-2.5 py-1.5 text-xs leading-snug text-secondary">
-          {tooltipCmd.description}
+      {footerDescription ? (
+        <div
+          className="shrink-0 border-t border-border px-2.5 py-1.5 text-xs leading-snug text-secondary"
+          title={tooltipCmd?.description}
+        >
+          {footerDescription}
         </div>
       ) : null}
     </div>,

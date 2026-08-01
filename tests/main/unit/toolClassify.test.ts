@@ -20,6 +20,7 @@ describe('tool classify', () => {
     expect(isParallelSafeTool('list_dir')).toBe(true)
     expect(isParallelSafeTool('web_fetch')).toBe(true)
     expect(isParallelSafeTool('memory_read')).toBe(true)
+    expect(isParallelSafeTool('Skill')).toBe(true)
     expect(isParallelSafeTool('subagent')).toBe(true)
     expect(isReadOnlyTool('read')).toBe(true)
   })

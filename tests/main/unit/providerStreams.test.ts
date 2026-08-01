@@ -390,6 +390,38 @@ describe('gemini mid-stream tool_call', () => {
       arguments: '{"path":"a.ts"}'
     })
   })
+
+  it('uses generateContent when thinking is disabled even if thinkingApi is interactions', async () => {
+    const { geminiProvider } = await import('@main/agent/providers/gemini')
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      expect(url).toMatch(/generateContent|:streamGenerateContent/)
+      expect(url).not.toMatch(/interactions/)
+      return sseBody([
+        'data: {"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}\n\n',
+        'data: {"candidates":[{"finishReason":"STOP"}]}\n\n'
+      ])
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await collect(
+      geminiProvider.streamChat(
+        baseReq({
+          model: 'gemini-2.5-flash',
+          apiKey: 'test-key',
+          tools: [],
+          thinking: { enabled: false },
+          modelInfo: {
+            id: 'gemini-2.5-flash',
+            label: 'Gemini 2.5 Flash',
+            contextWindow: 1_000_000,
+            thinkingApi: 'interactions'
+          } as never
+        })
+      )
+    )
+    expect(fetchMock).toHaveBeenCalled()
+  })
 })
 
 describe('openai responses thinking boundaries', () => {

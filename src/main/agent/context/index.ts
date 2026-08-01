@@ -1,4 +1,4 @@
-export { assembleContext, estimateToolsJson } from './assemble'
+export { assembleContext, clearSystemPromptCache, estimateToolsJson } from './assemble'
 export { allocateBudget, contextWindowFor, effectiveWindow, compactionTriggerTokens, contentWindow } from './budget'
 export { compactMessages, preserveRecentMessages, preserveRecentMessagesAsync } from './compact'
 export {
