@@ -154,6 +154,7 @@ export function Composer({
   onCancelEdit?: () => void
 }) {
   const taRef = useRef<ComposerMentionInputHandle>(null)
+  const focusInput = useCallback(() => taRef.current?.focus(), [])
   const mentionAnchorRef = useRef<HTMLDivElement | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const workspacePathRef = useRef(workspacePath)
@@ -755,6 +756,7 @@ export function Composer({
             metaStore={metaStore}
             onCompactContext={onCompactContext}
             onCancelEdit={isInline ? onCancelEdit : undefined}
+            focusInput={focusInput}
           />
         </form>
 

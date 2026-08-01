@@ -394,7 +394,7 @@ export async function toolTerminal(
 
   const opts: ToolTerminalOptions =
     typeof timeoutMsOrOpts === 'number' ? { timeoutMs: timeoutMsOrOpts } : timeoutMsOrOpts
-  const timeoutMs = opts.timeoutMs ?? 60_000
+  const timeoutMs = Math.min(opts.timeoutMs ?? 60_000, TERMINAL_MAX_TIMEOUT_MS)
   const cwd = opts.cwd ?? workspaceRoot
   const resolved = resolveTerminalShell(opts.shell ?? 'auto')
   const spec = terminalSpawnSpec(command, resolved)

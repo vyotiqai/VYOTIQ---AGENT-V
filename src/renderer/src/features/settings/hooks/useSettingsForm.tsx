@@ -82,12 +82,25 @@ export function useSettingsForm({
 
   const displayError = error ?? appError
 
-  const fieldError = (field: SettingsErrorField, id: string): ReactNode =>
-    errorField === field && displayError ? (
-      <p id={id} className="m-0 w-full text-xs text-danger" role="alert">
-        {displayError}
-      </p>
-    ) : null
+  type SettingsErrorKey = Exclude<SettingsErrorField, null>
+  const fieldError = useMemo<Partial<Record<SettingsErrorKey, ReactNode>>>(() => {
+    if (!errorField || !displayError) return {}
+    const idByField: Record<SettingsErrorKey, string> = {
+      ollama: 'ollama-error',
+      apikey: 'apikey-error',
+      compaction: 'compaction-error',
+      keepTurns: 'keep-turns-error'
+    }
+    const id = idByField[errorField]
+    if (!id) return {}
+    return {
+      [errorField]: (
+        <p id={id} className="m-0 w-full text-xs text-danger" role="alert">
+          {displayError}
+        </p>
+      )
+    } as Partial<Record<SettingsErrorKey, ReactNode>>
+  }, [errorField, displayError])
 
   const runUpdate = async (partial: Partial<Settings>): Promise<boolean> => {
     clearErrors()

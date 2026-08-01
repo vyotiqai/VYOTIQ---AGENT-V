@@ -36,7 +36,9 @@ export function enqueueSettingsMutation<T>(fn: () => T | Promise<T>): Promise<T>
   const run = settingsMutationChain.then(() => fn())
   settingsMutationChain = run.then(
     () => undefined,
-    () => undefined
+    (err) => {
+      logger.warn('Settings mutation failed; continuing chain', { scope: 'settings', err })
+    }
   )
   return run
 }

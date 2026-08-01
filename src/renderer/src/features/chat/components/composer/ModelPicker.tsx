@@ -19,6 +19,7 @@ import {
   supportedTiersForModel,
   type ModelPickerOption
 } from './composerModelUtils'
+import { clampComposerDropdownPanel } from './composerDropdownLayout'
 
 const SESSION_TAB_KEY = 'vyotiq:model-picker-tab'
 
@@ -44,7 +45,6 @@ const badgeChip =
   'rounded px-1 py-0.5 text-[9px] uppercase tracking-wide text-muted ring-1 ring-border'
 
 const PANEL_MAX_PX = 512
-const VIEWPORT_PAD_PX = 8
 
 /** Fixed Think / Vision / Tools columns; missing slots stay invisible so tags align. */
 function CapabilityBadges({ meta }: { meta?: ModelPickerOption['meta'] }) {
@@ -135,6 +135,7 @@ function ModelRow({
         )}
         aria-label={favorite ? 'Remove from favorites' : 'Add to favorites'}
         tabIndex={favorite ? 0 : -1}
+        onMouseDown={(e) => e.preventDefault()}
         onClick={(e) => {
           e.stopPropagation()
           onToggleFavorite()
@@ -174,7 +175,8 @@ export function ModelPicker({
   catalogLoading,
   disabled,
   className,
-  triggerClassName
+  triggerClassName,
+  focusInput
 }: {
   providers: ProviderId[]
   optionsByProvider: Record<ProviderId, ModelPickerOption[]>
@@ -195,6 +197,7 @@ export function ModelPicker({
   disabled?: boolean
   className?: string
   triggerClassName?: string
+  focusInput?: () => void
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -219,9 +222,20 @@ export function ModelPicker({
     modelMetaByValue[modelValue]
   )
 
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      setOpen(next)
+      if (!next) {
+        setQuery('')
+        setActiveIndex(-1)
+      }
+    },
+    [setOpen]
+  )
+
   const { position, close } = useDropdownMenu({
     open,
-    onOpenChange: setOpen,
+    onOpenChange: handleOpenChange,
     triggerRef,
     panelRef,
     placement: 'up',
@@ -319,9 +333,10 @@ export function ModelPicker({
       const parsed = parseModelSelectionKey(value)
       if (!parsed) return
       onModelChange(parsed.provider, parsed.model)
-      close()
+      close(false)
+      window.setTimeout(() => focusInput?.(), 0)
     },
-    [onModelChange, close]
+    [onModelChange, close, focusInput]
   )
 
   const onListKeyDown = (e: React.KeyboardEvent): void => {
@@ -346,15 +361,11 @@ export function ModelPicker({
     open && position
       ? (() => {
           const pos = position
-          const panelWidth = Math.min(PANEL_MAX_PX, window.innerWidth - VIEWPORT_PAD_PX * 2)
-          const panelLeft = Math.max(
-            VIEWPORT_PAD_PX,
-            Math.min(pos.left, window.innerWidth - panelWidth - VIEWPORT_PAD_PX)
-          )
-          const panelMaxHeight =
-            pos.placement === 'up'
-              ? Math.max(240, pos.top - VIEWPORT_PAD_PX)
-              : Math.max(240, window.innerHeight - pos.top - VIEWPORT_PAD_PX)
+          const { left: panelLeft, width: panelWidth, maxHeight } = clampComposerDropdownPanel({
+            position: pos,
+            maxWidthPx: PANEL_MAX_PX,
+            minHeightPx: 240
+          })
           return createPortal(
           <div
             ref={panelRef}
@@ -369,7 +380,7 @@ export function ModelPicker({
               left: panelLeft,
               width: panelWidth,
               maxWidth: panelWidth,
-              maxHeight: Math.min(panelMaxHeight, Math.round(window.innerHeight * 0.7))
+              maxHeight
             }}
             onKeyDown={onListKeyDown}
           >
@@ -392,6 +403,7 @@ export function ModelPicker({
                 className="inline-grid size-7 shrink-0 place-items-center rounded-xl text-muted vy-transition hover:bg-surface hover:text-fg disabled:opacity-50"
                 aria-label="Refresh model catalog"
                 disabled={catalogLoading}
+                onMouseDown={(e) => e.preventDefault()}
                 onClick={() => onRefreshCatalog()}
               >
                 <span className={cn('text-sm', catalogLoading && 'animate-spin')}>↻</span>
@@ -419,6 +431,7 @@ export function ModelPicker({
                         : 'text-secondary hover:bg-surface hover:text-fg'
                     )}
                     aria-pressed={active}
+                    onMouseDown={(e) => e.preventDefault()}
                     onClick={() => selectBrowsedProvider(p)}
                   >
                     <ProviderLogo id={p} size="sm" />
@@ -510,6 +523,7 @@ export function ModelPicker({
                       )}
                       title={SERVICE_TIER_DESCRIPTIONS[tier]}
                       aria-pressed={serviceTier === tier}
+                      onMouseDown={(e) => e.preventDefault()}
                       onClick={() => onServiceTierChange(tier)}
                     >
                       {SERVICE_TIER_LABELS[tier]}
@@ -536,6 +550,7 @@ export function ModelPicker({
         aria-controls={open ? panelId : undefined}
         title={`${providerMeta?.label ?? provider} · ${displayName}`}
         disabled={disabled}
+        onMouseDown={(e) => e.preventDefault()}
         onClick={() => setOpen((v) => !v)}
       >
         <ProviderLogo id={provider} size="sm" className="shrink-0 text-muted" />

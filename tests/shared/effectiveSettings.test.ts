@@ -32,6 +32,7 @@ describe('resolveEffectiveSettings', () => {
     expect(effective).toEqual({
       provider: 'openai',
       model: 'gpt-5.6',
+      ollamaBaseUrl: DEFAULT_SETTINGS.ollamaBaseUrl,
       subagentProvider: 'anthropic',
       subagentModel: 'claude-sonnet-5',
       thinkingEnabled: false,

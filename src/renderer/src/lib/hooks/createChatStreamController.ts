@@ -67,14 +67,16 @@ function withPresentationLock(tool: UiToolRow, name: string, argsPreview?: strin
   // OpenAI often sends nameless first deltas; locking on placeholder "tool" would
   // permanently demote terminal/edit/etc. to compact.
   if (!resolvedName) return tool
+  const preview = argsPreview ?? tool.argsPreview
+  const summary = tool.summary
   if (tool.presentation && tool.name && tool.name !== 'tool') {
-    // Recompute terminal when args arrive so read-only commands can demote.
+    // Recompute terminal when args/summary arrive so read-only commands can demote.
     if (resolvedName === 'terminal') {
-      return { ...tool, presentation: toolPresentation(resolvedName, argsPreview) }
+      return { ...tool, presentation: toolPresentation(resolvedName, preview, summary) }
     }
     return tool
   }
-  return { ...tool, presentation: toolPresentation(resolvedName, argsPreview) }
+  return { ...tool, presentation: toolPresentation(resolvedName, preview, summary) }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -614,7 +616,7 @@ function hydrateFromDisk(
       ...item,
       tool: {
         ...item.tool,
-        presentation: toolPresentation(item.tool.name, item.tool.argsPreview)
+        presentation: toolPresentation(item.tool.name, item.tool.argsPreview, item.tool.summary)
       }
     }
   })

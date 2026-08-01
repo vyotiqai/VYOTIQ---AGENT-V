@@ -7,6 +7,6 @@
   "description": "Official MCP git server (stdio via uvx). Requires uv on PATH.",
   "transport": "stdio",
   "command": "uvx",
-  "args": ["mcp-server-git", "--repository", "."],
+  "args": ["--with", "mcp<2", "mcp-server-git", "--repository", "."],
   "env": {}
 }

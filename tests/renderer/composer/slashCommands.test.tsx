@@ -155,4 +155,24 @@ describe('Composer slash commands', () => {
     await waitFor(() => expect(onCompact).toHaveBeenCalled())
     expect(onSend).not.toHaveBeenCalled()
   })
+
+  it('keeps the slash menu open when the query has no matches', async () => {
+    const onDraftChange = vi.fn()
+    const { rerender } = render(
+      <Composer {...baseProps} draft="" onDraftChange={onDraftChange} />
+    )
+
+    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    ta.textContent = '/zzzznotacommand'
+    fireEvent.input(ta)
+    rerender(
+      <Composer {...baseProps} draft="/zzzznotacommand" onDraftChange={onDraftChange} />
+    )
+    fireEvent.focus(ta)
+
+    await waitFor(() => {
+      expect(screen.getByRole('listbox', { name: /Slash commands/i })).toBeTruthy()
+    })
+    expect(screen.getByText('No matches')).toBeTruthy()
+  })
 })

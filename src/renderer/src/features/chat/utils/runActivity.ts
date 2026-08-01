@@ -22,6 +22,18 @@ function truncateDetail(text: string | undefined): string | undefined {
   return truncateText(trimmed, MAX_DETAIL_CHARS)
 }
 
+function toolPhaseFromCard(row: Extract<TranscriptRow, { kind: 'card' }>): RunActivityPhase {
+  const meta = getToolHeaderMeta(row.item.tool, {
+    subagent: row.item.subagent,
+    subagentContextUsage: row.item.subagentContextUsage
+  })
+  return {
+    kind: 'tool',
+    label: meta.verb,
+    detail: truncateDetail(meta.target)
+  }
+}
+
 function toolPhaseFromActivity(row: Extract<TranscriptRow, { kind: 'activity' }>): RunActivityPhase {
   const uiTools = row.tools.map((item) => item.tool)
   const props = mapToolGroupProps(uiTools, {})
@@ -93,7 +105,7 @@ function lastActiveRow(
 
 /**
  * Derive what the agent is doing right now within an active turn.
- * Priority: running tools → writing → thinking → approval/question → planning/working.
+ * Priority: prominent tool → compact tools → writing → thinking → approval/question → planning/working.
  * Within each tier, prefer the latest row so live work beats earlier steps.
  */
 export function deriveRunActivity(
@@ -101,6 +113,12 @@ export function deriveRunActivity(
   pendingRun?: boolean,
   opts?: { hiddenThinkingStreaming?: boolean }
 ): RunActivityPhase {
+  const runningCard = lastActiveRow(
+    turnRows,
+    (row) => row.kind === 'card' && row.item.tool.status === 'running'
+  )
+  if (runningCard?.kind === 'card') return toolPhaseFromCard(runningCard)
+
   const runningActivity = lastActiveRow(
     turnRows,
     (row) => row.kind === 'activity' && row.tools.some((item) => item.tool.status === 'running')

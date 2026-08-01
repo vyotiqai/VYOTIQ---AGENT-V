@@ -15,6 +15,7 @@ import {
   setModelListInflight
 } from './modelCache'
 import {
+  assertValidProviderBaseUrl,
   deepseekProvider,
   groqProvider,
   mistralProvider,
@@ -136,6 +137,9 @@ async function listProviderModelsUncached(
   }
 
   try {
+    if (input.baseUrl) {
+      assertValidProviderBaseUrl(input.baseUrl)
+    }
     const models = await provider.listModels(req)
     if (!models.length) {
       if (input.forceRefresh) clearModelCacheKey(key)

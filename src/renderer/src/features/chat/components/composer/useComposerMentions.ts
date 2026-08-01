@@ -287,9 +287,7 @@ export function useComposerMentions({
     (view === 'chats' && chatsLoading) ||
     (view === 'docs' && docsLoading) ||
     (view === 'rules' && rulesLoading)
-  const open = Boolean(
-    token && !dismissed && (menuLoading || items.length > 0 || token.query === '')
-  )
+  const open = Boolean(token && !dismissed)
 
   const activeItem = items[activeIndex] ?? null
   useEffect(() => {

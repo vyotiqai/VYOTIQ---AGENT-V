@@ -53,6 +53,7 @@ export function ModePicker({
         aria-label={ariaLabel}
         title={running ? ariaLabel : `${ariaLabel} Shift-click for previous.`}
         className={cn(chromePillButton, 'text-fg')}
+        onMouseDown={(e) => e.preventDefault()}
         onClick={(e) => {
           e.preventDefault()
           if (locked) return

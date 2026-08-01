@@ -24,13 +24,22 @@ export function validateAgainstJsonSchema(
       }
     }
     const properties = schema.properties
+    const allowedKeys = new Set<string>()
     if (properties && typeof properties === 'object' && !Array.isArray(properties)) {
       for (const [key, propSchema] of Object.entries(
         properties as Record<string, Record<string, unknown>>
       )) {
+        allowedKeys.add(key)
         if (obj[key] === undefined) continue
         const nested = validateAgainstJsonSchema(propSchema, obj[key])
         if (!nested.ok) return { ok: false, error: `${key}: ${nested.error}` }
+      }
+    }
+    if (schema.additionalProperties === false) {
+      for (const key of Object.keys(obj)) {
+        if (!allowedKeys.has(key)) {
+          return { ok: false, error: `Unexpected property: ${key}` }
+        }
       }
     }
     return { ok: true }

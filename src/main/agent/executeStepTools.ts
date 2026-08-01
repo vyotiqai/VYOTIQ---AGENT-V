@@ -38,7 +38,7 @@ export type ToolStepContext = {
   /** Ask / Plan / Agent for this invoke (mutable via switch_mode). */
   agentMode?: AgentInteractionMode
   getAgentMode?: () => AgentInteractionMode
-  setAgentMode?: (mode: AgentInteractionMode) => void
+  setAgentMode?: (mode: AgentInteractionMode) => void | Promise<void>
   /** Snapshot of settings.autoModeSwitch for this invoke. */
   autoModeSwitch?: boolean
   /** Snapshot of settings.terminalShell for this invoke. */

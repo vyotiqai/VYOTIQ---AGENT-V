@@ -1,4 +1,4 @@
-import { memo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import { cn } from '@renderer/lib/ui'
 import { Button } from '@renderer/lib/ui'
 import { QUESTION_GATE_HEADER, QUESTION_GATE_SURFACE } from '@renderer/lib/utils/layout'
@@ -57,10 +57,14 @@ export const ChangeSummary = memo(function ChangeSummary({
 
   const resolveDisabled = Boolean(resolveBusy || resolveBlockedReason)
 
+  const normalizedResolvablePaths = useMemo(() => {
+    if (!resolvablePaths) return null
+    return new Set(Array.from(resolvablePaths).map((p) => normalizeRelPath(p)))
+  }, [resolvablePaths])
+
   const isResolvablePath = (path: string): boolean => {
-    if (!resolvablePaths) return true
-    if (resolvablePaths.has(path)) return true
-    return resolvablePaths.has(normalizeRelPath(path))
+    if (!resolvablePaths || !normalizedResolvablePaths) return true
+    return resolvablePaths.has(path) || normalizedResolvablePaths.has(normalizeRelPath(path))
   }
 
   const totalAdded = files.reduce((sum, file) => sum + file.added, 0)

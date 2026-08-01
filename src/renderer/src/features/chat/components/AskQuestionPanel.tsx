@@ -1,11 +1,9 @@
 import { memo, useMemo, useState, type FormEvent } from 'react'
-import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
 import {
-  QUESTION_GATE_BODY,
-  QUESTION_GATE_FOOTER,
-  QUESTION_GATE_HEADER,
-  QUESTION_GATE_SURFACE
+  TOOL_CARD_BODY,
+  TOOL_CARD_HEADER,
+  TOOL_CARD_SURFACE
 } from '@renderer/lib/utils/layout'
 import { questionTypeHint } from '@shared/utils/agentQuestionForm'
 import type { UiAgentQuestion, UiAgentQuestionAnswer } from '@shared/transcript'
@@ -95,21 +93,29 @@ export const AskQuestionPanel = memo(function AskQuestionPanel({
 
   return (
     <form
-      className={cn(QUESTION_GATE_SURFACE, 'w-full')}
+      className={cn(TOOL_CARD_SURFACE, 'w-full')}
       role="group"
       aria-labelledby={`ask-q-title-${question.requestId}`}
       aria-busy={phase === 'pending' ? true : undefined}
       onSubmit={onFormSubmit}
     >
-      <div className={QUESTION_GATE_HEADER}>
-        <Icon name="sparkles" size={14} className="shrink-0 text-accent" />
-        <span id={`ask-q-title-${question.requestId}`} className="font-medium">
+      <div className={cn(TOOL_CARD_HEADER, 'flex items-center gap-2')}>
+        <span
+          id={`ask-q-title-${question.requestId}`}
+          className="shrink-0 font-medium text-fg"
+        >
           {headerTitle}
         </span>
-        {singleHint ? <span className="text-tertiary">{singleHint}</span> : null}
+        {singleHint ? (
+          <span className="min-w-0 truncate text-tertiary">{singleHint}</span>
+        ) : multi ? (
+          <span className="min-w-0 truncate text-tertiary">
+            {question.questions.length} questions
+          </span>
+        ) : null}
       </div>
 
-      <div className={cn(QUESTION_GATE_BODY, 'flex flex-col gap-3')}>
+      <div className={cn(TOOL_CARD_BODY, 'flex flex-col gap-3 px-3 py-2.5')}>
         {question.questions.map((item) => {
           const promptId = `ask-q-prompt-${question.requestId}-${item.id}`
           const state = fields[item.id] ?? { values: [], customText: '' }
@@ -134,25 +140,30 @@ export const AskQuestionPanel = memo(function AskQuestionPanel({
             </div>
           )
         })}
-      </div>
 
-      {localError ? (
-        <p className="px-3 pb-1 text-xs text-danger" role="alert">
-          {localError}
-        </p>
-      ) : null}
+        {localError ? (
+          <p className="text-xs text-danger" role="alert">
+            {localError}
+          </p>
+        ) : null}
 
-      <div className={QUESTION_GATE_FOOTER}>
-        <button
-          type="submit"
-          disabled={!canSubmit}
-          aria-busy={phase === 'pending' ? true : undefined}
-          className="rounded-md border border-accent bg-accent px-2.5 py-1 text-xs text-accent-fg vy-transition hover:opacity-90 disabled:opacity-[var(--vy-disabled-opacity)]"
-        >
-          {submitLabel}
-        </button>
+        <div className="flex items-center pt-0.5">
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            aria-busy={phase === 'pending' ? true : undefined}
+            className={cn(
+              'rounded-md border px-2.5 py-1 text-xs vy-transition',
+              'disabled:opacity-[var(--vy-disabled-opacity)]',
+              canSubmit
+                ? 'border-border bg-surface text-fg hover:bg-surface-2'
+                : 'border-border text-tertiary'
+            )}
+          >
+            {submitLabel}
+          </button>
+        </div>
       </div>
     </form>
   )
 })
-

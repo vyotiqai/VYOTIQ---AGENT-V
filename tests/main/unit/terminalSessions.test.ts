@@ -104,6 +104,19 @@ describe('terminalSessions', () => {
     ).rejects.toThrow(/does not belong/i)
 
     expect(disposeTerminalSessionsForInvoke('run-owner', 7)).toBe(1)
-    expect(getTerminalSession(sessionId!)).toBeUndefined()
+    expect(getTerminalSession(sessionId!, 'run-owner', 7)).toBeUndefined()
+    expect(getTerminalSession(sessionId!, 'other-run', 1)).toBeUndefined()
   }, 15_000)
+
+  it('rejects an invented session id when polling', async () => {
+    await expect(
+      pollTerminalSession({
+        runId: 'run-1',
+        invokeId: 1,
+        sessionId: '550e8400-e29b-41d4-a716-446655440000',
+        blockUntilMs: 0,
+        signal: new AbortController().signal
+      })
+    ).rejects.toThrow(/Unknown terminal session_id/i)
+  })
 })

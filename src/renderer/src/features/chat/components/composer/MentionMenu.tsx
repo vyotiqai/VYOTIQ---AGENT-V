@@ -6,10 +6,20 @@ import { useDropdownMenu } from '@renderer/lib/hooks/useDropdownMenu'
 import { cn } from '@renderer/lib/ui/cn'
 import { FileTypeBadge } from './FileTypeBadge'
 import {
+  COMPOSER_DROPDOWN_PAD_PX,
+  COMPOSER_DROPDOWN_TREE_MIN_PX,
+  clampComposerDropdownPanel,
+  composerDropdownRow,
+  composerDropdownSectionHeader
+} from './composerDropdownLayout'
+import {
   pathSegments,
   type MentionMenuItem,
   type MentionMenuView
 } from './mentionModel'
+
+const MENTION_MAX_PX = 320
+const MENTION_TREE_MAX_PX = 480
 
 function itemIcon(item: MentionMenuItem): IconName {
   switch (item.kind) {
@@ -44,13 +54,13 @@ function PathTree({ path }: { path: string }) {
   const parts = pathSegments(path)
   if (!parts.length) return null
   return (
-    <div className="flex min-w-[140px] max-w-[180px] flex-col gap-0.5 border-l border-border px-2 py-1.5">
+    <div className="sidebar-scroll flex min-h-0 min-w-[140px] max-w-[180px] shrink-0 flex-col gap-0.5 overflow-y-auto border-l border-border px-2 py-1.5">
       {parts.map((part, i) => {
         const isLast = i === parts.length - 1
         return (
           <div
             key={`${i}:${part}`}
-            className="flex items-center gap-1.5 text-[11px] text-muted"
+            className="flex items-center gap-1.5 text-[11px] text-secondary"
             style={{ paddingLeft: i * 8 }}
           >
             {isLast ? (
@@ -58,7 +68,12 @@ function PathTree({ path }: { path: string }) {
             ) : (
               <FileTypeIcon path={part} kind="folder" size={14} />
             )}
-            <span className={cn('truncate', isLast && 'font-medium text-fg')}>{part}</span>
+            <span
+              className={cn('truncate', isLast && 'font-medium text-fg')}
+              title={part}
+            >
+              {part}
+            </span>
           </div>
         )
       })}
@@ -74,12 +89,31 @@ function rootSectionLabel(item: MentionMenuItem, index: number, items: MentionMe
   const prevFileish = prev.kind === 'file'
   if (isFileish && !prevFileish) return 'Files'
   const isNav = item.kind === 'nav' || item.kind === 'lints'
-  const prevNav = prev.kind === 'nav' || prev.kind === 'lints' || prev.kind === 'branch' || prev.kind === 'browser'
+  const prevNav =
+    prev.kind === 'nav' ||
+    prev.kind === 'lints' ||
+    prev.kind === 'branch' ||
+    prev.kind === 'browser'
   if (isNav && prevFileish) return 'More'
   if (item.kind === 'nav' && prev.kind !== 'nav' && !prevFileish && index > 0 && !prevNav) {
     return null
   }
   return null
+}
+
+function emptyCopy(view: MentionMenuView): string {
+  switch (view) {
+    case 'files':
+      return 'No files match'
+    case 'chats':
+      return 'No past chats match'
+    case 'docs':
+      return 'No docs match'
+    case 'rules':
+      return 'No rules match'
+    default:
+      return 'No matches'
+  }
 }
 
 export function MentionMenu({
@@ -114,7 +148,6 @@ export function MentionMenu({
     open,
     onOpenChange: (next) => {
       if (!next) {
-        // Escape / outside: prefer subview back over full dismiss.
         if (view !== 'root' && onBack?.()) return
         onDismiss?.()
       }
@@ -138,7 +171,7 @@ export function MentionMenu({
     active?.kind === 'file' || active?.kind === 'docs' || active?.kind === 'rule'
       ? active.path
       : null
-  const showTree =
+  const treeDesired =
     (view === 'files' || view === 'docs' || view === 'rules') && Boolean(activePath)
   const title =
     view === 'files'
@@ -150,6 +183,16 @@ export function MentionMenu({
           : view === 'rules'
             ? 'Rules'
             : null
+
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1024
+  const { left, width, maxHeight } = clampComposerDropdownPanel({
+    position,
+    maxWidthPx:
+      treeDesired && vw >= COMPOSER_DROPDOWN_TREE_MIN_PX + COMPOSER_DROPDOWN_PAD_PX * 2
+        ? MENTION_TREE_MAX_PX
+        : MENTION_MAX_PX
+  })
+  const showTree = treeDesired && width >= COMPOSER_DROPDOWN_TREE_MIN_PX
 
   const activeDescendant =
     activeIndex >= 0 && items[activeIndex]
@@ -163,25 +206,24 @@ export function MentionMenu({
       role="listbox"
       aria-label="Mentions"
       aria-activedescendant={activeDescendant}
-      className={cn(
-        'fixed z-dropdown flex max-h-80 overflow-hidden rounded-md border border-border bg-card shadow-menu animate-fade-in',
-        showTree ? 'w-[min(92vw,480px)]' : 'w-[min(92vw,320px)]'
-      )}
+      className="fixed z-dropdown flex overflow-hidden rounded-xl border border-border bg-card shadow-menu animate-fade-in"
       style={{
         top: position.placement === 'up' ? undefined : position.top,
         bottom:
           position.placement === 'up' ? window.innerHeight - position.top : undefined,
-        left: position.left,
-        minWidth: Math.max(position.minWidth, 260)
+        left,
+        width,
+        maxWidth: width,
+        maxHeight
       }}
     >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {title ? (
-          <div className="flex items-center gap-1 border-b border-border px-2 py-1.5">
+          <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5">
             {onBack ? (
               <button
                 type="button"
-                className="rounded p-0.5 text-muted hover:bg-surface hover:text-fg"
+                className="rounded p-0.5 text-secondary hover:bg-surface hover:text-fg"
                 aria-label="Back"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => onBack()}
@@ -189,17 +231,24 @@ export function MentionMenu({
                 <Icon name="chevron" size={14} className="rotate-90" />
               </button>
             ) : null}
-            <span className="text-xs font-medium text-fg">{title}</span>
+            <span className="min-w-0 flex-1 truncate text-xs font-medium text-fg">{title}</span>
+            {loading && items.length > 0 ? (
+              <span className="shrink-0 text-[10px] text-secondary">Searching…</span>
+            ) : null}
+          </div>
+        ) : loading && items.length > 0 ? (
+          <div className="shrink-0 border-b border-border px-2.5 py-1 text-[10px] text-secondary">
+            Searching…
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-1">
+        <div className="sidebar-scroll min-h-0 flex-1 overflow-y-auto p-1">
           {loading && items.length === 0 ? (
-            <p className="m-0 px-2.5 py-2 text-xs text-muted">Searching…</p>
+            <p className="m-0 px-2.5 py-2 text-xs text-secondary">Searching…</p>
           ) : items.length === 0 ? (
-            <p className="m-0 px-2.5 py-2 text-xs text-muted">No matches</p>
+            <p className="m-0 px-2.5 py-2 text-xs text-secondary">{emptyCopy(view)}</p>
           ) : (
-            <ul className="m-0 list-none p-0">
+            <ul className="m-0 list-none p-0" role={view === 'root' ? 'group' : undefined}>
               {items.map((item, index) => {
                 const selected = index === activeIndex
                 const optionId = `${listId}-opt-${item.id}`
@@ -207,11 +256,7 @@ export function MentionMenu({
                   view === 'root' ? rootSectionLabel(item, index, items) : null
                 return (
                   <li key={item.id} className="m-0">
-                    {section ? (
-                      <p className="m-0 px-2.5 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted">
-                        {section}
-                      </p>
-                    ) : null}
+                    {section ? <p className={composerDropdownSectionHeader}>{section}</p> : null}
                     <button
                       type="button"
                       id={optionId}
@@ -220,10 +265,7 @@ export function MentionMenu({
                       ref={(el) => {
                         optionRefs.current[index] = el
                       }}
-                      className={cn(
-                        'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm',
-                        selected ? 'bg-surface-2 text-fg' : 'text-fg hover:bg-surface'
-                      )}
+                      className={cn(composerDropdownRow, selected && 'bg-surface-2 text-fg')}
                       onMouseDown={(e) => e.preventDefault()}
                       onMouseEnter={() => onActiveIndexChange(index)}
                       onClick={() => onPick(item)}
@@ -238,11 +280,14 @@ export function MentionMenu({
                         />
                       )}
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate font-medium leading-snug">
+                        <span className="block truncate font-medium leading-snug" title={item.label}>
                           {item.label}
                         </span>
                         {'subtitle' in item && item.subtitle ? (
-                          <span className="block truncate text-[11px] text-muted">
+                          <span
+                            className="block truncate text-[11px] text-secondary"
+                            title={item.subtitle}
+                          >
                             {item.subtitle}
                           </span>
                         ) : null}

@@ -71,9 +71,9 @@ function stripTrailingComma(text: string): string {
 function tryParse(text: string): string | null {
   try {
     const parsed: unknown = JSON.parse(text)
-    // Tool arguments are always an object; a bare scalar means the repair
+    // Tool arguments are always an object; a bare scalar or array means the repair
     // produced something the caller cannot use.
-    if (parsed === null || typeof parsed !== 'object') return null
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
     return text
   } catch {
     return null

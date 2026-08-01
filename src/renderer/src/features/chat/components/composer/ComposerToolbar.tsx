@@ -105,7 +105,8 @@ export function ComposerToolbar({
   contextUsage,
   metaStore,
   onCompactContext,
-  onCancelEdit
+  onCancelEdit,
+  focusInput
 }: {
   variant: ComposerVariant
   disabled?: boolean
@@ -142,6 +143,7 @@ export function ComposerToolbar({
   metaStore?: ChatMetaStore
   onCompactContext?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
   onCancelEdit?: () => void
+  focusInput?: () => void
 }) {
   void disabled
   const isInline = variant === 'inline'
@@ -249,6 +251,7 @@ export function ComposerToolbar({
           onBrowseProvider={onBrowseProvider}
           catalogLoading={catalogLoading}
           disabled={locked}
+          focusInput={focusInput}
         />
         <ThinkingControls
           provider={provider}

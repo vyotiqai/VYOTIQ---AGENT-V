@@ -219,6 +219,7 @@ export function useComposerDraft({
       }
       if (e.key === 'Escape') {
         e.preventDefault()
+        if (onMentionBack?.()) return
         onMentionDismiss?.()
         return
       }

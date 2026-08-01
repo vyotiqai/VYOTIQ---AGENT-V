@@ -3,11 +3,16 @@ import {
   MCP_TOOL_PREFIX,
   TOOL_LABELS,
   isUnresolvedToolName,
+  parseArgsRecord,
   parseMcpToolDisplay
 } from '@shared/toolSummary'
 import { mcpDoneLabel, mcpRunningLabel, mcpToolKind, humanizeSnakeCase } from '@shared/utils/mcpToolMeta'
+import { isReadOnlyTerminalCommand } from '@shared/utils/displayPath'
 import type { IconName } from '@renderer/lib/icons'
 import type { ToolCategory, ToolPresentation } from './types'
+
+/** Terminal + edit/diff tools get bordered cards; everything else stays compact. */
+const PROMINENT_TOOLS = new Set(['terminal', 'edit', 'multi_edit', 'str_replace'])
 
 const FILE_TOOLS = new Set(['read', 'memory_read'])
 const EDIT_TOOLS = new Set([
@@ -63,9 +68,43 @@ const CATEGORY_LABELS: Record<ToolCategory, { running: string; done: string }> =
 
 const MIXED_LABELS = { running: 'Exploring', done: 'Explored' }
 
-/** All tools share the compact activity pipeline; family shells differentiate chrome. */
-export function toolPresentation(_name?: string, _argsPreview?: string): ToolPresentation {
-  return 'compact'
+export function isProminentTool(
+  name: string,
+  argsPreview?: string,
+  summary?: string
+): boolean {
+  if (!PROMINENT_TOOLS.has(name)) return false
+  if (name === 'terminal') {
+    const args = argsPreview ? parseArgsRecord(argsPreview) : null
+    const fromArgs = args?.command ?? args?.cmd
+    const command =
+      typeof fromArgs === 'string'
+        ? fromArgs
+        : typeof summary === 'string'
+          ? summary
+          : null
+    if (command && isReadOnlyTerminalCommand(command)) return false
+  }
+  return true
+}
+
+/** Shared card vs compact decision — respects locked presentation when set. */
+export function isProminentPresentation(tool: {
+  name: string
+  argsPreview?: string
+  summary?: string
+  presentation?: ToolPresentation
+}): boolean {
+  if (tool.presentation) return tool.presentation === 'prominent'
+  return isProminentTool(tool.name, tool.argsPreview, tool.summary)
+}
+
+export function toolPresentation(
+  name: string,
+  argsPreview?: string,
+  summary?: string
+): ToolPresentation {
+  return isProminentTool(name, argsPreview, summary) ? 'prominent' : 'compact'
 }
 
 export function mcpToolCategory(toolName: string): ToolCategory {

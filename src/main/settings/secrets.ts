@@ -73,14 +73,15 @@ function assertSafeStorageBackend(): void {
 }
 
 function encryptBlob(value: string): string {
+  assertSafeStorageBackend()
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error('OS secure storage is unavailable')
   }
-  assertSafeStorageBackend()
   return safeStorage.encryptString(value).toString('base64')
 }
 
 function decryptBlob(encrypted: string): string | null {
+  assertSafeStorageBackend()
   if (!safeStorage.isEncryptionAvailable()) return null
   try {
     return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
@@ -136,7 +137,17 @@ export function getSecret(provider: SecretProvider): string | null {
 
 /** True only when a stored blob decrypts successfully with the current OS keychain. */
 export function secretStatus(): SecretsStatus {
-  const encryptionAvailable = safeStorage.isEncryptionAvailable()
+  let encryptionAvailable = safeStorage.isEncryptionAvailable()
+  try {
+    assertSafeStorageBackend()
+  } catch (err) {
+    logger.warn('OS secure storage backend is insecure; secrets unavailable', {
+      scope: 'secrets',
+      code: 'SECRETS',
+      err
+    })
+    encryptionAvailable = false
+  }
   const data = readFile()
   const keys = emptySecretStatus()
   for (const provider of SECRET_PROVIDERS) {

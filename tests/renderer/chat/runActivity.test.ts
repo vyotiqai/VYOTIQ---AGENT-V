@@ -64,10 +64,19 @@ describe('deriveRunActivity', () => {
     expect(phase).toEqual({ kind: 'tool', label: 'Grepping', detail: 'foo' })
   })
 
-  it('prefers a running edit activity over compact read activity and writing', () => {
+  it('prefers a running edit card over compact read activity and writing', () => {
     const phase = deriveRunActivity([
       activityRow([{ id: 't1', name: 'read', summary: 'a.ts', status: 'running' }]),
-      activityRow([{ id: 't2', name: 'edit', summary: 'src/foo.ts', status: 'running' }]),
+      {
+        kind: 'card',
+        id: 't2',
+        turnIndex: 0,
+        item: {
+          kind: 'tool',
+          id: 't2',
+          tool: { id: 't2', name: 'edit', summary: 'src/foo.ts', status: 'running' }
+        }
+      },
       textRow(true)
     ])
     expect(phase).toEqual({ kind: 'tool', label: 'Editing', detail: 'foo.ts' })

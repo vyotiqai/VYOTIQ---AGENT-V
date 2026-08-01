@@ -120,7 +120,7 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
             })
           }}
         />
-        {form.fieldError('compaction', 'compaction-error')}
+        {form.fieldError.compaction}
       </SettingsRow>
 
       <SettingsRow
@@ -152,7 +152,7 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
             })
           }}
         />
-        {form.fieldError('keepTurns', 'keep-turns-error')}
+        {form.fieldError.keepTurns}
       </SettingsRow>
 
       <SettingsRow

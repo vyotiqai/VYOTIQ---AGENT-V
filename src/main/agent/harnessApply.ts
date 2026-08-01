@@ -41,7 +41,7 @@ export const HARNESS_EVAL_TESTS = [
 
 /** Patterns that attempt to disable or hollow out the apply gate inside a proposed harness body. */
 const GATE_TAMPER_RE =
-  /(?:\bHARNESS_EVAL_TESTS\b|\bharnessValidate\b|\brunHarnessEvaluators\b).{0,80}(?:delete|remove|empty|skip|disable)|(?:delete|remove|empty|skip|disable).{0,80}(?:\bHARNESS_EVAL_TESTS\b|\bharnessValidate\b|\brunHarnessEvaluators\b)|(?:skip|disable)\s+(?:vitest|harness\s+eval|apply\s+gate)|(?:do\s+not\s+run|never\s+run)\s+vitest/i
+  /(?:\bHARNESS_EVAL_TESTS\b|\bharnessValidate\b|\brunHarnessEvaluators\b)[\s\S]{0,40}\b(delete|remove|empty|skip|disable)\b|\b(delete|remove|empty|skip|disable)\b[\s\S]{0,40}(?:\bHARNESS_EVAL_TESTS\b|\bharnessValidate\b|\brunHarnessEvaluators\b)|\b(skip|disable)\s+(?:vitest|harness\s+eval|apply\s+gate)\b|\b(do\s+not\s+run|never\s+run)\s+vitest\b/i
 
 /** True when proposed harness text appears to instruct hollowed-out apply validation. */
 export function proposalAttemptsGateTamper(proposedBody: string): boolean {

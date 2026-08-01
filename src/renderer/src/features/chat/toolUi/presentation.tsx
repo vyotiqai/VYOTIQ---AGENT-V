@@ -2,6 +2,7 @@ import { createElement } from 'react'
 import { useFullToolContent } from '../components/useFullToolContent'
 import type { ToolBodyContext } from './types'
 import { getToolBody } from './registry'
+import { isProminentPresentation } from './meta'
 import { wrapFamilyShell } from './shells'
 
 export function ToolBodyView({
@@ -20,7 +21,7 @@ export function ToolBodyView({
     mcpServerNames,
     inGroup
   } = context
-  // Fetch full content only while the body is expanded (mounted in ExpandPanel).
+  // Full content loads only while the body is visible (ExpandPanel open or card expanded).
   const enabled = tool.contentTruncated === true && expanded === true
   const { loading, failed } = useFullToolContent(tool, enabled, onLoadFullContent)
   const body = createElement(getToolBody(tool.name), {
@@ -36,5 +37,7 @@ export function ToolBodyView({
     mcpServerNames,
     inGroup
   })
+  // Bordered ToolCard already provides chrome for prominent tools.
+  if (isProminentPresentation(tool)) return body
   return wrapFamilyShell(tool.name, body)
 }

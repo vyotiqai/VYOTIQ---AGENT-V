@@ -3,9 +3,9 @@ import { cn } from '@renderer/lib/ui'
 import type { UiAgentQuestionItem } from '@shared/transcript'
 
 const OPTION_BASE =
-  'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm vy-transition disabled:opacity-[var(--vy-disabled-opacity)]'
-const OPTION_IDLE = 'text-secondary hover:bg-surface hover:text-fg'
-const OPTION_ACTIVE = 'bg-accent/10 text-fg'
+  'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm vy-transition disabled:opacity-[var(--vy-disabled-opacity)]'
+const OPTION_IDLE = 'text-secondary hover:bg-surface-2/60 hover:text-fg'
+const OPTION_ACTIVE = 'bg-surface-2 text-fg'
 
 export type QuestionFieldProps = {
   item: UiAgentQuestionItem
@@ -28,14 +28,14 @@ function OptionMark({
       className={cn(
         'flex h-3.5 w-3.5 shrink-0 items-center justify-center border border-border',
         kind === 'radio' ? 'rounded-full' : 'rounded-sm',
-        active && 'border-accent bg-accent'
+        active && 'border-fg bg-fg'
       )}
       aria-hidden
     >
       {active ? (
         <span
           className={cn(
-            'bg-accent-fg',
+            'bg-bg',
             kind === 'radio' ? 'h-1.5 w-1.5 rounded-full' : 'h-1.5 w-1.5'
           )}
         />
@@ -195,7 +195,7 @@ export function BooleanField({
             className={cn(
               'min-w-[4.5rem] rounded-md border px-3 py-1.5 text-sm vy-transition disabled:opacity-[var(--vy-disabled-opacity)]',
               active
-                ? 'border-accent bg-accent/10 text-fg'
+                ? 'border-border bg-surface-2 text-fg'
                 : 'border-border text-secondary hover:bg-surface'
             )}
             onClick={() => onChange([option], '')}

@@ -23,7 +23,7 @@ export type UiToolRow = {
   /** Live IPC shipped a preview only; expand to lazy-load from disk. */
   contentTruncated?: boolean
   argsPreview?: string
-  /** Locked at first render so args streaming cannot flip card ↔ activity. */
+  /** Locked at first render; terminal may recompute when args arrive for read-only demotion. */
   presentation?: ToolPresentation
 }
 

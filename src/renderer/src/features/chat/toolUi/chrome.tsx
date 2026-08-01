@@ -1,8 +1,71 @@
 import { memo } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
-import { DISCLOSURE_ROW } from '@renderer/lib/utils/layout'
+import {
+  DISCLOSURE_ROW,
+  TOOL_BODY_CLAMP_PX,
+  TOOL_CARD_BODY,
+  TOOL_CARD_HEADER,
+  TOOL_CARD_SURFACE
+} from '@renderer/lib/utils/layout'
 import { TextShimmer } from '../components/TextShimmer'
+
+export function ProminentChrome({
+  header,
+  body,
+  expanded,
+  hasBody,
+  running,
+  clampWhenCollapsed = true,
+  ariaLabel,
+  onToggle
+}: {
+  header: React.ReactNode
+  body: React.ReactNode
+  expanded: boolean
+  hasBody: boolean
+  running: boolean
+  /** When false, the collapsed preview is not height-clamped (e.g. task checklists). */
+  clampWhenCollapsed?: boolean
+  ariaLabel?: string
+  onToggle: () => void
+}) {
+  return (
+    <div className={cn(TOOL_CARD_SURFACE, 'w-full')} aria-busy={running || undefined}>
+      <button
+        type="button"
+        className={cn(
+          TOOL_CARD_HEADER,
+          'flex w-full items-center gap-2 text-left vy-transition',
+          hasBody && 'hover:bg-surface/60'
+        )}
+        onClick={onToggle}
+        aria-label={ariaLabel}
+        aria-expanded={hasBody ? expanded : undefined}
+        disabled={!hasBody}
+      >
+        {header}
+        {hasBody ? (
+          <Icon
+            name="chevronRight"
+            size={14}
+            className={cn('shrink-0 text-tertiary vy-transition', expanded && 'rotate-90')}
+          />
+        ) : null}
+      </button>
+      {hasBody && body ? (
+        <div
+          className={cn(TOOL_CARD_BODY, !expanded && clampWhenCollapsed && 'mask-fade-bottom')}
+          style={
+            !expanded && clampWhenCollapsed ? { maxHeight: TOOL_BODY_CLAMP_PX } : undefined
+          }
+        >
+          {body}
+        </div>
+      ) : null}
+    </div>
+  )
+}
 
 export const CompactRow = memo(function CompactRow({
   title,

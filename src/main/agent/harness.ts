@@ -24,7 +24,12 @@ export function loadHarness(workspaceRoot?: string): string {
     const wsPath = workspaceHarnessPath(workspaceRoot)
     try {
       if (existsSync(wsPath)) {
-        return readFileSync(wsPath, 'utf8')
+        const text = readFileSync(wsPath, 'utf8')
+        if (text.trim() && /^#{1,6}\s+/m.test(text)) return text
+        logger.warn('Workspace harness appears malformed; trying bundled', {
+          scope: 'harness',
+          path: wsPath
+        })
       }
     } catch (err) {
       logger.warn('Workspace harness unreadable; trying bundled', {
@@ -44,7 +49,15 @@ export function loadHarness(workspaceRoot?: string): string {
       })
       return FALLBACK_ONELINER
     }
-    return readFileSync(harnessPath, 'utf8')
+    const text = readFileSync(harnessPath, 'utf8')
+    if (!text.trim() || !/^#{1,6}\s+/m.test(text)) {
+      logger.warn('Bundled harness appears malformed; using fallback', {
+        scope: 'harness',
+        path: harnessPath
+      })
+      return FALLBACK_ONELINER
+    }
+    return text
   } catch (err) {
     logger.warn('Bundled harness unreadable; using fallback', {
       scope: 'harness',

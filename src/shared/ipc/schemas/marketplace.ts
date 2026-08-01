@@ -65,6 +65,13 @@ export const VyotiqMcpManifestSchema = z
         path: ['command']
       })
     }
+    if (val.command && !isSafeWorkspaceRelPath(val.command)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'command must be a safe relative path or bare binary name (no .., absolute, or traversal)',
+        path: ['command']
+      })
+    }
     if ((val.transport === 'http' || val.transport === 'sse') && !(val.url ?? '').trim()) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

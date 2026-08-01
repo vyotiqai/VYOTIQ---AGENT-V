@@ -3,11 +3,20 @@ import { toolCategory, toolLabel, toolPresentation } from '@renderer/features/ch
 import { toolHasBody } from '@renderer/features/chat/toolUi/registry'
 
 describe('toolUi meta', () => {
-  it('routes all tools through compact family shells', () => {
-    expect(toolPresentation('terminal')).toBe('compact')
-    expect(toolPresentation('edit')).toBe('compact')
+  it('routes terminal and edit tools to prominent cards', () => {
+    expect(toolPresentation('terminal')).toBe('prominent')
+    expect(toolPresentation('edit')).toBe('prominent')
+    expect(toolPresentation('multi_edit')).toBe('prominent')
+    expect(toolPresentation('str_replace')).toBe('prominent')
     expect(toolPresentation('todo_write')).toBe('compact')
+    expect(toolPresentation('delete')).toBe('compact')
     expect(toolPresentation('read')).toBe('compact')
+  })
+
+  it('demotes read-only terminal commands to compact', () => {
+    expect(toolPresentation('terminal', '{"command":"cat README.md"}')).toBe('compact')
+    expect(toolPresentation('terminal', undefined, 'cat README.md')).toBe('compact')
+    expect(toolPresentation('terminal', '{"command":"pnpm test"}')).toBe('prominent')
   })
 
   it('categorizes tools for group headers', () => {

@@ -71,21 +71,22 @@ describe('buildTranscriptRows', () => {
     expect(rows.some((row) => row.kind === 'activity')).toBe(true)
   })
 
-  it('keeps commands and edits in the same activity group as lookups', () => {
+  it('breaks terminal and edit tools out as cards between lookups', () => {
     const rows = buildTranscriptRows([
       tool('r1', 'read'),
       tool('t1', 'terminal'),
       tool('r2', 'read'),
       tool('e1', 'edit')
     ])
-    expect(rows.map((row) => row.kind)).toEqual(['activity'])
+    expect(rows.map((row) => row.kind)).toEqual(['activity', 'card', 'card'])
     const activity = rows.find((row) => row.kind === 'activity')
     if (activity?.kind === 'activity') {
-      expect(activity.tools.map((item) => item.id)).toEqual(['r1', 't1', 'r2', 'e1'])
+      expect(activity.tools.map((item) => item.id)).toEqual(['r1', 'r2'])
     }
+    expect(rows.filter((row) => row.kind === 'card').map((row) => row.id)).toEqual(['t1', 'e1'])
   })
 
-  it('gives a lone terminal or edit call an activity row', () => {
+  it('gives a lone terminal call a card row', () => {
     const items: UiItem[] = [
       { kind: 'message', id: 'u1', role: 'user', content: 'build it' },
       tool('t1', 'terminal'),
@@ -94,7 +95,7 @@ describe('buildTranscriptRows', () => {
     ]
     expect(buildTranscriptRows(items).map((row) => row.kind)).toEqual([
       'user',
-      'activity',
+      'card',
       'turn',
       'user',
       'activity',
@@ -132,7 +133,7 @@ describe('buildTranscriptRows', () => {
     }
   })
 
-  it('keeps a command in an activity row even mid-batch', () => {
+  it('keeps a command as a card even mid-batch', () => {
     const items: UiItem[] = [
       tool('a1'),
       { kind: 'message', id: 'm', role: 'assistant', content: 'building' },
@@ -141,7 +142,7 @@ describe('buildTranscriptRows', () => {
     expect(buildTranscriptRows(items).map((row) => row.kind)).toEqual([
       'activity',
       'text',
-      'activity'
+      'card'
     ])
   })
 
@@ -472,7 +473,7 @@ describe('buildTranscriptRows', () => {
     }
   })
 
-  it('keeps terminal tools in activity groups (family shell, not cards)', () => {
+  it('gives terminal tools a card when presentation is prominent', () => {
     const rows = buildTranscriptRows([
       {
         kind: 'tool',
@@ -487,7 +488,55 @@ describe('buildTranscriptRows', () => {
         }
       }
     ])
+    expect(rows[0]?.kind).toBe('card')
+  })
+
+  it('keeps read-only terminal commands in activity groups', () => {
+    const rows = buildTranscriptRows([
+      {
+        kind: 'tool',
+        id: 't1',
+        tool: {
+          id: 't1',
+          name: 'terminal',
+          summary: 'cat README.md',
+          status: 'done',
+          argsPreview: '{"command":"cat README.md"}'
+        }
+      }
+    ])
     expect(rows[0]?.kind).toBe('activity')
+  })
+
+  it('demotes read-only terminal via summary when argsPreview is missing', () => {
+    const rows = buildTranscriptRows([
+      {
+        kind: 'tool',
+        id: 't1',
+        tool: {
+          id: 't1',
+          name: 'terminal',
+          summary: 'cat README.md',
+          status: 'done'
+        }
+      }
+    ])
+    expect(rows[0]?.kind).toBe('activity')
+  })
+
+  it('treats card rows as turn work (collapsed turns hide them)', () => {
+    expect(
+      isTurnWorkRow({
+        kind: 'card',
+        id: 't-run',
+        turnIndex: 0,
+        item: {
+          kind: 'tool',
+          id: 't-run',
+          tool: { id: 't-run', name: 'terminal', summary: 'npm test', status: 'running' }
+        }
+      })
+    ).toBe(true)
   })
 
   it('keeps activity batches split by thinking in step order', () => {
@@ -536,7 +585,7 @@ describe('buildTranscriptRows', () => {
     }
   })
 
-  it('keeps edit and lookup tools in one activity group', () => {
+  it('merges lookup batches across a sandwiched terminal card', () => {
     const items: UiItem[] = [
       tool('r1', 'read'),
       tool('d1', 'list_dir'),
@@ -545,11 +594,13 @@ describe('buildTranscriptRows', () => {
       tool('d2', 'list_dir')
     ]
     const rows = buildTranscriptRows(items)
-    expect(rows.map((row) => row.kind)).toEqual(['activity'])
+    expect(rows.map((row) => row.kind)).toEqual(['activity', 'card'])
     const activity = rows[0]
     if (activity?.kind === 'activity') {
-      expect(activity.tools.map((item) => item.id)).toEqual(['r1', 'd1', 't1', 'r2', 'd2'])
+      expect(activity.tools.map((item) => item.id)).toEqual(['r1', 'd1', 'r2', 'd2'])
     }
+    expect(rows[1]?.kind).toBe('card')
+    expect(rows[1]?.id).toBe('t1')
   })
 
   it('keeps step reasoning inline between tool batches', () => {
@@ -588,7 +639,7 @@ describe('buildTranscriptRows', () => {
       'thinking',
       'activity',
       'thinking',
-      'activity',
+      'card',
       'turn'
     ])
   })
@@ -894,7 +945,7 @@ describe('transcriptRowFingerprint / stabilizeTranscriptRows', () => {
     expect(stable[0]).not.toBe(prev[0])
   })
 
-  it('invalidates activity identity when subagent progress updates', () => {
+  it('invalidates card identity when subagent progress updates', () => {
     const base: UiItem = {
       kind: 'tool',
       id: 'edit-1',
@@ -916,9 +967,9 @@ describe('transcriptRowFingerprint / stabilizeTranscriptRows', () => {
     }
     const prev = buildTranscriptRows([base])
     const next = buildTranscriptRows([grown])
-    expect(prev[0]?.kind).toBe('activity')
-    expect(next[0]?.kind).toBe('activity')
-    if (prev[0]?.kind !== 'activity' || next[0]?.kind !== 'activity') return
+    expect(prev[0]?.kind).toBe('card')
+    expect(next[0]?.kind).toBe('card')
+    if (prev[0]?.kind !== 'card' || next[0]?.kind !== 'card') return
     expect(transcriptRowFingerprint(prev[0])).not.toBe(transcriptRowFingerprint(next[0]))
     const stable = stabilizeTranscriptRows(prev, next)
     expect(stable[0]).not.toBe(prev[0])
@@ -932,8 +983,7 @@ describe('transcriptRowFingerprint / stabilizeTranscriptRows', () => {
         id: 'sub-1',
         name: 'subagent',
         summary: 'audit',
-        status: 'running',
-        presentation: 'prominent'
+        status: 'running'
       },
       nestedAgent: {
         subagentId: 'n1',

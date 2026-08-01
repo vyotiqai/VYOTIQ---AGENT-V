@@ -54,8 +54,32 @@ function matchesPattern(session: TerminalSession): boolean {
   return session.pattern.test(hay)
 }
 
-export function getTerminalSession(id: string): TerminalSession | undefined {
-  return sessions.get(id)
+function assertSessionOwnership(
+  session: TerminalSession | undefined,
+  sessionId: string,
+  runId: string,
+  invokeId: number
+): asserts session is TerminalSession {
+  if (!session) {
+    throw new Error(`Unknown terminal session_id: ${sessionId}`)
+  }
+  if (session.runId !== runId || session.invokeId !== invokeId) {
+    throw new Error(`Terminal session does not belong to run: ${sessionId}`)
+  }
+}
+
+export function getTerminalSession(
+  id: string,
+  runId: string,
+  invokeId: number
+): TerminalSession | undefined {
+  const session = sessions.get(id)
+  try {
+    assertSessionOwnership(session, id, runId, invokeId)
+  } catch {
+    return undefined
+  }
+  return session
 }
 
 export function disposeTerminalSession(id: string): void {
@@ -268,12 +292,7 @@ export type PollTerminalSessionOpts = {
 
 export async function pollTerminalSession(opts: PollTerminalSessionOpts): Promise<string> {
   const session = sessions.get(opts.sessionId)
-  if (!session) {
-    throw new Error(`Unknown terminal session_id: ${opts.sessionId}`)
-  }
-  if (session.runId !== opts.runId || session.invokeId !== opts.invokeId) {
-    throw new Error(`Terminal session does not belong to run: ${opts.sessionId}`)
-  }
+  assertSessionOwnership(session, opts.sessionId, opts.runId, opts.invokeId)
   if (opts.onOutput) session.onOutput = opts.onOutput
   if (opts.pattern?.trim()) {
     try {

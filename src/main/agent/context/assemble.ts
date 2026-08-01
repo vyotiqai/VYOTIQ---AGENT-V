@@ -146,6 +146,7 @@ function buildSystem(parts: {
   compaction?: CompactionRecord | null
   budgets: ReturnType<typeof allocateBudget>
   loopHint?: string
+  model: ModelInfo
 }): string {
   const fingerprint = systemFingerprint({
     harness: parts.harness,
@@ -182,7 +183,7 @@ function buildSystem(parts: {
     if (systemTokensLeft < 50) return null
     const allowed = Math.min(requested, systemTokensLeft)
     const capped = capFn(text, allowed)
-    const used = Math.min(systemTokensLeft, Math.ceil(capped.length / 4))
+    const used = estimateTextTokens(capped, parts.model)
     systemTokensLeft -= used
     return capped
   }
@@ -370,7 +371,8 @@ export async function assembleContext(
     sessionEnv: input.sessionEnv,
     nestedRoleSection: input.nestedRoleSection,
     budgets,
-    loopHint: input.loopHint
+    loopHint: input.loopHint,
+    model: input.model
   }
 
   const systemDraft = buildSystem({

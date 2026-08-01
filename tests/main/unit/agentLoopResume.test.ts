@@ -366,6 +366,34 @@ describe('runAgent session continuation', () => {
     }
     expect(input.messages.some((m) => m.content === 'keep me')).toBe(true)
     expect(input.messages).not.toHaveLength(0)
+
+    const clamped = loadCompaction(runDir)
+    expect(clamped?.foldedMessages).toBe(2)
+    expect(clamped?.summary).toBe('prior summary')
+  })
+
+  it('persists server-side compaction from a stream done chunk', async () => {
+    const runId = 'server-compact'
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'folding' }
+      yield { type: 'done', compaction: '## Server compaction\nNew intent' }
+    })
+
+    for await (const _ev of runAgent({
+      runId,
+      messages: [
+        { role: 'user', content: 'one' },
+        { role: 'assistant', content: 'two' },
+        { role: 'user', content: 'three' }
+      ],
+      workspacePath: workspace
+    })) {
+      // drain
+    }
+
+    const record = loadCompaction(resolveRunDir(workspace, runId))
+    expect(record).not.toBeNull()
+    expect(record?.summary).toContain('Server compaction')
   })
 
   it('persists foldedMessages on compaction emit when context shrinks', async () => {

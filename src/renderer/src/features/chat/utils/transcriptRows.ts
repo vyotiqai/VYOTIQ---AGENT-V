@@ -7,6 +7,7 @@ import {
   stripToolShapedAssistantText,
   stripToolShapedAssistantTextForStream
 } from '@shared/transcript'
+import { isProminentPresentation } from '../toolUi'
 import { collectWritingChanges } from '../toolUi/parsers/edit'
 import { parseDeleteData } from '../toolUi/parsers/delete'
 import { deriveRunActivity, type RunActivityPhase } from './runActivity'
@@ -27,6 +28,7 @@ export type TranscriptRow =
   /** `final` marks the turn's closing answer, the one that earns a footer. */
   | { kind: 'text'; id: string; item: AssistantItem; turnIndex: number; final: boolean }
   | { kind: 'activity'; id: string; tools: ToolItem[]; turnIndex: number }
+  | { kind: 'card'; id: string; item: ToolItem; turnIndex: number }
   | { kind: 'changes'; id: string; turnIndex: number; files: ChangedFile[] }
   | { kind: 'approval'; id: string; approval: UiToolApproval; turnIndex: number }
   | { kind: 'question'; id: string; question: UiAgentQuestion; turnIndex: number }
@@ -60,9 +62,9 @@ export type TurnSpan = {
  */
 export function isTurnWorkRow(row: TranscriptRow): boolean {
   if (row.kind === 'approval' || row.kind === 'question') return false
-  // Collapsed turns rely on TurnSummary for live phase; hide activity/thinking so
+  // Collapsed turns rely on TurnSummary for live phase; hide cards/activity so
   // running tools are not duplicated beside the timeline label.
-  if (row.kind === 'thinking' || row.kind === 'activity') {
+  if (row.kind === 'thinking' || row.kind === 'activity' || row.kind === 'card') {
     return true
   }
   return row.kind === 'text' && !row.final
@@ -71,12 +73,18 @@ export function isTurnWorkRow(row: TranscriptRow): boolean {
 /** Extra lead-in above a user prompt that opens a new turn (matches TRANSCRIPT_TURN_GAP). */
 export const TURN_GAP_PX = 24
 
+/** Tools whose output is worth a dedicated card instead of a group line. */
+function isCardTool(item: ToolItem): boolean {
+  return isProminentPresentation(item.tool)
+}
+
 /**
  * Build turn-aware transcript rows.
  *
- * Consecutive tool calls collapse into activity rows with family-specific body
- * chrome (edit/terminal/todo/delete). Assistant narration stays where it
- * happened, which also separates the groups on either side of it.
+ * Consecutive lookup-style calls collapse into one activity row, while a call
+ * whose output is the point — a command, an edit — breaks out into its own card
+ * where the reader can see it without opening anything. Assistant narration
+ * stays where it happened, which also separates the groups on either side of it.
  */
 export function buildTranscriptRows(
   items: UiItem[],
@@ -126,6 +134,11 @@ export function buildTranscriptRows(
           approval,
           turnIndex: Math.max(turnIndex, 0)
         })
+      }
+      if (isCardTool(item)) {
+        closeGroup()
+        rows.push({ kind: 'card', id: item.id, item, turnIndex })
+        return
       }
       group.push(item)
     }
@@ -297,6 +310,44 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
           ].join(':')
         })
         .join('|')}`
+    case 'card': {
+      const t = row.item
+      const sub = t.subagent?.length ?? 0
+      const subLast = t.subagent?.[t.subagent.length - 1]
+      const usage = t.subagentContextUsage
+      const nested = t.nestedAgent
+      const nestedSig = nested
+        ? [
+            nested.subagentId,
+            nested.leaves.length,
+            nested.leaves
+              .map((leaf) => {
+                if (leaf.kind === 'text' || leaf.kind === 'thinking') {
+                  return `${leaf.kind}:${leaf.id}:${leaf.text.length}:${leaf.streaming ? 1 : 0}`
+                }
+                return `tool:${leaf.id}:${leaf.tool.status}:${leaf.tool.content?.length ?? 0}:${leaf.approval?.requestId ?? ''}`
+              })
+              .join(','),
+            nested.contextUsage
+              ? `${nested.contextUsage.step}:${nested.contextUsage.used}:${nested.contextUsage.updatedAt}`
+              : ''
+          ].join(';')
+        : ''
+      return [
+        'card',
+        row.id,
+        t.tool.status,
+        t.tool.argsPreview?.length ?? 0,
+        t.tool.content?.length ?? 0,
+        t.tool.contentTruncated ? 1 : 0,
+        t.tool.summary,
+        t.toolExpanded ?? '',
+        sub,
+        subLast ? `${subLast.kind}:${subLast.text.length}` : '',
+        usage ? `${usage.step}:${usage.used}:${usage.updatedAt}` : '',
+        nestedSig
+      ].join(':')
+    }
     case 'changes':
       return `changes:${row.id}:${row.files.map((f) => `${f.path}:${f.added}:${f.removed}`).join('|')}`
     case 'approval':
@@ -345,6 +396,7 @@ function writingToolChanges(item: ToolItem): ChangedFile[] {
 }
 
 function turnToolItems(row: TranscriptRow): ToolItem[] {
+  if (row.kind === 'card') return [row.item]
   if (row.kind === 'activity') return row.tools
   return []
 }
@@ -488,6 +540,8 @@ function rowTimestamps(row: TranscriptRow): { at: number | null; endedAt: number
     case 'thinking':
     case 'text':
       return { at: toMs(row.item.at), endedAt: null }
+    case 'card':
+      return { at: toMs(row.item.at), endedAt: row.item.groupTiming?.endedAt ?? null }
     case 'activity': {
       let at: number | null = null
       let endedAt: number | null = null
@@ -512,6 +566,8 @@ function isRowActive(row: TranscriptRow): boolean {
     case 'thinking':
     case 'text':
       return row.item.streaming === true || row.item.thinkingStreaming === true
+    case 'card':
+      return row.item.tool.status === 'running'
     case 'activity':
       return row.tools.some((tool) => tool.tool.status === 'running')
     case 'approval':
@@ -530,6 +586,17 @@ function isRowActive(row: TranscriptRow): boolean {
 
 /** Earliest start timestamp for the currently running tool phase, if any. */
 function phaseStartedAtFromRows(turnRows: TranscriptRow[]): number | null {
+  const runningCard = [...turnRows]
+    .reverse()
+    .find((row) => row.kind === 'card' && row.item.tool.status === 'running')
+  if (runningCard?.kind === 'card') {
+    return (
+      toMs(runningCard.item.at) ??
+      runningCard.item.groupTiming?.startedAt ??
+      null
+    )
+  }
+
   const runningActivity = [...turnRows]
     .reverse()
     .find(
@@ -687,6 +754,7 @@ function coalesceTurnWork(rows: TranscriptRow[]): TranscriptRow[] {
     const groupKey = activityGroupKey(row.tools)
     let mergedTools = [...row.tools]
     const anchorId = row.id
+    const sandwichedCards: TranscriptRow[] = []
     index += 1
 
     while (index < rows.length && rows[index]!.turnIndex === turnIndex) {
@@ -700,6 +768,11 @@ function coalesceTurnWork(rows: TranscriptRow[]): TranscriptRow[] {
       if (index >= rows.length || rows[index]!.turnIndex !== turnIndex) break
 
       const next = rows[index]!
+      if (next.kind === 'card') {
+        sandwichedCards.push(next)
+        index += 1
+        continue
+      }
       if (next.kind === 'activity' && activityGroupKey(next.tools) === groupKey) {
         mergedTools.push(...next.tools)
         index += 1
@@ -714,6 +787,7 @@ function coalesceTurnWork(rows: TranscriptRow[]): TranscriptRow[] {
       tools: mergedTools,
       turnIndex
     })
+    for (const card of sandwichedCards) out.push(card)
   }
 
   return out

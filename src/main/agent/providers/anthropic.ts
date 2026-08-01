@@ -240,11 +240,10 @@ async function postAnthropicMessages(
 
   if (body.output_config) {
     const next = { ...body }
-    delete next.context_management
     delete next.output_config
     push(
       next,
-      stripAnthropicBetas(betaStr, 'context-management', 'compact', 'structured-outputs')
+      stripAnthropicBetas(betaStr, 'output-config', 'thinking')
     )
   }
 

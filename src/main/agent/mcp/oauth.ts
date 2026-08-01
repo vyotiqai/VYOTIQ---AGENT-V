@@ -80,6 +80,12 @@ export async function beginMcpOAuthCallback(serverId: string): Promise<{
 
   server.on('request', (req, res) => {
     try {
+      const remote = req.socket.remoteAddress
+      if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') {
+        res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' })
+        res.end(htmlPage('Forbidden', 'OAuth callback must come from localhost.'))
+        return
+      }
       const url = new URL(req.url ?? '/', redirectUrl)
       if (url.pathname !== CALLBACK_PATH) {
         res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' })

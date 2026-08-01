@@ -29,11 +29,13 @@ import { MessageFooter } from './MessageFooter'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolApprovalCard } from './ToolApprovalCard'
 import { AskQuestionPanel } from './AskQuestionPanel'
+import { ToolCard } from './ToolCard'
 import { ToolGroup } from './ToolGroup'
 import { TurnSummary } from './TurnSummary'
 import { UserPrompt } from './UserPrompt'
 import { MarkdownContent } from '@renderer/lib/ui'
 import { shouldRenderThinking } from '@shared/transcript'
+import { toolHasBody } from '../toolUi'
 
 /** One aria-controls target per turn — only the first work row gets the id. */
 function turnWorkPanelId(
@@ -55,6 +57,7 @@ function turnHasWorkPanel(rows: readonly TranscriptRow[], turnIndex: number): bo
 
 /** ~chars per visual line in the 840px chat column at text-sm. */
 const CHARS_PER_LINE = 65
+/** Line height for text-sm (1.69 line-height × 13px). */
 const LINE_PX = 22
 
 /**
@@ -105,6 +108,19 @@ export function estimateTranscriptRowSize(
       // Lone running tools auto-expand via familyDefaultExpanded.
       if (live || toolExpanded || groupExpanded) return 56 + TOOL_BODY_CLAMP_PX
       return 48
+    }
+    case 'card': {
+      const live = row.item.tool.status === 'running'
+      const expanded = row.item.toolExpanded === true || (live && row.item.toolExpanded !== false)
+      const hasBody = toolHasBody(row.item.tool, {
+        subagent: row.item.subagent,
+        subagentContextUsage: row.item.subagentContextUsage,
+        nestedAgent: row.item.nestedAgent
+      })
+      if (expanded) return 56 + TOOL_BODY_CLAMP_PX + 80
+      // ProminentChrome still paints clamped body when collapsed + hasBody.
+      if (hasBody) return 56 + TOOL_BODY_CLAMP_PX
+      return 56
     }
     case 'changes':
       return (
@@ -211,10 +227,10 @@ function rowSpacingClass(row: TranscriptRow, next?: TranscriptRow): string {
   if (row.kind === 'turn') {
     return cn('pt-1', TRANSCRIPT_ROW_GAP)
   }
-  const isWork = row.kind === 'activity' || row.kind === 'thinking'
+  const isWork = row.kind === 'activity' || row.kind === 'thinking' || row.kind === 'card'
   const tightPair =
-    (row.kind === 'thinking' && next?.kind === 'activity') ||
-    (row.kind === 'activity' && next?.kind === 'thinking')
+    (row.kind === 'thinking' && (next?.kind === 'activity' || next?.kind === 'card')) ||
+    ((row.kind === 'activity' || row.kind === 'card') && next?.kind === 'thinking')
   const gap = tightPair
     ? TRANSCRIPT_WORK_PAIR_GAP
     : isWork
@@ -396,6 +412,20 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
         onToolToggle={onToolToggle}
         onLoadFullContent={onLoadToolContent}
         onApprovalDecision={onApprovalDecision}
+        mcpServerNames={mcpServerNames}
+      />
+    )
+  }
+
+  if (row.kind === 'card') {
+    return (
+      <ToolCard
+        item={row.item}
+        expanded={row.item.toolExpanded}
+        // Without a host that persists the choice the card owns its own state,
+        // so it still opens instead of swallowing the click.
+        onToggle={onToolToggle ? (next) => onToolToggle(row.item.id, next) : undefined}
+        onLoadFullContent={onLoadToolContent}
         mcpServerNames={mcpServerNames}
       />
     )

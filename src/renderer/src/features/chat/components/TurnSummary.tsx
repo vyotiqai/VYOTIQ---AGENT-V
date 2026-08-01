@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
 import { DISCLOSURE_ROW } from '@renderer/lib/utils/layout'
@@ -44,10 +44,16 @@ export const TurnSummary = memo(function TurnSummary({
           ? null
           : endedAt - phaseAnchor
 
-  const turnDuration =
-    turnElapsedMs != null && turnElapsedMs >= MIN_REPORTABLE_MS ? formatElapsed(turnElapsedMs) : ''
-  const phaseDuration =
-    phaseElapsedMs != null && phaseElapsedMs >= MIN_REPORTABLE_MS ? formatElapsed(phaseElapsedMs) : ''
+  const turnDuration = useMemo(
+    () =>
+      turnElapsedMs != null && turnElapsedMs >= MIN_REPORTABLE_MS ? formatElapsed(turnElapsedMs) : '',
+    [turnElapsedMs]
+  )
+  const phaseDuration = useMemo(
+    () =>
+      phaseElapsedMs != null && phaseElapsedMs >= MIN_REPORTABLE_MS ? formatElapsed(phaseElapsedMs) : '',
+    [phaseElapsedMs]
+  )
 
   const phaseLabel = activity ? formatRunActivityLabel(activity) : 'Working'
 

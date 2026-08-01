@@ -572,6 +572,26 @@ describe('MessageList', () => {
     expect(estimateTranscriptRowSize(single)).toBe(56 + TOOL_BODY_CLAMP_PX)
   })
 
+  it('estimates running terminal cards as expanded', () => {
+    const rows = buildTranscriptRows([
+      {
+        kind: 'tool',
+        id: 't1',
+        tool: {
+          id: 't1',
+          name: 'terminal',
+          summary: 'pnpm test',
+          status: 'running',
+          argsPreview: '{"command":"pnpm test"}',
+          presentation: 'prominent'
+        }
+      }
+    ])
+    const card = rows.find((r) => r.kind === 'card')
+    expect(card?.kind).toBe('card')
+    expect(estimateTranscriptRowSize(card)).toBe(56 + TOOL_BODY_CLAMP_PX + 80)
+  })
+
   it('estimates long assistant text tall enough to avoid virtual overlap', () => {
     const rows = buildTranscriptRows([
       {

@@ -102,9 +102,7 @@ export function useSlashCommands({
     return buildSlashDisplayList(token.query, commands)
   }, [token, commands])
 
-  const open = Boolean(
-    enabled && token && !dismissed && (filtered.length > 0 || loading || Boolean(listError))
-  )
+  const open = Boolean(enabled && token && !dismissed)
 
   useEffect(() => {
     setActiveIndex(0)
@@ -121,7 +119,7 @@ export function useSlashCommands({
   const moveActive = useCallback(
     (delta: number) => {
       if (filtered.length === 0) return
-      setActiveIndex((i) => (i + delta + filtered.length) % filtered.length)
+      setActiveIndex((i) => Math.max(0, Math.min(filtered.length - 1, i + delta)))
     },
     [filtered.length]
   )

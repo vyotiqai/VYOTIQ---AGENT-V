@@ -79,7 +79,7 @@ export function ProvidersSection({
             }
           }}
         />
-        {form.fieldError('ollama', 'ollama-error')}
+        {form.fieldError.ollama}
       </SettingsRow>
 
       <SettingsRow

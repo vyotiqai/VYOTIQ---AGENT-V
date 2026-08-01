@@ -409,6 +409,12 @@ export async function* runAgent(input: {
       const applied = applyFoldedMessagesWatermark(messages, foldedMessages)
       messages = applied.messages
       foldedMessages = applied.foldedMessages
+      // Persist the clamped watermark so a corrupt/stale resume value does not
+      // fold away the latest turn on the next restart.
+      if (compaction && compaction.foldedMessages !== foldedMessages) {
+        compaction = { ...compaction, foldedMessages }
+        if (runDir) saveCompaction(runDir, compaction)
+      }
     } else {
       foldedMessages = 0
     }
@@ -1102,9 +1108,9 @@ export async function* runAgent(input: {
                     ? { foldedMessages: compaction.foldedMessages }
                     : {})
               }
-              compaction = { ...(compaction ?? {}), ...record }
               const anthropicCompactionEv = emitCompaction(record)
               if (anthropicCompactionEv) yield anthropicCompactionEv
+              compaction = { ...(compaction ?? {}), ...record }
               // Server-side compaction means prior inputTokens no longer describe the wire payload.
               lastUsage = {
                 inputTokens: assembled.estimatedTokens
@@ -1473,7 +1479,7 @@ export async function* runAgent(input: {
         getAgentMode: () => agentMode,
         setAgentMode: (mode: AgentInteractionMode) => {
           agentMode = mode
-          writeStatus({ mode })
+          return writeStatus({ mode })
         },
         autoModeSwitch: settings.autoModeSwitch,
         terminalShell: settings.terminalShell,
@@ -1576,9 +1582,9 @@ export async function* runAgent(input: {
     }
 
     if (controller.signal.aborted) {
-      yield* flushWriteCheckpoint()
-      clearFollowUps(runId)
       markRunTurnComplete(runId, invokeId)
+      clearFollowUps(runId)
+      yield* flushWriteCheckpoint()
       yield { type: 'status', runId, invokeId, status: 'cancelled' }
       writeStatus({ status: 'cancelled' })
       appendEvent(runDir, { type: 'status', runId, invokeId, status: 'cancelled' })
@@ -1586,8 +1592,8 @@ export async function* runAgent(input: {
     } catch (err) {
     if (isAbortError(err)) {
       logger.warn('Agent run cancelled', { scope: 'agent', correlationId: runId })
-      clearFollowUps(runId)
       markRunTurnComplete(runId, invokeId)
+      clearFollowUps(runId)
       yield* flushWriteCheckpoint()
       yield { type: 'status', runId, invokeId, status: 'cancelled' }
       if (runDir) {
@@ -1602,8 +1608,8 @@ export async function* runAgent(input: {
         correlationId: runId,
         err
       })
-      clearFollowUps(runId)
       markRunTurnComplete(runId, invokeId)
+      clearFollowUps(runId)
       yield { type: 'error', runId, invokeId, message, code: 'AGENT_LOOP' }
       yield* flushWriteCheckpoint()
       yield { type: 'status', runId, invokeId, status: 'error' }
@@ -1614,6 +1620,9 @@ export async function* runAgent(input: {
       }
     }
   } finally {
+    // Close the turn for follow-ups as soon as the run ends so a queued message
+    // cannot land during flush/dispose and then be dropped unapplied.
+    markRunTurnComplete(runId, invokeId)
     // Persistence flush/receipt must not skip slot teardown — a rethrown append
     // error would otherwise leave isActive(runId) true forever.
     try {

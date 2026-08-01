@@ -6,7 +6,7 @@ import {
   trailingToolMessages,
   type ProviderReasoningState
 } from '../../../shared/reasoning'
-import { serviceTierForApiBody } from '../../../shared/domain/serviceTier'
+import { parseServiceTier, serviceTierForApiBody } from '../../../shared/domain/serviceTier'
 import type { ProviderChatRequest, StopReason, StreamChunk, ToolCall, TokenUsage } from './types'
 import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
@@ -161,8 +161,13 @@ export async function* streamOpenAiResponses(
     ...(priorState?.responseId ? { previous_response_id: priorState.responseId } : {})
   }
 
-  const tier = serviceTierForApiBody(req.serviceTier)
-  if (tier) body.service_tier = tier
+  const tier = serviceTierForApiBody(parseServiceTier(req.serviceTier))
+  if (tier) {
+    const supported = req.modelInfo?.supportedServiceTiers
+    if (!Array.isArray(supported) || supported.includes(tier)) {
+      body.service_tier = tier
+    }
+  }
 
   let res: Response
   try {

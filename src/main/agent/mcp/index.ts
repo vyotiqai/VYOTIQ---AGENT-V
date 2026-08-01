@@ -280,7 +280,7 @@ export function resolveMcpRequestHeaders(
 
 /**
  * If settings still hold a plaintext Bearer token, migrate it into safeStorage
- * and return headers with Authorization removed. Caller should persist when changed.
+ * and return headers with Authorization removed. Throws if safeStorage cannot store the secret.
  */
 export function migratePlaintextMcpBearer(
   server: McpServer
@@ -288,16 +288,7 @@ export function migratePlaintextMcpBearer(
   const bearer = getBearerToken(server.headers)
   if (!bearer) return { server, migrated: false }
   if (!hasMcpAuthToken(server.id)) {
-    try {
-      setMcpAuthToken(server.id, bearer)
-    } catch (err) {
-      logger.warn('Could not migrate MCP bearer to secure storage', {
-        scope: 'mcp',
-        serverId: server.id,
-        err
-      })
-      return { server, migrated: false }
-    }
+    setMcpAuthToken(server.id, bearer)
   }
   const nextHeaders = headersWithoutAuthorization(server.headers)
   return {
@@ -885,17 +876,17 @@ export async function invokeMcpTool(
     const text = (result.content as Array<{ type?: string; text?: string }>)
       .map((c) => (c.type === 'text' ? c.text ?? '' : JSON.stringify(c)))
       .join('\n')
-      .slice(0, 100_000)
     const ok = result.isError !== true
     const prefix = ok ? '' : `[MCP ${fullToolName ?? toolName} error]\n`
-    return { ok, summary, content: prefix + (text || '(empty)') }
+    const content = (prefix + (text || '(empty)')).slice(0, 100_000)
+    return { ok, summary, content }
   } catch (err) {
     if (signal.aborted || isAbortError(err)) {
       throw new DOMException('Aborted', 'AbortError')
     }
     const message = formatError(err)
     const transient =
-      /timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|network|temporarily/i.test(message)
+      /timeout|ETIMEDOUT|ECONNRESET|socket hang up/i.test(message)
     if (transient) {
       // Keep the session; model can retry. Permanent protocol errors still drop it.
       connectErrors.set(serverId, message)

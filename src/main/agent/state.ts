@@ -462,12 +462,17 @@ export function loadEvents(
   runId?: string,
   options?: { limit?: number }
 ): PersistedEvent[] {
-  const flushed = blockUntilEventAppendsFlushed(dir)
+  let flushed = blockUntilEventAppendsFlushed(dir)
   if (!flushed) {
-    logger.warn('Loading events.jsonl after flush timeout; recent events may be missing', {
-      scope: 'state',
-      correlationId: basename(dir)
-    })
+    // One more wait — sync callers (receipts/trajectory) should prefer a late
+    // complete read over a partial tail after a busy append chain.
+    flushed = blockUntilEventAppendsFlushed(dir, 3000)
+    if (!flushed) {
+      logger.warn('Loading events.jsonl after flush timeout; recent events may be missing', {
+        scope: 'state',
+        correlationId: basename(dir)
+      })
+    }
   }
   const p = join(dir, 'events.jsonl')
   if (!existsSync(p)) return []

@@ -74,6 +74,59 @@ export function compatStreamOptions(
   return { stream_options: { include_usage: true } }
 }
 
+const URL_CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F]/
+const URL_HOST_CHARS = /^[\da-zA-Z\-_.:]+$/
+
+/**
+ * Synchronous structural check for provider base URLs: scheme, host,
+ * credentials, fragments, query strings, and non-ASCII control characters.
+ * Rejects values that should never reach a cache key or HTTP request.
+ */
+export function assertValidProviderBaseUrl(raw: string | undefined): URL {
+  if (!raw || typeof raw !== 'string') {
+    throw new Error('Provider base URL is empty')
+  }
+  if (URL_CONTROL_CHARS.test(raw)) {
+    throw new Error('Provider base URL contains control characters')
+  }
+
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    throw new Error(`Invalid provider base URL: ${raw}`)
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`Provider base URL must use http(s): ${raw}`)
+  }
+  if (url.username || url.password) {
+    throw new Error(`Provider base URL must not contain credentials: ${raw}`)
+  }
+  if (url.hash) {
+    throw new Error(`Provider base URL must not contain a fragment: ${raw}`)
+  }
+  if (url.search) {
+    throw new Error(`Provider base URL must not contain a query string: ${raw}`)
+  }
+
+  const host = url.hostname
+  if (!host) {
+    throw new Error(`Provider base URL is missing a host: ${raw}`)
+  }
+  if (!URL_HOST_CHARS.test(host)) {
+    throw new Error(`Provider base URL host contains invalid characters: ${host}`)
+  }
+
+  return url
+}
+
+/** Full base URL validation: structural checks plus DNS/SSRF via assertAllowedUrl. */
+export async function validateProviderBaseUrl(raw: string, allowLocal = false): Promise<URL> {
+  assertValidProviderBaseUrl(raw)
+  return assertAllowedUrl(raw, allowLocal)
+}
+
 function toOpenAiContent(
   content: MessageContent,
   opts: { ollamaVision?: boolean }
@@ -509,7 +562,12 @@ export function buildOpenAiCompatBody(
   }
 
   const tier = serviceTierForApiBody(req.serviceTier)
-  if (tier) body.service_tier = tier
+  if (tier) {
+    const supported = req.modelInfo?.supportedServiceTiers
+    if (!Array.isArray(supported) || supported.includes(tier)) {
+      body.service_tier = tier
+    }
+  }
 
   return body
 }
@@ -532,6 +590,7 @@ export function createOpenAiCompatibleProvider(
       }
       const raw = (req.baseUrl || opts.defaultBaseUrl).replace(/\/$/, '')
       const base = opts.ollamaVision ? `${normalizeOllamaHost(raw)}/v1` : raw
+      await validateProviderBaseUrl(base, id === 'ollama')
       const headers: Record<string, string> = { ...(opts.extraHeaders ?? {}) }
       if (!opts.ollamaVision && req.apiKey) {
         headers.Authorization = `Bearer ${req.apiKey}`
@@ -546,7 +605,7 @@ export function createOpenAiCompatibleProvider(
       const raw = (req.baseUrl || opts.defaultBaseUrl).replace(/\/$/, '')
       const base = opts.ollamaVision ? `${normalizeOllamaHost(raw)}/v1` : raw
       const allowLocal = id === 'ollama'
-      await assertAllowedUrl(base, allowLocal)
+      await validateProviderBaseUrl(base, allowLocal)
       const url = `${base}/chat/completions`
 
       const headers: Record<string, string> = {

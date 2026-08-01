@@ -75,7 +75,7 @@ export type ToolExecutionContext = {
   /** Ask / Plan / Agent mode for this invoke (prefer getAgentMode when mutable). */
   agentMode?: AgentInteractionMode
   getAgentMode?: () => AgentInteractionMode
-  setAgentMode?: (mode: AgentInteractionMode) => void
+  setAgentMode?: (mode: AgentInteractionMode) => void | Promise<void>
   /** Snapshot of settings.autoModeSwitch for this invoke (not live mid-run). */
   autoModeSwitch?: boolean
   /** Snapshot of settings.terminalShell for this invoke (not live mid-run). */
@@ -873,7 +873,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       return toolFail('ask_question', summary, message)
     }
   },
-  switch_mode: (_workspace, args, signal, context) => {
+  switch_mode: async (_workspace, args, signal, context) => {
     throwIfAborted(signal)
     if (!context.autoModeSwitch) {
       return toolFail(
@@ -887,7 +887,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       return toolFail('switch_mode', 'mode', 'mode must be ask, plan, or agent')
     }
     const previous = resolveAgentMode(context)
-    context.setAgentMode?.(mode)
+    await context.setAgentMode?.(mode)
     if (context.runId) {
       context.emitAgentEvent?.({ type: 'mode_changed', runId: context.runId, mode })
     }

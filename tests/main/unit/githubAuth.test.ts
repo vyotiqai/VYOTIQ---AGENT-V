@@ -33,12 +33,12 @@ describe('githubAuth helpers', () => {
     expect(resolveGithubClientId()).toBe('from-env')
   })
 
-  it('prefers stored app token over ambient GH_TOKEN', () => {
+  it('uses only the stored app token and never ambient GH_TOKEN', () => {
     vi.stubEnv('GH_TOKEN', 'ambient')
     vi.mocked(getGithubAccessToken).mockReturnValue('app-token')
     expect(resolveGhTokenForCli()).toBe('app-token')
 
     vi.mocked(getGithubAccessToken).mockReturnValue(null)
-    expect(resolveGhTokenForCli()).toBe('ambient')
+    expect(resolveGhTokenForCli()).toBeUndefined()
   })
 })

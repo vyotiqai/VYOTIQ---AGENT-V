@@ -1306,7 +1306,7 @@ describe('useChatStream', () => {
       'thinking',
       'activity',
       'thinking',
-      'activity',
+      'card',
       'turn',
       'text'
     ])
@@ -1361,21 +1361,15 @@ describe('useChatStream', () => {
       'thinking',
       'activity',
       'text',
-      'activity',
+      'card',
       'turn'
     ])
     const narration = rows.find((row) => row.kind === 'text')
     expect(narration?.kind === 'text' && narration.item.content).toBe(
       'The table is built up front.'
     )
-    const command = rows.find(
-      (row) =>
-        row.kind === 'activity' && row.tools.some((item) => item.tool.name === 'terminal')
-    )
-    expect(
-      command?.kind === 'activity' &&
-        command.tools.find((item) => item.tool.name === 'terminal')?.tool.status
-    ).toBe('running')
+    const command = rows.find((row) => row.kind === 'card' && row.item.tool.name === 'terminal')
+    expect(command?.kind === 'card' && command.item.tool.status).toBe('running')
   })
 
   it('completes the live row when a tool_result id drifts from its tool_start', async () => {
@@ -1451,9 +1445,9 @@ describe('useChatStream', () => {
     })
 
     const tool = result.current.items.find((i) => i.kind === 'tool')
-    expect(tool?.kind === 'tool' ? tool.tool.presentation : null).toBe('compact')
+    expect(tool?.kind === 'tool' ? tool.tool.presentation : null).toBe('prominent')
     const rows = buildTranscriptRows(result.current.items)
-    expect(rows.some((row) => row.kind === 'activity')).toBe(true)
+    expect(rows.some((row) => row.kind === 'card')).toBe(true)
   })
 
   it('does not attach a drifted tool_result to the wrong parallel same-name row', async () => {

@@ -107,7 +107,7 @@ export const ACTIVITY_ROW = 'text-xs tracking-[var(--vy-tracking)]'
 export const DISCLOSURE_ROW =
   'flex min-w-0 items-center gap-1.5 rounded-sm py-1 text-xs vy-transition hover:opacity-80'
 
-/** Tool card chrome — approval / change summary only. */
+/** Tool card chrome — bordered terminal / edit ToolCard surfaces. */
 export const TOOL_CARD_SURFACE = 'overflow-hidden rounded-lg border border-border'
 export const TOOL_CARD_HEADER = 'px-3 py-2 text-xs'
 /** Body content owns its own padding so a diff can run edge to edge. */
@@ -139,8 +139,7 @@ export const TOOL_BODY_PAD = 'px-3 py-2'
 /** Scrollable inner region inside a tool body. */
 export const TOOL_BODY_INNER = 'px-3 py-1.5'
 
-/** Family shells — replace bordered tool cards for edit / terminal / todo / delete. */
-export const TOOL_FAMILY_EDIT = 'overflow-hidden rounded-md'
+/** Family shells — compact todo / delete / read-only terminal (not bordered cards). */
 export const TOOL_FAMILY_TERMINAL = 'overflow-hidden rounded-md bg-surface'
 export const TOOL_FAMILY_TODO = 'rounded-md'
 export const TOOL_FAMILY_DELETE = 'border-l-2 border-danger/50 pl-2'

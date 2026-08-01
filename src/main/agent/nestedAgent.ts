@@ -406,6 +406,7 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
     )
   }
 
+  try {
   await refreshMcpToolsForStep()
 
   let step = 0
@@ -537,18 +538,25 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
       contentWindow: contentWin,
       model: modelId
     })
+    // Prefer prior-step provider input tokens when context did not shrink (main-loop parity).
+    const priorProviderInput =
+      lastUsage?.inputTokens && lastUsage.inputTokens > 0 ? lastUsage.inputTokens : undefined
+    const usingProviderMeter =
+      priorProviderInput != null &&
+      !assembled.contextShrunk &&
+      compactionState.current?.summary === priorCompactionSummary
     const contextEv: AgentEvent = {
       type: 'context_usage',
       runId,
       step,
       estimatedTokens: assembled.estimatedTokens,
-      inputTokens: assembled.estimatedTokens,
+      inputTokens: usingProviderMeter ? priorProviderInput : assembled.estimatedTokens,
       contextWindow: window,
       contentWindow: contentWin,
       compactionTrigger,
-      source: 'estimate',
+      source: usingProviderMeter ? 'provider' : 'estimate',
       ...(assembled.overflow ? { overflow: true } : {}),
-      layers: assembled.layers
+      ...(usingProviderMeter ? {} : { layers: assembled.layers })
     }
     emitParent(contextEv)
 
@@ -805,7 +813,16 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
                     ? { foldedMessages: prior.foldedMessages }
                     : {})
               }
-              compactionState.current = { ...(prior ?? {}), ...record }
+              const nextRecord = { ...(prior ?? {}), ...record }
+              if (childDir && !saveCompaction(childDir, nextRecord)) {
+                logger.warn('Nested server-side compaction not persisted; keeping prior in-memory record', {
+                  scope: 'agent',
+                  correlationId: runId,
+                  subagentId: options.subagentId
+                })
+              } else {
+                compactionState.current = nextRecord
+              }
               emitParent({
                 type: 'compaction',
                 runId,
@@ -1078,6 +1095,19 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
       : 'Nested agent finished without producing a report.',
     steps: step
   }, childDir)
+  } finally {
+    try {
+      await flushChildTranscript(childDir)
+    } catch (flushErr) {
+      logger.warn('Failed to flush nested agent transcript', {
+        scope: 'agent',
+        code: 'NESTED_FLUSH',
+        correlationId: runId,
+        subagentId: options.subagentId,
+        err: flushErr
+      })
+    }
+  }
 }
 
 /** Allocate a nested agent id (hex) for report dir + event routing. */

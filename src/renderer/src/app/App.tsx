@@ -92,12 +92,16 @@ export function App() {
   const settingsBackRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
+    const focusWhenRendered = (el: HTMLElement | null): void => {
+      if (!el) return
+      requestAnimationFrame(() => requestAnimationFrame(() => el.focus()))
+    }
     if (view === 'settings') {
-      window.setTimeout(() => settingsBackRef.current?.focus(), 0)
+      focusWhenRendered(settingsBackRef.current)
     } else if (view === 'marketplace') {
       // MarketplaceView focuses its Close control on mount.
     } else if (view === 'chat') {
-      window.setTimeout(() => chatHeadingRef.current?.focus(), 0)
+      focusWhenRendered(chatHeadingRef.current)
     }
   }, [view])
 
@@ -718,17 +722,22 @@ export function App() {
           onModelsRefreshed={() => setModelsRefreshNonce((n) => n + 1)}
         />
       ) : view === 'marketplace' ? (
-        <MarketplaceView
-          settings={settings}
-          onUpdate={update}
-          onReloadSettings={refresh}
-          activeWorkspacePath={activeWorkspace}
-          settingsOverridesByPath={registry?.settingsOverridesByPath ?? {}}
-          onSetSettingsOverride={setSettingsOverride}
-          focusServerId={marketplaceFocusServerId}
-          onFocusServerConsumed={() => setMarketplaceFocusServerId(null)}
-          onClose={() => setView('chat')}
-        />
+        <ErrorBoundary
+          title="Marketplace couldn't render"
+          resetKey={marketplaceFocusServerId ?? 'marketplace'}
+        >
+          <MarketplaceView
+            settings={settings}
+            onUpdate={update}
+            onReloadSettings={refresh}
+            activeWorkspacePath={activeWorkspace}
+            settingsOverridesByPath={registry?.settingsOverridesByPath ?? {}}
+            onSetSettingsOverride={setSettingsOverride}
+            focusServerId={marketplaceFocusServerId}
+            onFocusServerConsumed={() => setMarketplaceFocusServerId(null)}
+            onClose={() => setView('chat')}
+          />
+        </ErrorBoundary>
       ) : (
         <ErrorBoundary title="Chat couldn't render" resetKey={chatSurfaceEpoch}>
           <ChatView

@@ -1,7 +1,9 @@
 import { existsSync, readFileSync, readdirSync } from 'fs'
-import { join } from 'path'
+import { isAbsolute, join } from 'path'
 import spawn from 'cross-spawn'
 import { getSettings } from '@main/settings/settings'
+import { resolveInsideWorkspace } from '@main/workspace/safePath'
+import { assertInsideWorkspace } from '../../../shared/workspacePath'
 import { sanitizedTerminalEnv } from './terminal'
 
 const DIAG_TIMEOUT_MS = 120_000
@@ -104,7 +106,9 @@ function parseSafeCommand(command: string): { bin: string; args: string[] } {
     }
 
     // Reject common shell metacharacters that would only be useful with a shell.
-    if (/[;|&$`()<>!~*?[\]{}#\n\r%^]/.test(ch)) {
+    // Wildcards (*, ?) are allowed inside quoted arguments; otherwise they are treated
+    // as shell metacharacters and rejected.
+    if (/[;|&$`()<>!~[\]{}#\n\r%^]/.test(ch)) {
       throw new Error(`Disallowed character in diagnostics command: ${ch}`)
     }
 
@@ -117,6 +121,21 @@ function parseSafeCommand(command: string): { bin: string; args: string[] } {
   if (args.length === 0) throw new Error('Empty diagnostics command')
 
   return { bin: args[0]!, args: args.slice(1) }
+}
+
+function resolveDiagnosticsBin(workspace: string, bin: string): string {
+  if (bin.includes('..')) {
+    throw new Error(`Diagnostics binary cannot contain '..' traversal`)
+  }
+  if (bin.includes('/') || bin.includes('\\') || isAbsolute(bin)) {
+    const candidate = resolveInsideWorkspace(workspace, bin)
+    if (!existsSync(candidate)) {
+      throw new Error(`Diagnostics binary not found in workspace: ${bin}`)
+    }
+    assertInsideWorkspace(workspace, candidate)
+    return candidate
+  }
+  return bin
 }
 
 function runSafeCommand(
@@ -317,6 +336,7 @@ export async function toolDiagnosticsAsync(
   let argv: string[]
   try {
     ;({ bin, args: argv } = parseSafeCommand(command))
+    bin = resolveDiagnosticsBin(workspace, bin)
   } catch (err) {
     return {
       ok: false,

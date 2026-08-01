@@ -90,14 +90,24 @@ export async function githubAuthStatus(): Promise<GithubAuthStatus> {
   } catch {
     available = false
   }
+
+  let hasAppToken = false
+  let statusError = pending?.error ?? null
+  try {
+    hasAppToken = hasGithubAccessToken() && Boolean(getGithubAccessToken())
+  } catch (err) {
+    hasAppToken = false
+    statusError = err instanceof Error ? err.message : String(err)
+  }
+
   return {
     ghAvailable: available,
     clientIdConfigured: Boolean(resolveGithubClientId()),
-    hasAppToken: hasGithubAccessToken() && Boolean(getGithubAccessToken()),
+    hasAppToken,
     pending: Boolean(pending),
     userCode: pending?.userCode ?? null,
     verificationUri: pending?.verificationUri ?? null,
-    error: pending?.error ?? null
+    error: statusError
   }
 }
 
@@ -246,14 +256,15 @@ export async function logoutGithubAuth(): Promise<GithubAuthStatus> {
   return githubAuthStatus()
 }
 
-/** Prefer app-stored token for `gh` CLI; fall back to ambient env. */
+/** Use only the app-stored token for `gh` CLI; never fall back to ambient env. */
 export function resolveGhTokenForCli(): string | undefined {
   try {
-    const stored = getGithubAccessToken()
-    if (stored) return stored
-  } catch {
-    // safeStorage may be unavailable in tests / headless; fall through to ambient env
+    return getGithubAccessToken() ?? undefined
+  } catch (err) {
+    logger.warn('GitHub token cannot be read from secure storage', {
+      scope: 'github-auth',
+      err
+    })
+    return undefined
   }
-  const ambient = process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim()
-  return ambient || undefined
 }

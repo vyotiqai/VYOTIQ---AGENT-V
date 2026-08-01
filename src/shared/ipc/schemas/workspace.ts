@@ -26,6 +26,7 @@ export type WorkspaceUiState = z.infer<typeof WorkspaceUiStateSchema>
 export const WorkspaceSettingsOverrideSchema = z.object({
   provider: ProviderIdSchema.optional(),
   model: z.string().min(1).optional(),
+  ollamaBaseUrl: z.string().min(1).optional(),
   compactionTriggerRatio: z.number().min(0.5).max(0.95).optional(),
   keepRecentTurns: z.number().int().min(4).max(50).optional(),
   thinkingEnabled: z.boolean().optional(),

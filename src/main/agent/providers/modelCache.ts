@@ -46,7 +46,8 @@ export function modelCacheKey(
   const fingerprint = apiKey
     ? createHash('sha256').update(apiKey).digest('hex').slice(0, 12)
     : 'nokey'
-  return `${provider}|${baseUrl ?? ''}|${fingerprint}`
+  const normalizedBaseUrl = baseUrl ? baseUrl.replace(/\/+$/, '') : ''
+  return `${provider}|${normalizedBaseUrl}|${fingerprint}`
 }
 
 function resolveDiskPath(): string | null {

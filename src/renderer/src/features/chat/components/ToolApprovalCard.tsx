@@ -1,4 +1,4 @@
-import { memo, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
 import { QUESTION_GATE_BODY, QUESTION_GATE_FOOTER, QUESTION_GATE_HEADER, QUESTION_GATE_SURFACE } from '@renderer/lib/utils/layout'
@@ -22,6 +22,13 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
   const [phase, setPhase] = useState<'idle' | 'pending' | 'done'>('idle')
   const [pendingDecision, setPendingDecision] = useState<ToolApprovalDecision | null>(null)
   const [localError, setLocalError] = useState<string | null>(null)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   const decide = (decision: ToolApprovalDecision): void => {
     if (phase !== 'idle') return
@@ -30,10 +37,12 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
     setLocalError(null)
     void Promise.resolve(onDecide?.(approval.requestId, decision))
       .then(() => {
+        if (!mountedRef.current) return
         // Stay locked; parent usually removes the card on success.
         setPhase('done')
       })
       .catch((err: unknown) => {
+        if (!mountedRef.current) return
         setPhase('idle')
         setPendingDecision(null)
         setLocalError(err instanceof Error ? err.message : 'Could not send decision')
