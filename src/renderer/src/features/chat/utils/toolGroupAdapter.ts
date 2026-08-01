@@ -10,6 +10,7 @@ import {
 import { formatElapsed } from '@shared/utils/timeFormat'
 import {
   categoryLabels,
+  isInterruptedToolContent,
   mixedGroupLabels,
   toolCategory,
   toolLabel,
@@ -41,8 +42,6 @@ export type ToolGroupProps = {
   elapsedDisplay: string
   singleTool: boolean
 }
-
-const INTERRUPTED_CONTENT = new Set(['Cancelled', 'Interrupted', 'Stopped'])
 
 const CATEGORY_COUNT_LABELS: Record<ToolGroupCategory, [singular: string, plural: string]> = {
   file: ['file', 'files'],
@@ -158,7 +157,7 @@ function nestedRowTitle(tool: UiToolRow, subtitle: string, inGroup: boolean): st
   if (tool.status === 'running' && isUnresolvedToolName(tool.name)) {
     return 'Preparing…'
   }
-  return toolLabel(tool.name, tool.status)
+  return toolLabel(tool.name, tool.status, tool.content)
 }
 
 function formatCount(value: number, label: string, plural: string): string {
@@ -209,7 +208,7 @@ function summarizeCounts(tools: ToolGroupNestedTool[]): string {
 }
 
 function isInterrupted(tools: UiToolRow[]): boolean {
-  return tools.some((tool) => INTERRUPTED_CONTENT.has(tool.content ?? ''))
+  return tools.some((tool) => isInterruptedToolContent(tool.content))
 }
 
 function deriveState(tools: UiToolRow[], groupTiming: UiGroupTiming | undefined): ToolGroupState {
@@ -251,6 +250,8 @@ export function mapToolGroupProps(
     nestedTools,
     tools.map((tool) => tool.name)
   )
+  // Interrupted groups never completed — header uses the in-progress verb.
+  const settledLabel = state === 'interrupted' ? labels.running : labels.done
 
   const allSubagents = tools.length > 0 && tools.every((tool) => tool.name === 'subagent')
   const summary = allSubagents
@@ -262,7 +263,7 @@ export function mapToolGroupProps(
     nestedTools,
     summary,
     runningLabel: labels.running,
-    doneLabel: labels.done,
+    doneLabel: settledLabel,
     elapsedMs,
     elapsedDisplay: elapsedMs != null && elapsedMs >= 1000 ? formatElapsed(elapsedMs) : '',
     singleTool: tools.length === 1

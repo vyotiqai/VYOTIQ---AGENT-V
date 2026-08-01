@@ -6,6 +6,22 @@ import { logger } from '../../../shared/logger'
 
 const BUILTIN_NAMES = new Set(AGENT_TOOLS.map((t) => t.name))
 
+/**
+ * Built-ins that may be shed (largest-first) so pinned/unpinned MCP can fit.
+ * Core file/edit/search/MCP meta/memory tools stay required.
+ */
+const OPTIONAL_BUILTIN_NAMES = new Set(
+  AGENT_TOOLS.map((t) => t.name).filter(
+    (name) =>
+      name.startsWith('browser_') ||
+      name === 'web_search' ||
+      name === 'diagnostics' ||
+      name === 'subagent' ||
+      name === 'generate_image' ||
+      name === 'edit_image'
+  )
+)
+
 function estimateToolDefTokens(tool: ToolDefinition): number {
   try {
     return estimateTextTokens(JSON.stringify(tool))
@@ -16,7 +32,7 @@ function estimateToolDefTokens(tool: ToolDefinition): number {
 
 /**
  * Fit tool definitions into the tools token budget.
- * Built-in tools are always kept; pinned MCP tools are preferred; other MCP may be dropped.
+ * Required builtins stay; optional builtins may shed for MCP; pinned MCP preferred.
  */
 export function trimToolsToBudget(
   tools: ToolDefinition[],
@@ -32,7 +48,10 @@ export function trimToolsToBudget(
   const mcp = tools.filter((t) => t.name.startsWith(MCP_TOOL_PREFIX))
   const pinnedNames = options?.pinnedMcpNames
 
-  let kept = [...builtins]
+  const required = builtins.filter((t) => !OPTIONAL_BUILTIN_NAMES.has(t.name))
+  const optional = builtins.filter((t) => OPTIONAL_BUILTIN_NAMES.has(t.name))
+
+  let kept = [...required]
   let estimate = kept.reduce((n, t) => n + estimateToolDefTokens(t), 0)
 
   const pinned: ToolDefinition[] = []
@@ -61,16 +80,38 @@ export function trimToolsToBudget(
     return false
   }
 
+  // Optional builtins first (may later be shed for MCP).
+  for (const tool of optional) {
+    tryKeep(tool)
+  }
+
   // Pinned MCP first (agent-requested), then greedy smallest-first fill.
   for (const tool of pinned) {
-    tryKeep(tool)
+    if (tryKeep(tool)) continue
+    if (shedOptionalBuiltinsFor(tool)) tryKeep(tool)
   }
 
   const sortedUnpinned = [...unpinned].sort(
     (a, b) => estimateToolDefTokens(a) - estimateToolDefTokens(b)
   )
   for (const tool of sortedUnpinned) {
-    tryKeep(tool)
+    if (tryKeep(tool)) continue
+    if (shedOptionalBuiltinsFor(tool)) tryKeep(tool)
+  }
+
+  function shedOptionalBuiltinsFor(incoming: ToolDefinition): boolean {
+    const need = estimateToolDefTokens(incoming)
+    if (estimate + need <= budgetTokens) return true
+    const optionalKept = kept
+      .filter((t) => OPTIONAL_BUILTIN_NAMES.has(t.name))
+      .sort((a, b) => estimateToolDefTokens(b) - estimateToolDefTokens(a))
+    for (const drop of optionalKept) {
+      const dropEst = estimateToolDefTokens(drop)
+      kept = kept.filter((t) => t.name !== drop.name)
+      estimate = Math.max(0, estimate - dropEst)
+      if (estimate + need <= budgetTokens) return true
+    }
+    return estimate + need <= budgetTokens
   }
 
   const keptMcpNames = new Set(

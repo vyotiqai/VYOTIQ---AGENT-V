@@ -4,6 +4,13 @@ import { app } from 'electron'
 import log from 'electron-log/main'
 import { logger, setLoggerBackend, type LogFields, type LogLevel } from '../../shared/logger'
 import { initSentryMain, captureExceptionMain } from './sentry'
+import { crashDumpsDirectory, isCrashReporterStarted } from './crashReporter'
+import {
+  countCrashpadReports,
+  formatWindowsExitCode,
+  sanitizeCrashUrl,
+  shouldReloadRendererAfterCrash
+} from './crashDiagnostics'
 import { isIgnorablePipeError } from './pipeErrors'
 
 export { isIgnorablePipeError } from './pipeErrors'
@@ -61,7 +68,42 @@ export function initMainLogging(): void {
   initSentryMain()
 
   installProcessHandlers()
-  logger.info('Logging initialized', { scope: 'main', logsDir })
+  installChildProcessCrashLogging()
+  const crashDumpsPath = resolveCrashDumpsPath()
+  logger.info('Logging initialized', {
+    scope: 'main',
+    logsDir,
+    ...(crashDumpsPath ? { crashDumpsPath } : {}),
+    crashReporterStarted: isCrashReporterStarted(),
+    ...(crashDumpsPath ? { crashDumpCount: countCrashpadReports(crashDumpsPath) } : {})
+  })
+}
+
+function installChildProcessCrashLogging(): void {
+  app.on('child-process-gone', (_event, details) => {
+    if (details.reason === 'clean-exit' || details.reason === 'killed') {
+      logger.info('Child process gone', {
+        scope: 'main',
+        processType: details.type,
+        reason: details.reason,
+        exitCode: details.exitCode,
+        ...(details.name ? { name: details.name } : {}),
+        ...(details.serviceName ? { serviceName: details.serviceName } : {})
+      })
+      return
+    }
+    const exitCodeHex = formatWindowsExitCode(details.exitCode)
+    logger.error('Child process gone', {
+      scope: 'main',
+      code: 'CHILD_PROCESS_CRASH',
+      processType: details.type,
+      reason: details.reason,
+      exitCode: details.exitCode,
+      ...(exitCodeHex ? { exitCodeHex } : {}),
+      ...(details.name ? { name: details.name } : {}),
+      ...(details.serviceName ? { serviceName: details.serviceName } : {})
+    })
+  })
 }
 
 function swallowStreamPipeError(err: Error): void {
@@ -105,6 +147,77 @@ export function logWithFields(level: LogLevel, message: string, fields?: LogFiel
   logger[level](message, fields)
 }
 
+const RENDERER_RELOAD_COOLDOWN_MS = 10_000
+const MAX_RENDERER_RELOADS = 3
+let rendererReloadCount = 0
+let lastRendererReloadAt = 0
+
+function resolveCrashDumpsPath(): string | undefined {
+  return crashDumpsDirectory() ?? (() => {
+    try {
+      return app.getPath('crashDumps')
+    } catch {
+      return undefined
+    }
+  })()
+}
+
+function logRendererProcessGone(
+  webContents: Electron.WebContents,
+  details: Electron.RenderProcessGoneDetails
+): void {
+  const crashDumpsPath = resolveCrashDumpsPath()
+  const exitCodeHex = formatWindowsExitCode(details.exitCode)
+  const crashDumpCount = crashDumpsPath ? countCrashpadReports(crashDumpsPath) : undefined
+  let url: string | undefined
+  try {
+    url = sanitizeCrashUrl(webContents.getURL())
+  } catch {
+    url = undefined
+  }
+  logger.error('Renderer process gone', {
+    scope: 'main',
+    code: 'RENDERER_CRASH',
+    reason: details.reason,
+    exitCode: details.exitCode,
+    ...(exitCodeHex ? { exitCodeHex } : {}),
+    ...(crashDumpsPath ? { crashDumpsPath } : {}),
+    ...(crashDumpCount != null ? { crashDumpCount } : {}),
+    ...(url ? { url } : {})
+  })
+}
+
+function maybeReloadRendererAfterCrash(
+  webContents: Electron.WebContents,
+  details: Electron.RenderProcessGoneDetails
+): void {
+  if (!shouldReloadRendererAfterCrash(details.reason)) return
+  if (rendererReloadCount >= MAX_RENDERER_RELOADS) {
+    logger.warn('Renderer reload limit reached after repeated crashes', {
+      scope: 'main',
+      reloadCount: rendererReloadCount
+    })
+    return
+  }
+  const now = Date.now()
+  if (now - lastRendererReloadAt < RENDERER_RELOAD_COOLDOWN_MS) return
+  lastRendererReloadAt = now
+  rendererReloadCount += 1
+  setTimeout(() => {
+    if (webContents.isDestroyed()) return
+    try {
+      webContents.reload()
+      logger.info('Reloading renderer after crash', {
+        scope: 'main',
+        reason: details.reason,
+        reloadCount: rendererReloadCount
+      })
+    } catch (err) {
+      logger.warn('Failed to reload renderer after crash', { scope: 'main', err })
+    }
+  }, 500)
+}
+
 export function attachWebContentsCrashLogging(
   webContents: Electron.WebContents
 ): void {
@@ -118,19 +231,8 @@ export function attachWebContentsCrashLogging(
       })
       return
     }
-    let crashDumpsPath: string | undefined
-    try {
-      crashDumpsPath = app.getPath('crashDumps')
-    } catch {
-      crashDumpsPath = undefined
-    }
-    logger.error('Renderer process gone', {
-      scope: 'main',
-      code: 'RENDERER_CRASH',
-      reason: details.reason,
-      exitCode: details.exitCode,
-      ...(crashDumpsPath ? { crashDumpsPath } : {})
-    })
+    logRendererProcessGone(webContents, details)
+    maybeReloadRendererAfterCrash(webContents, details)
   })
   webContents.on('unresponsive', () => {
     logger.warn('Renderer unresponsive', { scope: 'main' })

@@ -8,6 +8,7 @@ import {
   decodeMentionPayload,
   extractMentions,
   findActiveMentionToken,
+  findSlashChipSubmit,
   insertMentionAtToken,
   isSafeWorkspaceRelPath,
   isAutoInjectedWorkspaceRule,
@@ -38,6 +39,47 @@ describe('mentionModel', () => {
     expect(extractMentions(raw)).toHaveLength(4)
     expect(composerDocumentPlainText(raw)).toContain('@a.ts')
     expect(hasComposerContent(raw)).toBe(true)
+  })
+
+  it('round-trips slash markers (skills/mcp/commands) and strips them for slash submit', () => {
+    const marker = mentionMarker({
+      kind: 'slash',
+      slashKind: 'skill',
+      trigger: 'code-review',
+      commandId: 'skill:code-review'
+    })
+    expect(decodeMentionPayload(marker.slice(1, -1))).toEqual({
+      kind: 'slash',
+      slashKind: 'skill',
+      trigger: 'code-review',
+      commandId: 'skill:code-review'
+    })
+    expect(composerDocumentPlainText(`Run ${marker} please`)).toBe('Run /code-review please')
+    expect(findSlashChipSubmit(`${marker} review the diff`)).toEqual({
+      trigger: 'code-review',
+      commandId: 'skill:code-review',
+      slashKind: 'skill',
+      trailingRaw: ' review the diff'
+    })
+
+    const mcp = mentionMarker({
+      kind: 'slash',
+      slashKind: 'mcp',
+      trigger: 'server-tool',
+      commandId: 'mcp:mcp__server__tool'
+    })
+    expect(decodeMentionPayload(mcp.slice(1, -1))?.kind).toBe('slash')
+    expect(findSlashChipSubmit(`${mcp} args`)?.slashKind).toBe('mcp')
+
+    // Legacy skill: payloads still decode.
+    expect(
+      decodeMentionPayload(`skill:${encodeURIComponent('legacy')}|${encodeURIComponent('skill:legacy')}`)
+    ).toEqual({
+      kind: 'slash',
+      slashKind: 'skill',
+      trigger: 'legacy',
+      commandId: 'skill:legacy'
+    })
   })
 
   it('decodes chat titles with encoding', () => {

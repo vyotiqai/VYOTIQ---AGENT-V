@@ -11,7 +11,7 @@ import type {
 } from '@shared/ipc'
 import { buildUserContent } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
-import { triggerKey } from '@shared/slashCommands'
+import { resolveSlashCommandForSubmit } from '@shared/slashCommands'
 import { Alert, cn } from '@renderer/lib/ui'
 import {
   CHAT_COLUMN,
@@ -37,7 +37,7 @@ import { useSlashCommands } from './useSlashCommands'
 import { MentionMenu } from './MentionMenu'
 import { useComposerMentions } from './useComposerMentions'
 import { resolveComposerMentions } from './resolveMentions'
-import type { MentionMenuItem } from './mentionModel'
+import { mentionMarker, type MentionMenuItem } from './mentionModel'
 import {
   executeSlashResolveResult,
   type SlashClientHandlers
@@ -52,6 +52,7 @@ export function Composer({
   hasWorkspace,
   hasTranscript,
   ollamaBaseUrl,
+  customOpenAiBaseUrl,
   modelsRefreshKey,
   draft,
   onDraftChange,
@@ -91,7 +92,8 @@ export function Composer({
   seedFiles,
   seedAudio,
   seedNativeFiles,
-  onCancelEdit
+  onCancelEdit,
+  imageReadyHint = null
 }: {
   provider: ProviderId
   model: string
@@ -100,6 +102,7 @@ export function Composer({
   hasWorkspace?: boolean
   hasTranscript?: boolean
   ollamaBaseUrl?: string
+  customOpenAiBaseUrl?: string
   modelsRefreshKey?: string | number
   draft?: string
   onDraftChange?: (draft: string) => void
@@ -152,6 +155,8 @@ export function Composer({
   seedNativeFiles?: AttachedNativeFile[]
   /** Escape / cancel while editing a prompt bubble. */
   onCancelEdit?: () => void
+  /** Shown in toolbar when image generation keys are configured. */
+  imageReadyHint?: string | null
 }) {
   const taRef = useRef<ComposerMentionInputHandle>(null)
   const focusInput = useCallback(() => taRef.current?.focus(), [])
@@ -162,7 +167,13 @@ export function Composer({
   const inputLocked = Boolean(disabled)
   const settingsLocked = Boolean(disabled || running)
   const hotUi = useWorkspaceHotUi(workspacePath)
-  const resolvedDraft = workspacePath ? hotUi.composerDraft : (draft ?? '')
+  // Inline edit must keep its own draft; dock uses hot UI when a workspace is bound.
+  const resolvedDraft =
+    variant === 'inline'
+      ? (draft ?? '')
+      : workspacePath
+        ? hotUi.composerDraft
+        : (draft ?? '')
   const [cursor, setCursor] = useState(0)
 
   const syncCursor = useCallback((): void => {
@@ -286,12 +297,14 @@ export function Composer({
     [workspacePath, onSend, setFileError]
   )
 
-  const findCommandByTrigger = useCallback(
-    (trigger: string): SlashCommandDescriptor | null => {
-      const key = triggerKey(trigger)
-      return slash.commands.find((c) => triggerKey(c.trigger) === key) ?? null
+  const resolveSlashSubmitCommand = useCallback(
+    async (triggerOrId: string): Promise<SlashCommandDescriptor | null> => {
+      const commands = await slash.ensureCommands()
+      const byId = commands.find((c) => c.id === triggerOrId)
+      if (byId) return byId
+      return resolveSlashCommandForSubmit(triggerOrId, commands, slash.activeCommand)
     },
-    [slash.commands]
+    [slash]
   )
 
   const resolveAndExecute = useCallback(
@@ -299,7 +312,8 @@ export function Composer({
       command: SlashCommandDescriptor,
       trailingText: string,
       sendImages: string[],
-      sendFiles: AttachedFile[]
+      sendFiles: AttachedFile[],
+      extras?: ComposerSendExtras
     ): Promise<boolean> => {
       if (!window.vyotiq?.slashCommandsResolve) return false
 
@@ -317,14 +331,34 @@ export function Composer({
         command.availability === 'disconnected' ||
         command.availability === 'needs_auth'
       ) {
+        const notice =
+          command.description?.includes(' — ')
+            ? command.description.split(' — ').slice(1).join(' — ')
+            : command.availability === 'needs_auth'
+              ? 'MCP server needs authentication — open Marketplace to connect.'
+              : 'MCP server not connected — open Marketplace to reconnect.'
+        slashHandlers?.onNotice?.(notice)
         slashHandlers?.onOpenMarketplace?.(command.mcpServerId)
         return false
       }
 
+      // Trailing text may include @mention markers (skill chip submit / typed after /cmd).
+      const boundWorkspace = workspacePath
+      const resolvedTrailing = await resolveComposerMentions({
+        workspacePath: boundWorkspace,
+        draft: trailingText,
+        existingFiles: sendFiles,
+        isCurrent: () => workspacePathRef.current === boundWorkspace
+      })
+      if (resolvedTrailing.stale || workspacePathRef.current !== boundWorkspace) {
+        return false
+      }
+      if (resolvedTrailing.error) setFileError(resolvedTrailing.error)
+
       const res = await window.vyotiq.slashCommandsResolve({
         id: command.id,
         workspacePath: workspacePath ?? null,
-        trailingText
+        trailingText: resolvedTrailing.text
       })
       if (!res.ok) {
         slashHandlers?.onNotice?.(res.error)
@@ -351,7 +385,8 @@ export function Composer({
           sendWithMentions(
             res.data.message,
             sendImages.length ? sendImages : undefined,
-            sendFiles.length ? sendFiles : undefined
+            resolvedTrailing.files.length ? resolvedTrailing.files : undefined,
+            extras
           )
         )
         return ok !== false
@@ -363,49 +398,66 @@ export function Composer({
       if (outcome === 'failed') return false
       return true
     },
-    [workspacePath, slashHandlers, onCompactContext, sendWithMentions, slash]
+    [workspacePath, slashHandlers, onCompactContext, sendWithMentions, slash, setFileError]
   )
 
   const onSlashAccept = useCallback(
     (command: SlashCommandDescriptor): void => {
-      const token = slash.token
-      const trailingForResolve = token?.trailingText ?? ''
-      const snapshot = resolvedDraft
-      if (token && onDraftChange) {
-        const before = resolvedDraft.slice(0, token.start)
-        const afterToken = resolvedDraft.slice(token.end).replace(/^\s+/, '')
-        onDraftChange(`${before}${afterToken}`.trimStart())
+      // Marketplace / connectivity CTAs — do not insert or send.
+      if (command.availability === 'not_installed' && command.packageId) {
+        void Promise.resolve(
+          slashHandlers?.onMarketplaceAction?.(command.packageId, 'install')
+        ).then(() => {
+          void slash.reload()
+        })
+        return
+      }
+      if (command.availability === 'disabled' && command.packageId) {
+        void Promise.resolve(
+          slashHandlers?.onMarketplaceAction?.(command.packageId, 'enable')
+        ).then(() => {
+          void slash.reload()
+        })
+        return
+      }
+      if (
+        command.availability === 'disconnected' ||
+        command.availability === 'needs_auth'
+      ) {
+        const notice =
+          command.description?.includes(' — ')
+            ? command.description.split(' — ').slice(1).join(' — ')
+            : command.availability === 'needs_auth'
+              ? 'MCP server needs authentication — open Marketplace to connect.'
+              : 'MCP server not connected — open Marketplace to reconnect.'
+        slashHandlers?.onNotice?.(notice)
+        slashHandlers?.onOpenMarketplace?.(command.mcpServerId)
+        return
       }
 
-      void resolveAndExecute(command, trailingForResolve, images, files).then((ok) => {
-        if (ok) {
-          onDraftChange?.('')
-          setImages([])
-          setImageError(null)
-          setFiles([])
-          setNativeFiles([])
-          setAudio([])
-          setFileError(null)
-        } else {
-          // Restore pre-strip draft on CTA / IPC failure / pending marketplace.
-          onDraftChange?.(snapshot)
-        }
+      // All slash kinds → chip; user adds trailing text then sends.
+      const token = slash.token
+      const before = token ? resolvedDraft.slice(0, token.start) : resolvedDraft
+      const after = token
+        ? resolvedDraft.slice(token.end).replace(/^\s+/, '')
+        : ''
+      const insertion = `${mentionMarker({
+        kind: 'slash',
+        slashKind: command.kind,
+        trigger: command.trigger,
+        commandId: command.id
+      })} `
+      const nextText = `${before}${insertion}${after}`
+      const nextCursor = before.length + insertion.length
+      onDraftChange?.(nextText)
+      setCursor(nextCursor)
+      requestAnimationFrame(() => {
+        taRef.current?.setSelectionStart(nextCursor)
+        taRef.current?.focus()
       })
+      slash.dismiss()
     },
-    [
-      slash.token,
-      resolvedDraft,
-      onDraftChange,
-      resolveAndExecute,
-      images,
-      files,
-      setImages,
-      setImageError,
-      setFiles,
-      setNativeFiles,
-      setAudio,
-      setFileError
-    ]
+    [slash, resolvedDraft, onDraftChange, slashHandlers]
   )
 
   const onSlashSubmit = useCallback(
@@ -413,9 +465,10 @@ export function Composer({
       command: SlashCommandDescriptor,
       trailingText: string,
       sendImages: string[],
-      sendFiles: AttachedFile[]
+      sendFiles: AttachedFile[],
+      extras?: ComposerSendExtras
     ): Promise<boolean> => {
-      return resolveAndExecute(command, trailingText, sendImages, sendFiles)
+      return resolveAndExecute(command, trailingText, sendImages, sendFiles, extras)
     },
     [resolveAndExecute]
   )
@@ -442,7 +495,7 @@ export function Composer({
     onSlashDismiss: slash.dismiss,
     onSlashAccept,
     onSlashSubmit,
-    findCommandByTrigger,
+    resolveSlashSubmitCommand,
     mentionMenuOpen: mentions.open,
     mentionActiveItem: mentions.activeItem,
     onMentionMove: (delta: number) => {
@@ -476,6 +529,7 @@ export function Composer({
     provider,
     model,
     ollamaBaseUrl,
+    customOpenAiBaseUrl,
     modelsRefreshKey,
     hasWorkspace,
     hasImages: images.length > 0,
@@ -581,8 +635,7 @@ export function Composer({
             '@container relative grid gap-2 p-2.5',
             FLOATING_CHROME,
             FLOATING_CHROME_SHADOW_BOTTOM,
-            isDock && 'pointer-events-auto',
-            isInline && 'ring-1 ring-accent/35'
+            isDock && 'pointer-events-auto'
           )}
           data-composer-shell
         >
@@ -759,6 +812,7 @@ export function Composer({
             metaStore={metaStore}
             onCompactContext={onCompactContext}
             onCancelEdit={isInline ? onCancelEdit : undefined}
+            imageReadyHint={imageReadyHint}
             focusInput={focusInput}
           />
         </form>

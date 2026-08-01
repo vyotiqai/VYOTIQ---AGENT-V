@@ -43,13 +43,14 @@ Project paths with spaces are fine when using prebuilds; if a source rebuild fai
 2. `pnpm dev` → pick a workspace → send a message.
 3. Confirm tool rows (`read` / `search` / `memory_*` / …), streaming text, and **Stop** cancels the run.
 
-## Providers (9)
+## Providers (10)
 
-OpenAI · Anthropic · Gemini · Ollama · DeepSeek · Groq · OpenRouter · xAI · Mistral
+OpenAI · Anthropic · Gemini · Ollama · DeepSeek · Groq · OpenRouter · xAI · Mistral · Custom (OpenAI-compatible)
 
-- **Ollama:** Local daemon (`http://127.0.0.1:11434`, no key) or **Ollama Cloud** (`https://ollama.com` + API key via OpenAI-compatible `/v1`).
+- **Ollama:** Local daemon by default (no key). Saving an Ollama API key automatically uses **Ollama Cloud** (`https://ollama.com`).
+- **Custom:** Any OpenAI-compatible `/v1` host (Cerebras, Fireworks, Together, vLLM, …). Set the base URL in Settings; local hosts need no key.
 - **Extended thinking:** Reasoning-capable models stream a separate thinking channel (collapsed in chat). Configure in the composer **model picker** (thinking on/off, effort, show/hide), along with compaction.
-- **OpenAI** reasoning models use the **Responses API** (`/v1/responses`) with reasoning summaries and tool-loop continuity.
+- **OpenAI** GPT-5 / o-series models use the **Responses API** (`/v1/responses`) by default (thinking off still uses Responses without reasoning). GPT-5.6+ sends explicit prompt-cache breakpoints on the system prefix.
 - **Gemini** thinking models use the **Interactions API** (`/v1beta/interactions`) with stateful `previous_interaction_id`.
 - **Anthropic** uses **Messages API** extended/adaptive thinking; **DeepSeek** and **OpenRouter** use Chat Completions with `reasoning_content` / `reasoning` replay on tool steps.
 - Non-thinking models keep **Chat Completions / Messages / streamGenerateContent** paths.

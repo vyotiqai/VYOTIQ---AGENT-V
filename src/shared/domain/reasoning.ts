@@ -98,15 +98,16 @@ export function thinkingApiFor(id: string, providerId: ProviderId): ThinkingApi 
     case 'xai':
     case 'mistral':
     case 'ollama':
+    case 'custom':
       return 'chat_completions'
     default:
       return undefined
   }
 }
 
-/** Anthropic adaptive thinking is available on Opus 4.7+ / Sonnet 5+ / Fable 5+. */
+/** Anthropic adaptive thinking is available on Opus 4.7+ / Opus 5+ / Sonnet 5+ / Fable 5+. */
 export function anthropicUsesAdaptiveThinking(modelId: string): boolean {
-  return /claude-(opus-4-[78]|opus-4\.[78]|sonnet-5|fable-5|mythos)/i.test(modelId)
+  return /claude-(opus-4-[78]|opus-4\.[78]|opus-5|sonnet-5|fable-5|mythos)/i.test(modelId)
 }
 
 /** Anthropic manual budget_tokens mode for older Claude 4.x models. */

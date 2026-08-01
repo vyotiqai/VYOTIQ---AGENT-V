@@ -6,6 +6,22 @@ import {
   McpTransportSchema
 } from './marketplace'
 
+export const ImageGenProviderIdSchema = z.enum([
+  'openai',
+  'gemini',
+  'xai',
+  'openrouter',
+  'custom'
+])
+export type ImageGenProviderId = z.infer<typeof ImageGenProviderIdSchema>
+
+/** `auto` picks OpenAI → Gemini → xAI → OpenRouter → custom (if enabled) by available key. */
+export const ImageProviderSettingSchema = z.union([
+  z.literal('auto'),
+  ImageGenProviderIdSchema
+])
+export type ImageProviderSetting = z.infer<typeof ImageProviderSettingSchema>
+
 export const ThinkingEffortSchema = z.enum([
   'minimal',
   'low',
@@ -112,6 +128,8 @@ export const SettingsSchema = z.object({
   provider: ProviderIdSchema,
   model: z.string().min(1),
   ollamaBaseUrl: z.string().min(1),
+  /** OpenAI-compatible base URL for the `custom` provider (must end with `/v1`). */
+  customOpenAiBaseUrl: z.string().min(1).default('http://127.0.0.1:8080/v1'),
   theme: ThemeIdSchema,
   telemetryEnabled: z.boolean().default(false),
   mcpServers: z.array(McpServerSchema).default([]),
@@ -148,6 +166,21 @@ export const SettingsSchema = z.object({
   /** When set, sub-agents use this model instead of `model`. */
   subagentModel: z.string().min(1).optional(),
   /**
+   * Default provider for the `generate_image` tool. `auto` = first available key
+   * (prefer matching chat provider when it is openai/gemini/xai).
+   */
+  imageProvider: ImageProviderSettingSchema.default('auto'),
+  /**
+   * Optional default image model for `generate_image`. Empty = provider default
+   * (gpt-image-2 / gemini-3.1-flash-image / grok-imagine-image-quality).
+   */
+  imageModel: z.string().default(''),
+  /**
+   * When true, image tools may use the Custom OpenAI-compatible base URL after a
+   * capability probe. Off by default — chat Completions ≠ Images API.
+   */
+  customImageEnabled: z.boolean().default(false),
+  /**
    * GitHub App / OAuth App client ID for in-app device-flow Connect.
    * Empty falls back to `VYOTIQ_GITHUB_CLIENT_ID` env.
    */
@@ -160,6 +193,7 @@ export const DEFAULT_SETTINGS: Settings = {
   provider: 'ollama',
   model: 'qwen2.5',
   ollamaBaseUrl: 'http://127.0.0.1:11434',
+  customOpenAiBaseUrl: 'http://127.0.0.1:8080/v1',
   theme: 'system',
   telemetryEnabled: false,
   mcpServers: [],
@@ -178,6 +212,9 @@ export const DEFAULT_SETTINGS: Settings = {
   diagnosticsCommand: '',
   harnessProposalRewriter: false,
   autoModeSwitch: false,
+  imageProvider: 'auto',
+  imageModel: '',
+  customImageEnabled: false,
   githubClientId: '',
   marketplace: DEFAULT_MARKETPLACE_SETTINGS
 }

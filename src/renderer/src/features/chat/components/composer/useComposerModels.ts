@@ -16,6 +16,7 @@ export function useComposerModels({
   provider,
   model,
   ollamaBaseUrl,
+  customOpenAiBaseUrl,
   modelsRefreshKey,
   hasWorkspace,
   hasImages,
@@ -25,6 +26,7 @@ export function useComposerModels({
   provider: ProviderId
   model: string
   ollamaBaseUrl?: string
+  customOpenAiBaseUrl?: string
   modelsRefreshKey?: string | number
   hasWorkspace?: boolean
   hasImages: boolean
@@ -35,7 +37,7 @@ export function useComposerModels({
   const activeBrowse = browsedProvider ?? provider
 
   const { cache, loadProvider, getEntry } = useProviderCatalogCache(
-    ollamaBaseUrl,
+    { ollamaBaseUrl, customOpenAiBaseUrl },
     modelsRefreshKey
   )
 

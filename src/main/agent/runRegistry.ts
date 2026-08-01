@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto'
 import { contentDisplayText, type ChatMessage } from '../../shared/ipc'
+import { userMessageDisplayText } from '../../shared/slashCommands'
 import { cancelPendingQuestions } from './agentQuestion'
 import { disposeSubagentsForRun } from './subagentRegistry'
 
@@ -172,7 +173,7 @@ export type ActiveRunInfo = {
 }
 
 export function followUpPreview(message: ChatMessage): string {
-  const text = contentDisplayText(message.content).trim()
+  const text = userMessageDisplayText(contentDisplayText(message.content)).trim()
   if (text) return text
   const content = message.content
   if (typeof content !== 'string') {

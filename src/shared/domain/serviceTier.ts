@@ -36,16 +36,20 @@ export function serviceTierForApiBody(tier?: ServiceTier | null): ServiceTier | 
   return tier
 }
 
+/**
+ * API still sends `service_tier: "priority"`; OpenAI maps that to Fast mode.
+ * UI label says Fast so Settings/composer match current product naming.
+ */
 export const SERVICE_TIER_LABELS: Record<ServiceTier, string> = {
   default: 'Default',
   flex: 'Flex',
-  priority: 'Priority'
+  priority: 'Fast'
 }
 
 export const SERVICE_TIER_DESCRIPTIONS: Record<ServiceTier, string> = {
   default: 'Standard latency and pricing',
   flex: 'Lower cost, higher latency',
-  priority: 'Faster responses, premium pricing'
+  priority: 'Faster responses (API: priority → Fast mode), about 2× price'
 }
 
 export function parseServiceTier(value: unknown): ServiceTier {

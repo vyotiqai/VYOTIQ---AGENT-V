@@ -14,7 +14,7 @@ import type {
   SlashCommandDescriptor
 } from '@shared/ipc'
 import { parseSlashSubmit } from '@shared/slashCommands'
-import { hasComposerContent } from './mentionModel'
+import { findSlashChipSubmit, hasComposerContent } from './mentionModel'
 import type { MentionMenuItem } from './mentionModel'
 
 export function useComposerDraft({
@@ -39,7 +39,7 @@ export function useComposerDraft({
   onSlashDismiss,
   onSlashAccept,
   onSlashSubmit,
-  findCommandByTrigger,
+  resolveSlashSubmitCommand,
   mentionMenuOpen,
   mentionActiveItem,
   onMentionMove,
@@ -77,9 +77,13 @@ export function useComposerDraft({
     command: SlashCommandDescriptor,
     trailingText: string,
     images: string[],
-    files: AttachedFile[]
+    files: AttachedFile[],
+    extras?: ComposerSendExtras
   ) => boolean | void | Promise<boolean | void>
-  findCommandByTrigger?: (trigger: string) => SlashCommandDescriptor | null
+  /** Exact / active-prefix / fuzzy-prefix resolve for slash submit (loads catalog if empty). */
+  resolveSlashSubmitCommand?: (
+    trigger: string
+  ) => SlashCommandDescriptor | null | Promise<SlashCommandDescriptor | null>
   mentionMenuOpen?: boolean
   mentionActiveItem?: MentionMenuItem | null
   onMentionMove?: (delta: number) => void
@@ -144,19 +148,100 @@ export function useComposerDraft({
     e?.preventDefault()
     if ((!hasComposerContent(text) && !hasAttachments) || disabled) return
 
-    const parsed = parseSlashSubmit(text)
-    if (parsed && onSlashSubmit && findCommandByTrigger) {
-      const cmd = findCommandByTrigger(parsed.trigger)
-      if (cmd) {
-        const { draftImages, draftFiles, restore } = clearDraft()
-        void Promise.resolve()
-          .then(() => onSlashSubmit(cmd, parsed.trailingText, draftImages, draftFiles))
-          .then((ok) => {
+    const slashChip = findSlashChipSubmit(text)
+    if (slashChip && onSlashSubmit && resolveSlashSubmitCommand) {
+      // Resolve against a loaded catalog before clearing — chip remounts often have
+      // an empty in-memory list (list IPC is deferred until `/` is typed).
+      const trailingRaw = slashChip.trailingRaw
+      const commandId = slashChip.commandId
+      const trigger = slashChip.trigger
+      void Promise.resolve()
+        .then(async () => {
+          const cmd =
+            (commandId ? await resolveSlashSubmitCommand(commandId) : null) ??
+            (await resolveSlashSubmitCommand(trigger))
+          if (!cmd) {
+            // Do not fall through: resolveComposerMentions strips slash chips and
+            // would send trailing text without the skill/MCP body.
+            return false
+          }
+          const { draftImages, draftFiles, draftNative, draftAudio, restore } = clearDraft()
+          const extras: ComposerSendExtras | undefined =
+            draftNative.length || draftAudio.length
+              ? {
+                  ...(draftNative.length ? { nativeFiles: draftNative } : {}),
+                  ...(draftAudio.length ? { audio: draftAudio } : {})
+                }
+              : undefined
+          try {
+            const ok = await onSlashSubmit(
+              cmd,
+              trailingRaw,
+              draftImages,
+              draftFiles,
+              extras
+            )
             if (ok === false) restore()
-          }, restore)
-        return
-      }
-      // Unknown slash → fall through as normal chat message
+          } catch {
+            restore()
+          }
+        })
+      return
+    }
+
+    const parsed = parseSlashSubmit(text)
+    if (parsed && onSlashSubmit && resolveSlashSubmitCommand) {
+      const trailingText = parsed.trailingText
+      const trigger = parsed.trigger
+      void Promise.resolve()
+        .then(async () => {
+          const cmd = await resolveSlashSubmitCommand(trigger)
+          if (!cmd) {
+            // Unknown slash → fall through as normal chat message
+            const { draftText, draftImages, draftFiles, draftNative, draftAudio, restore } =
+              clearDraft()
+            const extras: ComposerSendExtras | undefined =
+              draftNative.length || draftAudio.length
+                ? {
+                    ...(draftNative.length ? { nativeFiles: draftNative } : {}),
+                    ...(draftAudio.length ? { audio: draftAudio } : {})
+                  }
+                : undefined
+            try {
+              const ok = await onSend(
+                draftText,
+                draftImages.length ? draftImages : undefined,
+                draftFiles.length ? draftFiles : undefined,
+                extras
+              )
+              if (ok === false) restore()
+            } catch {
+              restore()
+            }
+            return
+          }
+          const { draftImages, draftFiles, draftNative, draftAudio, restore } = clearDraft()
+          const extras: ComposerSendExtras | undefined =
+            draftNative.length || draftAudio.length
+              ? {
+                  ...(draftNative.length ? { nativeFiles: draftNative } : {}),
+                  ...(draftAudio.length ? { audio: draftAudio } : {})
+                }
+              : undefined
+          try {
+            const ok = await onSlashSubmit(
+              cmd,
+              trailingText,
+              draftImages,
+              draftFiles,
+              extras
+            )
+            if (ok === false) restore()
+          } catch {
+            restore()
+          }
+        })
+      return
     }
 
     const { draftText, draftImages, draftFiles, draftNative, draftAudio, restore } = clearDraft()

@@ -327,6 +327,12 @@ export interface VyotiqApi {
     workspacePath: string
     path: string
   }) => Promise<IpcResult<{ name: string; mime: string; text: string; truncated: boolean }>>
+  workspaceReadImage: (payload: {
+    workspacePath: string
+    path: string
+  }) => Promise<
+    IpcResult<{ path: string; mime: string; dataUrl: string; byteLength: number }>
+  >
   workspaceListDocs: (payload: {
     workspacePath: string
     query?: string

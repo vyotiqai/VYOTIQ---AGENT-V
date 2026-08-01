@@ -61,4 +61,15 @@ describe('trimToolsToBudget', () => {
     })
     expect(result.tools.map((t) => t.name)).toContain('mcp__pin__big')
   })
+
+  it('sheds optional builtins before dropping MCP tools', () => {
+    const required = [tool('read', 'r')]
+    const optional = [tool('browser_navigate', 'B'.repeat(800))]
+    const mcp = tool('mcp__git__status', 'm')
+    const withMcp = trimToolsToBudget([...required, mcp], 1_000_000).estimate
+    const result = trimToolsToBudget([...required, ...optional, mcp], withMcp + 5)
+    expect(result.tools.map((t) => t.name)).toContain('mcp__git__status')
+    expect(result.tools.map((t) => t.name)).not.toContain('browser_navigate')
+    expect(result.omittedMcp).toBe(0)
+  })
 })

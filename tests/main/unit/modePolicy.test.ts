@@ -20,6 +20,13 @@ describe('modePolicy', () => {
     expect(askSafeAlignsWithParallelSafe()).toBe(true)
   })
 
+  it('Ask mode allows generate_image and edit_image (dry-run in handler)', () => {
+    expect(isBuiltinAllowedInMode('ask', 'generate_image')).toBe(true)
+    expect(isBuiltinAllowedInMode('ask', 'edit_image')).toBe(true)
+    expect(isBuiltinAllowedInMode('plan', 'generate_image')).toBe(true)
+    expect(isBuiltinAllowedInMode('plan', 'edit_image')).toBe(true)
+  })
+
   it('Ask mode denies edit and terminal', () => {
     expect(isBuiltinAllowedInMode('ask', 'edit')).toBe(false)
     expect(isBuiltinAllowedInMode('ask', 'terminal')).toBe(false)

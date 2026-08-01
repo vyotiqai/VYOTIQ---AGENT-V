@@ -69,9 +69,16 @@ export function shouldRetryOpenRouterCompatBody(status: number, body: string): b
 const PROVIDER_SECRET_RE =
   /\b(?:sk-[a-zA-Z0-9_-]+|Bearer\s+[a-zA-Z0-9._/=+-]+|api[_-]?key["\s:=]+[a-zA-Z0-9._-]+)/gi
 
+/** OpenAI often echoes a masked key fragment: "Incorrect API key provided: abcd…wxyz". */
+const INCORRECT_API_KEY_RE =
+  /Incorrect API key provided:\s*[A-Za-z0-9*_./+=-]{6,}/gi
+
 /** Redact common provider secret shapes from error text. */
 export function scrubProviderErrorText(text: string): string {
-  return text.replace(PROVIDER_SECRET_RE, '[redacted]').slice(0, 280)
+  return text
+    .replace(INCORRECT_API_KEY_RE, 'Incorrect API key provided: [redacted]')
+    .replace(PROVIDER_SECRET_RE, '[redacted]')
+    .slice(0, 280)
 }
 
 /** Scrubbed ≤280-char snippet for logs / UI (no API keys). */
@@ -112,6 +119,9 @@ export function formatProviderHttpError(
   }
 
   if (status === 401 || status === 403) {
+    if (providerId === 'openai' && status === 401) {
+      return 'OpenAI authentication failed (HTTP 401). Update your API key in Settings → Providers.'
+    }
     return (
       scrubbedMessage ??
       `Authentication failed (HTTP ${status}). Check your API key in Settings.`

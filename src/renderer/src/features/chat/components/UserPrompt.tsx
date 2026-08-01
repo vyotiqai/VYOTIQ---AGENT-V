@@ -1,8 +1,10 @@
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { FileChip, ImageChip, MarkdownContent, balanceIncompleteMarkdown, cn } from '@renderer/lib/ui'
+import { parseMcpToolInvocation, parseSkillInvocation } from '@shared/slashCommands'
 import { TOOL_BODY_CLAMP_PX, USER_PROMPT_SURFACE } from '@renderer/lib/utils/layout'
 import type { UserItem } from '../utils/transcriptRows'
+import { SlashChip } from './SlashChip'
 
 export function UserPrompt({
   item,
@@ -20,17 +22,43 @@ export function UserPrompt({
   const bodyRef = useRef<HTMLDivElement>(null)
   const [overflows, setOverflows] = useState(false)
   const [expanded, setExpanded] = useState(false)
+
+  const slashChip = useMemo(() => {
+    if (!item.content) return null
+    const skill = parseSkillInvocation(item.content)
+    if (skill) {
+      return {
+        kind: 'skill' as const,
+        name: skill.skillName,
+        userRequest: skill.userRequest
+      }
+    }
+    const mcp = parseMcpToolInvocation(item.content)
+    if (mcp) {
+      return {
+        kind: 'mcp' as const,
+        name: `${mcp.serverId}-${mcp.toolName}`,
+        userRequest: mcp.userRequest
+      }
+    }
+    return null
+  }, [item.content])
+
   const content = useMemo(() => {
     if (!item.content) return ''
-    // Preserve exactly what the model received — no paragraph dedupe.
+    if (slashChip) {
+      return slashChip.userRequest
+        ? balanceIncompleteMarkdown(slashChip.userRequest)
+        : ''
+    }
     return balanceIncompleteMarkdown(item.content)
-  }, [item.content])
+  }, [item.content, slashChip])
 
   useLayoutEffect(() => {
     const el = bodyRef.current
     if (!el) return
     setOverflows(el.scrollHeight > TOOL_BODY_CLAMP_PX + 8)
-  }, [content])
+  }, [content, slashChip])
 
   if (editing && editComposer) {
     return <div className="w-full">{editComposer}</div>
@@ -38,6 +66,7 @@ export function UserPrompt({
 
   const clamped = overflows && !expanded
   const editable = Boolean(onBeginEdit)
+  const hasBody = Boolean(content) || Boolean(slashChip)
 
   return (
     <div
@@ -47,7 +76,7 @@ export function UserPrompt({
         editable &&
           cn(
             'group/prompt cursor-text vy-transition',
-            'hover:border-border-strong hover:bg-surface/40',
+            'hover:border-border-strong hover:bg-surface/30',
             'focus-within:vy-focus-ring'
           )
       )}
@@ -66,8 +95,8 @@ export function UserPrompt({
         <button
           type="button"
           className={cn(
-            'absolute right-2 top-2 z-[1] inline-grid size-6 place-items-center rounded-md',
-            'border border-border/70 bg-card/90 text-muted shadow-sm backdrop-blur-sm',
+            'absolute right-1 top-1 z-[1] inline-grid size-6 place-items-center rounded-md',
+            'text-muted hover:bg-surface hover:text-fg',
             'opacity-0 vy-transition',
             'group-hover/prompt:opacity-100 group-focus-within/prompt:opacity-100',
             'focus-visible:opacity-100 focus-visible:vy-focus-ring'
@@ -82,7 +111,7 @@ export function UserPrompt({
         </button>
       ) : null}
 
-      {content ? (
+      {hasBody ? (
         <div
           ref={bodyRef}
           className={cn(
@@ -92,7 +121,14 @@ export function UserPrompt({
           )}
           style={clamped ? { maxHeight: TOOL_BODY_CLAMP_PX } : undefined}
         >
-          <MarkdownContent content={content} />
+          {slashChip ? (
+            <div className="flex flex-col gap-2">
+              <SlashChip name={slashChip.name} kind={slashChip.kind} />
+              {content ? <MarkdownContent content={content} /> : null}
+            </div>
+          ) : (
+            <MarkdownContent content={content} />
+          )}
         </div>
       ) : null}
 
@@ -109,7 +145,7 @@ export function UserPrompt({
 
       {item.images?.length || item.attachments?.length ? (
         <div
-          className={cn('flex flex-wrap items-center gap-1.5', content ? 'mt-2' : null)}
+          className={cn('flex flex-wrap items-center gap-1.5', hasBody ? 'mt-2' : null)}
           data-no-prompt-edit
         >
           {item.images?.map((url, imageIndex) => (

@@ -29,6 +29,9 @@ import {
   contentImages,
   contentNativeFiles
 } from '@shared/ipc'
+import { parseMcpToolInvocation, parseSkillInvocation } from '@shared/slashCommands'
+import { MCP_TOOL_PREFIX } from '@shared/utils/toolSummary'
+import { mentionMarker } from './components/composer/mentionModel'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { Alert, PanelResizeHandle } from '@renderer/lib/ui'
 import { usePersistedBoolean } from '@renderer/lib/hooks/usePersistedBoolean'
@@ -43,6 +46,7 @@ import {
   COMPOSER_DOCK_CLEARANCE_PX,
   COMPOSER_DOCK_FADE_PX,
   COMPOSER_DOCK_FALLBACK_PX,
+  COMPOSER_DOCK_LIVE_CLEARANCE_PX,
   DOCK_EXPANDED_KEY,
   DOCK_WIDTH_DEFAULT_PX,
   DOCK_WIDTH_KEY,
@@ -204,6 +208,7 @@ export function ChatView({
   provider,
   model,
   ollamaBaseUrl,
+  customOpenAiBaseUrl,
   modelsRefreshKey,
   activeRunId,
   transcriptLoading,
@@ -251,7 +256,8 @@ export function ChatView({
   onKeepWriteFile,
   onDiscardWriteFile,
   onKeepAllWrites,
-  resolveBlockedReason = null
+  resolveBlockedReason = null,
+  imageReadyHint = null
 }: {
   items: UiItem[]
   /** When set, transcript leaves subscribe so ChatView/Composer skip token patches. */
@@ -272,6 +278,7 @@ export function ChatView({
   provider: ProviderId
   model: string
   ollamaBaseUrl?: string
+  customOpenAiBaseUrl?: string
   modelsRefreshKey?: string | number
   activeRunId: string | null
   transcriptLoading?: boolean
@@ -336,6 +343,8 @@ export function ChatView({
   onDiscardWriteFile?: (path: string) => void | Promise<unknown>
   onKeepAllWrites?: () => void | Promise<unknown>
   resolveBlockedReason?: string | null
+  /** Composer hint when an image-capable API key is configured. */
+  imageReadyHint?: string | null
 }) {
   // Boolean presence only — stays Object.is-stable across pure text_delta frames.
   const hasItems = useHasChatItems(itemsStore, items)
@@ -734,15 +743,22 @@ export function ChatView({
 
   // Transcript scrolls behind the floating composer, so it has to reserve the
   // dock height plus the fade painted above it (not included in offsetHeight).
+  // Live runs add a little more so streaming rows are not trapped under the dock.
   useLayoutEffect(() => {
     const stage = stageRef.current
     if (!stage) return undefined
     const dock = stage.querySelector<HTMLElement>('[data-composer-dock]')
     if (!dock) return undefined
 
+    const liveExtra =
+      running || pendingRun ? COMPOSER_DOCK_LIVE_CLEARANCE_PX : 0
+
     const sync = (): void => {
       const dockH =
-        Math.max(dock.offsetHeight, 48) + COMPOSER_DOCK_FADE_PX + COMPOSER_DOCK_CLEARANCE_PX
+        Math.max(dock.offsetHeight, 48) +
+        COMPOSER_DOCK_FADE_PX +
+        COMPOSER_DOCK_CLEARANCE_PX +
+        liveExtra
       stage.style.setProperty('--vy-dock-h', `${dockH}px`)
       setDockReservePx(dockH)
     }
@@ -754,7 +770,7 @@ export function ChatView({
     const shell = dock.querySelector('[data-composer-shell]')
     if (shell) ro.observe(shell)
     return () => ro.disconnect()
-  }, [showHero, surfaceKey, dockImmersive, immersiveTab])
+  }, [showHero, surfaceKey, dockImmersive, immersiveTab, running, pendingRun])
 
   const [editingUserMessageIndex, setEditingUserMessageIndex] = useState<number | null>(null)
   const [editDraft, setEditDraft] = useState('')
@@ -785,7 +801,26 @@ export function ChatView({
       const files = contentFiles(msg.content)
       const audio = contentAudios(msg.content)
       const nativeFiles = contentNativeFiles(msg.content)
-      setEditDraft(contentDisplayText(msg.content))
+      const rawText = contentDisplayText(msg.content)
+      const skill = parseSkillInvocation(rawText)
+      const mcp = skill ? null : parseMcpToolInvocation(rawText)
+      let editDraftText = rawText
+      if (skill) {
+        editDraftText = `${mentionMarker({
+          kind: 'slash',
+          slashKind: 'skill',
+          trigger: skill.skillName
+        })}${skill.userRequest ? ` ${skill.userRequest}` : ' '}`
+      } else if (mcp) {
+        const trigger = `${mcp.serverId}-${mcp.toolName}`.replace(/__/g, '-')
+        editDraftText = `${mentionMarker({
+          kind: 'slash',
+          slashKind: 'mcp',
+          trigger,
+          commandId: `mcp:${MCP_TOOL_PREFIX}${mcp.serverId}__${mcp.toolName}`
+        })}${mcp.userRequest ? ` ${mcp.userRequest}` : ' '}`
+      }
+      setEditDraft(editDraftText)
       setEditSeeds({
         images: images.length ? images : undefined,
         files: files.length ? files : undefined,
@@ -824,7 +859,9 @@ export function ChatView({
         disabled={!hasWorkspace}
         hasTranscript
         hasWorkspace={hasWorkspace}
+        workspacePath={workspacePath}
         ollamaBaseUrl={ollamaBaseUrl}
+        customOpenAiBaseUrl={customOpenAiBaseUrl}
         modelsRefreshKey={modelsRefreshKey}
         draft={editDraft}
         onDraftChange={setEditDraft}
@@ -881,6 +918,7 @@ export function ChatView({
     ),
     hasWorkspace,
     ollamaBaseUrl,
+    customOpenAiBaseUrl,
     modelsRefreshKey,
     draft: composerDraft,
     onDraftChange: onComposerDraftChange,
@@ -908,7 +946,8 @@ export function ChatView({
     metaStore,
     onCompactContext,
     slashHandlers,
-    sideRailPad: agentSideRailPad
+    sideRailPad: agentSideRailPad,
+    imageReadyHint
   }
 
   const agentColumn = (
@@ -989,21 +1028,19 @@ export function ChatView({
             onBeginEditUserMessage={onEditAndResend ? beginPromptEdit : undefined}
           />
 
-          {!editing ? (
-            <MemoComposer
-              key={`composer:${surfaceKey}`}
-              {...composerProps}
-              variant="dock"
-              bannerError={bannerError}
-              onDismissError={onDismissError}
-              leading={
-                <ChatGitLeading chrome={gitChrome} onOpenChanges={() => openChangesPanel('uncommitted')} />
-              }
-              trailing={
-                <ChatGitTrailing chrome={gitChrome} />
-              }
-            />
-          ) : null}
+          <MemoComposer
+            key={`composer:${surfaceKey}`}
+            {...composerProps}
+            variant="dock"
+            bannerError={bannerError}
+            onDismissError={onDismissError}
+            leading={
+              <ChatGitLeading chrome={gitChrome} onOpenChanges={() => openChangesPanel('uncommitted')} />
+            }
+            trailing={
+              <ChatGitTrailing chrome={gitChrome} />
+            }
+          />
         </div>
       )}
     </>

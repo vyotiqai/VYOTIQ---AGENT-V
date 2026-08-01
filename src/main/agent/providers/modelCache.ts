@@ -2,6 +2,7 @@ import { createHash } from 'crypto'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import type { ModelInfo, ProviderId } from '../../../shared/ipc'
+import { ollamaNativeHost } from '../../../shared/domain/providers'
 import { logger } from '../../../shared/logger'
 import { atomicWriteJson } from '../../storage/atomicWrite'
 
@@ -39,6 +40,17 @@ function currentModelListGeneration(key: string): number {
   return listGeneration.get(key) ?? 0
 }
 
+/** Normalize list/chat base URLs so Ollama `/v1` and native hosts share one cache slot. */
+export function normalizeModelCacheBaseUrl(
+  provider: ProviderId,
+  baseUrl: string | undefined
+): string {
+  if (!baseUrl?.trim()) return ''
+  const trimmed = baseUrl.trim().replace(/\/+$/, '')
+  if (provider === 'ollama') return ollamaNativeHost(trimmed)
+  return trimmed
+}
+
 export function modelCacheKey(
   provider: ProviderId,
   baseUrl: string | undefined,
@@ -47,8 +59,23 @@ export function modelCacheKey(
   const fingerprint = apiKey
     ? createHash('sha256').update(apiKey).digest('hex').slice(0, 12)
     : 'nokey'
-  const normalizedBaseUrl = baseUrl ? baseUrl.replace(/\/+$/, '') : ''
+  const normalizedBaseUrl = normalizeModelCacheBaseUrl(provider, baseUrl)
   return `${provider}|${normalizedBaseUrl}|${fingerprint}`
+}
+
+function migrateDiskCacheKey(key: string): string {
+  const fingerprintSep = key.lastIndexOf('|')
+  if (fingerprintSep <= 0) return key
+  const fingerprint = key.slice(fingerprintSep + 1)
+  const rest = key.slice(0, fingerprintSep)
+  const providerSep = rest.indexOf('|')
+  if (providerSep <= 0) return key
+  const provider = rest.slice(0, providerSep) as ProviderId
+  const baseUrl = rest.slice(providerSep + 1)
+  if (!baseUrl) return key
+  const normalized = normalizeModelCacheBaseUrl(provider, baseUrl)
+  if (normalized === baseUrl.replace(/\/+$/, '')) return key
+  return `${provider}|${normalized}|${fingerprint}`
 }
 
 function resolveDiskPath(): string | null {
@@ -72,9 +99,12 @@ function ensureDiskLoaded(): void {
     const raw = JSON.parse(readFileSync(path, 'utf8')) as DiskFile
     if (raw?.version !== 1 || !raw.entries) return
     const now = Date.now()
-    for (const [key, entry] of Object.entries(raw.entries)) {
+    for (const [rawKey, entry] of Object.entries(raw.entries)) {
       if (!entry?.models?.length) continue
       if (now - entry.savedAt > DISK_TTL_MS) continue
+      const key = migrateDiskCacheKey(rawKey)
+      const existing = cache.get(key)
+      if (existing && existing.diskSavedAt >= entry.savedAt) continue
       cache.set(key, {
         models: entry.models,
         expiresAt: now + TTL_MS,

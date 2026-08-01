@@ -5,6 +5,7 @@ export type EffectiveChatSettings = Pick<
   | 'provider'
   | 'model'
   | 'ollamaBaseUrl'
+  | 'customOpenAiBaseUrl'
   | 'subagentProvider'
   | 'subagentModel'
   | 'compactionTriggerRatio'
@@ -29,6 +30,7 @@ export function resolveEffectiveSettings(
       provider: global.provider,
       model: global.model,
       ollamaBaseUrl: global.ollamaBaseUrl,
+      customOpenAiBaseUrl: global.customOpenAiBaseUrl,
       subagentProvider: global.subagentProvider,
       subagentModel: global.subagentModel,
       compactionTriggerRatio: global.compactionTriggerRatio,
@@ -43,6 +45,7 @@ export function resolveEffectiveSettings(
     provider: override.provider ?? global.provider,
     model: override.model ?? global.model,
     ollamaBaseUrl: override.ollamaBaseUrl ?? global.ollamaBaseUrl,
+    customOpenAiBaseUrl: override.customOpenAiBaseUrl ?? global.customOpenAiBaseUrl,
     subagentProvider: override.subagentProvider ?? global.subagentProvider,
     subagentModel: override.subagentModel ?? global.subagentModel,
     compactionTriggerRatio: override.compactionTriggerRatio ?? global.compactionTriggerRatio,

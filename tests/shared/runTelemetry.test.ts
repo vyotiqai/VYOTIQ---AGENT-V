@@ -35,18 +35,59 @@ describe('runTelemetry', () => {
       inputTokens: 300,
       outputTokens: 30,
       cachedInputTokens: 200,
+      cacheCreationInputTokens: 0,
       reasoningTokens: 16,
+      steps: 2
+    })
+  })
+
+  it('accumulates cache write tokens across steps', () => {
+    const first = stepUsageFromEvent({
+      type: 'step_usage',
+      runId: 'r1',
+      step: 1,
+      inputTokens: 500,
+      outputTokens: 20,
+      cacheCreationInputTokens: 400
+    })
+    const second = stepUsageFromEvent({
+      type: 'step_usage',
+      runId: 'r1',
+      step: 2,
+      inputTokens: 300,
+      outputTokens: 10,
+      cachedInputTokens: 280,
+      cacheCreationInputTokens: 50
+    })
+    expect(mergeStepUsageTotals(first!, second!)).toMatchObject({
+      cachedInputTokens: 280,
+      cacheCreationInputTokens: 450,
       steps: 2
     })
   })
 
   it('carries the previous input window forward when a step reports none', () => {
     const totals = mergeStepUsageTotals(
-      { inputTokens: 900, outputTokens: 5, cachedInputTokens: 700, reasoningTokens: 3, steps: 1 },
-      { inputTokens: 0, outputTokens: 7, cachedInputTokens: 0, reasoningTokens: 2, steps: 1 }
+      {
+        inputTokens: 900,
+        outputTokens: 5,
+        cachedInputTokens: 700,
+        cacheCreationInputTokens: 100,
+        reasoningTokens: 3,
+        steps: 1
+      },
+      {
+        inputTokens: 0,
+        outputTokens: 7,
+        cachedInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        reasoningTokens: 2,
+        steps: 1
+      }
     )
     expect(totals.inputTokens).toBe(900)
     expect(totals.cachedInputTokens).toBe(700)
+    expect(totals.cacheCreationInputTokens).toBe(100)
     expect(totals.outputTokens).toBe(12)
     expect(totals.reasoningTokens).toBe(5)
   })
@@ -60,6 +101,7 @@ describe('runTelemetry', () => {
       outputTokens: 10
     })
     expect(usage?.reasoningTokens).toBe(0)
+    expect(usage?.cacheCreationInputTokens).toBe(0)
   })
 
   it('starts from an empty total', () => {
@@ -67,6 +109,7 @@ describe('runTelemetry', () => {
       inputTokens: 0,
       outputTokens: 0,
       cachedInputTokens: 0,
+      cacheCreationInputTokens: 0,
       reasoningTokens: 0,
       steps: 0
     })

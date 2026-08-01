@@ -19,6 +19,7 @@ import {
   pushRecentModel,
   resolveServiceTier
 } from '@shared/domain/modelSelection'
+import { resolveImageReadyLabel } from '@shared/domain/imageCapability'
 import { logger } from '@shared/logger'
 import { workspacePathsEqual } from '@shared/workspacePathMatch'
 import { normalizeRelPath } from '../features/chat/utils/turnFileDiffs'
@@ -192,6 +193,16 @@ export function App() {
   const effectiveChatSettings = resolveEffectiveSettings(
     settings,
     activeContext?.settingsOverride
+  )
+
+  const imageReadyHint = useMemo(
+    () =>
+      resolveImageReadyLabel({
+        imageProvider: settings.imageProvider,
+        secrets,
+        customImageEnabled: settings.customImageEnabled
+      }),
+    [settings.imageProvider, settings.customImageEnabled, secrets]
   )
 
   const loadRunIntoTab = async (runId: string): Promise<void> => {
@@ -612,7 +623,9 @@ export function App() {
   const modelsRefreshKey = `${
     settings.provider === 'ollama'
       ? `ollama:${settings.ollamaBaseUrl}:${secrets.ollama ? '1' : '0'}`
-      : `${settings.provider}:${secrets[settings.provider as SecretProvider] ? '1' : '0'}`
+      : settings.provider === 'custom'
+        ? `custom:${settings.customOpenAiBaseUrl}:${secrets.custom ? '1' : '0'}`
+        : `${settings.provider}:${secrets[settings.provider as SecretProvider] ? '1' : '0'}`
   }:${modelsRefreshNonce}`
 
   const shellWorkspaceProps = {
@@ -741,6 +754,7 @@ export function App() {
       ) : (
         <ErrorBoundary title="Chat couldn't render" resetKey={chatSurfaceEpoch}>
           <ChatView
+            imageReadyHint={imageReadyHint}
             items={chat.items}
             itemsStore={{
               subscribeItems: chat.subscribeItems,
@@ -766,6 +780,7 @@ export function App() {
             provider={effectiveChatSettings.provider}
             model={effectiveChatSettings.model}
             ollamaBaseUrl={settings.ollamaBaseUrl}
+            customOpenAiBaseUrl={settings.customOpenAiBaseUrl}
             modelsRefreshKey={modelsRefreshKey}
             activeRunId={chat.runId ?? activeContext?.activeRunId ?? null}
             transcriptLoading={chat.transcriptLoading}

@@ -8,7 +8,18 @@ import {
   type WorkspaceSettingsOverride,
   DEFAULT_TOOL_APPROVAL
 } from '@shared/ipc'
-import { PROVIDER_DEFAULTS, defaultModelFor, providerLabel, ollamaNativeHost, providerNeedsKey } from '@shared/providers'
+import {
+  PROVIDER_DEFAULTS,
+  defaultModelFor,
+  providerLabel,
+  ollamaNativeHost,
+  normalizeCustomOpenAiBaseUrl,
+  providerNeedsKey,
+  isLocalOllamaHost,
+  isOllamaCloudHost,
+  OLLAMA_CLOUD_BASE_URL,
+  OLLAMA_LOCAL_DEFAULT
+} from '@shared/providers'
 import { findByWorkspacePath } from '@shared/workspacePathMatch'
 import { useEscapeToClose } from '@renderer/lib/hooks/useEscapeToClose'
 import { useModelCatalog } from '@renderer/lib/hooks/useModelCatalog'
@@ -57,6 +68,7 @@ export function useSettingsForm({
   )
   const [keyDraft, setKeyDraft] = useState('')
   const [ollamaUrl, setOllamaUrl] = useState(settings.ollamaBaseUrl)
+  const [customUrl, setCustomUrl] = useState(settings.customOpenAiBaseUrl)
   const [error, setError] = useState<string | null>(null)
   const [errorField, setErrorField] = useState<SettingsErrorField>(null)
   const [modelsInfo, setModelsInfo] = useState<string | null>(null)
@@ -87,6 +99,7 @@ export function useSettingsForm({
     if (!errorField || !displayError) return {}
     const idByField: Record<SettingsErrorKey, string> = {
       ollama: 'ollama-error',
+      customUrl: 'custom-url-error',
       apikey: 'apikey-error',
       compaction: 'compaction-error',
       keepTurns: 'keep-turns-error'
@@ -189,16 +202,27 @@ export function useSettingsForm({
   const keyProviderLabel = providerLabel(keyProvider)
   const busy = savingKey || clearingKey || savingField || refreshingModels
   const formLocked = savingKey || clearingKey || savingField
-  const activeNeedsKey =
-    providerNeedsKey(settings.provider, settings.ollamaBaseUrl) &&
-    !secrets[settings.provider as SecretProvider]
+  const activeNeedsKey = (() => {
+    if (settings.provider === 'ollama') {
+      if (secrets.ollama) return false
+      return providerNeedsKey('ollama', settings.ollamaBaseUrl)
+    }
+    if (settings.provider === 'custom') {
+      if (secrets.custom) return false
+      return providerNeedsKey('custom', customUrl || settings.customOpenAiBaseUrl)
+    }
+    return !secrets[settings.provider as SecretProvider]
+  })()
   const savedKeyProviders = useMemo(
     () => SECRET_PROVIDERS.filter((p) => secrets[p]),
     [secrets]
   )
   const { refresh: refreshCatalog } = useModelCatalog(
     settings.provider,
-    settings.ollamaBaseUrl,
+    {
+      ollamaBaseUrl: settings.ollamaBaseUrl,
+      customOpenAiBaseUrl: settings.customOpenAiBaseUrl
+    },
     undefined,
     false
   )
@@ -206,6 +230,10 @@ export function useSettingsForm({
   useEffect(() => {
     setOllamaUrl(settings.ollamaBaseUrl)
   }, [settings.ollamaBaseUrl])
+
+  useEffect(() => {
+    setCustomUrl(settings.customOpenAiBaseUrl)
+  }, [settings.customOpenAiBaseUrl])
 
   useEffect(() => {
     let cancelled = false
@@ -296,6 +324,29 @@ export function useSettingsForm({
     return normalized
   }
 
+  const commitCustomUrl = async (): Promise<string | null> => {
+    const trimmed = customUrl.trim()
+    if (!trimmed) {
+      setCustomUrl(settings.customOpenAiBaseUrl)
+      setFieldError('customUrl', 'Custom OpenAI base URL cannot be empty.')
+      return null
+    }
+    if (!isValidHttpUrl(trimmed.startsWith('http') ? trimmed : `http://${trimmed}`)) {
+      setCustomUrl(settings.customOpenAiBaseUrl)
+      setFieldError('customUrl', 'Custom OpenAI base URL must be a valid http(s) URL.')
+      return null
+    }
+    const normalized = normalizeCustomOpenAiBaseUrl(trimmed)
+    if (normalized !== customUrl) setCustomUrl(normalized)
+    if (normalized === settings.customOpenAiBaseUrl) return normalized
+    const ok = await runUpdate({ customOpenAiBaseUrl: normalized })
+    if (!ok) {
+      setCustomUrl(settings.customOpenAiBaseUrl)
+      return null
+    }
+    return normalized
+  }
+
   const refreshModels = async (
     provider = settings.provider,
     opts?: { skipKeyCheck?: boolean }
@@ -304,7 +355,12 @@ export function useSettingsForm({
     setModelsInfo(null)
     setRefreshingModels(true)
     try {
-      const baseForKeyCheck = provider === 'ollama' ? ollamaUrl : undefined
+      const baseForKeyCheck =
+        provider === 'ollama'
+          ? ollamaUrl
+          : provider === 'custom'
+            ? customUrl
+            : undefined
       if (providerNeedsKey(provider, baseForKeyCheck) && !opts?.skipKeyCheck) {
         const hasKey = Boolean(secrets[provider as SecretProvider])
         if (!hasKey) {
@@ -318,15 +374,22 @@ export function useSettingsForm({
       }
 
       let ollamaHost: string | undefined
+      let customHost: string | undefined
       if (provider === 'ollama') {
         const host = await commitOllamaUrl()
         if (!host) return
         ollamaHost = host
       }
+      if (provider === 'custom') {
+        const host = await commitCustomUrl()
+        if (!host) return
+        customHost = host
+      }
       const res = await refreshCatalog({
         forceRefresh: true,
         provider,
-        ollamaBaseUrl: ollamaHost
+        ollamaBaseUrl: ollamaHost,
+        customOpenAiBaseUrl: customHost
       })
       if (res.ok) {
         onModelsRefreshed?.()
@@ -362,6 +425,11 @@ export function useSettingsForm({
         return
       }
       setKeyDraft('')
+      // Ollama API keys target Cloud — switch off local default automatically.
+      if (keyProvider === 'ollama' && isLocalOllamaHost(ollamaUrl || settings.ollamaBaseUrl)) {
+        const ok = await runUpdate({ ollamaBaseUrl: OLLAMA_CLOUD_BASE_URL })
+        if (ok) setOllamaUrl(OLLAMA_CLOUD_BASE_URL)
+      }
       const activated =
         keyProvider === settings.provider || (await setActiveProvider(keyProvider))
       if (!activated) return
@@ -380,6 +448,10 @@ export function useSettingsForm({
       if (!res.ok) setError(res.error)
       else {
         setKeyDraft('')
+        if (keyProvider === 'ollama' && isOllamaCloudHost(ollamaUrl || settings.ollamaBaseUrl)) {
+          const ok = await runUpdate({ ollamaBaseUrl: OLLAMA_LOCAL_DEFAULT })
+          if (ok) setOllamaUrl(OLLAMA_LOCAL_DEFAULT)
+        }
         setModelsInfo(`Cleared ${keyProviderLabel} key.`)
       }
     } finally {
@@ -406,6 +478,8 @@ export function useSettingsForm({
     setKeyDraft,
     ollamaUrl,
     setOllamaUrl,
+    customUrl,
+    setCustomUrl,
     error,
     errorField,
     modelsInfo,
@@ -449,6 +523,7 @@ export function useSettingsForm({
     runAgentUpdate,
     setActiveProvider,
     commitOllamaUrl,
+    commitCustomUrl,
     refreshModels,
     saveKey,
     clearKey,

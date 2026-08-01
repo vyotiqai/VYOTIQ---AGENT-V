@@ -128,17 +128,17 @@ describe('MarkdownContent streaming', () => {
     expect(screen.getByText('Hello')).toBeTruthy()
   })
 
-  it('keeps partial bold as plain text while streaming', () => {
+  it('balances partial bold while streaming', () => {
     render(<MarkdownContent content="Partial **bold" streaming />)
 
-    expect(screen.getByText('Partial **bold')).toBeTruthy()
-    expect(screen.queryByText('bold')?.tagName).not.toBe('STRONG')
+    expect(screen.getByText('bold').tagName).toBe('STRONG')
+    expect(screen.queryByText('Partial **bold')).toBeNull()
   })
 
-  it('renders bold after streaming completes', () => {
+  it('keeps bold after streaming completes', () => {
     const { rerender } = render(<MarkdownContent content="Partial **bold" streaming />)
 
-    expect(screen.getByText('Partial **bold')).toBeTruthy()
+    expect(screen.getByText('bold').tagName).toBe('STRONG')
 
     rerender(<MarkdownContent content="Partial **bold" streaming={false} />)
 

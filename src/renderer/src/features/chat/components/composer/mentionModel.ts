@@ -1,3 +1,4 @@
+import type { SlashCommandKind } from '@shared/ipc'
 import { isSafeWorkspaceRelPath, isCuratedDocPath } from '@shared/workspacePath'
 import { basename } from '@shared/utils/path'
 
@@ -15,6 +16,24 @@ export type ComposerMention =
   | { kind: 'branch'; branch?: string | null }
   | { kind: 'browser' }
   | { kind: 'chat'; runId: string; title: string }
+  | {
+      kind: 'slash'
+      slashKind: SlashCommandKind
+      trigger: string
+      commandId?: string
+    }
+
+const SLASH_KINDS = new Set<SlashCommandKind>([
+  'builtin',
+  'skill',
+  'workspace',
+  'rule',
+  'mcp'
+])
+
+function isSlashKind(value: string): value is SlashCommandKind {
+  return SLASH_KINDS.has(value as SlashCommandKind)
+}
 
 export type ComposerSegment =
   | { type: 'text'; value: string }
@@ -157,6 +176,8 @@ export function mentionLabel(mention: ComposerMention): string {
       return 'Browser'
     case 'chat':
       return mention.title.trim() || mention.runId.slice(0, 8)
+    case 'slash':
+      return mention.trigger.trim() || mention.slashKind
     default: {
       const _exhaustive: never = mention
       return _exhaustive
@@ -180,10 +201,69 @@ function encodePayload(mention: ComposerMention): string {
       return 'browser'
     case 'chat':
       return `chat:${mention.runId}|${encodeURIComponent(mention.title)}`
+    case 'slash': {
+      const trigger = mention.trigger.trim()
+      const head = `slash:${mention.slashKind}:${encodeURIComponent(trigger)}`
+      if (!mention.commandId) return head
+      return `${head}|${encodeURIComponent(mention.commandId)}`
+    }
     default: {
       const _exhaustive: never = mention
       return _exhaustive
     }
+  }
+}
+
+function decodeSlashPayload(raw: string): Extract<ComposerMention, { kind: 'slash' }> | null {
+  const decode = (value: string): string => {
+    try {
+      return decodeURIComponent(value)
+    } catch {
+      return value
+    }
+  }
+
+  // Legacy skill: payloads from earlier drafts.
+  if (raw.startsWith('skill:')) {
+    const rest = raw.slice('skill:'.length)
+    const bar = rest.indexOf('|')
+    if (bar < 0) {
+      const trigger = decode(rest.trim())
+      if (!trigger) return null
+      return { kind: 'slash', slashKind: 'skill', trigger }
+    }
+    const trigger = decode(rest.slice(0, bar).trim())
+    if (!trigger) return null
+    const commandId = decode(rest.slice(bar + 1).trim()) || undefined
+    return {
+      kind: 'slash',
+      slashKind: 'skill',
+      trigger,
+      ...(commandId ? { commandId } : {})
+    }
+  }
+
+  if (!raw.startsWith('slash:')) return null
+  const rest = raw.slice('slash:'.length)
+  const firstColon = rest.indexOf(':')
+  if (firstColon <= 0) return null
+  const slashKindRaw = rest.slice(0, firstColon)
+  if (!isSlashKind(slashKindRaw)) return null
+  const afterKind = rest.slice(firstColon + 1)
+  const bar = afterKind.indexOf('|')
+  if (bar < 0) {
+    const trigger = decode(afterKind.trim())
+    if (!trigger) return null
+    return { kind: 'slash', slashKind: slashKindRaw, trigger }
+  }
+  const trigger = decode(afterKind.slice(0, bar).trim())
+  if (!trigger) return null
+  const commandId = decode(afterKind.slice(bar + 1).trim()) || undefined
+  return {
+    kind: 'slash',
+    slashKind: slashKindRaw,
+    trigger,
+    ...(commandId ? { commandId } : {})
   }
 }
 
@@ -233,6 +313,8 @@ export function decodeMentionPayload(payload: string): ComposerMention | null {
     }
     return { kind: 'chat', runId, title: title || runId }
   }
+  const slash = decodeSlashPayload(raw)
+  if (slash) return slash
   return null
 }
 
@@ -286,9 +368,38 @@ export function composerDocumentPlainText(raw: string): string {
   return parseComposerDocument(raw)
     .map((seg) => {
       if (seg.type === 'text') return seg.value
+      if (seg.mention.kind === 'slash') return `/${mentionLabel(seg.mention)}`
       return `@${mentionLabel(seg.mention)}`
     })
     .join('')
+}
+
+/**
+ * Detect a slash-command chip in the composer draft for slash-style submit.
+ * Returns the first slash chip and the draft with slash chips removed
+ * (other @mentions preserved for resolve-on-send).
+ */
+export function findSlashChipSubmit(raw: string): {
+  trigger: string
+  commandId: string | null
+  slashKind: SlashCommandKind
+  trailingRaw: string
+} | null {
+  const segments = parseComposerDocument(raw)
+  const slashSeg = segments.find(
+    (seg): seg is { type: 'mention'; mention: Extract<ComposerMention, { kind: 'slash' }> } =>
+      seg.type === 'mention' && seg.mention.kind === 'slash'
+  )
+  if (!slashSeg) return null
+  const trailingRaw = serializeComposerDocument(
+    segments.filter((seg) => !(seg.type === 'mention' && seg.mention.kind === 'slash'))
+  )
+  return {
+    trigger: slashSeg.mention.trigger,
+    commandId: slashSeg.mention.commandId ?? null,
+    slashKind: slashSeg.mention.slashKind,
+    trailingRaw
+  }
 }
 
 export function extractMentions(raw: string): ComposerMention[] {

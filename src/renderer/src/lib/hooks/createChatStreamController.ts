@@ -430,6 +430,38 @@ function clearQuestions(items: UiItem[], requestId?: string): UiItem[] {
   })
 }
 
+/**
+ * `messagesToUiItems` rebuilds chrome without timestamps. After edit/resend,
+ * copy `at` / `groupTiming` from the prior UI so earlier turns keep "Worked for…".
+ */
+function carryTimingFromPriorItems(nextItems: UiItem[], priorItems: UiItem[]): UiItem[] {
+  if (priorItems.length === 0) return nextItems
+  const priorById = new Map(priorItems.map((item) => [item.id, item]))
+  let changed = false
+  const out = nextItems.map((item) => {
+    const prior = priorById.get(item.id)
+    if (!prior || prior.kind !== item.kind) return item
+    if (item.kind === 'message' && prior.kind === 'message') {
+      if (item.at || !prior.at) return item
+      changed = true
+      return { ...item, at: prior.at }
+    }
+    if (item.kind === 'tool' && prior.kind === 'tool') {
+      const at = item.at ?? prior.at
+      const groupTiming = item.groupTiming ?? prior.groupTiming
+      if (at === item.at && groupTiming === item.groupTiming) return item
+      changed = true
+      return {
+        ...item,
+        ...(at ? { at } : {}),
+        ...(groupTiming ? { groupTiming } : {})
+      }
+    }
+    return item
+  })
+  return changed ? out : nextItems
+}
+
 /** Drop question panels gated on a settled ask_question tool call. */
 function clearQuestionsForTool(items: UiItem[], toolCallId: string): UiItem[] {
   return items.filter(
@@ -2001,7 +2033,17 @@ export function createChatStreamController(
     const priorWriteCheckpoint = state.writeCheckpoint
     const priorCollapsed = state.collapsedTurnIndices
     const nextMessages = messagesForNextTurn([...priorMessages.slice(0, editMessageIndex), user])
-    const nextItems = messagesToUiItems(nextMessages)
+    const sentAt = new Date().toISOString()
+    const editedUserId = messageUiId('user', editMessageIndex)
+    const nextItems = carryTimingFromPriorItems(
+      messagesToUiItems(nextMessages),
+      priorItems
+    ).map((item) => {
+      if (item.kind === 'message' && item.role === 'user' && item.id === editedUserId) {
+        return { ...item, at: sentAt }
+      }
+      return item
+    })
 
     patch({
       error: null,

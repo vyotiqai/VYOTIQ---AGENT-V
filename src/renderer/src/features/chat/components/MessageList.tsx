@@ -593,7 +593,7 @@ export function MessageList({
       programmaticScrollRef.current = true
       el.scrollTop = top
       const contentTall = el.scrollHeight > el.clientHeight + nearBottomPxRef.current
-      pinnedToBottomRef.current = !contentTall || distanceFromBottom(el) < nearBottomPxRef.current
+      pinnedToBottomRef.current = !contentTall || distanceFromBottom(el) <= nearBottomPxRef.current
       appliedRestoreRef.current = scrollRestoreToken ?? 0
       setScrollRestored(true)
       restorePendingRef.current = false
@@ -619,7 +619,7 @@ export function MessageList({
       programmaticScrollRef.current = true
       el.scrollTop = top
       const contentTall = el.scrollHeight > el.clientHeight + nearBottomPxRef.current
-      pinnedToBottomRef.current = !contentTall || distanceFromBottom(el) < nearBottomPxRef.current
+      pinnedToBottomRef.current = !contentTall || distanceFromBottom(el) <= nearBottomPxRef.current
       restorePendingRef.current = false
       window.requestAnimationFrame(() => {
         programmaticScrollRef.current = false
@@ -661,8 +661,9 @@ export function MessageList({
       autoScrollRafRef.current = null
       if (!scrollRestored || restorePendingRef.current || !pinnedToBottomRef.current) return
       const el = containerRef.current
-      // Already within pin slack — avoid yanking on every height tick.
-      if (el && distanceFromBottom(el) <= nearBottomPxRef.current) return
+      // Only skip when already flush at the absolute bottom. Skipping for the
+      // whole dock slack lets streaming growth sit under the floating composer.
+      if (el && distanceFromBottom(el) < 1) return
       followTail('auto')
     })
   }, [followTail, scrollRestored])
@@ -672,7 +673,7 @@ export function MessageList({
     if (!reserveComposerSpace || dockReservePx == null) return
     if (!scrollRestored || restorePendingRef.current || !pinnedToBottomRef.current) return
     const el = containerRef.current
-    if (el && distanceFromBottom(el) <= nearBottomPxRef.current) return
+    if (el && distanceFromBottom(el) < 1) return
     followTail('auto')
   }, [dockReservePx, reserveComposerSpace, followTail, scrollRestored])
 
@@ -688,8 +689,6 @@ export function MessageList({
     if (!el || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(() => {
       if (!scrollRestored || restorePendingRef.current || !pinnedToBottomRef.current) return
-      const current = containerRef.current
-      if (current && distanceFromBottom(current) <= nearBottomPxRef.current) return
       scheduleTailFollow()
     })
     ro.observe(el)
@@ -702,7 +701,7 @@ export function MessageList({
     (scrollTop: number) => {
       const el = containerRef.current
       if (el && !programmaticScrollRef.current) {
-        pinnedToBottomRef.current = distanceFromBottom(el) < nearBottomPxRef.current
+        pinnedToBottomRef.current = distanceFromBottom(el) <= nearBottomPxRef.current
         restorePendingRef.current = false
       }
       onScrollTopChange?.(scrollTop)
@@ -710,9 +709,18 @@ export function MessageList({
     [onScrollTopChange]
   )
 
-  const dockReserveStyle = reserveComposerSpace
-    ? ({ paddingBottom: 'var(--vy-dock-h, 8rem)' } as const)
-    : undefined
+  // Prefer the measured px from ChatView so reserve cannot desync from --vy-dock-h.
+  const dockReserveStyle = (() => {
+    if (!reserveComposerSpace) return undefined
+    const pad =
+      dockReservePx != null && dockReservePx > 0
+        ? `${dockReservePx}px`
+        : 'var(--vy-dock-h, 8rem)'
+    return {
+      paddingBottom: pad,
+      scrollPaddingBottom: pad
+    } as const
+  })()
 
   const streamingAnnouncement = useMemo(() => {
     for (const row of displayRows) {
@@ -827,12 +835,17 @@ export function MessageList({
     if (!scrollRestored || displayRows.length === 0) return
     if (restoreScrollTop && restoreScrollTop > 0) return
     if (shouldVirtualize) {
-      // Remasure visible rows first so scrollToEnd uses real heights, not cold estimates.
+      // Remasure visible rows first so end scroll uses real heights, not cold estimates.
       remasureMountedRows()
-      rowVirtualizer.scrollToEnd()
-    } else {
-      const el = containerRef.current
-      if (el) el.scrollTop = el.scrollHeight
+    }
+    // Scroll to scrollHeight (includes paddingBottom) so the last row clears the
+    // floating composer. Avoid virtualizer scrollToEnd — it aligns to the client
+    // bottom and can leave rows under the dock. Do not use followTail here: it
+    // sets programmaticScrollRef and can swallow the user's immediate unpin scroll.
+    const el = containerRef.current
+    if (el) {
+      el.scrollTop = el.scrollHeight
+      pinnedToBottomRef.current = true
     }
     // Pin once after restore/surface — followOnAppend handles stream growth.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot pin

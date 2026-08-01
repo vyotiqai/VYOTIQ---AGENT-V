@@ -226,7 +226,8 @@ describe('MessageList', () => {
       expect(scrollTopSet).toHaveBeenCalled()
     })
     expect(scrollTopSet).toHaveBeenCalledWith(4000)
-    expect(scroll.style.paddingBottom).toBe('var(--vy-dock-h, 8rem)')
+    expect(scroll.style.paddingBottom).toBe('180px')
+    expect(scroll.style.scrollPaddingBottom).toBe('180px')
 
     vi.unstubAllGlobals()
   })
@@ -267,9 +268,8 @@ describe('MessageList', () => {
       get: () => scrollTop,
       set: scrollTopSet
     })
-    // Outside pin slack so content-revision follow must call followTail.
-    // nearBottom ≈ dockReserve (180); distance must exceed that.
-    scrollTop = 1000
+    // Within former dock slack — must still follow so tokens do not sit under the composer.
+    scrollTop = 2000 - 400 - 50
     scrollTopSet.mockClear()
 
     rerender(
@@ -769,8 +769,9 @@ describe('MessageList', () => {
 
     render(<MessageList items={items} onBeginEditUserMessage={() => {}} />)
 
-    const bubble = screen.getByLabelText('Edit message')
-    expect(bubble.getAttribute('title')).toBe('Click to edit')
-    expect(bubble.className).toContain('group/prompt')
+    const editBtn = screen.getByLabelText('Edit message')
+    const bubble = editBtn.parentElement
+    expect(bubble?.getAttribute('title')).toBe('Click to edit')
+    expect(bubble?.className).toContain('group/prompt')
   })
 })

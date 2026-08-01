@@ -20,7 +20,7 @@ import {
   setMcpAuthToken,
   clearMcpOAuthState
 } from '../../settings/secrets'
-import { getSettings, setSettings, enqueueSettingsMutation } from '../../settings/settings'
+import { getSettings, setSettings, enqueueSettingsMutation, REDACTED_VALUE } from '../../settings/settings'
 import {
   getBearerToken,
   headersWithoutAuthorization,
@@ -44,13 +44,16 @@ export function buildMcpChildEnv(
   source: NodeJS.ProcessEnv = process.env
 ): Record<string, string> {
   const env: Record<string, string> = { ...sanitizedTerminalEnv(source) }
-  // Official Python MCP servers on Windows often hang/garble without UTF-8 stdio.
-  if (process.platform === 'win32' && !env.PYTHONIOENCODING) {
-    env.PYTHONIOENCODING = 'utf-8'
-  }
   const safeOverlay = sanitizeMcpManifestEnv(serverEnv)
   for (const [key, value] of Object.entries(safeOverlay ?? {})) {
-    if (typeof value === 'string') env[key] = value
+    // Never inject IPC redaction placeholders into the child process.
+    if (typeof value !== 'string' || value === REDACTED_VALUE) continue
+    env[key] = value
+  }
+  // Official Python MCP servers on Windows often hang/garble without UTF-8 stdio.
+  // Apply after overlay so a redacted PYTHONIOENCODING cannot overwrite the default.
+  if (process.platform === 'win32' && !env.PYTHONIOENCODING) {
+    env.PYTHONIOENCODING = 'utf-8'
   }
   return env
 }
@@ -623,7 +626,26 @@ export async function disconnectMcpServer(serverId: string): Promise<void> {
   connectErrors.delete(serverId)
 }
 
-export async function syncMcpServers(servers: McpServer[]): Promise<void> {
+export async function syncMcpServers(
+  servers: McpServer[],
+  opts?: { forceRetryFailures?: boolean }
+): Promise<void> {
+  if (opts?.forceRetryFailures) {
+    for (const server of servers) {
+      if (!server.enabled) continue
+      if (sessions.has(server.id)) continue
+      if (!connectErrors.has(server.id)) continue
+      connectFailures.delete(server.id)
+    }
+    // Bust fingerprint so a prior failed sync does not early-return.
+    if (
+      servers.some(
+        (s) => s.enabled && !sessions.has(s.id) && connectErrors.has(s.id)
+      )
+    ) {
+      lastSyncedServersFp = ''
+    }
+  }
   const fp = servers
     .map((s) => `${s.id}:${s.enabled ? 1 : 0}:${mcpServerConfigKey(s)}`)
     .sort()
@@ -709,7 +731,8 @@ async function syncMcpServersUnlocked(servers: McpServer[]): Promise<void> {
         logger.warn('MCP connect failed', {
           scope: 'mcp',
           serverId: server.id,
-          err: message
+          reason: message,
+          err: err instanceof Error ? err : new Error(message)
         })
       }
     }

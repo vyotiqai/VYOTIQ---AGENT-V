@@ -9,7 +9,8 @@ export const ProviderIdSchema = z.enum([
   'groq',
   'openrouter',
   'xai',
-  'mistral'
+  'mistral',
+  'custom'
 ])
 export type ProviderId = z.infer<typeof ProviderIdSchema>
 

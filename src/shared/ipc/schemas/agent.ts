@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { AgentInteractionModeSchema } from './settings'
 
-export const MAX_IMAGE_BYTES = 4 * 1024 * 1024
+export const MAX_IMAGE_BYTES = 12 * 1024 * 1024
 export const MAX_IMAGE_DATA_URL_CHARS = Math.ceil(MAX_IMAGE_BYTES * (4 / 3)) + 128
 
 /** Raw bytes an attachment may carry before extraction; PDFs are the heavy case. */
@@ -278,6 +278,7 @@ export const AgentEventSchema = z.discriminatedUnion('type', [
     inputTokens: z.number().int().min(0).optional(),
     outputTokens: z.number().int().min(0).optional(),
     cachedInputTokens: z.number().int().min(0).optional(),
+    cacheCreationInputTokens: z.number().int().min(0).optional(),
     reasoningTokens: z.number().int().min(0).optional()
   }),
   z.object({
@@ -925,6 +926,21 @@ export const WorkspaceReadTextResultSchema = z.object({
   truncated: z.boolean()
 })
 export type WorkspaceReadTextResult = z.infer<typeof WorkspaceReadTextResultSchema>
+
+/** Read a workspace image as a data URL for tool-card / UI preview (not model context). */
+export const WorkspaceReadImageRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  path: z.string().min(1)
+})
+export type WorkspaceReadImageRequest = z.infer<typeof WorkspaceReadImageRequestSchema>
+
+export const WorkspaceReadImageResultSchema = z.object({
+  path: z.string(),
+  mime: z.string(),
+  dataUrl: z.string().max(MAX_IMAGE_DATA_URL_CHARS),
+  byteLength: z.number().int().min(0)
+})
+export type WorkspaceReadImageResult = z.infer<typeof WorkspaceReadImageResultSchema>
 
 export const WorkspaceListDocsRequestSchema = z.object({
   workspacePath: z.string().min(1),

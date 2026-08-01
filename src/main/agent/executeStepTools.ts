@@ -184,25 +184,32 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
     // Ask before doing anything: the tool_start event is already out, so the
     // renderer can show the approval card in the row the user is looking at.
     if (ctx.approval) {
-      const verdict = await ctx.approval.authorize(call)
-      if (!verdict.allowed) {
-        const toolMsg: ChatMessage = {
-          role: 'tool',
-          toolCallId: call.id,
-          toolName: call.name,
-          content: verdict.reason,
-          ok: false
+      const agentMode = ctx.getAgentMode?.() ?? ctx.agentMode
+      // Ask/Plan generate_image is describe-only (no network/write) — skip approval.
+      const dryRunImage =
+        (call.name === 'generate_image' || call.name === 'edit_image') &&
+        (agentMode === 'ask' || agentMode === 'plan')
+      if (!dryRunImage) {
+        const verdict = await ctx.approval.authorize(call)
+        if (!verdict.allowed) {
+          const toolMsg: ChatMessage = {
+            role: 'tool',
+            toolCallId: call.id,
+            toolName: call.name,
+            content: verdict.reason,
+            ok: false
+          }
+          events.push({
+            type: 'tool_result',
+            runId: ctx.runId,
+            toolCallId: call.id,
+            name: call.name,
+            summary: 'denied',
+            ok: false,
+            content: verdict.reason
+          })
+          return { ok: false, events, message: toolMsg }
         }
-        events.push({
-          type: 'tool_result',
-          runId: ctx.runId,
-          toolCallId: call.id,
-          name: call.name,
-          summary: 'denied',
-          ok: false,
-          content: verdict.reason
-        })
-        return { ok: false, events, message: toolMsg }
       }
     }
 
@@ -301,7 +308,18 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
         scope: 'agent',
         code: 'TOOL_EXEC',
         correlationId: ctx.runId,
-        tool: call.name
+        tool: call.name,
+        reason: result.summary === 'error' ? undefined : result.summary,
+        // Safe provider taxonomy only — never log full tool content (may include prompts).
+        ...(call.name === 'generate_image' || call.name === 'edit_image'
+          ? {
+              kind: /401|auth|API key/i.test(result.content)
+                ? 'auth'
+                : /moderation/i.test(result.content)
+                  ? 'moderation'
+                  : 'image'
+            }
+          : {})
       })
     }
     return {

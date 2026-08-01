@@ -1,5 +1,5 @@
 import type { ChatMessage, CompactRunResult, ProviderId } from '../../shared/ipc'
-import { ollamaOpenAiBaseUrl, providerNeedsKey } from '../../shared/domain/providers'
+import { providerNeedsKey, resolveProviderChatBaseUrl } from '../../shared/domain/providers'
 import { DEFAULT_SETTINGS } from '../../shared/ipc'
 import { logger } from '../../shared/logger'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
@@ -48,7 +48,8 @@ export async function compactRunNow(input: {
 
   const providerId: ProviderId = settings.provider
   const apiKey = getSecret(providerId)
-  if (providerNeedsKey(providerId, settings.ollamaBaseUrl) && !apiKey) {
+  const baseUrl = resolveProviderChatBaseUrl(providerId, settings, apiKey)
+  if (providerNeedsKey(providerId, baseUrl ?? settings.ollamaBaseUrl) && !apiKey) {
     const status = secretStatus()
     const storedBlob = hasStoredSecretBlob(providerId)
     const message = !status.encryptionAvailable
@@ -74,7 +75,6 @@ export async function compactRunNow(input: {
   const keepRecent = settings.keepRecentTurns ?? KEEP_RECENT_TURNS
   const signal = AbortSignal.timeout(COMPACT_TIMEOUT_MS)
   const provider = getProvider(providerId)
-  const baseUrl = providerId === 'ollama' ? ollamaOpenAiBaseUrl(settings.ollamaBaseUrl) : undefined
   const model = await resolveModelInfo(providerId, settings.model, apiKey, baseUrl, signal)
 
   const kept = await preserveRecentMessagesAsync(

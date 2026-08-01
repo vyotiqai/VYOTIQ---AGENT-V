@@ -2,8 +2,9 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, act } from '@testing-library/react'
 import { Composer } from '@renderer/features/chat/components/composer/Composer'
+import { mentionMarker } from '@renderer/features/chat/components/composer/mentionModel'
 
 const slashCommands = [
   {
@@ -42,7 +43,8 @@ beforeEach(() => {
             ok: true,
             data: {
               action: 'send',
-              message: '[Skill: code-review]\n\n<body>'
+              message:
+                '[Skill: code-review]\n\n<skill instructions>\n<body>\n</skill instructions>\n\nUser request:\n(no additional instructions)'
             }
           }
         }
@@ -174,5 +176,236 @@ describe('Composer slash commands', () => {
       expect(screen.getByRole('listbox', { name: /Slash commands/i })).toBeTruthy()
     })
     expect(screen.getByText('No matches')).toBeTruthy()
+  })
+
+  it('resolves a partial skill trigger on form submit via fuzzy prefix', async () => {
+    const onSend = vi.fn().mockResolvedValue(true)
+    const onDraftChange = vi.fn()
+    const { rerender } = render(
+      <Composer
+        {...baseProps}
+        draft="/cod"
+        onDraftChange={onDraftChange}
+        onSend={onSend}
+      />
+    )
+
+    await waitFor(() => expect(window.vyotiq.slashCommandsList).toHaveBeenCalled())
+
+    rerender(
+      <Composer
+        {...baseProps}
+        draft="/cod"
+        onDraftChange={onDraftChange}
+        onSend={onSend}
+      />
+    )
+
+    const form = screen.getByRole('textbox', { name: /^Message$/i }).closest('form')!
+    fireEvent.submit(form)
+
+    await waitFor(() => {
+      expect(window.vyotiq.slashCommandsResolve).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'skill:code-review' })
+      )
+    })
+    await waitFor(() => expect(onSend).toHaveBeenCalled())
+    expect(onSend.mock.calls[0]?.[0]).toContain('[Skill: code-review]')
+  })
+
+  it('inserts a skill chip on menu pick without sending', async () => {
+    const onSend = vi.fn().mockResolvedValue(true)
+    const onDraftChange = vi.fn()
+    const { rerender } = render(
+      <Composer
+        {...baseProps}
+        draft="/code-review"
+        onDraftChange={onDraftChange}
+        onSend={onSend}
+      />
+    )
+
+    await waitFor(() => expect(window.vyotiq.slashCommandsList).toHaveBeenCalled())
+
+    const prefixed = 'hello /code-review'
+    rerender(
+      <Composer
+        {...baseProps}
+        draft={prefixed}
+        onDraftChange={onDraftChange}
+        onSend={onSend}
+      />
+    )
+
+    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    ta.focus()
+    const sel = window.getSelection()
+    const range = document.createRange()
+    range.selectNodeContents(ta)
+    range.collapse(false)
+    sel?.removeAllRanges()
+    sel?.addRange(range)
+    fireEvent.click(ta)
+
+    await waitFor(() => {
+      expect(screen.getByRole('listbox', { name: /Slash commands/i })).toBeTruthy()
+    })
+
+    fireEvent.click(screen.getByRole('option', { name: /code-review/i }))
+
+    await waitFor(() => {
+      const last = onDraftChange.mock.calls.at(-1)?.[0] as string
+      expect(last).toContain('hello ')
+      expect(last).toMatch(/\uFFF9slash:skill:/)
+      expect(last).toContain('code-review')
+      expect(last.endsWith(' ')).toBe(true)
+      expect(last).not.toContain('/code-review')
+    })
+    expect(onSend).not.toHaveBeenCalled()
+    expect(window.vyotiq.slashCommandsResolve).not.toHaveBeenCalled()
+  })
+
+  it('inserts a builtin command chip on menu pick without sending', async () => {
+    const onSend = vi.fn().mockResolvedValue(true)
+    const onDraftChange = vi.fn()
+    const { rerender } = render(
+      <Composer {...baseProps} draft="/compact" onDraftChange={onDraftChange} onSend={onSend} />
+    )
+
+    await waitFor(() => expect(window.vyotiq.slashCommandsList).toHaveBeenCalled())
+
+    rerender(
+      <Composer {...baseProps} draft="/compact" onDraftChange={onDraftChange} onSend={onSend} />
+    )
+
+    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    ta.focus()
+    fireEvent.click(ta)
+
+    await waitFor(() => {
+      expect(screen.getByRole('listbox', { name: /Slash commands/i })).toBeTruthy()
+    })
+
+    fireEvent.click(screen.getByRole('option', { name: /Compact context/i }))
+
+    await waitFor(() => {
+      const last = onDraftChange.mock.calls.at(-1)?.[0] as string
+      expect(last).toMatch(/\uFFF9slash:builtin:/)
+      expect(last).toContain('compact')
+      expect(last.endsWith(' ')).toBe(true)
+    })
+    expect(onSend).not.toHaveBeenCalled()
+    expect(window.vyotiq.slashCommandsResolve).not.toHaveBeenCalled()
+  })
+
+  it('inserts a partial skill pick as a chip without sending', async () => {
+    const onSend = vi.fn().mockResolvedValue(true)
+    const onDraftChange = vi.fn()
+    const { rerender } = render(
+      <Composer {...baseProps} draft="/cod" onDraftChange={onDraftChange} onSend={onSend} />
+    )
+
+    await waitFor(() => expect(window.vyotiq.slashCommandsList).toHaveBeenCalled())
+
+    rerender(
+      <Composer {...baseProps} draft="/cod" onDraftChange={onDraftChange} onSend={onSend} />
+    )
+
+    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    ta.focus()
+    fireEvent.click(ta)
+
+    await waitFor(() => {
+      expect(screen.getByRole('listbox', { name: /Slash commands/i })).toBeTruthy()
+    })
+
+    fireEvent.click(screen.getByRole('option', { name: /code-review/i }))
+
+    await waitFor(() => {
+      const last = onDraftChange.mock.calls.at(-1)?.[0] as string
+      expect(last).toMatch(/^\uFFF9slash:skill:/)
+      expect(last).toContain('code-review')
+      expect(last.endsWith(' ')).toBe(true)
+    })
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('resolves a skill chip on submit after loading catalog (no prior / menu)', async () => {
+    const onSend = vi.fn().mockResolvedValue(true)
+    const onDraftChange = vi.fn()
+    const chipDraft = `${mentionMarker({
+      kind: 'slash',
+      slashKind: 'skill',
+      trigger: 'code-review',
+      commandId: 'skill:code-review'
+    })} focus on auth`
+
+    render(
+      <Composer
+        {...baseProps}
+        variant="inline"
+        workspacePath="/ws"
+        draft={chipDraft}
+        onDraftChange={onDraftChange}
+        onSend={onSend}
+      />
+    )
+
+    await waitFor(() => expect(window.vyotiq.slashCommandsList).toHaveBeenCalled())
+
+    const form = screen.getByRole('textbox', { name: /Edit message|Message/i }).closest('form')
+    expect(form).toBeTruthy()
+    fireEvent.submit(form!)
+
+    await waitFor(() => {
+      expect(window.vyotiq.slashCommandsResolve).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'skill:code-review',
+          trailingText: 'focus on auth'
+        })
+      )
+    })
+    await waitFor(() => expect(onSend).toHaveBeenCalled())
+    expect(onSend.mock.calls[0]?.[0]).toContain('[Skill: code-review]')
+  })
+
+  it('does not strip a skill chip into a plain send when catalog resolve fails', async () => {
+    const onSend = vi.fn().mockResolvedValue(true)
+    const onDraftChange = vi.fn()
+    vi.mocked(window.vyotiq.slashCommandsList).mockResolvedValue({
+      ok: true,
+      data: { commands: [] }
+    })
+    const chipDraft = `${mentionMarker({
+      kind: 'slash',
+      slashKind: 'skill',
+      trigger: 'code-review'
+    })} trailing only`
+
+    render(
+      <Composer
+        {...baseProps}
+        variant="inline"
+        workspacePath="/ws"
+        draft={chipDraft}
+        onDraftChange={onDraftChange}
+        onSend={onSend}
+      />
+    )
+
+    await waitFor(() => expect(window.vyotiq.slashCommandsList).toHaveBeenCalled())
+
+    const form = screen.getByRole('textbox', { name: /Edit message|Message/i }).closest('form')
+    fireEvent.submit(form!)
+
+    await waitFor(() => {
+      expect(window.vyotiq.slashCommandsResolve).not.toHaveBeenCalled()
+    })
+    // Give the async submit path a tick; must not fall through to plain onSend.
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(onSend).not.toHaveBeenCalled()
   })
 })

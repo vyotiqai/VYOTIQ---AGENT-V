@@ -2,13 +2,14 @@ import { app, BrowserWindow, nativeTheme } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 import { createWindow, applyTitleBarTheme, getMainWindow } from '@main/app/window'
+import { configureChromiumDiskCache } from '@main/app/chromiumProfile'
 import { applyCsp } from '@main/app/security'
 import { closeAgentBrowser } from '@main/app/agentBrowser'
 import { disposeAllPtySessions, replayPtySessionsToWindow } from '@main/app/ptySessions'
 import { disposeAllTerminalSessions } from '@main/agent/tools/terminalSessions'
 import { registerIpc } from './ipc/register'
 import { shutdownMcpServers, syncMcpServers } from '@main/agent/mcp'
-import { resolveEffectiveMcpServers, syncMarketplaceMcpIntoSettings } from '@main/marketplace'
+import { resolveEffectiveMcpServers, syncMarketplaceMcpIntoSettings, purgeOrphanMarketplacePackageDirs } from '@main/marketplace'
 import { ensureDefaultSemanticMcp } from '@main/marketplace/ensureDefaultSemanticMcp'
 import { getSettings } from '@main/settings/settings'
 import { migrateLegacySessions } from '@main/storage/migrations/migrateSessions'
@@ -32,10 +33,9 @@ import { startLoadPerfMonitor } from './perf/loadSnapshot'
 
 // Keep Chromium caches under userData so concurrent/dev instances do not
 // fight over the default Windows profile cache (Access denied / Gpu Cache).
+// Fingerprint the main bundle so rebuilds do not reuse stale disk cache.
 try {
-  const userData = app.getPath('userData')
-  app.commandLine.appendSwitch('disk-cache-dir', join(userData, 'Cache'))
-  app.commandLine.appendSwitch('disable-gpu-shader-disk-cache')
+  configureChromiumDiskCache(join(__dirname, 'index.js'))
 } catch {
   // getPath can fail in odd launch contexts; ignore
 }
@@ -48,6 +48,7 @@ initCrashReporter()
 // a Crashpad dump identifies a different root cause.
 if (process.platform === 'win32') {
   app.disableHardwareAcceleration()
+  app.commandLine.appendSwitch('disable-gpu-compositing')
 }
 
 const QUIT_FLUSH_MS = 500
@@ -101,6 +102,13 @@ if (!gotLock) {
     registerIpc()
     startLoadPerfMonitor()
     try {
+      const orphan = purgeOrphanMarketplacePackageDirs()
+      if (orphan.removed > 0) {
+        logger.info('Purged orphan marketplace package directories', {
+          scope: 'main',
+          removed: orphan.removed
+        })
+      }
       void ensureDefaultSemanticMcp().then(() => {
         void syncMcpServers(resolveEffectiveMcpServers()).catch((err) => {
           logger.warn('MCP sync after default semantic install failed', { scope: 'main', err })

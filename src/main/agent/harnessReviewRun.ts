@@ -1,6 +1,6 @@
 import { getSettings } from '@main/settings/settings'
 import { getSecret } from '@main/settings/secrets'
-import { ollamaOpenAiBaseUrl } from '../../shared/providers'
+import { resolveProviderChatBaseUrl } from '../../shared/providers'
 import { getProvider } from './providers'
 import { runHarnessReview, type WeaknessSummary } from './harnessReview'
 import { rewriteHarnessProposalBody } from './harnessRewrite'
@@ -22,8 +22,7 @@ export async function runHarnessReviewWithSettings(
       }) => {
         const provider = getProvider(settings.provider)
         const apiKey = getSecret(settings.provider)
-        const baseUrl =
-          settings.provider === 'ollama' ? ollamaOpenAiBaseUrl(settings.ollamaBaseUrl) : undefined
+        const baseUrl = resolveProviderChatBaseUrl(settings.provider, settings, apiKey)
         return rewriteHarnessProposalBody({
           currentHarness,
           summary,

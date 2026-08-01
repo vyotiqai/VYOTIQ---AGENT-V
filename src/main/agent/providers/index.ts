@@ -16,6 +16,7 @@ import {
 } from './modelCache'
 import {
   assertValidProviderBaseUrl,
+  customProvider,
   deepseekProvider,
   groqProvider,
   mistralProvider,
@@ -35,7 +36,8 @@ const providers: Record<ProviderId, LlmProvider> = {
   groq: groqProvider,
   openrouter: openrouterProvider,
   xai: xaiProvider,
-  mistral: mistralProvider
+  mistral: mistralProvider,
+  custom: customProvider
 }
 
 export function getProvider(id: ProviderId): LlmProvider {

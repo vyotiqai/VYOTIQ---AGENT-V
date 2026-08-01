@@ -45,10 +45,28 @@ export const ALLOWED_LOG_FIELD_KEYS = new Set([
   'cacheHitRatio',
   'inputTokens',
   'cachedInputTokens',
+  'cacheCreationInputTokens',
   'attempt',
   'messageCount',
   'toolCallId',
-  'providerMessage'
+  'providerMessage',
+  'logsDir',
+  'crashDumpsPath',
+  'crashReporterStarted',
+  'crashDumpCount',
+  'exitCodeHex',
+  'processType',
+  'serviceName',
+  'reloadCount',
+  'url',
+  'restored',
+  'kept',
+  'discarded',
+  'action',
+  'checkpointId',
+  'id',
+  'version',
+  'removed'
 ])
 
 const PATH_IN_TEXT =
@@ -111,9 +129,23 @@ export function sanitizeErrorForLog(err: unknown): Record<string, unknown> | und
     if (typeof rec.code === 'string' || typeof rec.code === 'number') out.code = rec.code
     if (typeof rec.errno === 'number') out.errno = rec.errno
     if (typeof rec.syscall === 'string') out.syscall = rec.syscall
+    // Keep a short scrubbed message when it does not embed workspace paths.
+    const raw = err.message?.trim() ?? ''
+    if (raw && !USER_DATA_PREFIX.test(raw) && !PATH_IN_TEXT.test(raw)) {
+      const scrubbed = sanitizeLogMessage(raw)
+      if (scrubbed && scrubbed !== err.name) out.message = scrubbed.slice(0, 200)
+    }
     return out
   }
-  if (typeof err === 'string') return { name: 'Error', code: 'IPC_CLIENT' }
+  // String errors (e.g. formatError output) must retain scrubbed text — do not
+  // collapse them to a fake IPC_CLIENT code that hides spawn/uv failures.
+  if (typeof err === 'string') {
+    const scrubbed = sanitizeLogMessage(err)
+    return {
+      name: 'Error',
+      message: scrubbed.slice(0, 200) || 'error'
+    }
+  }
   return { name: 'Unknown' }
 }
 

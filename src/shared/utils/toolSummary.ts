@@ -55,6 +55,8 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   git_diff: { running: 'Diffing', done: 'Git diff' },
   git_commit: { running: 'Committing', done: 'Git commit' },
   diagnostics: { running: 'Checking', done: 'Diagnostics' },
+  generate_image: { running: 'Generating image', done: 'Generated image' },
+  edit_image: { running: 'Editing image', done: 'Edited image' },
   ask_question: { running: 'Asking', done: 'Asked' },
   switch_mode: { running: 'Switching mode', done: 'Switched mode' }
 }
@@ -104,6 +106,23 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
   if (name === 'read' || name === 'edit' || name === 'str_replace' || name === 'delete') {
     const path = args.path ?? args.file
     if (typeof path === 'string') return formatPathTarget(path)
+  }
+  if (name === 'generate_image') {
+    const path = args.path
+    if (typeof path === 'string' && path.trim()) return formatPathTarget(path)
+    const prompt = args.prompt
+    if (typeof prompt === 'string' && prompt.trim()) return truncate(prompt, 80)
+  }
+  if (name === 'edit_image') {
+    const path = args.path
+    if (typeof path === 'string' && path.trim()) return formatPathTarget(path)
+    const refs = args.reference_paths
+    if (Array.isArray(refs) && refs.length > 0) {
+      const first = refs.find((r) => typeof r === 'string' && r.trim())
+      if (typeof first === 'string') return formatPathTarget(first)
+    }
+    const prompt = args.prompt
+    if (typeof prompt === 'string' && prompt.trim()) return truncate(prompt, 80)
   }
   if (name === 'list_dir') {
     const path = args.path

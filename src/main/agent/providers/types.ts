@@ -20,6 +20,8 @@ export interface TokenUsage {
   totalTokens?: number
   /** Input tokens served from provider prompt cache (OpenAI, DeepSeek, Groq, Anthropic, Gemini). */
   cachedInputTokens?: number
+  /** Input tokens written into the prompt cache this step (Anthropic cache_creation). */
+  cacheCreationInputTokens?: number
   /** Reasoning / thinking tokens billed as output (provider-specific). */
   reasoningTokens?: number
 }
@@ -98,7 +100,7 @@ export interface ProviderChatRequest {
   reasoningState?: ProviderReasoningState
   /** Resolved model metadata for routing (Responses vs Completions, etc.). */
   modelInfo?: ModelInfo
-  /** API service tier (flex / priority) when supported. */
+  /** API service tier (`flex` / `priority`). UI labels `priority` as Fast (OpenAI Fast mode). */
   serviceTier?: ServiceTier
 }
 

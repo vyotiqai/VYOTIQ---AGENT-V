@@ -298,6 +298,10 @@ export async function resolveComposerMentions(opts: {
         if (!stillCurrent()) return staleResult()
         break
       }
+      case 'slash': {
+        // Slash chips are resolved via slash submit before send; ignore here.
+        break
+      }
       default: {
         const _exhaustive: never = mention
         void _exhaustive

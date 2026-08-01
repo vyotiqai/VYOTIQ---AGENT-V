@@ -108,10 +108,10 @@ describe('Composer', () => {
     render(
       <Composer
         provider="openai"
-        model="gpt-4.1"
+        model="gpt-5.6"
         running={false}
         hasWorkspace
-        chatSettings={{ ...chatSettings, provider: 'openai', model: 'gpt-4.1' }}
+        chatSettings={{ ...chatSettings, provider: 'openai', model: 'gpt-5.6' }}
         onChatSettingsChange={vi.fn()}
         onProviderModel={vi.fn()}
         onSend={vi.fn()}
@@ -130,8 +130,9 @@ describe('Composer', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Select model/i }))
     const listbox = screen.getByRole('listbox')
-    expect(within(listbox).queryByText('gpt-4.1')).toBeNull()
-    expect(within(listbox).getByText('gpt-4o')).toBeTruthy()
+    // Offline → OpenAI seeds; all mid-2026 seeds are vision-capable.
+    expect(within(listbox).getByText('gpt-5.6')).toBeTruthy()
+    expect(within(listbox).getByText('gpt-5.6-terra')).toBeTruthy()
   })
 
   it('attaches a document and sends its extracted text', async () => {

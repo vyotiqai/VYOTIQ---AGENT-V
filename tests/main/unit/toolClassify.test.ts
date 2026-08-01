@@ -29,6 +29,8 @@ describe('tool classify', () => {
     expect(isParallelSafeTool('edit')).toBe(false)
     expect(isParallelSafeTool('terminal')).toBe(false)
     expect(isParallelSafeTool('memory_write')).toBe(false)
+    expect(isParallelSafeTool('generate_image')).toBe(false)
+    expect(isParallelSafeTool('edit_image')).toBe(false)
   })
 
   it('gates web_fetch for approval while keeping it parallel-safe', () => {

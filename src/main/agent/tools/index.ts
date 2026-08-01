@@ -2,7 +2,8 @@ import { logger, logErrorSummary } from '../../../shared/logger'
 import { formatError, isAbortError, isExpectedToolError } from '../../../shared/errors'
 import { summarizeToolArgsFromRecord } from '../../../shared/toolSummary'
 import { validateToolArgs, type AgentToolName } from '../schemas/tools'
-import { invokeMcpTool, parseMcpToolName, getMcpToolDefinition, listMcpToolDefinitions, getMcpReadOnlyHint, assertMcpServerAccess, listMcpResources, readMcpResource, listMcpPrompts, getMcpPrompt } from '../mcp'
+import { invokeMcpTool, parseMcpToolName, getMcpToolDefinition, listMcpToolDefinitions, getMcpReadOnlyHint, assertMcpServerAccess, listMcpResources, readMcpResource, listMcpPrompts, getMcpPrompt, getMcpServerStatus } from '../mcp'
+import { resolveEffectiveMcpServers } from '@main/marketplace'
 import { isMcpToolPermitted } from '../../../shared/utils/mcpToolPolicy'
 import { validateAgainstJsonSchema } from '../schemas/jsonSchemaValidate'
 import { toolRead, READ_CONTENT_CAP } from './read'
@@ -23,6 +24,8 @@ import { toolMemoryList, toolMemoryRead, toolMemoryWrite } from './memory'
 import { toolSkill, summarizeSkillArgs } from './skill'
 import { toolGitDiffAsync, toolGitStatusAsync } from './gitHelpers'
 import { toolDiagnosticsAsync } from './diagnostics'
+import { toolGenerateImage } from './generateImage'
+import { toolEditImage } from './editImage'
 import { getSettings } from '@main/settings/settings'
 import { getWriteCheckpoint } from '../checkpoints'
 import { resolveInsideWorkspace } from '@main/workspace/safePath'
@@ -610,6 +613,28 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       return true
     })
     if (defs.length === 0) {
+      const statuses = getMcpServerStatus(resolveEffectiveMcpServers()).filter((s) => {
+        if (!s.enabled) return false
+        if (enabled && !enabled.has(s.id)) return false
+        if (filter && s.id.toLowerCase() !== filter) return false
+        return true
+      })
+      const down = statuses.filter((s) => !s.connected)
+      if (down.length > 0) {
+        const lines = down.map(
+          (s) => `- ${s.id}${s.error ? `: ${s.error}` : ': not connected'}`
+        )
+        return toolFail(
+          'mcp_list_tools',
+          filter || 'mcp',
+          [
+            'Enabled MCP server(s) are configured but not connected:',
+            ...lines,
+            '',
+            'Fix in Settings → Marketplace (ensure uv/uvx is on PATH), then Refresh MCP connections.'
+          ].join('\n')
+        )
+      }
       return toolOk(
         'mcp_list_tools',
         filter || 'mcp',
@@ -1062,6 +1087,121 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     throwIfAborted(signal)
     if (!result.ok) return toolFail('diagnostics', kind, result.content)
     return toolOk('diagnostics', kind, result.content)
+  },
+  generate_image: async (workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    const agentMode = resolveAgentMode(context)
+    const result = await toolGenerateImage(
+      workspace,
+      {
+        prompt: String(args.prompt ?? ''),
+        path: typeof args.path === 'string' ? args.path : undefined,
+        provider: typeof args.provider === 'string' ? args.provider : undefined,
+        model: typeof args.model === 'string' ? args.model : undefined,
+        size: typeof args.size === 'string' ? args.size : undefined,
+        quality:
+          args.quality === 'low' ||
+          args.quality === 'medium' ||
+          args.quality === 'high' ||
+          args.quality === 'auto'
+            ? args.quality
+            : undefined,
+        aspect_ratio: typeof args.aspect_ratio === 'string' ? args.aspect_ratio : undefined,
+        resolution: typeof args.resolution === 'string' ? args.resolution : undefined,
+        preset: args.preset === 'draft' || args.preset === 'final' ? args.preset : undefined,
+        n: typeof args.n === 'number' && Number.isFinite(args.n) ? args.n : undefined,
+        output_format:
+          args.output_format === 'png' ||
+          args.output_format === 'jpeg' ||
+          args.output_format === 'webp'
+            ? args.output_format
+            : undefined,
+        output_compression:
+          typeof args.output_compression === 'number' && Number.isFinite(args.output_compression)
+            ? args.output_compression
+            : undefined,
+        background:
+          args.background === 'opaque' ||
+          args.background === 'transparent' ||
+          args.background === 'auto'
+            ? args.background
+            : undefined
+      },
+      {
+        agentMode,
+        signal,
+        runDir: context.runDir,
+        skipWriteCheckpoint: context.skipWriteCheckpoint,
+        onProgress: context.onProgress
+      }
+    )
+    throwIfAborted(signal)
+    if (!result.ok) return toolFail('generate_image', result.summary, result.content)
+    if (agentMode === 'agent') {
+      clearWorkspaceSnapshotCache(workspace)
+      invalidateGitStatusCache(workspace)
+    }
+    return toolOk('generate_image', result.summary, result.content)
+  },
+  edit_image: async (workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    const agentMode = resolveAgentMode(context)
+    const refs = Array.isArray(args.reference_paths)
+      ? args.reference_paths.map((p) => String(p ?? ''))
+      : []
+    const result = await toolEditImage(
+      workspace,
+      {
+        prompt: String(args.prompt ?? ''),
+        reference_paths: refs,
+        path: typeof args.path === 'string' ? args.path : undefined,
+        mask_path: typeof args.mask_path === 'string' ? args.mask_path : undefined,
+        provider: typeof args.provider === 'string' ? args.provider : undefined,
+        model: typeof args.model === 'string' ? args.model : undefined,
+        size: typeof args.size === 'string' ? args.size : undefined,
+        quality:
+          args.quality === 'low' ||
+          args.quality === 'medium' ||
+          args.quality === 'high' ||
+          args.quality === 'auto'
+            ? args.quality
+            : undefined,
+        aspect_ratio: typeof args.aspect_ratio === 'string' ? args.aspect_ratio : undefined,
+        resolution: typeof args.resolution === 'string' ? args.resolution : undefined,
+        preset: args.preset === 'draft' || args.preset === 'final' ? args.preset : undefined,
+        n: typeof args.n === 'number' && Number.isFinite(args.n) ? args.n : undefined,
+        output_format:
+          args.output_format === 'png' ||
+          args.output_format === 'jpeg' ||
+          args.output_format === 'webp'
+            ? args.output_format
+            : undefined,
+        output_compression:
+          typeof args.output_compression === 'number' && Number.isFinite(args.output_compression)
+            ? args.output_compression
+            : undefined,
+        background:
+          args.background === 'opaque' ||
+          args.background === 'transparent' ||
+          args.background === 'auto'
+            ? args.background
+            : undefined
+      },
+      {
+        agentMode,
+        signal,
+        runDir: context.runDir,
+        skipWriteCheckpoint: context.skipWriteCheckpoint,
+        onProgress: context.onProgress
+      }
+    )
+    throwIfAborted(signal)
+    if (!result.ok) return toolFail('edit_image', result.summary, result.content)
+    if (agentMode === 'agent') {
+      clearWorkspaceSnapshotCache(workspace)
+      invalidateGitStatusCache(workspace)
+    }
+    return toolOk('edit_image', result.summary, result.content)
   }
 }
 

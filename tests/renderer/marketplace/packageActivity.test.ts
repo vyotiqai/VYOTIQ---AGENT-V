@@ -47,6 +47,26 @@ describe('packageActivity', () => {
     expect(installedActionLabel(a)).toBe('Connected')
   })
 
+  it('surfaces connect error on MCP cards', () => {
+    const status: McpServerStatus = {
+      id: 'git',
+      name: 'Git',
+      enabled: true,
+      connected: false,
+      toolCount: 0,
+      error: 'spawn uvx ENOENT'
+    }
+    const a = packageActivity(
+      entry({ id: 'git', kind: 'mcp' }),
+      installed({ id: 'git', enabled: true }),
+      status
+    )
+    expect(a.kind).toBe('enabled')
+    expect(a.label).toContain('Connect failed')
+    expect(a.label).toContain('spawn uvx ENOENT')
+    expect(a.className).toBe('text-danger')
+  })
+
   it('shows enabled / disabled for skills', () => {
     expect(
       packageActivity(
@@ -63,7 +83,6 @@ describe('packageActivity', () => {
       ).label
     ).toBe('Disabled')
   })
-})
 
   it('shows Force off here when workspace disables an installed package', () => {
     const a = packageActivity(
@@ -91,4 +110,5 @@ describe('packageActivity', () => {
     expect(a.kind).toBe('connected')
     expect(a.label).toBe('Connected · 3 tools')
   })
+})
 

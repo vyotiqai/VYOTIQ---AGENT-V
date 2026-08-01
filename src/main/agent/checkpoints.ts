@@ -277,7 +277,7 @@ export type ResolveWritesResult = {
   fullyResolved: boolean
 }
 
-function resolveCheckpointId(runDir: string, checkpointId?: string): string {
+function resolveCheckpointId(runDir: string, checkpointId?: string): string | null {
   if (checkpointId) assertValidCheckpointId(checkpointId)
   const index = loadIndex(runDir)
   let id = checkpointId
@@ -291,9 +291,7 @@ function resolveCheckpointId(runDir: string, checkpointId?: string): string {
       }
     }
   }
-  if (!id) {
-    throw new Error('No undoable write checkpoint found for this run')
-  }
+  if (!id) return null
   assertValidCheckpointId(id)
   return id
 }
@@ -347,6 +345,9 @@ export function undoWrites(
   checkpointId?: string
 ): UndoWritesResult {
   const id = resolveCheckpointId(runDir, checkpointId)
+  if (!id) {
+    throw new Error('No undoable write checkpoint found for this run')
+  }
   const meta = loadMeta(runDir, id)
   if (!meta) throw new Error(`Checkpoint not found: ${id}`)
   if (meta.undone || meta.resolved) throw new Error('That checkpoint was already undone')
@@ -395,6 +396,16 @@ export function resolveWrites(
   }
 ): ResolveWritesResult {
   const id = resolveCheckpointId(runDir, opts.checkpointId)
+  if (!id) {
+    // Soft no-op: UI may call Keep/Discard after the banner cleared or with no writes.
+    return {
+      checkpointId: '',
+      kept: [],
+      discarded: [],
+      skipped: [],
+      fullyResolved: true
+    }
+  }
   const meta = loadMeta(runDir, id)
   if (!meta) throw new Error(`Checkpoint not found: ${id}`)
   if (meta.undone || meta.resolved) throw new Error('That checkpoint was already resolved')

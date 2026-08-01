@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { toolCategory, toolLabel, toolPresentation } from '@renderer/features/chat/toolUi/meta'
+import {
+  toolCategory,
+  toolIconName,
+  toolLabel,
+  toolPresentation
+} from '@renderer/features/chat/toolUi/meta'
 import { toolHasBody } from '@renderer/features/chat/toolUi/registry'
 
 describe('toolUi meta', () => {
@@ -26,9 +31,15 @@ describe('toolUi meta', () => {
     expect(toolCategory('memory_list')).toBe('browse')
     expect(toolCategory('git_commit')).toBe('command')
     expect(toolCategory('terminal')).toBe('command')
+    expect(toolCategory('Skill')).toBe('search')
     expect(toolCategory('mcp__srv__read_text_file')).toBe('file')
     expect(toolCategory('mcp__srv__list_allowed_directories')).toBe('browse')
     expect(toolCategory('mcp__srv__grep_search')).toBe('search')
+  })
+
+  it('icons Skill as sparkles not file', () => {
+    expect(toolIconName('Skill')).toBe('sparkles')
+    expect(toolIconName('Skill')).not.toBe('file')
   })
 
   it('labels MCP tools with readable verbs', () => {
@@ -40,6 +51,20 @@ describe('toolUi meta', () => {
   it('labels ask_question from TOOL_LABELS', () => {
     expect(toolLabel('ask_question', 'running')).toBe('Asking')
     expect(toolLabel('ask_question', 'done')).toBe('Asked')
+  })
+
+  it('uses in-progress verb when tool content is interrupted', () => {
+    expect(toolLabel('ask_question', 'fail', 'Cancelled')).toBe('Asking')
+    expect(toolLabel('ask_question', 'fail', 'Interrupted')).toBe('Asking')
+    expect(toolLabel('ask_question', 'done', 'Stopped')).toBe('Asking')
+    expect(toolLabel('read', 'fail', 'Cancelled')).toBe('Reading')
+    // Non-interrupt fail still uses the done form.
+    expect(toolLabel('ask_question', 'fail', 'Error: boom')).toBe('Asked')
+  })
+
+  it('labels Skill from TOOL_LABELS', () => {
+    expect(toolLabel('Skill', 'running')).toBe('Loading skill')
+    expect(toolLabel('Skill', 'done')).toBe('Loaded skill')
   })
 
   it('humanizes unknown built-in tool names', () => {

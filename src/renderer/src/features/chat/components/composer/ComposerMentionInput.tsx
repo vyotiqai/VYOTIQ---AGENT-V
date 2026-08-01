@@ -33,19 +33,38 @@ function encodeDataMention(mention: ComposerMention): string {
   return mentionMarker(mention).slice(MENTION_START.length, -MENTION_END.length)
 }
 
-function chipClassName(): string {
+function chipClassName(kind: ComposerMention['kind']): string {
+  const accent = kind === 'slash' ? 'text-violet-300' : 'text-sky-300'
   return [
     'mention-chip mx-0.5 inline-flex max-w-[12rem] items-center gap-1 align-baseline',
-    'rounded-md border border-border/80 bg-surface px-1 py-0.5 text-[13px] leading-none text-sky-300',
+    'px-0.5 text-[13px] leading-none',
+    accent,
     'select-none'
   ].join(' ')
+}
+
+function slashChipGlyph(slashKind: Extract<ComposerMention, { kind: 'slash' }>['slashKind']): string {
+  switch (slashKind) {
+    case 'skill':
+      return '✦'
+    case 'mcp':
+      return '⬡'
+    case 'builtin':
+      return '/'
+    case 'workspace':
+      return '⌘'
+    case 'rule':
+      return '▤'
+    default:
+      return '/'
+  }
 }
 
 function buildChipElement(mention: ComposerMention): HTMLSpanElement {
   const span = document.createElement('span')
   span.contentEditable = 'false'
   span.dataset.mention = encodeDataMention(mention)
-  span.className = chipClassName()
+  span.className = chipClassName(mention.kind)
   span.setAttribute('data-mention-kind', mention.kind)
 
   if (mention.kind === 'file' || mention.kind === 'docs') {
@@ -69,8 +88,10 @@ function buildChipElement(mention: ComposerMention): HTMLSpanElement {
           : mention.kind === 'lints'
             ? '!'
             : mention.kind === 'rule'
-              ? '§'
-              : '◇'
+              ? '▤'
+              : mention.kind === 'slash'
+                ? slashChipGlyph(mention.slashKind)
+                : '◇'
     span.appendChild(ico)
   }
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { ProviderId, TerminalShell, ToolApprovalMode } from '@shared/ipc'
+import type { ImageProviderSetting, ProviderId, TerminalShell, ToolApprovalMode } from '@shared/ipc'
 import { defaultModelFor } from '@shared/providers'
 import { Input, Menu, Button } from '@renderer/lib/ui'
 import type { SettingsFormState } from '../hooks/useSettingsForm'
@@ -13,6 +13,15 @@ import { SettingsRow } from '../components/SettingsRow'
 const SUBAGENT_PROVIDER_OPTIONS = [
   { value: '', label: 'Same as agent' },
   ...ACTIVE_PROVIDER_OPTIONS
+]
+
+const IMAGE_PROVIDER_OPTIONS: { value: ImageProviderSetting; label: string }[] = [
+  { value: 'auto', label: 'Auto (first available key)' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'gemini', label: 'Gemini' },
+  { value: 'xai', label: 'xAI' },
+  { value: 'openrouter', label: 'OpenRouter' },
+  { value: 'custom', label: 'Custom OpenAI host' }
 ]
 
 export function AgentSection({ form }: { form: SettingsFormState }) {
@@ -45,6 +54,27 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
     if (githubClientIdDraft === (form.settings.githubClientId ?? '')) return
     void form.runUpdate({ githubClientId: githubClientIdDraft })
   }
+
+  const imageReadyProviders = (['openai', 'gemini', 'xai', 'openrouter', 'custom'] as const).filter(
+    (id) => {
+      if (id === 'custom') {
+        return Boolean(form.settings.customImageEnabled) && form.savedKeyProviders.includes('custom')
+      }
+      return form.savedKeyProviders.includes(id)
+    }
+  )
+  const labelForImage = (id: (typeof imageReadyProviders)[number]): string => {
+    if (id === 'openai') return 'OpenAI'
+    if (id === 'gemini') return 'Gemini'
+    if (id === 'xai') return 'xAI'
+    if (id === 'openrouter') return 'OpenRouter'
+    return 'Custom'
+  }
+  const imageReadyLabel =
+    imageReadyProviders.length > 0
+      ? `Image ready: ${imageReadyProviders.map(labelForImage).join(', ')}.`
+      : 'Image ready: none — add an OpenAI, Gemini, xAI, or OpenRouter key (or enable custom host images).'
+  const imageProviderDescription = `${imageReadyLabel} Auto picks OpenAI → Gemini → xAI → OpenRouter → custom (if enabled) by key. Chat Completions on a custom host does not imply Images API support.`
 
   return (
     <>
@@ -192,6 +222,63 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
             if (e.key === 'Enter') e.currentTarget.blur()
           }}
         />
+      </SettingsRow>
+
+      <SettingsRow
+        title="Image provider"
+        description={imageProviderDescription}
+      >
+        <Menu
+          aria-label="Image provider"
+          value={form.settings.imageProvider ?? 'auto'}
+          options={IMAGE_PROVIDER_OPTIONS}
+          searchable={false}
+          placement="down"
+          disabled={form.formLocked}
+          onChange={(v) => {
+            void form.runUpdate({ imageProvider: v as ImageProviderSetting })
+          }}
+        />
+      </SettingsRow>
+
+      <SettingsRow
+        title="Image model"
+        description="Optional default for generate_image / edit_image. Blank uses gpt-image-2, gemini-3.1-flash-image (or set gemini-3-pro-image), grok-imagine-image-quality (use grok-imagine-image for speed), bytedance-seed/seedream-4.5 on OpenRouter, or dall-e-3 on custom hosts."
+      >
+        <Input
+          className="w-[240px] max-w-[46vw]"
+          aria-label="Image model"
+          placeholder="Provider default"
+          disabled={form.formLocked}
+          defaultValue={form.settings.imageModel ?? ''}
+          key={`image-model-${form.settings.imageModel ?? ''}`}
+          onBlur={(e) => {
+            const raw = e.target.value.trim()
+            void form.runUpdate({ imageModel: raw })
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur()
+          }}
+        />
+      </SettingsRow>
+
+      <SettingsRow
+        title="Enable image generation on custom host"
+        description="Off by default. Chat Completions on Custom OpenAI base URL does not imply /v1/images/generations. When on, VYOTIQ probes the host (empty POST → 404/501 = unsupported) before generate_image. Set Image model to a model your host actually serves."
+      >
+        <label className="inline-flex items-center gap-2 text-xs text-secondary">
+          <input
+            type="checkbox"
+            className="size-3.5 accent-fg"
+            aria-label="Enable image generation on custom host"
+            disabled={form.formLocked}
+            checked={Boolean(form.settings.customImageEnabled)}
+            onChange={(e) => {
+              void form.runUpdate({ customImageEnabled: e.target.checked })
+            }}
+          />
+          {form.settings.customImageEnabled ? 'On' : 'Off'}
+        </label>
       </SettingsRow>
 
       <SettingsRow

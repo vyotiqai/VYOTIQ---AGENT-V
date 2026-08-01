@@ -2,15 +2,21 @@ import { useCallback } from 'react'
 import type { ProviderId } from '@shared/ipc'
 import type { ListModelsResult } from '@shared/ipc/schemas/providers'
 
+type ProviderBaseUrls = {
+  ollamaBaseUrl?: string
+  customOpenAiBaseUrl?: string
+}
+
 type RefreshOptions = {
   forceRefresh?: boolean
   provider?: ProviderId
   ollamaBaseUrl?: string
+  customOpenAiBaseUrl?: string
 }
 
 export function useModelCatalog(
   provider: ProviderId,
-  ollamaBaseUrl?: string,
+  baseUrls?: ProviderBaseUrls | string,
   _apiKey?: string | null,
   _enabled = true
 ): {
@@ -18,16 +24,29 @@ export function useModelCatalog(
     { ok: true; data: ListModelsResult; warning?: string; models: ListModelsResult['models'] } | { ok: false; error: string }
   >
 } {
+  // Back-compat: older callers passed ollamaBaseUrl as a string.
+  const urls: ProviderBaseUrls =
+    typeof baseUrls === 'string' ? { ollamaBaseUrl: baseUrls } : (baseUrls ?? {})
+
   const refresh = useCallback(
     async (opts?: RefreshOptions) => {
       if (!window.vyotiq?.listModels) {
         return { ok: false as const, error: 'Unavailable' }
       }
       const targetProvider = opts?.provider ?? provider
+      const ollama =
+        opts?.ollamaBaseUrl ?? urls.ollamaBaseUrl
+      const custom =
+        opts?.customOpenAiBaseUrl ?? urls.customOpenAiBaseUrl
+      const baseUrl =
+        targetProvider === 'ollama'
+          ? ollama
+          : targetProvider === 'custom'
+            ? custom
+            : undefined
       const res = await window.vyotiq.listModels({
         provider: targetProvider,
-        baseUrl:
-          targetProvider === 'ollama' ? opts?.ollamaBaseUrl ?? ollamaBaseUrl : undefined,
+        baseUrl,
         forceRefresh: opts?.forceRefresh ?? true
       })
       if (!res.ok) return res
@@ -38,7 +57,7 @@ export function useModelCatalog(
         warning: res.data.warning
       }
     },
-    [provider, ollamaBaseUrl]
+    [provider, urls.ollamaBaseUrl, urls.customOpenAiBaseUrl]
   )
 
   return { refresh }

@@ -19,7 +19,7 @@ describe('toolsSchema', () => {
   it('covers every executable built-in with a short description', () => {
     const names = AGENT_TOOLS.map((t) => t.name).sort()
     expect(names).toEqual([...BUILTIN_TOOL_NAMES].sort())
-    expect(names.length).toBe(43)
+    expect(names.length).toBe(45)
 
     for (const tool of AGENT_TOOLS) {
       expect(tool.description.trim().length, `${tool.name} empty description`).toBeGreaterThan(0)
@@ -112,6 +112,12 @@ describe('harness tool catalog', () => {
     // Mode-specific diagnostics / terminal / subagent rules live in modeSectionMarkdown.
     expect(harness).not.toMatch(/Ask mode[\s\S]*no `diagnostics`/i)
     expect(harness).not.toMatch(/In Plan mode you may use `diagnostics`/i)
+    // Concurrency / serial / approval / nesting depth are runtime-enforced (classify + executeStepTools).
+    expect(harness).not.toMatch(/capped at 4/i)
+    expect(harness).not.toMatch(/at most 2 concurrent/i)
+    expect(harness).not.toMatch(/approval-gated|approval-exempt/i)
+    expect(harness).not.toMatch(/depth is capped at 1/i)
+    expect(harness).not.toMatch(/Do not nest `subagent`/i)
   })
 
   it('moved run-time and meta-assembly documentation to the harness handbook', () => {

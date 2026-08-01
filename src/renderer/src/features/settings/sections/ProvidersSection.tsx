@@ -62,7 +62,7 @@ export function ProvidersSection({
 
       <SettingsRow
         title="Ollama base URL"
-        description="Local daemon (http://127.0.0.1:11434) or Ollama Cloud (https://ollama.com). Cloud requires an Ollama API key below."
+        description="Local daemon by default. Saving an Ollama API key switches to Cloud (https://ollama.com) automatically."
       >
         <Input
           id="ollama"
@@ -83,6 +83,31 @@ export function ProvidersSection({
           }}
         />
         {form.fieldError.ollama}
+      </SettingsRow>
+
+      <SettingsRow
+        title="Custom OpenAI base URL"
+        description="OpenAI-compatible /v1 endpoint (Cerebras, Fireworks, Together, vLLM, …). Used when Custom is the active provider."
+      >
+        <Input
+          id="custom-openai-url"
+          className="w-[240px] max-w-[46vw]"
+          aria-label="Custom OpenAI base URL"
+          aria-invalid={form.errorField === 'customUrl' ? true : undefined}
+          aria-describedby={form.errorField === 'customUrl' ? 'custom-url-error' : undefined}
+          disabled={form.formLocked}
+          value={form.customUrl}
+          onChange={(e) => form.setCustomUrl(e.target.value)}
+          onBlur={() => {
+            void form.commitCustomUrl()
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.currentTarget.blur()
+            }
+          }}
+        />
+        {form.fieldError.customUrl}
       </SettingsRow>
 
       <SettingsRow

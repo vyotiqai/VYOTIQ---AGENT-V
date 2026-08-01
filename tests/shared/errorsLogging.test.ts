@@ -222,6 +222,24 @@ describe('log policy (no user workspace data)', () => {
     expect(out.context).toBeUndefined()
   })
 
+  it('preserves scrubbed message for string errors (not fake IPC_CLIENT)', () => {
+    const out = sanitizeErrorForLog('spawn uvx ENOENT') as Record<string, unknown>
+    expect(out.code).toBeUndefined()
+    expect(out.message).toContain('ENOENT')
+    expect(String(out.message)).not.toContain('IPC_CLIENT')
+  })
+
+  it('redacts OpenAI masked API key echoes in providerMessage', () => {
+    const out = sanitizeLogFields({
+      scope: 'provider',
+      providerMessage:
+        'Incorrect API key provided: 0e2be96e*********************************************ftCM.'
+    }) as Record<string, unknown>
+    expect(String(out.providerMessage)).toContain('[redacted]')
+    expect(String(out.providerMessage)).not.toContain('0e2be96e')
+    expect(String(out.providerMessage)).not.toContain('ftCM')
+  })
+
   it('redacts user paths and file names from log messages', () => {
     const msg = sanitizeLogMessage('File not found: C:\\Users\\me\\src\\auth.ts')
     expect(msg).not.toContain('auth.ts')
@@ -346,7 +364,7 @@ describe('logger facade', () => {
       captureException: capture
     })
     logger.fatal('disk full')
-    expect(capture).toHaveBeenCalledWith({ name: 'Error' }, undefined)
+    expect(capture).toHaveBeenCalledWith({ name: 'Error', message: 'disk full' }, undefined)
   })
 
   it('does not throw when the backend log throws', () => {

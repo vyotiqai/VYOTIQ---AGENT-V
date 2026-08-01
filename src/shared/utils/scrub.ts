@@ -14,8 +14,9 @@ const API_KEY_PATTERNS: RegExp[] = [
   /\b(?:Authorization|X-Api-Key)\s*[:=]\s*[^\s,;]+/gi,
   /\bapi[_-]?key["']?\s*[:=]\s*["']?[^\s"',}&}]+/gi,
   /\b(?:access[_-]?token|refresh[_-]?token|session[_-]?token|client[_-]?secret|token)["']?\s*[:=]\s*["']?[^\s"',}&}]+/gi,
-  // Compact JWTs (header.payload.sig)
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
+  // OpenAI-style masked key echo in error messages
+  /Incorrect API key provided:\s*[A-Za-z0-9*_./+=-]{6,}/gi
 ]
 
 const DATA_URL_RE = /data:(?:image|audio|application)\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi

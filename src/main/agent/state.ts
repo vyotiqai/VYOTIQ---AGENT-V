@@ -23,6 +23,7 @@ import {
   type RunSummary
 } from '../../shared/ipc'
 import { logger } from '../../shared/logger'
+import { workspaceIdFromPath } from '../../shared/utils/workspaceId'
 import { toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
 import { finalizeInterruptedTodoContent } from '../../shared/utils/todoContent'
 import { finalizeInterruptedTodos } from './tools/todo'
@@ -793,6 +794,12 @@ export function deleteRun(
   }
   rmSync(dir, { recursive: true, force: true })
   invalidateListRunsCache(workspacePath)
+  logger.info('Deleted run', {
+    scope: 'agent',
+    runId,
+    workspaceId: workspaceIdFromPath(workspacePath),
+    channel: 'runs:delete'
+  })
   return { ok: true }
 }
 

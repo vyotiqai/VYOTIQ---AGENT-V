@@ -11,6 +11,7 @@ export type SettingsSection = 'general' | 'providers' | 'agent' | 'marketplace'
 
 export type SettingsErrorField =
   | 'ollama'
+  | 'customUrl'
   | 'apikey'
   | 'compaction'
   | 'keepTurns'

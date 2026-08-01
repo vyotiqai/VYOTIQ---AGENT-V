@@ -1,9 +1,10 @@
-import { memo, useMemo, useState, type FormEvent } from 'react'
+import { memo, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { cn } from '@renderer/lib/ui'
 import {
-  TOOL_CARD_BODY,
-  TOOL_CARD_HEADER,
-  TOOL_CARD_SURFACE
+  QUESTION_GATE_BODY,
+  QUESTION_GATE_FOOTER,
+  QUESTION_GATE_HEADER,
+  QUESTION_GATE_SURFACE
 } from '@renderer/lib/utils/layout'
 import { questionTypeHint } from '@shared/utils/agentQuestionForm'
 import type { UiAgentQuestion, UiAgentQuestionAnswer } from '@shared/transcript'
@@ -47,6 +48,28 @@ export const AskQuestionPanel = memo(function AskQuestionPanel({
   const [phase, setPhase] = useState<'idle' | 'pending' | 'done'>('idle')
   const [localError, setLocalError] = useState<string | null>(null)
   const [fields, setFields] = useState<Record<string, FieldState>>(() => emptyFields(question))
+
+  // Same requestId can be replaced in place with new prompts/options; remount does not run.
+  const questionShapeKey = useMemo(
+    () =>
+      [
+        question.requestId,
+        question.title ?? '',
+        ...question.questions.map(
+          (item) =>
+            `${item.id}\0${item.prompt}\0${item.type}\0${item.allowCustom ? 1 : 0}\0${(item.options ?? []).join('\u001f')}`
+        )
+      ].join('\n'),
+    [question]
+  )
+
+  useEffect(() => {
+    setFields(emptyFields(question))
+    setPhase('idle')
+    setLocalError(null)
+    // Only when shape changes — same requestId with a new object must not wipe in-progress answers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by questionShapeKey
+  }, [questionShapeKey])
 
   const multi = question.questions.length > 1
   const headerTitle = question.title?.trim() || (multi ? 'Questions' : 'Question')
@@ -93,13 +116,13 @@ export const AskQuestionPanel = memo(function AskQuestionPanel({
 
   return (
     <form
-      className={cn(TOOL_CARD_SURFACE, 'w-full')}
+      className={cn(QUESTION_GATE_SURFACE, 'w-full')}
       role="group"
       aria-labelledby={`ask-q-title-${question.requestId}`}
       aria-busy={phase === 'pending' ? true : undefined}
       onSubmit={onFormSubmit}
     >
-      <div className={cn(TOOL_CARD_HEADER, 'flex items-center gap-2')}>
+      <div className={QUESTION_GATE_HEADER}>
         <span
           id={`ask-q-title-${question.requestId}`}
           className="shrink-0 font-medium text-fg"
@@ -115,7 +138,7 @@ export const AskQuestionPanel = memo(function AskQuestionPanel({
         ) : null}
       </div>
 
-      <div className={cn(TOOL_CARD_BODY, 'flex flex-col gap-3 px-3 py-2.5')}>
+      <div className={cn(QUESTION_GATE_BODY, 'flex flex-col gap-3')}>
         {question.questions.map((item) => {
           const promptId = `ask-q-prompt-${question.requestId}-${item.id}`
           const state = fields[item.id] ?? { values: [], customText: '' }
@@ -146,23 +169,23 @@ export const AskQuestionPanel = memo(function AskQuestionPanel({
             {localError}
           </p>
         ) : null}
+      </div>
 
-        <div className="flex items-center pt-0.5">
-          <button
-            type="submit"
-            disabled={!canSubmit}
-            aria-busy={phase === 'pending' ? true : undefined}
-            className={cn(
-              'rounded-md border px-2.5 py-1 text-xs vy-transition',
-              'disabled:opacity-[var(--vy-disabled-opacity)]',
-              canSubmit
-                ? 'border-border bg-surface text-fg hover:bg-surface-2'
-                : 'border-border text-tertiary'
-            )}
-          >
-            {submitLabel}
-          </button>
-        </div>
+      <div className={QUESTION_GATE_FOOTER}>
+        <button
+          type="submit"
+          disabled={!canSubmit}
+          aria-busy={phase === 'pending' ? true : undefined}
+          className={cn(
+            'rounded-md border px-2.5 py-1 text-xs vy-transition',
+            'disabled:opacity-[var(--vy-disabled-opacity)]',
+            canSubmit
+              ? 'border-border bg-surface text-fg hover:bg-surface-2'
+              : 'border-border text-tertiary'
+          )}
+        >
+          {submitLabel}
+        </button>
       </div>
     </form>
   )

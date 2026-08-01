@@ -14,6 +14,11 @@ import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
 import { formatProviderHttpError } from './httpErrors'
 
+/** GPT-5.6+ supports explicit prompt_cache_breakpoint / prompt_cache_options. */
+export function supportsExplicitPromptCache(modelId: string): boolean {
+  return /^gpt-5\.6/i.test(modelId.trim())
+}
+
 function toolOutputsFromMessages(messages: ChatMessage[]): Array<Record<string, unknown>> {
   return messages
     .filter((m) => m.role === 'tool')
@@ -27,7 +32,8 @@ function toolOutputsFromMessages(messages: ChatMessage[]): Array<Record<string, 
 export function toResponsesInput(
   messages: ChatMessage[],
   system: string | undefined,
-  priorState?: ProviderReasoningState
+  priorState?: ProviderReasoningState,
+  opts?: { explicitPromptCache?: boolean }
 ): Array<Record<string, unknown>> {
   // Stateful continuation: server retains prior turn via previous_response_id.
   if (priorState?.kind === 'openai_responses' && priorState.responseId) {
@@ -35,7 +41,22 @@ export function toResponsesInput(
   }
 
   const out: Array<Record<string, unknown>> = []
-  if (system) out.push({ role: 'developer', content: system })
+  if (system) {
+    if (opts?.explicitPromptCache) {
+      out.push({
+        role: 'developer',
+        content: [
+          {
+            type: 'input_text',
+            text: system,
+            prompt_cache_breakpoint: { mode: 'explicit' }
+          }
+        ]
+      })
+    } else {
+      out.push({ role: 'developer', content: system })
+    }
+  }
 
   for (const m of messages) {
     if (m.role === 'tool') {
@@ -136,10 +157,13 @@ export async function* streamOpenAiResponses(
   const priorState =
     req.reasoningState?.kind === 'openai_responses' ? req.reasoningState : undefined
   const thinkingEnabled = req.thinking?.enabled !== false
+  const explicitCache = supportsExplicitPromptCache(req.model)
 
   const body: Record<string, unknown> = {
     model: req.model,
-    input: toResponsesInput(req.messages, req.system, priorState),
+    input: toResponsesInput(req.messages, req.system, priorState, {
+      explicitPromptCache: explicitCache
+    }),
     stream: true,
     store: true,
     ...(req.tools.length
@@ -158,7 +182,11 @@ export async function* streamOpenAiResponses(
           }
         }
       : {}),
-    ...(priorState?.responseId ? { previous_response_id: priorState.responseId } : {})
+    ...(priorState?.responseId ? { previous_response_id: priorState.responseId } : {}),
+    ...(req.promptCacheKey ? { prompt_cache_key: req.promptCacheKey } : {}),
+    ...(explicitCache
+      ? { prompt_cache_options: { mode: 'explicit', ttl: '30m' } }
+      : {})
   }
 
   const tier = serviceTierForApiBody(parseServiceTier(req.serviceTier))

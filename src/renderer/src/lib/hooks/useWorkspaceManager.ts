@@ -152,13 +152,14 @@ function scrollKeyForRun(runId: string | null): string {
   return runId ?? DRAFT_SCROLL_KEY
 }
 
-/** Keep scroll entries for open tabs, active run, and draft only. @internal */
+/** Keep scroll entries for open tabs and active run; draft only while drafting. @internal */
 export function pruneScrollTopByRunId(
   scrollTopByRunId: Record<string, number>,
   keep: { openRunIds: string[]; activeRunId: string | null }
 ): Record<string, number> {
-  const allowed = new Set<string>([DRAFT_SCROLL_KEY, ...keep.openRunIds])
+  const allowed = new Set<string>([...keep.openRunIds])
   if (keep.activeRunId) allowed.add(keep.activeRunId)
+  else allowed.add(DRAFT_SCROLL_KEY)
   const next: Record<string, number> = {}
   for (const [key, value] of Object.entries(scrollTopByRunId)) {
     if (allowed.has(key)) next[key] = value
@@ -174,6 +175,33 @@ export function omitRunScrollTop(
   if (!(runId in scrollTopByRunId)) return scrollTopByRunId
   const { [runId]: _removed, ...rest } = scrollTopByRunId
   return rest
+}
+
+/** Drop open tabs / active run that no longer exist on disk. @internal */
+export function reconcileOpenRunIds(
+  openRunIds: string[],
+  activeRunId: string | null,
+  runIdsOnDisk: string[],
+  previouslyKnownRunIds: string[]
+): { openRunIds: string[]; activeRunId: string | null; changed: boolean } {
+  const existing = new Set(runIdsOnDisk)
+  const stale = new Set(previouslyKnownRunIds.filter((id) => !existing.has(id)))
+  if (stale.size === 0) {
+    return { openRunIds, activeRunId, changed: false }
+  }
+  const pruned = openRunIds.filter((id) => !stale.has(id))
+  let nextActive = activeRunId
+  if (nextActive && stale.has(nextActive)) {
+    nextActive = pruned[pruned.length - 1] ?? null
+  }
+  if (nextActive && !pruned.includes(nextActive)) {
+    pruned.push(nextActive)
+  }
+  const changed =
+    pruned.length !== openRunIds.length ||
+    pruned.some((id, i) => id !== openRunIds[i]) ||
+    nextActive !== activeRunId
+  return { openRunIds: pruned, activeRunId: nextActive, changed }
 }
 
 export type WorkspaceContext = {
@@ -665,14 +693,39 @@ export function useWorkspaceManager() {
         const ctx = prev[workspacePath]
         if (!ctx) return prev
         if (res.ok) {
+          const runIds = res.data.runs.map((r) => r.runId)
+          const reconciled = reconcileOpenRunIds(
+            ctx.openRunIds,
+            ctx.activeRunId,
+            runIds,
+            ctx.runs.map((r) => r.runId)
+          )
+          const nextCtx: WorkspaceContext = {
+            ...ctx,
+            runs: res.data.runs,
+            runsCapped: res.data.capped,
+            runsError: null,
+            ...(reconciled.changed
+              ? {
+                  openRunIds: reconciled.openRunIds,
+                  activeRunId: reconciled.activeRunId,
+                  ui: {
+                    ...ctx.ui,
+                    scrollTopByRunId: pruneScrollTopByRunId(ctx.ui.scrollTopByRunId, {
+                      openRunIds: reconciled.openRunIds,
+                      activeRunId: reconciled.activeRunId
+                    })
+                  }
+                }
+              : {})
+          }
+          if (reconciled.changed) {
+            contextsRef.current = { ...contextsRef.current, [workspacePath]: nextCtx }
+            schedulePersistUiState(workspacePath, nextCtx)
+          }
           return {
             ...prev,
-            [workspacePath]: {
-              ...ctx,
-              runs: res.data.runs,
-              runsCapped: res.data.capped,
-              runsError: null
-            }
+            [workspacePath]: nextCtx
           }
         }
         logger.warn('listRuns failed', { scope: 'runs', err: toLogErr(res.error) })
@@ -688,7 +741,7 @@ export function useWorkspaceManager() {
       })
       bump()
     },
-    [bump]
+    [bump, schedulePersistUiState]
   )
 
   refreshRunsRef.current = refreshRuns

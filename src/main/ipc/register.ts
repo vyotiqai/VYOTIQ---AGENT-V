@@ -58,6 +58,7 @@ import {
   ExtractAttachmentRequestSchema,
   WorkspaceSuggestPathsRequestSchema,
   WorkspaceReadTextRequestSchema,
+  WorkspaceReadImageRequestSchema,
   WorkspaceListDocsRequestSchema,
   WorkspaceListRulesRequestSchema,
   WorkspaceDiagnosticsRequestSchema,
@@ -77,6 +78,7 @@ import {
   ok,
   fail,
   MAX_ATTACHMENT_BYTES,
+  MAX_IMAGE_BYTES,
   type ExtractAttachmentResult,
   type IpcResult,
   type Settings,
@@ -107,7 +109,8 @@ import {
   type GitCommitResult,
   type AgentBrowserState
 } from '../../shared/ipc'
-import { resolveOllamaListBaseUrl } from '../../shared/providers'
+import { resolveProviderListBaseUrl } from '../../shared/providers'
+import { WORKSPACE_IMAGE_PREVIEW_MAX_BYTES } from '../agent/providers/imageGen/workspaceImages'
 import { existsSync, mkdirSync, readFileSync, statSync } from 'fs'
 import { formatError, AppError, isAbortError } from '../../shared/errors'
 import { logger, logErrorSummary } from '../../shared/logger'
@@ -140,7 +143,12 @@ import {
   openSlashFile
 } from '@main/agent/slashCommands'
 import { runHarnessReviewWithSettings } from '@main/agent/harnessReviewRun'
-import { applyHarnessProposal, previewHarnessApply } from '@main/agent/harnessApply'
+import {
+  applyHarnessProposal,
+  previewHarnessApply,
+  workspaceHasEditableHarness,
+  WORKSPACE_HARNESS_REL
+} from '@main/agent/harnessApply'
 import {
   setSecret,
   clearSecret,
@@ -182,6 +190,7 @@ import {
   chatCancelResult,
   listActiveRuns,
   tryRegisterRunAbort,
+  clearRunAbort,
   isActive,
   isRunTurnComplete,
   waitUntilRunInactive,
@@ -548,10 +557,12 @@ export function registerIpc(): void {
         const req = ListModelsRequestSchema.parse(raw ?? {})
         const settings = getSettings()
         const apiKey = getSecret(req.provider)
-        const baseUrl =
-          req.provider === 'ollama'
-            ? resolveOllamaListBaseUrl(req.baseUrl, settings.ollamaBaseUrl)
-            : req.baseUrl
+        const baseUrl = resolveProviderListBaseUrl(
+          req.provider,
+          req.baseUrl,
+          settings,
+          apiKey
+        )
         const result = await listProviderModels({
           provider: req.provider,
           apiKey,
@@ -729,22 +740,31 @@ export function registerIpc(): void {
           }
         }
 
-        const prepared = await prepareRewindAndReplaceUserMessage({
-          workspacePath: req.workspacePath,
-          runId: req.runId,
-          editMessageIndex: req.editMessageIndex,
-          editedUserMessage: req.editedUserMessage
-        })
-        if (prepared.writes.restored.length > 0) {
-          invalidateGitStatusCache(req.workspacePath)
-        }
-
+        // Register before mutating disk so a failed register cannot leave a
+        // rewound transcript without a new invoke (matches chatStart ordering).
         const runId = req.runId
         const registered = tryRegisterRunAbort(runId, req.workspacePath)
         if (!registered.ok) {
           return fail(registered.error)
         }
         const { invokeId } = registered
+
+        let prepared: Awaited<ReturnType<typeof prepareRewindAndReplaceUserMessage>>
+        try {
+          prepared = await prepareRewindAndReplaceUserMessage({
+            workspacePath: req.workspacePath,
+            runId: req.runId,
+            editMessageIndex: req.editMessageIndex,
+            editedUserMessage: req.editedUserMessage
+          })
+        } catch (err) {
+          clearRunAbort(runId, invokeId)
+          throw err
+        }
+        if (prepared.writes.restored.length > 0) {
+          invalidateGitStatusCache(req.workspacePath)
+        }
+
         const wc = event.sender
         logger.info('Chat rewind and start', {
           scope: 'ipc',
@@ -1015,6 +1035,10 @@ export function registerIpc(): void {
       })
       return ok(result)
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/no undoable write checkpoint/i.test(msg)) {
+        return fail('Nothing to undo — no write checkpoint for this run.')
+      }
       return failFrom(err, IPC.runsUndoWrites)
     }
   })
@@ -1106,6 +1130,11 @@ export function registerIpc(): void {
       try {
         const req = HarnessPreviewApplyRequestSchema.parse(raw)
         if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+        if (!workspaceHasEditableHarness(req.workspacePath)) {
+          return fail(
+            `This workspace has no editable harness at ${WORKSPACE_HARNESS_REL}. Open the Agent V repo (or a fork) to apply harness changes.`
+          )
+        }
         return ok(previewHarnessApply(req.workspacePath, req.proposalPath))
       } catch (err) {
         return failFrom(err, IPC.harnessPreviewApply)
@@ -1120,6 +1149,11 @@ export function registerIpc(): void {
       try {
         const req = HarnessApplyRequestSchema.parse(raw)
         if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+        if (!workspaceHasEditableHarness(req.workspacePath)) {
+          return fail(
+            `This workspace has no editable harness at ${WORKSPACE_HARNESS_REL}. Open the Agent V repo (or a fork) to apply harness changes.`
+          )
+        }
         return ok(
           await applyHarnessProposal(req.workspacePath, {
             proposalPath: req.proposalPath,
@@ -2011,6 +2045,46 @@ export function registerIpc(): void {
       return ok(result)
     } catch (err) {
       return failFrom(err, IPC.workspaceReadText)
+    }
+  })
+
+  ipcMain.handle(IPC.workspaceReadImage, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = WorkspaceReadImageRequestSchema.parse(raw ?? {})
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      const rel = String(req.path ?? '').trim().replace(/\\/g, '/')
+      if (!isSafeWorkspaceRelPath(rel)) {
+        return fail('Path is outside the workspace')
+      }
+      const lower = rel.toLowerCase()
+      const mime =
+        lower.endsWith('.jpg') || lower.endsWith('.jpeg')
+          ? 'image/jpeg'
+          : lower.endsWith('.webp')
+            ? 'image/webp'
+            : lower.endsWith('.gif')
+              ? 'image/gif'
+              : lower.endsWith('.svg')
+                ? 'image/svg+xml'
+                : lower.endsWith('.png')
+                  ? 'image/png'
+                  : null
+      if (!mime) return fail('Not an image file (png, jpg, jpeg, webp, gif, svg)')
+      const abs = resolveInsideWorkspace(req.workspacePath, rel)
+      const st = statSync(abs)
+      if (!st.isFile()) return fail('Not a file')
+      if (st.size > WORKSPACE_IMAGE_PREVIEW_MAX_BYTES) {
+        return fail(
+          `Image is larger than ${Math.round(WORKSPACE_IMAGE_PREVIEW_MAX_BYTES / (1024 * 1024))}MB for preview`
+        )
+      }
+      const bytes = readFileSync(abs)
+      if (bytes.length === 0) return fail('Image is empty')
+      const dataUrl = `data:${mime};base64,${bytes.toString('base64')}`
+      return ok({ path: rel, mime, dataUrl, byteLength: bytes.length })
+    } catch (err) {
+      return failFrom(err, IPC.workspaceReadImage)
     }
   })
 

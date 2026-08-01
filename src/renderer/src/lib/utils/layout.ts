@@ -58,7 +58,13 @@ export const COMPOSER_DOCK_FADE_PX = 24
  * Extra clearance so the last transcript row sits fully above the dock fade
  * when scrolled to the bottom (not just flush with the fade edge).
  */
-export const COMPOSER_DOCK_CLEARANCE_PX = 8
+export const COMPOSER_DOCK_CLEARANCE_PX = 20
+
+/**
+ * Extra bottom reserve while a run is live so streaming rows stay clear of the
+ * floating composer; idle chats keep only fade + {@link COMPOSER_DOCK_CLEARANCE_PX}.
+ */
+export const COMPOSER_DOCK_LIVE_CLEARANCE_PX = 16
 
 /** Fallback dock reserve when measured height is not yet available (`8rem`). */
 export const COMPOSER_DOCK_FALLBACK_PX = 128
@@ -96,9 +102,9 @@ export const TRANSCRIPT_WORK_PAIR_GAP = 'pb-1'
 /** Lead-in above a user prompt that opens a new turn. */
 export const TRANSCRIPT_TURN_GAP = 'pt-6'
 
-/** User prompt block surface. */
+/** User prompt block — thin border matching composer chrome. */
 export const USER_PROMPT_SURFACE =
-  'rounded-lg border border-border bg-card px-3.5 py-2.5 text-sm leading-relaxed tracking-[-0.006em] text-fg [overflow-wrap:anywhere]'
+  'rounded-xl border border-border bg-bg px-2.5 py-2 text-sm leading-relaxed tracking-[-0.006em] text-fg [overflow-wrap:anywhere]'
 
 /** Quiet activity row — no fill, no border. */
 export const ACTIVITY_ROW = 'text-xs tracking-[var(--vy-tracking)]'
@@ -146,7 +152,7 @@ export const TOOL_FAMILY_DELETE = 'border-l-2 border-danger/50 pl-2'
 
 /** Subtle floating surface shared by docked composer. */
 export const FLOATING_CHROME =
-  'rounded-xl border border-border/50 bg-bg motion-reduce:animate-none'
+  'rounded-xl border border-border bg-bg motion-reduce:animate-none'
 
 export const FLOATING_CHROME_SHADOW_BOTTOM =
   'shadow-[0_8px_32px_-12px_rgb(0_0_0/0.45)] animate-chrome-rise-in'

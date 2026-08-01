@@ -29,8 +29,10 @@ describe('reasoning', () => {
 
   it('classifies Anthropic thinking modes', () => {
     expect(anthropicUsesAdaptiveThinking('claude-sonnet-5')).toBe(true)
+    expect(anthropicUsesAdaptiveThinking('claude-opus-5')).toBe(true)
     expect(anthropicUsesManualThinking('claude-sonnet-4-6')).toBe(true)
     expect(anthropicUsesManualThinking('claude-sonnet-5')).toBe(false)
+    expect(anthropicUsesManualThinking('claude-opus-5')).toBe(false)
   })
 
   it('round-trips provider reasoning state', () => {

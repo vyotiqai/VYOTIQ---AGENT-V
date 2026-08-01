@@ -174,7 +174,8 @@ export function useMarketplaceController({
   }, [reload])
 
   useEffect(() => {
-    void loadMcpStatus()
+    // Refresh connections on open so connect errors / recovery are visible.
+    void loadMcpStatus(true)
   }, [loadMcpStatus, installed.items.length, settings.mcpServers])
 
   const ensureRemoteAck = useCallback(async (): Promise<boolean> => {

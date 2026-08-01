@@ -64,6 +64,10 @@ export type OpenAiCompatOptions = {
   deepseekThinking?: boolean
   /** OpenRouter: unified reasoning parameter. */
   openRouterReasoning?: boolean
+  /** Allow chat/catalog without an API key (local custom gateways). */
+  optionalApiKey?: boolean
+  /** Allow loopback / private hosts (SSRF allowlist). */
+  allowLocal?: boolean
 }
 
 /** Exported for tests — gate OpenAI `stream_options.include_usage` per provider. */
@@ -467,13 +471,13 @@ async function listOpenAiCompatModels(
         throw new Error(
           cloud
             ? `Cannot reach Ollama Cloud at ${host} (${formatError(openAiErr)}). Check the base URL and API key.`
-            : `Cannot reach Ollama at ${host} (${formatError(openAiErr)}). Start the Ollama app or check the base URL.`
+            : `Cannot reach Ollama at ${host} (${formatError(openAiErr)}). Start the Ollama app, or save an Ollama API key in Settings to use Ollama Cloud automatically.`
         )
       }
       throw new Error(
         cloud
           ? `Ollama Cloud at ${host} returned no models (${formatError(tagsErr)}). Verify your API key at ollama.com/settings/keys.`
-          : `Ollama at ${host} returned no models (${formatError(tagsErr)}). Pull a model with \`ollama pull\`.`
+          : `Ollama at ${host} returned no models (${formatError(tagsErr)}). Pull a model with \`ollama pull\`, or save an Ollama API key to use Cloud.`
       )
     }
   }
@@ -542,7 +546,12 @@ export function buildOpenAiCompatBody(
     stream: true,
     ...(req.maxOutputTokens && req.maxOutputTokens > 0 ? { max_tokens: req.maxOutputTokens } : {}),
     ...(opts.enablePromptCache && req.promptCacheKey
-      ? { prompt_cache_key: req.promptCacheKey }
+      ? {
+          prompt_cache_key: req.promptCacheKey,
+          ...(/^gpt-5\.6/i.test(req.model)
+            ? { prompt_cache_options: { mode: 'explicit', ttl: '30m' } }
+            : {})
+        }
       : {}),
     ...compatStreamOptions(opts)
   }
@@ -590,7 +599,7 @@ export function createOpenAiCompatibleProvider(
     async listModels(req: ListModelsRequest): Promise<ModelInfo[]> {
       // Local Ollama: no key required (Bearer can break some local proxies).
       // Ollama Cloud / other OpenAI-compat: require a key; omit Bearer only when unset.
-      if (!opts.ollamaVision && !req.apiKey?.trim()) {
+      if (!opts.ollamaVision && !opts.optionalApiKey && !req.apiKey?.trim()) {
         throw new Error(`${id} API key not set`)
       }
       if (
@@ -602,7 +611,7 @@ export function createOpenAiCompatibleProvider(
       }
       const raw = (req.baseUrl || opts.defaultBaseUrl).replace(/\/$/, '')
       const base = opts.ollamaVision ? `${ollamaNativeHost(raw)}/v1` : raw
-      await validateProviderBaseUrl(base, id === 'ollama')
+      await validateProviderBaseUrl(base, opts.allowLocal === true || id === 'ollama')
       const headers: Record<string, string> = { ...(opts.extraHeaders ?? {}) }
       if (req.apiKey?.trim()) {
         headers.Authorization = `Bearer ${req.apiKey.trim()}`
@@ -610,7 +619,7 @@ export function createOpenAiCompatibleProvider(
       return listOpenAiCompatModels(base, headers, opts, req.signal, id)
     },
     async *streamChat(req: ProviderChatRequest): AsyncGenerator<StreamChunk> {
-      if (!opts.ollamaVision && !req.apiKey?.trim()) {
+      if (!opts.ollamaVision && !opts.optionalApiKey && !req.apiKey?.trim()) {
         yield { type: 'error', error: `${id} API key not set` }
         return
       }
@@ -624,7 +633,7 @@ export function createOpenAiCompatibleProvider(
       }
       const raw = (req.baseUrl || opts.defaultBaseUrl).replace(/\/$/, '')
       const base = opts.ollamaVision ? `${ollamaNativeHost(raw)}/v1` : raw
-      const allowLocal = id === 'ollama'
+      const allowLocal = opts.allowLocal === true || id === 'ollama'
       await validateProviderBaseUrl(base, allowLocal)
       const url = `${base}/chat/completions`
 
@@ -864,10 +873,10 @@ export const openaiProvider: LlmProvider = {
     enablePromptCache: true
   }),
   async *streamChat(req: ProviderChatRequest): AsyncGenerator<StreamChunk> {
+    // Responses-first for reasoning-family models (better cache + tool loops).
     const useResponses =
-      req.thinking?.enabled === true &&
-      (req.modelInfo?.thinkingApi === 'responses' ||
-        /^(o[34](?:-|$)|gpt-5(?:\.|-|$))/i.test(req.model))
+      req.modelInfo?.thinkingApi === 'responses' ||
+      /^(o[34](?:-|$)|gpt-5(?:\.|-|$))/i.test(req.model)
     if (useResponses) {
       yield* streamOpenAiResponses(req)
       return
@@ -910,6 +919,13 @@ export const mistralProvider = createOpenAiCompatibleProvider('mistral', {
   defaultBaseUrl: 'https://api.mistral.ai/v1',
   /** Mistral rejects OpenAI `stream_options.include_usage`. */
   includeUsage: false
+})
+
+/** Bring-your-own OpenAI-compatible host (Cerebras, Fireworks, Together, vLLM, …). */
+export const customProvider = createOpenAiCompatibleProvider('custom', {
+  defaultBaseUrl: 'http://127.0.0.1:8080/v1',
+  optionalApiKey: true,
+  allowLocal: true
 })
 
 /** Exported for tests / multimodal mapping checks. */

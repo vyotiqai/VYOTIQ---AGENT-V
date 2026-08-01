@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SlashCommandDescriptor } from '@shared/ipc'
 import { fuzzyMatchCommands, findActiveSlashToken } from '@shared/slashCommands'
+import { findSlashChipSubmit } from './mentionModel'
 import {
   SLASH_GROUP_ORDER,
   clusterMcpByServer,
@@ -57,10 +58,10 @@ export function useSlashCommands({
   const onListErrorRef = useRef(onListError)
   onListErrorRef.current = onListError
 
-  const reload = useCallback(async (): Promise<void> => {
+  const reload = useCallback(async (): Promise<SlashCommandDescriptor[]> => {
     if (!window.vyotiq?.slashCommandsList) {
       setCommands([])
-      return
+      return []
     }
     const reqId = ++reqIdRef.current
     setLoading(true)
@@ -68,15 +69,16 @@ export function useSlashCommands({
       const res = await window.vyotiq.slashCommandsList({
         workspacePath: workspacePath ?? null
       })
-      if (reqId !== reqIdRef.current) return
+      if (reqId !== reqIdRef.current) return []
       if (res.ok) {
         setCommands(res.data.commands)
         setListError(null)
-      } else {
-        setCommands([])
-        setListError(res.error)
-        onListErrorRef.current?.(res.error)
+        return res.data.commands
       }
+      setCommands([])
+      setListError(res.error)
+      onListErrorRef.current?.(res.error)
+      return []
     } catch (err) {
       if (reqId === reqIdRef.current) {
         setCommands([])
@@ -84,10 +86,17 @@ export function useSlashCommands({
         setListError(message)
         onListErrorRef.current?.(message)
       }
+      return []
     } finally {
       if (reqId === reqIdRef.current) setLoading(false)
     }
   }, [workspacePath])
+
+  /** Prefer in-memory catalog; load once when empty (chip submit / edit remount). */
+  const ensureCommands = useCallback(async (): Promise<SlashCommandDescriptor[]> => {
+    if (commands.length > 0) return commands
+    return reload()
+  }, [commands, reload])
 
   const token = useMemo(() => {
     if (!enabled) return null
@@ -95,10 +104,16 @@ export function useSlashCommands({
   }, [enabled, text, cursor])
 
   // Defer list IPC until the user types `/` — cold list was ~720ms on every Composer mount.
+  // Also prefetch once when a slash chip is already in the draft (inline edit remount).
   useEffect(() => {
-    if (!enabled || !token) return
-    void reload()
-  }, [enabled, token?.start, reload])
+    if (!enabled) return
+    if (token) {
+      void reload()
+      return
+    }
+    if (commands.length > 0) return
+    if (findSlashChipSubmit(text)) void reload()
+  }, [enabled, token?.start, text, commands.length, reload])
 
   useEffect(() => {
     setDismissed(false)
@@ -147,6 +162,7 @@ export function useSlashCommands({
     token,
     loading,
     listError,
-    reload
+    reload,
+    ensureCommands
   }
 }

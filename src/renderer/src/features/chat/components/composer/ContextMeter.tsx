@@ -120,19 +120,74 @@ function LayerRow({
   )
 }
 
+/** Latest-step cache hit share of provider input, or null when unknown. */
+export function cacheHitPct(totals: StepUsageTotals): number | null {
+  if (totals.cachedInputTokens <= 0 || totals.inputTokens <= 0) return null
+  return Math.round((totals.cachedInputTokens / totals.inputTokens) * 100)
+}
+
+function PromptCacheSection({ totals }: { totals: StepUsageTotals }) {
+  const hitPct = cacheHitPct(totals)
+  const hasHit = totals.cachedInputTokens > 0
+  const hasWrite = totals.cacheCreationInputTokens > 0
+  if (!hasHit && !hasWrite) return null
+
+  const input = Math.max(1, totals.inputTokens)
+  const hitRatio = Math.min(1, totals.cachedInputTokens / input)
+  const freshTokens = Math.max(0, totals.inputTokens - totals.cachedInputTokens)
+
+  return (
+    <PanelSection title="Prompt cache" className="border-t border-border">
+      {hasHit ? (
+        <>
+          <div className="relative h-1.5 overflow-hidden rounded-full bg-surface-2">
+            <div
+              className="absolute inset-y-0 left-0 rounded-full bg-success/70 vy-transition"
+              style={{ width: `${hitRatio * 100}%` }}
+              title={`Cached ${formatTokens(totals.cachedInputTokens)}`}
+            />
+          </div>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <StatCard
+              label="Cache hit"
+              value={hitPct != null ? `${hitPct}%` : formatTokens(totals.cachedInputTokens)}
+              detail={`${formatTokens(totals.cachedInputTokens)} cached`}
+              tone="text-success"
+            />
+            <StatCard
+              label="Uncached input"
+              value={formatTokens(freshTokens)}
+              detail={`${formatTokens(totals.inputTokens)} total input`}
+            />
+          </div>
+        </>
+      ) : null}
+      <div className={cn('flex flex-col gap-1.5', hasHit ? 'mt-2' : undefined)}>
+        {hasWrite ? (
+          <MetricRow
+            label="Cache write"
+            value={formatTokens(totals.cacheCreationInputTokens)}
+            tone="text-warning"
+          />
+        ) : null}
+        {hasHit ? (
+          <p className="m-0 text-[10px] leading-snug text-secondary">
+            Hit rate is for the latest step’s input window
+          </p>
+        ) : (
+          <p className="m-0 text-[10px] leading-snug text-secondary">
+            Cache write tokens accumulate across steps this run
+          </p>
+        )}
+      </div>
+    </PanelSection>
+  )
+}
+
 function StepUsageSection({ totals }: { totals: StepUsageTotals }) {
-  if (
-    totals.steps <= 0 &&
-    totals.outputTokens <= 0 &&
-    totals.cachedInputTokens <= 0 &&
-    totals.reasoningTokens <= 0
-  ) {
+  if (totals.steps <= 0 && totals.outputTokens <= 0 && totals.reasoningTokens <= 0) {
     return null
   }
-  const cachePct =
-    totals.cachedInputTokens > 0 && totals.inputTokens > 0
-      ? Math.round((totals.cachedInputTokens / totals.inputTokens) * 100)
-      : null
   const reasoningPct =
     totals.reasoningTokens > 0 && totals.outputTokens > 0
       ? Math.round((totals.reasoningTokens / totals.outputTokens) * 100)
@@ -149,12 +204,6 @@ function StepUsageSection({ totals }: { totals: StepUsageTotals }) {
           <MetricRow
             label="Reasoning"
             value={`${formatTokens(totals.reasoningTokens)}${reasoningPct != null ? ` · ${reasoningPct}%` : ''}`}
-          />
-        ) : null}
-        {cachePct != null ? (
-          <MetricRow
-            label="Prompt cache"
-            value={`${cachePct}% · ${formatTokens(totals.cachedInputTokens)} / ${formatTokens(totals.inputTokens)}`}
           />
         ) : null}
       </div>
@@ -330,6 +379,7 @@ function ContextMeterPanel({
         ) : null}
 
         <TelemetrySection usage={usage} />
+        <PromptCacheSection totals={usage.stepUsage} />
         <StepUsageSection totals={usage.stepUsage} />
       </div>
 
@@ -409,6 +459,13 @@ export function ContextMeter({
   const windowLabel = formatTokens(denominator)
   const fillTone = usageFill(ratio)
   const usedTone = usageTone(ratio)
+  const hitPct = cacheHitPct(alignedUsage.stepUsage)
+  const cacheHint =
+    hitPct != null
+      ? ` · ${hitPct}% cached`
+      : alignedUsage.stepUsage.cacheCreationInputTokens > 0
+        ? ` · ${formatTokens(alignedUsage.stepUsage.cacheCreationInputTokens)} cache write`
+        : ''
 
   const panelLayout =
     open && position
@@ -436,15 +493,15 @@ export function ContextMeter({
         ref={triggerRef}
         type="button"
         className={cn(
-          'group relative inline-flex h-7 max-w-[7rem] min-w-0 items-center overflow-hidden rounded-xl px-1.5 text-[11px] leading-none tracking-[var(--vy-tracking)]',
+          'group relative inline-flex h-7 max-w-[9.5rem] min-w-0 items-center overflow-hidden rounded-xl px-1.5 text-[11px] leading-none tracking-[var(--vy-tracking)]',
           'vy-transition hover:bg-surface active:bg-surface',
           open && 'bg-surface'
         )}
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-controls={open ? panelId : undefined}
-        aria-label={`Context window ${pct}% full${estimate ? ' (estimated)' : ''}: ${usedLabel} of ${windowLabel}. Open breakdown.`}
-        title={`Context ${usedLabel} · ${windowLabel}${estimate ? ' (estimated)' : ''}`}
+        aria-label={`Context window ${pct}% full${estimate ? ' (estimated)' : ''}: ${usedLabel} of ${windowLabel}${cacheHint}. Open breakdown.`}
+        title={`Context ${usedLabel} · ${windowLabel}${estimate ? ' (estimated)' : ''}${cacheHint}`}
         onClick={() => setOpen((v) => !v)}
       >
         <span
@@ -462,6 +519,12 @@ export function ContextMeter({
           </span>
           <span className="shrink-0 text-tertiary">·</span>
           <span className="min-w-0 truncate text-muted">{windowLabel}</span>
+          {hitPct != null ? (
+            <>
+              <span className="shrink-0 text-tertiary">·</span>
+              <span className="shrink-0 text-success">{hitPct}%</span>
+            </>
+          ) : null}
         </span>
       </button>
 

@@ -9,7 +9,12 @@ import type {
 } from '../../shared/ipc'
 import { DEFAULT_SETTINGS } from '../../shared/ipc'
 import { contentDisplayText, contentToText } from '../../shared/ipc'
-import { ollamaOpenAiBaseUrl, providerNeedsKey, seedModelsFor } from '../../shared/providers'
+import { userMessageDisplayText } from '../../shared/slashCommands'
+import {
+  providerNeedsKey,
+  resolveProviderChatBaseUrl,
+  seedModelsFor
+} from '../../shared/providers'
 import { formatError, isAbortError } from '../../shared/errors'
 import { logger, logErrorSummary } from '../../shared/logger'
 import { workspaceIdFromPath } from '../../shared/workspaceId'
@@ -100,7 +105,12 @@ import { writeRunReceiptBestEffort } from './runReceipt'
 import { writeTrajectoryArtifactsBestEffort } from './runTrajectory'
 import { toolResultEventForIpc, toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
 import { AGENT_TOOLS } from './types'
-import { listMcpToolDefinitions, parseMcpToolName, syncMcpServers } from './mcp'
+import {
+  getMcpServerStatus,
+  listMcpToolDefinitions,
+  parseMcpToolName,
+  syncMcpServers
+} from './mcp'
 import { resolveEffectiveMcpServers, resolveMcpServersForSessionMap, mcpSessionMapFingerprint } from '../marketplace/resolve'
 import { buildSkillsSection, loadEnabledSkills, loadPluginRules } from './skills'
 import { beginWriteCheckpoint, finalizeWriteCheckpoint } from './checkpoints'
@@ -367,8 +377,11 @@ export async function* runAgent(input: {
       .find((m) => m.role === 'user')
     // Prefer what the user typed: an attachment's quoted text would make a
     // useless goal line for the workspace snapshot and the run list.
+    // Collapse skill/MCP slash injections so sidebar goals aren't the full body blob.
     const goal = lastUser
-      ? (contentDisplayText(lastUser.content) || contentToText(lastUser.content)).slice(0, 200)
+      ? userMessageDisplayText(
+          contentDisplayText(lastUser.content) || contentToText(lastUser.content)
+        ).slice(0, 200)
       : 'chat'
     let initialStep = 0
 
@@ -462,7 +475,8 @@ export async function* runAgent(input: {
     const provider = getProvider(providerId)
 
     let apiKey: string | null = getSecret(providerId)
-    if (providerNeedsKey(providerId, settings.ollamaBaseUrl) && !apiKey) {
+    const baseUrl = resolveProviderChatBaseUrl(providerId, settings, apiKey)
+    if (providerNeedsKey(providerId, baseUrl ?? settings.ollamaBaseUrl) && !apiKey) {
       const status = secretStatus()
       const storedBlob = hasStoredSecretBlob(providerId)
       const message = !status.encryptionAvailable
@@ -545,9 +559,6 @@ export async function* runAgent(input: {
       return { saved: true, event: ev }
     }
 
-    const baseUrl =
-      providerId === 'ollama' ? ollamaOpenAiBaseUrl(settings.ollamaBaseUrl) : undefined
-
     const modelInfo = await resolveModelInfo(
       providerId,
       settings.model,
@@ -584,6 +595,8 @@ export async function* runAgent(input: {
     let omittedMcpHint: string | undefined
     let lastMcpRefreshFp = ''
     let lastMcpCatalogFp = ''
+    /** One forced reconnect attempt per run when enabled servers previously failed. */
+    let mcpFailureRetried = false
     /** MCP tool names in the current step's provider catalog (post budget trim). */
     let stepMcpToolNames = new Set<string>()
     /** Agent-requested MCP tools to prefer in trimToolsToBudget on later steps. */
@@ -599,8 +612,18 @@ export async function* runAgent(input: {
       const refreshFp = `${mcpSessionMapFingerprint()}::${JSON.stringify(marketplaceOverrides ?? null)}`
       const configUnchanged = refreshFp === lastMcpRefreshFp
       lastMcpRefreshFp = refreshFp
-      if (!configUnchanged) {
-        await syncMcpServers(resolveMcpServersForSessionMap())
+      const sessionServers = resolveMcpServersForSessionMap()
+      const needsFailureRetry =
+        !mcpFailureRetried &&
+        getMcpServerStatus(sessionServers).some(
+          (s) => s.enabled && !s.connected && Boolean(s.error)
+        )
+      if (!configUnchanged || needsFailureRetry) {
+        if (needsFailureRetry) mcpFailureRetried = true
+        await syncMcpServers(
+          sessionServers,
+          needsFailureRetry ? { forceRetryFailures: true } : undefined
+        )
       }
       const runMcpServers = resolveEffectiveMcpServers(marketplaceOverrides)
       runEnabledMcpIds = new Set(runMcpServers.filter((s) => s.enabled).map((s) => s.id))
@@ -665,6 +688,11 @@ export async function* runAgent(input: {
       if (controller.signal.aborted) break
       // Inject any queued user follow-ups before the next model call.
       yield* applyDrainedFollowUps(runId, runDir, messages)
+      try {
+        await flushMessageAppends(runDir)
+      } catch {
+        // Failure is recorded for emitMessageAppendFailureNotice below.
+      }
       if (yield* emitMessageAppendFailureNotice(runId, runDir, invokeId)) {
         yield* flushWriteCheckpoint()
         const message = 'Failed to persist a chat message'
@@ -1094,6 +1122,7 @@ export async function* runAgent(input: {
                 inputTokens: chunk.usage.inputTokens,
                 outputTokens: chunk.usage.outputTokens,
                 cachedInputTokens: chunk.usage.cachedInputTokens,
+                cacheCreationInputTokens: chunk.usage.cacheCreationInputTokens,
                 reasoningTokens: chunk.usage.reasoningTokens
               }
               appendEvent(runDir, usageEv)
@@ -1115,13 +1144,18 @@ export async function* runAgent(input: {
               // Persist so reload/hydration keeps provider-accurate meter (latest wins per step).
               appendEvent(runDir, providerContextEv)
               yield providerContextEv
-              if (chunk.usage.cachedInputTokens && chunk.usage.cachedInputTokens > 0) {
-                logger.info('Prompt cache hit', {
+              if (
+                (chunk.usage.cachedInputTokens && chunk.usage.cachedInputTokens > 0) ||
+                (chunk.usage.cacheCreationInputTokens &&
+                  chunk.usage.cacheCreationInputTokens > 0)
+              ) {
+                logger.info('Prompt cache', {
                   scope: 'agent',
                   correlationId: runId,
                   provider: providerId,
                   step,
                   cachedInputTokens: chunk.usage.cachedInputTokens,
+                  cacheCreationInputTokens: chunk.usage.cacheCreationInputTokens,
                   inputTokens: chunk.usage.inputTokens
                 })
               }
@@ -1563,7 +1597,11 @@ export async function* runAgent(input: {
           consecutiveToolFailureSteps,
           MAX_PARALLEL_READ_TOOLS
         ),
-        appendMessage: (msg: ChatMessage) => appendMessage(runDir!, msg),
+        appendMessage: async (msg: ChatMessage) => {
+          await appendMessage(runDir!, msg)
+          // Surface persist failures before the next tool mutates the workspace.
+          await flushMessageAppends(runDir!)
+        },
         appendEvent: (ev: AgentEvent) => appendEvent(runDir!, ev),
         approval: approvalGate,
         agentMode,
@@ -1635,7 +1673,25 @@ export async function* runAgent(input: {
         ])
         wakeLiveEvents = null
       }
-      const toolOutcome = await settledWork
+      let toolOutcome: Awaited<typeof settledWork>
+      try {
+        toolOutcome = await settledWork
+      } catch (err) {
+        try {
+          await flushMessageAppends(runDir)
+        } catch {
+          // Failure is recorded for emitMessageAppendFailureNotice below.
+        }
+        if (yield* emitMessageAppendFailureNotice(runId, runDir, invokeId)) {
+          yield* flushWriteCheckpoint()
+          const message = 'Failed to persist a chat message'
+          yield { type: 'status', runId, invokeId, status: 'error' }
+          writeStatus({ status: 'error', error: message })
+          appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+          return
+        }
+        throw err
+      }
       for (const ev of toolOutcome.events) {
         if (ev.type === 'tool_result') {
           if (liveToolResultsEmitted.has(ev.toolCallId)) continue
@@ -1651,6 +1707,19 @@ export async function* runAgent(input: {
         (toolsSteered || hasPendingFollowUps(runId))
       ) {
         yield* applyDrainedFollowUps(runId, runDir, messages)
+        try {
+          await flushMessageAppends(runDir)
+        } catch {
+          // Failure is recorded for emitMessageAppendFailureNotice below.
+        }
+        if (yield* emitMessageAppendFailureNotice(runId, runDir, invokeId)) {
+          yield* flushWriteCheckpoint()
+          const message = 'Failed to persist a chat message'
+          yield { type: 'status', runId, invokeId, status: 'error' }
+          writeStatus({ status: 'error', error: message })
+          appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+          return
+        }
         continue
       }
 

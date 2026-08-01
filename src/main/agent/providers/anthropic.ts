@@ -499,12 +499,16 @@ export const anthropicProvider: LlmProvider = {
       const cachedInputTokens = hasCacheRead
         ? usage.cache_read_input_tokens
         : lastUsage?.cachedInputTokens
+      const cacheCreationInputTokens = hasCacheCreate
+        ? usage.cache_creation_input_tokens
+        : lastUsage?.cacheCreationInputTokens
       const reasoningTokens = hasReasoning ? usage.thinking_tokens : lastUsage?.reasoningTokens
 
       const next: TokenUsage = {
         inputTokens: inputTokens as number | undefined,
         outputTokens: outputTokens as number | undefined,
         cachedInputTokens: cachedInputTokens as number | undefined,
+        cacheCreationInputTokens: cacheCreationInputTokens as number | undefined,
         reasoningTokens: reasoningTokens as number | undefined
       }
       if (next.inputTokens !== undefined && next.outputTokens !== undefined) {

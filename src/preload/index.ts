@@ -244,6 +244,7 @@ const api: VyotiqApi = {
   slashCommandsOpenFile: (payload) => ipcRenderer.invoke(IPC.slashCommandsOpenFile, payload),
   workspaceSuggestPaths: (payload) => ipcRenderer.invoke(IPC.workspaceSuggestPaths, payload),
   workspaceReadText: (payload) => ipcRenderer.invoke(IPC.workspaceReadText, payload),
+  workspaceReadImage: (payload) => ipcRenderer.invoke(IPC.workspaceReadImage, payload),
   workspaceListDocs: (payload) => ipcRenderer.invoke(IPC.workspaceListDocs, payload),
   workspaceListRules: (payload) => ipcRenderer.invoke(IPC.workspaceListRules, payload),
   workspaceDiagnostics: (payload) => ipcRenderer.invoke(IPC.workspaceDiagnostics, payload),

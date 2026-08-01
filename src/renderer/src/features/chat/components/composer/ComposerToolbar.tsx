@@ -51,18 +51,18 @@ function ContextMeterLeaf({
 
 /** Shared compact control height for the toolbar row. */
 const iconCtl =
-  'inline-grid size-7 shrink-0 place-items-center rounded-xl text-muted vy-transition hover:bg-surface hover:text-fg disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)] disabled:hover:bg-transparent disabled:hover:text-muted'
+  'inline-grid size-7 shrink-0 place-items-center rounded-md border-0 bg-transparent text-muted vy-transition hover:bg-surface hover:text-fg disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)] disabled:hover:bg-transparent disabled:hover:text-muted'
 
 /** Size to content; truncate only when the middle zone is constrained. */
 const modelPillTrigger = cn(
-  'inline-flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-xl border-0 bg-transparent px-2',
+  'inline-flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-md border-0 bg-transparent px-1',
   chromeLabelText,
   'text-fg hover:bg-surface active:bg-surface',
   'vy-transition disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
 )
 
 const sendCtl = cn(
-  'inline-grid size-7 shrink-0 place-items-center rounded-xl vy-transition',
+  'inline-grid size-7 shrink-0 place-items-center rounded-md vy-transition',
   'disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
 )
 
@@ -106,7 +106,8 @@ export function ComposerToolbar({
   metaStore,
   onCompactContext,
   onCancelEdit,
-  focusInput
+  focusInput,
+  imageReadyHint = null
 }: {
   variant: ComposerVariant
   disabled?: boolean
@@ -144,6 +145,7 @@ export function ComposerToolbar({
   onCompactContext?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
   onCancelEdit?: () => void
   focusInput?: () => void
+  imageReadyHint?: string | null
 }) {
   void disabled
   const isInline = variant === 'inline'
@@ -261,6 +263,14 @@ export function ComposerToolbar({
           disabled={locked}
           running={running}
         />
+        {imageReadyHint ? (
+          <span
+            className="hidden max-w-[9rem] truncate px-1 text-[10px] text-tertiary @min-[520px]:inline"
+            title={imageReadyHint}
+          >
+            {imageReadyHint}
+          </span>
+        ) : null}
       </div>
 
       {/* Right: context + send, always trailing */}

@@ -5,6 +5,7 @@ import { join } from 'path'
 import {
   getCachedModels,
   modelCacheKey,
+  normalizeModelCacheBaseUrl,
   resetModelCacheForTests,
   setCachedModels,
   setModelCacheDiskPathForTests
@@ -65,5 +66,30 @@ describe('modelCache disk', () => {
     const after = JSON.parse(readFileSync(disk, 'utf8')) as typeof raw
     expect(after.entries[deepseek]!.savedAt).toBe(firstSavedAt - 60_000)
     expect(after.entries[openai]!.savedAt).toBeGreaterThan(firstSavedAt - 60_000)
+  })
+
+  it('normalizes Ollama /v1 and native host to the same cache key', () => {
+    const keyA = modelCacheKey('ollama', 'https://ollama.com', 'sk-test')
+    const keyB = modelCacheKey('ollama', 'https://ollama.com/v1', 'sk-test')
+    expect(keyA).toBe(keyB)
+    expect(normalizeModelCacheBaseUrl('ollama', 'https://ollama.com/v1/')).toBe('https://ollama.com')
+  })
+
+  it('migrates legacy Ollama /v1 disk keys on load', () => {
+    dir = mkdtempSync(join(tmpdir(), 'vyotiq-model-cache-'))
+    const disk = join(dir, 'model-catalog-cache.json')
+    const legacyKey = 'ollama|https://ollama.com/v1|abc123'
+    const canonicalKey = 'ollama|https://ollama.com|abc123'
+    writeFileSync(
+      disk,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [legacyKey]: { models: sample, savedAt: Date.now() }
+        }
+      })
+    )
+    setModelCacheDiskPathForTests(disk)
+    expect(getCachedModels(canonicalKey)).toEqual(sample)
   })
 })

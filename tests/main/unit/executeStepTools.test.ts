@@ -311,6 +311,33 @@ describe('executeStepToolCalls', () => {
     expect(order).toEqual(['persisted', 'emitted'])
   })
 
+  it('stops later serial tools when appendMessage rejects (persist failure)', async () => {
+    const ran: string[] = []
+    executeTool.mockImplementation(async (name: string) => {
+      ran.push(name)
+      return { ok: true, summary: name, content: name }
+    })
+    const { ctx } = makeCtx(new AbortController().signal)
+    let appends = 0
+    ctx.appendMessage = async () => {
+      appends++
+      if (appends === 1) throw new Error('disk full')
+    }
+
+    await expect(
+      executeStepToolCalls(
+        [
+          { id: 'c1', name: 'edit', arguments: '{"path":"a.ts","contents":"x"}' },
+          { id: 'c2', name: 'edit', arguments: '{"path":"b.ts","contents":"y"}' }
+        ],
+        ctx
+      )
+    ).rejects.toThrow('disk full')
+
+    expect(ran).toEqual(['edit'])
+    expect(appends).toBe(1)
+  })
+
   it('routes parallel subagent live updates to distinct parentToolCallIds', async () => {
     const live: AgentEvent[] = []
     executeTool.mockImplementation(

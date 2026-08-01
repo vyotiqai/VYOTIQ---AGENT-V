@@ -56,7 +56,15 @@ export function packageActivity(
       }
     }
     if (mcpStatus?.error) {
-      return { kind: 'enabled', label: 'Enabled · not connected', className: 'text-danger' }
+      const short =
+        mcpStatus.error.length > 72
+          ? `${mcpStatus.error.slice(0, 69)}…`
+          : mcpStatus.error
+      return {
+        kind: 'enabled',
+        label: `Connect failed · ${short}`,
+        className: 'text-danger'
+      }
     }
     return { kind: 'enabled', label: 'Enabled' }
   }

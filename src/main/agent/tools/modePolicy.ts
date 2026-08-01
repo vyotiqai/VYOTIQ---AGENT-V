@@ -38,7 +38,10 @@ export const ASK_SAFE_BUILTIN = new Set([
   'Skill',
   'subagent',
   'git_status',
-  'git_diff'
+  'git_diff',
+  // Describe-only in Ask/Plan (handler dry-runs); Agent writes the file.
+  'generate_image',
+  'edit_image'
   // `diagnostics` spawns a shell — Plan-only (see PLAN_EXTRA / agent), not Ask.
 ])
 
@@ -90,6 +93,7 @@ export function modeSectionMarkdown(
         '',
         'You are in Agent mode. You may edit files, run the `terminal` tool, write memory,',
         'and use the full tools catalog (subject to user approval settings).',
+        '`generate_image` / `edit_image` write image files under the workspace (checkpointed).',
         'Workspace writes are checkpointed for Keep/Discard; plan.md / contract.md run',
         'artifacts are not. Prefer non-destructive commands.',
         'You may delegate work with `subagent` (nested agents share your tools and approvals;',
@@ -110,8 +114,9 @@ export function modeSectionMarkdown(
         'You are in Ask mode. Use read-only built-in tools liberally to investigate and answer.',
         'MCP tools are not available in Ask mode (server-reported readOnlyHint is untrusted).',
         'Only avoid mutating tools. Do not edit files, delete paths, run the `terminal` tool,',
-        'run `diagnostics`, or write memory. `subagent` is allowed for broad investigation',
-        '(nested agents inherit Ask mode tool limits).',
+        'run `diagnostics`, or write memory. `generate_image` / `edit_image` are dry-run only (describe',
+        'path/provider; no API call or file write — switch to Agent to save). `subagent` is allowed',
+        'for broad investigation (nested agents inherit Ask mode tool limits).',
         ...(auto
           ? [
               'If the user wants a multi-step plan, call `switch_mode` to `plan` before writing plan artifacts.',
@@ -129,7 +134,8 @@ export function modeSectionMarkdown(
         '(MCP tools are not available — readOnlyHint is untrusted as a security gate),',
         'and update `plan.md` and `contract.md` incrementally (run plan artifacts — not product source).',
         'Prefer updating the injected `## Plan` rather than re-deriving it from scratch each turn.',
-        '`todo_write` and `diagnostics` are available. Do not edit application code, delete files,',
+        '`todo_write` and `diagnostics` are available. `generate_image` / `edit_image` are dry-run only',
+        '(no API call or file write). Do not edit application code, delete files,',
         'run the `terminal` tool, or spawn `subagent` (not Plan).',
         ...(auto
           ? [
@@ -266,7 +272,9 @@ const ASK_SAFE_SERIAL_OK = new Set([
   'mcp_list_resources',
   'mcp_read_resource',
   'mcp_list_prompts',
-  'mcp_get_prompt'
+  'mcp_get_prompt',
+  'generate_image',
+  'edit_image'
 ])
 
 export function askSafeAlignsWithParallelSafe(): boolean {

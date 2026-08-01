@@ -82,7 +82,7 @@ When the harness is too long for its budget, `capHarness()` drops lower-priority
 
 ## Tool policy (`## Tool policy`)
 
-**What this section governs:** Call tools to act; MCP naming/approval; exploration tools; concurrency and error recovery.
+**What this section governs:** Call tools to act; MCP naming and allowlist/denylist; exploration/recovery hints. Concurrency caps, serial/approval gates, and subagent nesting depth are enforced in `classify.ts` / `executeStepTools.ts` / nested-agent runtime — not restated as numbers in the harness.
 
 | Failure mode | Bucket | Evidence sources |
 |---|---|---|
@@ -151,9 +151,9 @@ When the harness is too long for its budget, `capHarness()` drops lower-priority
 
 - **Identity / role** — who the agent is.
 - **Capabilities** — what the agent can do.
-- **Tool policy** — when and how to call tools, including concurrency and MCP rules.
+- **Tool policy** — when and how to call tools (MCP naming, allowlists, recovery); not runtime concurrency/approval/depth numbers.
 - **Constraints** — hard guardrails, prompt-injection mitigation, and safety rules.
-- **Work style** — process defaults (read before edit, `todo_write`, subagent rules, etc.).
+- **Work style** — process defaults (`todo_write`, when to use `subagent`, report paths, etc.).
 - **Memory** — how to use long-term memory.
 - **Output format** — expected response structure.
 

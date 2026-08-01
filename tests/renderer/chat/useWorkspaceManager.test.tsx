@@ -7,7 +7,8 @@ import {
   useWorkspaceManager,
   WORKSPACE_MANAGER_LIMITS,
   pruneScrollTopByRunId,
-  omitRunScrollTop
+  omitRunScrollTop,
+  reconcileOpenRunIds
 } from '@renderer/lib/hooks/useWorkspaceManager'
 import type { AgentEvent, WorkspacesState } from '@shared/ipc'
 
@@ -980,7 +981,7 @@ describe('useWorkspaceManager', () => {
 })
 
 describe('scrollTopByRunId prune helpers', () => {
-  it('keeps open/active/draft keys only', () => {
+  it('keeps open/active keys; drops draft when a run is active', () => {
     const pruned = pruneScrollTopByRunId(
       {
         'run-open': 10,
@@ -992,13 +993,49 @@ describe('scrollTopByRunId prune helpers', () => {
     )
     expect(pruned).toEqual({
       'run-open': 10,
-      'run-active': 20,
-      __draft__: 5
+      'run-active': 20
     })
+  })
+
+  it('keeps __draft__ only while drafting', () => {
+    expect(
+      pruneScrollTopByRunId(
+        { __draft__: 5, 'run-open': 10 },
+        { openRunIds: ['run-open'], activeRunId: null }
+      )
+    ).toEqual({ __draft__: 5, 'run-open': 10 })
   })
 
   it('omitRunScrollTop removes a deleted run key', () => {
     expect(omitRunScrollTop({ a: 1, b: 2 }, 'a')).toEqual({ b: 2 })
     expect(omitRunScrollTop({ a: 1 }, 'missing')).toEqual({ a: 1 })
+  })
+})
+
+describe('reconcileOpenRunIds', () => {
+  it('drops deleted tabs and reassigns active run', () => {
+    const result = reconcileOpenRunIds(
+      ['run-a', 'run-deleted', 'run-b'],
+      'run-deleted',
+      ['run-a', 'run-b'],
+      ['run-a', 'run-deleted', 'run-b']
+    )
+    expect(result.changed).toBe(true)
+    expect(result.openRunIds).toEqual(['run-a', 'run-b'])
+    expect(result.activeRunId).toBe('run-b')
+  })
+
+  it('no-ops when all open tabs still exist', () => {
+    const result = reconcileOpenRunIds(['run-a'], 'run-a', ['run-a', 'run-b'], ['run-a'])
+    expect(result.changed).toBe(false)
+    expect(result.openRunIds).toEqual(['run-a'])
+    expect(result.activeRunId).toBe('run-a')
+  })
+
+  it('no-ops when listRuns is empty but prior runs were unknown', () => {
+    const result = reconcileOpenRunIds(['run-new'], 'run-new', [], [])
+    expect(result.changed).toBe(false)
+    expect(result.openRunIds).toEqual(['run-new'])
+    expect(result.activeRunId).toBe('run-new')
   })
 })

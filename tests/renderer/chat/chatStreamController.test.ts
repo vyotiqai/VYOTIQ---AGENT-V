@@ -227,6 +227,50 @@ describe('createChatStreamController', () => {
     expect(controller.messages).toEqual([{ role: 'user', content: 'first edited' }])
     expect(controller.messages.some((m) => m.content === 'reply-2')).toBe(false)
     expect(controller.running).toBe(true)
+    const editedUser = controller.items.find(
+      (item) => item.kind === 'message' && item.role === 'user'
+    )
+    expect(editedUser?.kind === 'message' ? editedUser.at : undefined).toMatch(
+      /^\d{4}-\d{2}-\d{2}T/
+    )
+  })
+
+  it('editAndResend keeps prior user at timestamps for earlier turns', async () => {
+    const chatRewindAndStart = vi.fn().mockResolvedValue({
+      ok: true,
+      data: { runId: 'r1', invokeId: 2 }
+    })
+    const chatCancel = vi.fn().mockResolvedValue({ ok: true, data: true })
+    // @ts-expect-error test bridge
+    window.vyotiq = { chatRewindAndStart, chatCancel }
+
+    const controller = createChatStreamController({ workspacePath: '/ws', runId: 'r1' })
+    controller.hydrateTranscript([
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'reply-1' },
+      { role: 'user', content: 'second' },
+      { role: 'assistant', content: 'reply-2' }
+    ])
+    const firstUser = controller.items.find(
+      (item) => item.kind === 'message' && item.role === 'user' && item.content === 'first'
+    )
+    expect(firstUser?.kind).toBe('message')
+    if (firstUser?.kind === 'message') {
+      firstUser.at = '2026-01-01T00:00:00.000Z'
+    }
+
+    const ok = await controller.editAndResend(2, 'second edited')
+    expect(ok).toBe(true)
+    const keptFirst = controller.items.find(
+      (item) => item.kind === 'message' && item.role === 'user' && item.content === 'first'
+    )
+    expect(keptFirst?.kind === 'message' ? keptFirst.at : undefined).toBe(
+      '2026-01-01T00:00:00.000Z'
+    )
+    const edited = controller.items.find(
+      (item) => item.kind === 'message' && item.role === 'user' && item.content === 'second edited'
+    )
+    expect(edited?.kind === 'message' ? edited.at : undefined).toMatch(/^\d{4}-\d{2}-\d{2}T/)
   })
 
   it('editAndResend rolls back UI when chatRewindAndStart fails', async () => {

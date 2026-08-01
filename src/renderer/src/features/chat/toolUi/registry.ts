@@ -26,7 +26,8 @@ import { TerminalBody } from './bodies/TerminalBody'
 import { TodoBody } from './bodies/TodoBody'
 import { WebFetchBody } from './bodies/WebFetchBody'
 import { WebSearchBody } from './bodies/WebSearchBody'
-import { isMcpTool, toolIconName, toolLabel } from './meta'
+import { GenerateImageBody } from './bodies/GenerateImageBody'
+import { isInterruptedToolContent, isMcpTool, toolIconName, toolLabel } from './meta'
 import {
   parseBrowserActionData,
   parseBrowserSnapshotData,
@@ -41,6 +42,7 @@ import { parseReadData } from './parsers/read'
 import { parseStatusMessageData } from './parsers/status'
 import { parseTodoData } from './parsers/todo'
 import { parseTerminalCardData } from './parsers/terminal'
+import { parseGenerateImageData } from './parsers/generateImage'
 import type { ToolBodyProps, ToolHeaderMeta } from './types'
 
 type ToolBodyCtx = {
@@ -137,6 +139,12 @@ function mcpIntrospectHasBody(tool: UiToolRow): boolean {
       data.text ||
       data.message ||
       tool.content
+  )
+}
+
+function generateImageHasBody(tool: UiToolRow, ctx?: ToolBodyCtx): boolean {
+  return (
+    Boolean((tool.content ?? '').trim() || tool.summary) || (ctx?.subagent?.length ?? 0) > 0
   )
 }
 
@@ -442,6 +450,30 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
       }
     }
   },
+  generate_image: {
+    Body: GenerateImageBody,
+    hasBody: generateImageHasBody,
+    headerMeta: (tool) => {
+      const data = parseGenerateImageData(tool)
+      return {
+        verb: toolLabel(tool.name, tool.status),
+        target: data.path || tool.summary,
+        icon: 'sparkles'
+      }
+    }
+  },
+  edit_image: {
+    Body: GenerateImageBody,
+    hasBody: generateImageHasBody,
+    headerMeta: (tool) => {
+      const data = parseGenerateImageData(tool)
+      return {
+        verb: toolLabel(tool.name, tool.status),
+        target: data.path || tool.summary,
+        icon: 'sparkles'
+      }
+    }
+  },
   mcp_list_tools: mcpIntrospectEntry,
   mcp_list_resources: mcpIntrospectEntry,
   mcp_read_resource: mcpIntrospectEntry,
@@ -512,16 +544,22 @@ export function toolHasBody(tool: UiToolRow, ctx?: ToolBodyCtx): boolean {
 export function getToolHeaderMeta(tool: UiToolRow, ctx?: ToolBodyCtx): ToolHeaderMeta {
   if (isUnresolvedToolName(tool.name)) {
     return {
-      verb: toolLabel(tool.name, tool.status),
+      verb: toolLabel(tool.name, tool.status, tool.content),
       target: '',
       icon: toolIconName(tool.name)
     }
   }
   const entry = getToolEntry(tool.name)
-  if (entry.headerMeta) return entry.headerMeta(tool, ctx)
-  return {
-    verb: toolLabel(tool.name, tool.status),
-    target: tool.summary || summarizeToolArgs(tool.name, tool.argsPreview),
-    icon: toolIconName(tool.name)
+  const meta = entry.headerMeta
+    ? entry.headerMeta(tool, ctx)
+    : {
+        verb: toolLabel(tool.name, tool.status, tool.content),
+        target: tool.summary || summarizeToolArgs(tool.name, tool.argsPreview),
+        icon: toolIconName(tool.name)
+      }
+  // Registry headerMeta often keys only on status; align interrupted verbs.
+  if (isInterruptedToolContent(tool.content) && tool.status !== 'running') {
+    return { ...meta, verb: toolLabel(tool.name, 'running') }
   }
+  return meta
 }

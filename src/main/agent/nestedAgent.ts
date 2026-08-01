@@ -14,7 +14,7 @@ import type {
   ProviderId
 } from '../../shared/ipc'
 import { DEFAULT_SETTINGS } from '../../shared/ipc'
-import { defaultModelFor, ollamaOpenAiBaseUrl, providerNeedsKey } from '../../shared/providers'
+import { defaultModelFor, providerNeedsKey, resolveProviderChatBaseUrl } from '../../shared/providers'
 import { resolveServiceTier } from '../../shared/domain/modelSelection'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
 import { formatError, isAbortError } from '../../shared/errors'
@@ -220,7 +220,24 @@ async function finalizeNested(
   outcome: { ok: boolean; report: string; steps: number },
   childDir: string | null
 ): Promise<SubagentOutcome> {
-  await flushChildTranscript(childDir)
+  try {
+    await flushChildTranscript(childDir)
+  } catch (err) {
+    logger.warn('Failed to flush nested agent transcript', {
+      scope: 'agent',
+      code: 'NESTED_FLUSH',
+      correlationId: options.runId ?? `nested-${options.subagentId}`,
+      subagentId: options.subagentId,
+      err
+    })
+    if (outcome.ok) {
+      return finalizeOutcome(options, {
+        ok: false,
+        report: `Nested agent finished but failed to persist transcript: ${formatError(err)}`,
+        steps: outcome.steps
+      })
+    }
+  }
   return finalizeOutcome(options, outcome)
 }
 
@@ -258,7 +275,8 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
 
   const provider = getProvider(providerId)
   const apiKey = getSecret(providerId)
-  if (providerNeedsKey(providerId, settings.ollamaBaseUrl) && !apiKey) {
+  const baseUrl = resolveProviderChatBaseUrl(providerId, settings, apiKey)
+  if (providerNeedsKey(providerId, baseUrl ?? settings.ollamaBaseUrl) && !apiKey) {
     const status = secretStatus()
     const storedBlob = hasStoredSecretBlob(providerId)
     const message = !status.encryptionAvailable
@@ -269,8 +287,6 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
     return finalizeOutcome(options, { ok: false, steps: 0, report: message })
   }
 
-  const baseUrl =
-    providerId === 'ollama' ? ollamaOpenAiBaseUrl(settings.ollamaBaseUrl) : undefined
   const childDir = ensureChildDir(options.runDir, options.subagentId)
   const parentRunDir = options.runDir
   const runId = options.runId ?? `nested-${options.subagentId}`
@@ -333,7 +349,18 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
     }
   ]
   if (childDir) {
-    for (const m of messages) void appendMessage(childDir, m)
+    for (const m of messages) {
+      await appendMessage(childDir, m)
+    }
+    try {
+      await flushMessageAppends(childDir)
+    } catch (err) {
+      return finalizeOutcome(options, {
+        ok: false,
+        steps: 0,
+        report: `Failed to persist nested agent transcript: ${formatError(err)}`
+      })
+    }
   }
 
   let runEnabledMcpIds = new Set<string>()
@@ -421,9 +448,11 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
   const thinkingEnabled =
     settings.thinkingEnabled && (modelInfo.supportsThinking !== false)
 
-  const persistMsg = (msg: ChatMessage): void => {
+  const persistMsg = async (msg: ChatMessage): Promise<void> => {
     messages.push(msg)
-    if (childDir) void appendMessage(childDir, msg)
+    if (!childDir) return
+    await appendMessage(childDir, msg)
+    await flushMessageAppends(childDir)
   }
 
   while (true) {
@@ -868,6 +897,7 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
                 })
                 lastUsage = { inputTokens: assembled.estimatedTokens }
               }
+            }
           } else if (chunk.type === 'error') {
             const message = chunk.error ?? 'Provider error'
             if (shouldRetryProviderStreamError(message, streamAttempt)) {
@@ -939,16 +969,24 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
         (!scrubbed.trim() && !thinkingText.trim())
       if (incomplete && truncationContinues < MAX_TRUNCATION_CONTINUES) {
         truncationContinues++
-        persistMsg({
-          role: 'assistant',
-          content: scrubbed,
-          ...(thinkingText ? { thinking: thinkingText } : {}),
-          ...(stepReasoningState ? { reasoningState: stepReasoningState } : {})
-        })
-        persistMsg({
-          role: 'user',
-          content: 'Continue from where you left off. Finish the report without repeating.'
-        })
+        try {
+          await persistMsg({
+            role: 'assistant',
+            content: scrubbed,
+            ...(thinkingText ? { thinking: thinkingText } : {}),
+            ...(stepReasoningState ? { reasoningState: stepReasoningState } : {})
+          })
+          await persistMsg({
+            role: 'user',
+            content: 'Continue from where you left off. Finish the report without repeating.'
+          })
+        } catch (err) {
+          return await finalizeNested(options, {
+            ok: false,
+            report: `Failed to persist nested agent message: ${formatError(err)}`,
+            steps: step
+          }, childDir)
+        }
         continue
       }
 
@@ -997,7 +1035,15 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
       ...(thinkingText ? { thinking: thinkingText } : {}),
       ...(stepReasoningState ? { reasoningState: stepReasoningState } : {})
     }
-    persistMsg(assistantWithTools)
+    try {
+      await persistMsg(assistantWithTools)
+    } catch (err) {
+      return await finalizeNested(options, {
+        ok: false,
+        report: `Failed to persist nested agent message: ${formatError(err)}`,
+        steps: step
+      }, childDir)
+    }
     if (thinkingText && !thinkingDoneEmitted) {
       emitParent({ type: 'thinking_done', runId, text: thinkingText, step })
     }
@@ -1020,7 +1066,15 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
           content: `Tool "${call.name}" is not available to nested agents.`,
           ok: false
         }
-        persistMsg(denied)
+        try {
+          await persistMsg(denied)
+        } catch (err) {
+          return await finalizeNested(options, {
+            ok: false,
+            report: `Failed to persist nested agent message: ${formatError(err)}`,
+            steps: step
+          }, childDir)
+        }
         emitParent({
           type: 'tool_start',
           runId,
@@ -1066,7 +1120,7 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
         MAX_PARALLEL_READ_TOOLS
       ),
       appendMessage: async (msg: ChatMessage) => {
-        persistMsg(msg)
+        await persistMsg(msg)
       },
       appendEvent: (ev: AgentEvent) => {
         if (childDir) appendEvent(childDir, ev)

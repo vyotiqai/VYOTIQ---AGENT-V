@@ -4,6 +4,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useSlashCommands } from '@renderer/features/chat/components/composer/useSlashCommands'
+import { mentionMarker } from '@renderer/features/chat/components/composer/mentionModel'
 
 const commands = [
   {
@@ -61,19 +62,43 @@ describe('useSlashCommands navigation', () => {
     expect(result.current.activeIndex).toBe(1)
   })
 
-  it('stays open with a token even when nothing matches', async () => {
+  it('prefetches the catalog when a slash chip is already in the draft', async () => {
+    const chip = `${mentionMarker({
+      kind: 'slash',
+      slashKind: 'skill',
+      trigger: 'code-review',
+      commandId: 'skill:code-review'
+    })} trailing`
     const { result } = renderHook(() =>
       useSlashCommands({
-        text: '/zzzz',
-        cursor: 5,
+        text: chip,
+        cursor: chip.length,
         enabled: true
       })
     )
 
+    await vi.waitFor(() => expect(result.current.commands.length).toBe(2))
+    expect(window.vyotiq.slashCommandsList).toHaveBeenCalled()
+  })
+
+  it('ensureCommands returns the list without a second fetch when already loaded', async () => {
+    const { result } = renderHook(() =>
+      useSlashCommands({
+        text: '/',
+        cursor: 1,
+        enabled: true
+      })
+    )
+
+    await vi.waitFor(() => expect(result.current.commands.length).toBe(2))
+    const list = vi.mocked(window.vyotiq.slashCommandsList)
+    const calls = list.mock.calls.length
+
+    let ensured: typeof commands = []
     await act(async () => {
-      await Promise.resolve()
+      ensured = await result.current.ensureCommands()
     })
-    await vi.waitFor(() => expect(result.current.open).toBe(true))
-    expect(result.current.filtered).toEqual([])
+    expect(ensured).toEqual(commands)
+    expect(list.mock.calls.length).toBe(calls)
   })
 })

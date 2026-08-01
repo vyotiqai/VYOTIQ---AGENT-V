@@ -613,6 +613,124 @@ const diagnosticsArgs = z.object({
     .optional()
 })
 
+const generateImageArgs = z.object({
+  prompt: z
+    .string()
+    .min(1)
+    .describe('Image generation instruction (scene, subject, style, constraints)'),
+  path: z
+    .string()
+    .describe(
+      'Workspace-relative output path (png/jpg/webp/svg). Omit to write under .vyotiq/generated/.'
+    )
+    .optional(),
+  provider: z
+    .enum(['openai', 'gemini', 'xai', 'openrouter', 'custom'])
+    .describe('Image API provider override (default: Settings → Image provider, then auto by key)')
+    .optional(),
+  model: z
+    .string()
+    .describe(
+      'Provider image model override (e.g. gpt-image-2, gemini-3.1-flash-image, grok-imagine-image, bytedance-seed/seedream-4.5, dall-e-3 on custom)'
+    )
+    .optional(),
+  preset: z
+    .enum(['draft', 'final'])
+    .describe(
+      'draft = low/1K/speed defaults; final = high/2K/quality. Explicit quality/size/resolution/model win.'
+    )
+    .optional(),
+  size: z
+    .string()
+    .describe(
+      'OpenAI/OpenRouter size WxH or auto (e.g. 1024x1024). OpenAI: edges multiples of 16. Prefer aspect_ratio+resolution for Gemini/xAI/OpenRouter.'
+    )
+    .optional(),
+  quality: z
+    .enum(['low', 'medium', 'high', 'auto'])
+    .describe('OpenAI/OpenRouter quality; prefer low / preset=draft for drafts')
+    .optional(),
+  aspect_ratio: z
+    .string()
+    .describe('Gemini/xAI/OpenRouter aspect ratio (e.g. 1:1, 16:9, 9:16). Prefer over size for those providers.')
+    .optional(),
+  resolution: z
+    .string()
+    .describe(
+      'Gemini/OpenRouter imageSize (0.5K/1K/2K/4K) or xAI resolution (1k/2k; 4k clamps to 2k)'
+    )
+    .optional(),
+  n: z
+    .number()
+    .int()
+    .min(1)
+    .max(4)
+    .describe(
+      'How many images to generate (OpenAI/xAI/OpenRouter; Gemini returns one). Extra files get -2, -3 suffixes.'
+    )
+    .optional(),
+  output_format: z
+    .enum(['png', 'jpeg', 'webp', 'svg'])
+    .describe('Output format (default png). svg is OpenRouter vector models only.')
+    .optional(),
+  output_compression: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .describe('jpeg/webp compression 0–100 (OpenAI/OpenRouter)')
+    .optional(),
+  background: z
+    .enum(['opaque', 'transparent', 'auto'])
+    .describe('Background. transparent is not supported on gpt-image-2.')
+    .optional()
+})
+
+const editImageArgs = z.object({
+  prompt: z
+    .string()
+    .min(1)
+    .describe(
+      'Edit instruction. Prefer “change only X; keep everything else the same.” Reference Image 1…N when multiple.'
+    ),
+  reference_paths: z
+    .array(z.string().min(1))
+    .min(1)
+    .max(16)
+    .describe(
+      'Workspace-relative source/reference images (1–16; xAI max 3). First image is the primary canvas.'
+    ),
+  path: z
+    .string()
+    .describe(
+      'Output path. Omit to overwrite the first reference (iterate in place). Pass a new path to keep the original.'
+    )
+    .optional(),
+  mask_path: z
+    .string()
+    .describe(
+      'Optional OpenAI mask PNG (transparent = editable). Not supported on Gemini/xAI/OpenRouter.'
+    )
+    .optional(),
+  provider: z
+    .enum(['openai', 'gemini', 'xai', 'openrouter', 'custom'])
+    .describe('Image API provider override')
+    .optional(),
+  model: z.string().describe('Provider image model override').optional(),
+  preset: z.enum(['draft', 'final']).describe('draft | final quality defaults').optional(),
+  size: z.string().describe('OpenAI/OpenRouter size WxH or auto').optional(),
+  quality: z.enum(['low', 'medium', 'high', 'auto']).describe('OpenAI/OpenRouter quality').optional(),
+  aspect_ratio: z.string().describe('Gemini/xAI/OpenRouter aspect ratio').optional(),
+  resolution: z.string().describe('Gemini/OpenRouter imageSize or xAI resolution').optional(),
+  n: z.number().int().min(1).max(4).describe('OpenAI/xAI/OpenRouter image count').optional(),
+  output_format: z
+    .enum(['png', 'jpeg', 'webp', 'svg'])
+    .describe('Output format (svg = OpenRouter vector models)')
+    .optional(),
+  output_compression: z.number().int().min(0).max(100).optional(),
+  background: z.enum(['opaque', 'transparent', 'auto']).optional()
+})
+
 const skillArgs = z.object({
   name: z
     .string()
@@ -831,6 +949,16 @@ const TOOL_REGISTRY = {
     description:
       'Run project typecheck or lint and return structured diagnostics when parseable.',
     schema: diagnosticsArgs
+  },
+  generate_image: {
+    description:
+      'Generate an image via OpenAI, Gemini, xAI, OpenRouter, or an enabled custom OpenAI-compatible host and save it under the workspace. Chat provider can differ. Use preset=draft|final for quality defaults; set size/quality/resolution/output_format/n explicitly when needed. Ask/Plan: dry-run only. For edits use edit_image.',
+    schema: generateImageArgs
+  },
+  edit_image: {
+    description:
+      'Edit or compose from workspace reference images (OpenAI / Gemini / xAI / OpenRouter / custom). Pass reference_paths (first = canvas). Omit path to overwrite the first reference; set path to write a new file. Optional mask_path (OpenAI / custom hosts that support edits). Ask/Plan: dry-run only.',
+    schema: editImageArgs
   }
 } as const
 

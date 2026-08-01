@@ -166,4 +166,44 @@ describe('AskQuestionPanel', () => {
     )
     expect(screen.queryByPlaceholderText('Other…')).toBeNull()
   })
+
+  it('uses quiet question-gate chrome instead of a tool card', () => {
+    const { container } = render(
+      <AskQuestionPanel
+        question={baseQuestion({
+          questions: [{ id: 'q1', prompt: 'Pick', type: 'single', options: ['A'] }]
+        })}
+      />
+    )
+    const form = container.querySelector('form')
+    expect(form?.className).toMatch(/border-l-2/)
+    expect(form?.className).toMatch(/bg-surface\/60/)
+    expect(form?.className).not.toMatch(/border-border(?!\/)/)
+  })
+
+  it('resets field selections when the question shape changes for the same requestId', () => {
+    const { rerender } = render(
+      <AskQuestionPanel
+        question={baseQuestion({
+          questions: [
+            { id: 'q1', prompt: 'Which path?', type: 'single', options: ['A', 'B'] }
+          ]
+        })}
+      />
+    )
+    fireEvent.click(screen.getByRole('radio', { name: 'A' }))
+    expect(screen.getByRole('radio', { name: 'A' }).getAttribute('aria-checked')).toBe('true')
+
+    rerender(
+      <AskQuestionPanel
+        question={baseQuestion({
+          questions: [
+            { id: 'q1', prompt: 'Which path now?', type: 'single', options: ['A', 'B', 'C'] }
+          ]
+        })}
+      />
+    )
+    expect(screen.getByRole('radio', { name: 'A' }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByRole('radio', { name: 'C' })).toBeTruthy()
+  })
 })

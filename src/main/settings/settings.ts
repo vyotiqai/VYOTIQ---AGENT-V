@@ -2,13 +2,15 @@ import { app } from 'electron'
 import { readFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { DEFAULT_SETTINGS, SettingsSchema, type Settings } from '../../shared/ipc'
-import { defaultModelFor, ollamaNativeHost } from '../../shared/providers'
+import { defaultModelFor, normalizeCustomOpenAiBaseUrl, ollamaNativeHost } from '../../shared/providers'
 import { logger } from '../../shared/logger'
 import { atomicWriteJson } from '../storage/atomicWrite'
 import { sanitizeMcpManifestEnv } from '../marketplace/sanitizeMcpEnv'
 import { getAuthorizationHeader, getBearerToken, headersWithoutAuthorization } from '../../shared/utils/mcpAuth'
 import {
   clearMcpServerSecrets,
+  clearMcpAuthToken,
+  clearMcpOAuthState,
   getMcpServerSecrets,
   setMcpAuthToken,
   setMcpServerSecrets,
@@ -314,7 +316,11 @@ export function clearSettingsCacheForTests(): void {
 
 function normalizeSettings(data: Settings): Settings {
   const host = ollamaNativeHost(data.ollamaBaseUrl)
-  return host === data.ollamaBaseUrl ? data : { ...data, ollamaBaseUrl: host }
+  const custom = normalizeCustomOpenAiBaseUrl(data.customOpenAiBaseUrl)
+  let next = data
+  if (host !== data.ollamaBaseUrl) next = { ...next, ollamaBaseUrl: host }
+  if (custom !== data.customOpenAiBaseUrl) next = { ...next, customOpenAiBaseUrl: custom }
+  return next
 }
 
 function stripLegacyFields(raw: Record<string, unknown>): Record<string, unknown> {
@@ -561,6 +567,9 @@ export function setSettings(
   if (typeof merged.ollamaBaseUrl === 'string') {
     merged.ollamaBaseUrl = ollamaNativeHost(merged.ollamaBaseUrl)
   }
+  if (typeof merged.customOpenAiBaseUrl === 'string') {
+    merged.customOpenAiBaseUrl = normalizeCustomOpenAiBaseUrl(merged.customOpenAiBaseUrl)
+  }
   if (partial.provider !== undefined && partial.model === undefined) {
     merged.model = defaultModelFor(partial.provider)
   }
@@ -576,6 +585,8 @@ export function setSettings(
     for (const s of prev.mcpServers ?? []) {
       if (!nextIds.has(s.id)) {
         try {
+          clearMcpAuthToken(s.id)
+          clearMcpOAuthState(s.id)
           clearMcpServerSecrets(s.id)
         } catch {
           // best-effort orphan cleanup

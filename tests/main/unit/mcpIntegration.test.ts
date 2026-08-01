@@ -248,6 +248,25 @@ describe('syncMcpServers', () => {
     expect(getMcpServerStatus([bad])[0]?.error).toBe(first)
   })
 
+  it('forceRetryFailures clears cooldown and re-attempts connect', async () => {
+    const bad = {
+      id: 'bad-force-retry',
+      name: 'Bad',
+      enabled: true,
+      command: 'vyotiq-nonexistent-mcp-command-force',
+      args: [] as string[]
+    }
+    await syncMcpServers([bad])
+    const first = getMcpServerStatus([bad])[0]?.error
+    expect(first).toBeTruthy()
+
+    await syncMcpServers([bad], { forceRetryFailures: true })
+    const second = getMcpServerStatus([bad])[0]?.error
+    expect(second).toBeTruthy()
+    // Re-attempted (error string may match) but status still disconnected.
+    expect(getMcpServerStatus([bad])[0]?.connected).toBe(false)
+  })
+
   it('reconnects when connection config changes', async () => {
     await syncMcpServers([echoServer])
     const before = listMcpToolDefinitions().length

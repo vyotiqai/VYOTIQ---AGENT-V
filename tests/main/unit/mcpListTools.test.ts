@@ -20,12 +20,23 @@ const listMcpToolDefinitions = vi.hoisted(() =>
   ])
 )
 
+const getMcpServerStatus = vi.hoisted(() => vi.fn(() => []))
+
 vi.mock('@main/agent/mcp', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@main/agent/mcp')>()
   return {
     ...actual,
     listMcpToolDefinitions: (...args: unknown[]) => listMcpToolDefinitions(...args),
-    getMcpReadOnlyHint: () => undefined
+    getMcpReadOnlyHint: () => undefined,
+    getMcpServerStatus: (...args: unknown[]) => getMcpServerStatus(...args)
+  }
+})
+
+vi.mock('@main/marketplace', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@main/marketplace')>()
+  return {
+    ...actual,
+    resolveEffectiveMcpServers: () => []
   }
 })
 
@@ -34,6 +45,8 @@ import { executeTool } from '@main/agent/tools'
 describe('mcp_list_tools filtering', () => {
   beforeEach(() => {
     listMcpToolDefinitions.mockClear()
+    getMcpServerStatus.mockReset()
+    getMcpServerStatus.mockReturnValue([])
   })
 
   it('filters by parsed serverId equality, not substring of full tool name', async () => {
@@ -67,6 +80,31 @@ describe('mcp_list_tools filtering', () => {
     expect(result.content).toContain('mcp__github__create_issue')
     expect(result.content).toContain('[omitted from this step catalog]')
     expect(result.content).toContain('mcp__gitlab__list_issues')
+  })
+
+  it('fails when enabled servers are configured but not connected', async () => {
+    listMcpToolDefinitions.mockReturnValueOnce([])
+    getMcpServerStatus.mockReturnValueOnce([
+      {
+        id: 'git',
+        name: 'Git',
+        enabled: true,
+        connected: false,
+        toolCount: 0,
+        hasAuthToken: false,
+        error: 'spawn uvx ENOENT'
+      }
+    ])
+    const result = await executeTool(
+      'mcp_list_tools',
+      '{}',
+      '/tmp/ws',
+      new AbortController().signal,
+      { runEnabledMcpIds: new Set(['git']) }
+    )
+    expect(result.ok).toBe(false)
+    expect(result.content).toContain('not connected')
+    expect(result.content).toContain('spawn uvx ENOENT')
   })
 
   it('pins tools for the next step via request_mcp_tools', async () => {

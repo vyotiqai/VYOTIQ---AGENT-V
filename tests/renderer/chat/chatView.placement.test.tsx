@@ -7,7 +7,7 @@ import { ChatView } from '@renderer/features/chat/ChatView'
 import { TitleBar } from '@renderer/app/TitleBar'
 import { BreakpointProvider } from '@renderer/lib/context/BreakpointProvider'
 import { TitleBarAccessoryProvider } from '@renderer/lib/context/TitleBarAccessory'
-import { COMPOSER_DOCK_CLEARANCE_PX, COMPOSER_DOCK_FADE_PX } from '@renderer/lib/utils/layout'
+import { COMPOSER_DOCK_CLEARANCE_PX, COMPOSER_DOCK_FADE_PX, COMPOSER_DOCK_LIVE_CLEARANCE_PX } from '@renderer/lib/utils/layout'
 
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
@@ -615,10 +615,43 @@ describe('ChatView composer placement', () => {
     const transcript = document.querySelector('[data-transcript-scroll]') as HTMLElement | null
     expect(stage).toBeTruthy()
     expect(transcript).toBeTruthy()
-    expect(stage!.style.getPropertyValue('--vy-dock-h')).toBe(
-      `${120 + COMPOSER_DOCK_FADE_PX + COMPOSER_DOCK_CLEARANCE_PX}px`
+    const expected = 120 + COMPOSER_DOCK_FADE_PX + COMPOSER_DOCK_CLEARANCE_PX
+    expect(stage!.style.getPropertyValue('--vy-dock-h')).toBe(`${expected}px`)
+    expect(transcript!.style.paddingBottom).toBe(`${expected}px`)
+    expect(transcript!.style.scrollPaddingBottom).toBe(`${expected}px`)
+  })
+
+  it('adds live clearance while the agent is running', () => {
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (
+      this: HTMLElement
+    ) {
+      if (this.hasAttribute('data-composer-dock')) return 120
+      return 0
+    })
+
+    render(
+      <ChatView
+        {...baseProps}
+        running
+        pendingRun={false}
+        items={[
+          {
+            kind: 'message',
+            id: 'm1',
+            role: 'user',
+            content: 'hello',
+            at: '2024-01-01T00:00:00.000Z'
+          }
+        ]}
+      />
     )
-    expect(transcript!.style.paddingBottom).toBe('var(--vy-dock-h, 8rem)')
+
+    const stage = document.querySelector('[data-chat-stage]') as HTMLElement | null
+    const transcript = document.querySelector('[data-transcript-scroll]') as HTMLElement | null
+    const expected =
+      120 + COMPOSER_DOCK_FADE_PX + COMPOSER_DOCK_CLEARANCE_PX + COMPOSER_DOCK_LIVE_CLEARANCE_PX
+    expect(stage!.style.getPropertyValue('--vy-dock-h')).toBe(`${expected}px`)
+    expect(transcript!.style.paddingBottom).toBe(`${expected}px`)
   })
 
   it('remounts the transcript when chatSurfaceEpoch changes but not for draft alone', () => {

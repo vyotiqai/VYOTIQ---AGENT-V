@@ -345,7 +345,13 @@ export function setMcpServerSecrets(serverId: string, secrets: McpServerSecrets)
     }
     return
   }
-  data[key] = encryptBlob(JSON.stringify(secrets))
+  const nextJson = JSON.stringify(secrets)
+  const existing = getMcpServerSecrets(id)
+  if (existing && JSON.stringify(existing) === nextJson) {
+    // Unchanged payload — skip encrypt/write (boot sync was rewriting every launch).
+    return
+  }
+  data[key] = encryptBlob(nextJson)
   writeFile(data)
   logger.info('MCP server secrets saved', { scope: 'secrets', serverId: id })
 }

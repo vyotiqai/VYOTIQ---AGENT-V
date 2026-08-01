@@ -165,4 +165,96 @@ describe('setSettings mcpServers ack gate', () => {
       'Bearer secret-token'
     )
   })
+
+  it('migrates legacy plaintext MCP env secrets on first getSettings load', async () => {
+    const { writeFileSync, readFileSync } = await import('fs')
+    const { join: pathJoin } = await import('path')
+    const {
+      clearSettingsCacheForTests,
+      getSettings,
+      REDACTED_VALUE
+    } = await import('@main/settings/settings')
+    const { getMcpServerSecrets } = await import('@main/settings/secrets')
+
+    clearSettingsCacheForTests()
+    writeFileSync(
+      pathJoin(userData, 'settings.json'),
+      JSON.stringify({
+        provider: 'ollama',
+        model: 'qwen2.5',
+        ollamaBaseUrl: 'http://127.0.0.1:11434',
+        theme: 'system',
+        telemetryEnabled: false,
+        mcpServers: [
+          {
+            id: 'legacy-env',
+            name: 'Legacy',
+            enabled: true,
+            transport: 'stdio',
+            command: 'npx',
+            env: { API_KEY: 'plaintext-secret' },
+            source: 'manual'
+          }
+        ]
+      }),
+      'utf8'
+    )
+
+    const settings = getSettings()
+    expect(settings.mcpServers.find((s) => s.id === 'legacy-env')?.env?.API_KEY).toBe(
+      'plaintext-secret'
+    )
+
+    const onDisk = JSON.parse(readFileSync(pathJoin(userData, 'settings.json'), 'utf8')) as {
+      mcpServers: Array<{ env?: Record<string, string> }>
+    }
+    expect(onDisk.mcpServers[0]?.env?.API_KEY).toBe(REDACTED_VALUE)
+    expect(JSON.stringify(onDisk)).not.toContain('plaintext-secret')
+    expect(getMcpServerSecrets('legacy-env')?.env?.API_KEY).toBe('plaintext-secret')
+  })
+
+  it('clears auth token and OAuth state when an MCP server is removed', async () => {
+    const {
+      clearSettingsCacheForTests,
+      setSettings,
+      setMarketplaceRemoteInstallAcked
+    } = await import('@main/settings/settings')
+    const {
+      setMcpAuthToken,
+      getMcpAuthToken,
+      setMcpOAuthState,
+      getMcpOAuthState,
+      setMcpServerSecrets,
+      getMcpServerSecrets
+    } = await import('@main/settings/secrets')
+
+    clearSettingsCacheForTests()
+    setMarketplaceRemoteInstallAcked(true)
+    setSettings({
+      mcpServers: [
+        {
+          id: 'gone-mcp',
+          name: 'Gone',
+          enabled: true,
+          transport: 'http',
+          url: 'https://example.com/mcp',
+          source: 'manual'
+        }
+      ]
+    })
+    setMcpAuthToken('gone-mcp', 'Bearer secret-token')
+    setMcpOAuthState('gone-mcp', {
+      tokens: {
+        access_token: 'access',
+        refresh_token: 'refresh'
+      }
+    })
+    setMcpServerSecrets('gone-mcp', { env: {}, headers: { 'X-Key': 'h' } })
+
+    setSettings({ mcpServers: [] })
+
+    expect(getMcpAuthToken('gone-mcp')).toBeNull()
+    expect(getMcpOAuthState('gone-mcp')).toBeNull()
+    expect(getMcpServerSecrets('gone-mcp')).toBeNull()
+  })
 })

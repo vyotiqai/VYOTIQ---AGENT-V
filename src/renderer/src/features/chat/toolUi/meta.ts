@@ -12,7 +12,14 @@ import type { IconName } from '@renderer/lib/icons'
 import type { ToolCategory, ToolPresentation } from './types'
 
 /** Terminal + edit/diff tools get bordered cards; everything else stays compact. */
-const PROMINENT_TOOLS = new Set(['terminal', 'edit', 'multi_edit', 'str_replace'])
+const PROMINENT_TOOLS = new Set([
+  'terminal',
+  'edit',
+  'multi_edit',
+  'str_replace',
+  'generate_image',
+  'edit_image'
+])
 
 const FILE_TOOLS = new Set(['read', 'memory_read'])
 const EDIT_TOOLS = new Set([
@@ -21,7 +28,9 @@ const EDIT_TOOLS = new Set([
   'str_replace',
   'memory_write',
   'delete',
-  'todo_write'
+  'todo_write',
+  'generate_image',
+  'edit_image'
 ])
 const SEARCH_TOOLS = new Set([
   'search',
@@ -37,7 +46,8 @@ const SEARCH_TOOLS = new Set([
   'ask_question',
   'switch_mode',
   'git_status',
-  'git_diff'
+  'git_diff',
+  'Skill'
 ])
 const BROWSER_TOOLS = new Set([
   'browser_navigate',
@@ -139,20 +149,39 @@ export function toolCategory(name: string): ToolCategory {
   return 'file'
 }
 
-export function toolLabel(name: string, status: UiToolRow['status']): string {
+/** Settled tool content written when a run is aborted before the tool finishes. */
+const INTERRUPTED_TOOL_CONTENT = new Set(['Cancelled', 'Interrupted', 'Stopped'])
+
+export function isInterruptedToolContent(content: string | undefined | null): boolean {
+  return INTERRUPTED_TOOL_CONTENT.has(content ?? '')
+}
+
+/**
+ * Human verb for a tool row. Interrupted tools never completed, so they use the
+ * in-progress form (e.g. "Asking") rather than past tense ("Asked").
+ */
+export function toolLabel(
+  name: string,
+  status: UiToolRow['status'],
+  content?: string | null
+): string {
+  const effectiveStatus =
+    isInterruptedToolContent(content) && status !== 'running' ? 'running' : status
   if (isUnresolvedToolName(name)) {
-    return status === 'running' ? 'Preparing…' : 'Tool'
+    return effectiveStatus === 'running' ? 'Preparing…' : 'Tool'
   }
   const mcp = parseMcpToolDisplay(name)
   if (mcp) {
-    return status === 'running' ? mcpRunningLabel(mcp.toolName) : mcpDoneLabel(mcp.toolName)
+    return effectiveStatus === 'running'
+      ? mcpRunningLabel(mcp.toolName)
+      : mcpDoneLabel(mcp.toolName)
   }
   const labels = TOOL_LABELS[name]
   if (!labels) {
     const human = humanizeSnakeCase(name)
-    return status === 'running' ? `Running ${human}` : human
+    return effectiveStatus === 'running' ? `Running ${human}` : human
   }
-  return status === 'running' ? labels.running : labels.done
+  return effectiveStatus === 'running' ? labels.running : labels.done
 }
 
 export function categoryLabels(category: ToolCategory): { running: string; done: string } {
@@ -200,6 +229,7 @@ const TOOL_ICON_BY_NAME: Record<string, IconName> = {
   mcp_get_prompt: 'plug',
   ask_question: 'sparkles',
   switch_mode: 'bot',
+  Skill: 'sparkles',
   subagent: 'bot',
   terminal: 'terminal',
   memory_list: 'memory',
@@ -208,7 +238,9 @@ const TOOL_ICON_BY_NAME: Record<string, IconName> = {
   git_status: 'branch',
   git_diff: 'branch',
   git_commit: 'branch',
-  diagnostics: 'scanSearch'
+  diagnostics: 'scanSearch',
+  generate_image: 'sparkles',
+  edit_image: 'sparkles'
 }
 
 export function toolIconName(name: string): IconName {

@@ -330,7 +330,7 @@ describe('settings', () => {
       />
     )
     fireEvent.click(screen.getByRole('button', { name: /^Providers$/i }))
-    expect(screen.getByText(/1\/9 saved/i)).toBeTruthy()
+    expect(screen.getByText(/1\/10 saved/i)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /Refresh models/i }))
     expect(
       await screen.findByText(/seed models for Ollama.*Cannot reach Ollama/i)

@@ -266,7 +266,7 @@ describe('buildTranscriptRows', () => {
     expect(kinds).toEqual(['user', 'activity', 'turn', 'text'])
   })
 
-  it('rolls up a turn that edited several files', () => {
+  it('rolls up a turn that edited several files', async () => {
     const first = tool('e1', 'edit')
     first.tool.argsPreview = JSON.stringify({ path: 'src/a.ts', contents: 'x\ny\n' })
     const second = tool('e2', 'edit')
@@ -284,6 +284,25 @@ describe('buildTranscriptRows', () => {
         { path: 'src/a.ts', added: 2, removed: 0 },
         { path: 'src/b.ts', added: 1, removed: 0 }
       ])
+    }
+  })
+
+  it('merges same file when change paths use mixed separators', () => {
+    const first = tool('e1', 'edit')
+    first.tool.argsPreview = JSON.stringify({ path: 'src\\a.ts', contents: 'x\ny\n' })
+    const second = tool('e2', 'edit')
+    second.tool.argsPreview = JSON.stringify({ path: 'src/a.ts', contents: 'x\ny\nz\n' })
+
+    const changes = buildTranscriptRows([
+      { kind: 'message', id: 'u1', role: 'user', content: 'edit' },
+      first,
+      second
+    ]).find((row) => row.kind === 'changes')
+
+    expect(changes?.kind).toBe('changes')
+    if (changes?.kind === 'changes') {
+      expect(changes.files).toHaveLength(1)
+      expect(changes.files[0]?.path).toBe('src/a.ts')
     }
   })
 
@@ -1024,5 +1043,70 @@ describe('transcriptRowFingerprint / stabilizeTranscriptRows', () => {
     const next = buildTranscriptRows([{ ...item }])
     const stable = stabilizeTranscriptRows(prev, next)
     expect(stable[0]).toBe(prev[0])
+  })
+
+  it('invalidates question identity when prompt/options change for the same requestId', () => {
+    const prev = buildTranscriptRows([
+      {
+        kind: 'question',
+        id: 'q-ui',
+        question: {
+          requestId: 'req-1',
+          toolCallId: 't1',
+          questions: [{ id: 'a', prompt: 'Pick one', type: 'single', options: ['A', 'B'] }]
+        }
+      }
+    ])
+    const next = buildTranscriptRows([
+      {
+        kind: 'question',
+        id: 'q-ui',
+        question: {
+          requestId: 'req-1',
+          toolCallId: 't1',
+          questions: [
+            { id: 'a', prompt: 'Pick one now', type: 'single', options: ['A', 'B', 'C'] }
+          ]
+        }
+      }
+    ])
+    expect(prev[0]?.kind).toBe('question')
+    expect(next[0]?.kind).toBe('question')
+    if (prev[0]?.kind !== 'question' || next[0]?.kind !== 'question') return
+    expect(transcriptRowFingerprint(prev[0])).not.toBe(transcriptRowFingerprint(next[0]))
+    const stable = stabilizeTranscriptRows(prev, next)
+    expect(stable[0]).toBe(next[0])
+    expect(stable[0]).not.toBe(prev[0])
+  })
+
+  it('invalidates text identity when content changes at the same length', () => {
+    const prev = buildTranscriptRows([
+      {
+        kind: 'message',
+        id: 'm1',
+        role: 'assistant',
+        content: 'hello world!!!'
+      }
+    ])
+    const next = buildTranscriptRows([
+      {
+        kind: 'message',
+        id: 'm1',
+        role: 'assistant',
+        content: 'HELLO WORLD!!!'
+      }
+    ])
+    const prevText = prev.find((row) => row.kind === 'text')
+    const nextText = next.find((row) => row.kind === 'text')
+    expect(prevText?.kind).toBe('text')
+    expect(nextText?.kind).toBe('text')
+    if (prevText?.kind !== 'text' || nextText?.kind !== 'text') return
+    expect(prevText.item.content.length).toBe(nextText.item.content.length)
+    expect(transcriptRowFingerprint(prevText)).not.toBe(transcriptRowFingerprint(nextText))
+    const stable = stabilizeTranscriptRows(
+      prev.filter((row) => row.kind === 'text'),
+      next.filter((row) => row.kind === 'text')
+    )
+    expect(stable[0]).toBe(nextText)
   })
 })

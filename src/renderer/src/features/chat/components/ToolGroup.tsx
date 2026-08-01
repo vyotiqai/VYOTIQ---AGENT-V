@@ -12,6 +12,7 @@ import {
   CompactRow,
   ExpandPanel,
   familyDefaultExpanded,
+  isInterruptedToolContent,
   toolCategory,
   toolHasBody,
   toolLabel
@@ -43,7 +44,6 @@ function NestedToolRow({
   nested,
   staggerIndex,
   isToolExpanded,
-  interrupted,
   onToolToggle,
   onLoadFullContent,
   onApprovalDecision,
@@ -53,7 +53,6 @@ function NestedToolRow({
   nested: ToolGroupNestedTool
   staggerIndex: number
   isToolExpanded: boolean
-  interrupted: boolean
   onToolToggle?: (toolCallId: string, expanded: boolean) => void
   onLoadFullContent?: (toolCallId: string) => Promise<string | null>
   onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void
@@ -64,6 +63,7 @@ function NestedToolRow({
     subagentContextUsage: item.subagentContextUsage,
     nestedAgent: item.nestedAgent
   })
+  const rowInterrupted = isInterruptedToolContent(item.tool.content)
   return (
     <div
       className="tool-stagger-enter flex min-w-0 flex-col"
@@ -75,7 +75,7 @@ function NestedToolRow({
         status={nested.status}
         expanded={isToolExpanded}
         hasBody={hasBody}
-        interrupted={interrupted}
+        interrupted={rowInterrupted}
         onToggle={() => onToolToggle?.(item.id, !isToolExpanded)}
       />
       <ExpandPanel open={hasBody && isToolExpanded}>
@@ -212,7 +212,7 @@ export const ToolGroup = memo(function ToolGroup({
         id: item.id,
         name: item.tool.name,
         category: toolCategory(item.tool.name),
-        title: toolLabel(item.tool.name, item.tool.status),
+        title: toolLabel(item.tool.name, item.tool.status, item.tool.content),
         subtitle: item.tool.summary?.trim() || '',
         status: item.tool.status
       }
@@ -346,7 +346,6 @@ export const ToolGroup = memo(function ToolGroup({
                 nested={nested}
                 staggerIndex={index}
                 isToolExpanded={isToolExpanded}
-                interrupted={isInterrupted}
                 onToolToggle={onToolToggle}
                 onLoadFullContent={onLoadFullContent}
                 onApprovalDecision={onApprovalDecision}

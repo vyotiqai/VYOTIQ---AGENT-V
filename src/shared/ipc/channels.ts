@@ -94,6 +94,7 @@ export const IPC = {
   slashCommandsOpenFile: 'slash-commands:openFile',
   workspaceSuggestPaths: 'workspace:suggestPaths',
   workspaceReadText: 'workspace:readText',
+  workspaceReadImage: 'workspace:readImage',
   workspaceListDocs: 'workspace:listDocs',
   workspaceListRules: 'workspace:listRules',
   workspaceDiagnostics: 'workspace:diagnostics',

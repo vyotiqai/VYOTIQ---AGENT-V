@@ -49,12 +49,17 @@ export function listMcpCommands(
     if (!trigger || seenTriggers.has(trigger)) continue
     seenTriggers.add(trigger)
 
+    const errHint = status?.error?.trim()
+    const baseDesc = tool.description || `MCP tool ${parsed.toolName}`
     out.push({
       id: `mcp:${tool.name}`,
       trigger,
       // Server name belongs in a section header — keep the row label clean.
       label: humanizeSlashToken(parsed.toolName),
-      description: tool.description || `MCP tool ${parsed.toolName}`,
+      description:
+        availability !== 'ready' && errHint
+          ? `${baseDesc} — ${errHint}`
+          : baseDesc,
       kind: 'mcp',
       group: 'MCP',
       availability,
@@ -77,11 +82,14 @@ export function listMcpCommands(
     const trigger = sanitizeTriggerPart(server.id)
     if (!trigger || seenTriggers.has(trigger)) continue
     seenTriggers.add(trigger)
+    const errHint = status?.error?.trim()
     out.push({
       id: `mcp-server:${server.id}`,
       trigger,
       label: server.name || server.id,
-      description: 'MCP server — connect in Marketplace to use tools',
+      description: errHint
+        ? `MCP server — ${errHint}`
+        : 'MCP server — connect in Marketplace to use tools',
       kind: 'mcp',
       group: 'MCP',
       availability,

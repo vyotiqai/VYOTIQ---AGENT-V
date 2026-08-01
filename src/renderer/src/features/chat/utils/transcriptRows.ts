@@ -12,7 +12,7 @@ import { collectWritingChanges } from '../toolUi/parsers/edit'
 import { parseDeleteData } from '../toolUi/parsers/delete'
 import { deriveRunActivity, type RunActivityPhase } from './runActivity'
 import { mapToolGroupProps } from './toolGroupAdapter'
-import { normalizeRelPath } from './turnFileDiffs'
+import { normalizeRelPath, WRITING_TOOLS } from './turnFileDiffs'
 
 export type { RunActivityPhase } from './runActivity'
 
@@ -259,17 +259,24 @@ function activityFingerprint(activity: RunActivityPhase | null | undefined): str
   return activity.kind
 }
 
+/** Cheap content identity for React.memo reuse — length alone hides same-length replacements. */
+function contentFingerprint(content: string): string {
+  const len = content.length
+  if (len <= 48) return content
+  return `${len}:${content.slice(0, 16)}:${content.slice(-16)}`
+}
+
 /** Fingerprint of a row's visible content for React.memo identity reuse. */
 export function transcriptRowFingerprint(row: TranscriptRow): string {
   switch (row.kind) {
     case 'user':
-      return `user:${row.id}:${row.item.content.length}:${row.item.at ?? ''}`
+      return `user:${row.id}:${contentFingerprint(row.item.content)}:${row.item.at ?? ''}`
     case 'turn':
       return `turn:${row.id}:${row.span.startedAt}:${row.span.endedAt}:${row.span.active}:${row.span.phaseStartedAt ?? ''}:${activityFingerprint(row.span.activity)}`
     case 'thinking':
-      return `thinking:${row.id}:${row.item.thinking?.length ?? 0}:${row.item.thinkingStreaming ? 1 : 0}:${row.item.thinkingExpanded ?? ''}`
+      return `thinking:${row.id}:${contentFingerprint(row.item.thinking ?? '')}:${row.item.thinkingStreaming ? 1 : 0}:${row.item.thinkingExpanded ?? ''}`
     case 'text':
-      return `text:${row.id}:${row.item.content.length}:${row.item.streaming ? 1 : 0}:${row.final ? 1 : 0}`
+      return `text:${row.id}:${contentFingerprint(row.item.content)}:${row.item.streaming ? 1 : 0}:${row.final ? 1 : 0}`
     case 'activity':
       return `activity:${row.id}:${row.tools
         .map((t) => {
@@ -352,8 +359,17 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
       return `changes:${row.id}:${row.files.map((f) => `${f.path}:${f.added}:${f.removed}`).join('|')}`
     case 'approval':
       return `approval:${row.id}:${row.approval.requestId}`
-    case 'question':
-      return `question:${row.id}:${row.question.requestId}`
+    case 'question': {
+      const q = row.question
+      const shape = [
+        q.title ?? '',
+        ...q.questions.map(
+          (item) =>
+            `${item.id}\0${item.prompt}\0${item.type}\0${item.allowCustom ? 1 : 0}\0${(item.options ?? []).join('\u001f')}`
+        )
+      ].join('\n')
+      return `question:${row.id}:${q.requestId}:${shape}`
+    }
     default: {
       const _exhaustive: never = row
       return _exhaustive

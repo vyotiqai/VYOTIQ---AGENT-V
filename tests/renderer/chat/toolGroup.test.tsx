@@ -189,8 +189,37 @@ describe('ToolGroup', () => {
     tools[0]!.tool.content = 'Cancelled'
     render(<ToolGroup tools={tools} />)
     expect(screen.getByText('interrupted')).toBeTruthy()
-    expect(screen.getByText('Read')).toBeTruthy()
+    // In-progress verb: work did not complete.
+    expect(screen.getByText('Reading')).toBeTruthy()
+    expect(screen.queryByText('Read')).toBeNull()
     expect(screen.getByText(/a\.ts/)).toBeTruthy()
+  })
+
+  it('shows Asking interrupted for cancelled ask_question, not Asked', () => {
+    const tools = [
+      toolItem('t1', 'ask_question', 'Pick one', 'fail', { startedAt: 1_000, endedAt: 2_000 })
+    ]
+    tools[0]!.tool.content = 'Cancelled'
+    render(<ToolGroup tools={tools} />)
+    expect(screen.getByText('interrupted')).toBeTruthy()
+    expect(screen.getByText('Asking')).toBeTruthy()
+    expect(screen.queryByText('Asked')).toBeNull()
+  })
+
+  it('marks only the cancelled nested tool as interrupted, not completed siblings', () => {
+    const tools = [
+      toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 1_500 }),
+      toolItem('t2', 'ask_question', 'Pick one', 'fail', { startedAt: 1_500, endedAt: 2_000 })
+    ]
+    tools[1]!.tool.content = 'Cancelled'
+    render(<ToolGroup tools={tools} groupExpanded />)
+    const interrupted = screen.getAllByText('interrupted')
+    // Group header + cancelled nested row only.
+    expect(interrupted).toHaveLength(2)
+    const doneRow = screen.getByLabelText('a.ts')
+    const cancelledRow = screen.getByLabelText(/Pick one/)
+    expect(doneRow.textContent).not.toContain('interrupted')
+    expect(cancelledRow.textContent).toContain('interrupted')
   })
 
   it('does not duplicate list_dir path in the expanded body when shown as activity', () => {

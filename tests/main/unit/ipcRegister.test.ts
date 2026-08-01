@@ -32,6 +32,12 @@ const waitUntilRunInactiveMock = vi.hoisted(() => vi.fn(async () => true))
 const runAgentMock = vi.hoisted(() => vi.fn())
 const runExistsMock = vi.hoisted(() => vi.fn())
 const isActiveMock = vi.hoisted(() => vi.fn(() => false))
+const prepareRewindMock = vi.hoisted(() =>
+  vi.fn(async () => ({
+    messages: [{ role: 'user' as const, content: 'edited' }],
+    writes: { restored: [] as string[], checkpointIds: [] as string[] }
+  }))
+)
 const fromWebContents = vi.hoisted(() => vi.fn(() => mockWin))
 
 vi.mock('electron', () => ({
@@ -80,6 +86,10 @@ vi.mock('@main/agent/loop', () => ({
   runAgent: runAgentMock,
   createRunId: () => 'run-test',
   registerRunAbort: vi.fn()
+}))
+
+vi.mock('@main/agent/rewindRun', () => ({
+  prepareRewindAndReplaceUserMessage: prepareRewindMock
 }))
 
 vi.mock('@main/agent/providers', () => ({
@@ -199,6 +209,11 @@ describe('registerIpc', () => {
     waitUntilRunInactiveMock.mockReset()
     waitUntilRunInactiveMock.mockResolvedValue(true)
     isActiveMock.mockReturnValue(false)
+    prepareRewindMock.mockReset()
+    prepareRewindMock.mockResolvedValue({
+      messages: [{ role: 'user' as const, content: 'edited' }],
+      writes: { restored: [], checkpointIds: [] }
+    })
     registerIpc()
   })
 
@@ -362,6 +377,57 @@ describe('registerIpc', () => {
       expect(markRunTurnCompleteMock).toHaveBeenCalledWith('run-test', 42)
       // clearRunAbort is owned by runAgent's finally (mocked here).
       expect(clearRunAbortMock).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('chatRewindAndStart', () => {
+    const rewindPayload = {
+      workspacePath: '/ws',
+      runId: 'run-edit',
+      editMessageIndex: 0,
+      editedUserMessage: { role: 'user' as const, content: 'edited' }
+    }
+
+    it('registers the run before preparing rewind on disk', async () => {
+      const order: string[] = []
+      tryRegisterRunAbortMock.mockImplementation(() => {
+        order.push('register')
+        return { ok: true as const, controller: new AbortController(), invokeId: 7 }
+      })
+      prepareRewindMock.mockImplementation(async () => {
+        order.push('prepare')
+        return {
+          messages: [{ role: 'user' as const, content: 'edited' }],
+          writes: { restored: [], checkpointIds: [] }
+        }
+      })
+      runExistsMock.mockReturnValue(true)
+      runAgentMock.mockImplementation(async function* () {
+        yield { type: 'status', runId: 'run-edit', status: 'done' } satisfies AgentEvent
+      })
+
+      const handler = handlers.get(IPC.chatRewindAndStart)
+      const result = await handler!({ sender: mockWc }, rewindPayload)
+
+      expect(result).toEqual({ ok: true, data: { runId: 'run-edit', invokeId: 7 } })
+      expect(order).toEqual(['register', 'prepare'])
+    })
+
+    it('clears the run slot when rewind prepare fails after register', async () => {
+      runExistsMock.mockReturnValue(true)
+      prepareRewindMock.mockRejectedValue(new Error('editMessageIndex out of range'))
+
+      const handler = handlers.get(IPC.chatRewindAndStart)
+      const result = await handler!({ sender: mockWc }, rewindPayload)
+
+      expect(result).toEqual({
+        ok: false,
+        error: expect.stringContaining('editMessageIndex out of range'),
+        code: 'IPC_HANDLER'
+      })
+      expect(tryRegisterRunAbortMock).toHaveBeenCalledWith('run-edit', '/ws')
+      expect(clearRunAbortMock).toHaveBeenCalledWith('run-edit', 42)
+      expect(runAgentMock).not.toHaveBeenCalled()
     })
   })
 })

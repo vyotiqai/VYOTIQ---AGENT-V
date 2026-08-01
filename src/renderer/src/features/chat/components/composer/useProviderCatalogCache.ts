@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ollamaNativeHost } from '@shared/providers'
+import { normalizeCustomOpenAiBaseUrl, ollamaNativeHost } from '@shared/providers'
 import type { ModelInfo, ProviderId } from '@shared/ipc'
 
 type CacheEntry = {
@@ -26,9 +26,13 @@ function isRetryableFailure(entry: CacheEntry): boolean {
 }
 
 export function useProviderCatalogCache(
-  ollamaBaseUrl?: string,
+  baseUrls?: { ollamaBaseUrl?: string; customOpenAiBaseUrl?: string } | string,
   modelsRefreshKey?: string | number
 ) {
+  // Back-compat: older callers passed ollamaBaseUrl as a bare string.
+  const urls =
+    typeof baseUrls === 'string' ? { ollamaBaseUrl: baseUrls } : (baseUrls ?? {})
+
   const [cache, setCache] = useState<Partial<Record<ProviderId, CacheEntry>>>({})
   const cacheRef = useRef(cache)
   const inflight = useRef(new Map<ProviderId, Promise<CacheEntry>>())
@@ -62,12 +66,16 @@ export function useProviderCatalogCache(
           return UNAVAILABLE
         }
 
+        const baseUrl =
+          provider === 'ollama' && urls.ollamaBaseUrl
+            ? ollamaNativeHost(urls.ollamaBaseUrl)
+            : provider === 'custom' && urls.customOpenAiBaseUrl
+              ? normalizeCustomOpenAiBaseUrl(urls.customOpenAiBaseUrl)
+              : undefined
+
         const res = await window.vyotiq.listModels({
           provider,
-          baseUrl:
-            provider === 'ollama' && ollamaBaseUrl
-              ? ollamaNativeHost(ollamaBaseUrl)
-              : undefined,
+          baseUrl,
           forceRefresh: opts?.forceRefresh
         })
 
@@ -90,7 +98,7 @@ export function useProviderCatalogCache(
         if (inflight.current.get(provider) === run) inflight.current.delete(provider)
       }
     },
-    [ollamaBaseUrl, write]
+    [urls.ollamaBaseUrl, urls.customOpenAiBaseUrl, write]
   )
 
   const refreshKeyRef = useRef(modelsRefreshKey)

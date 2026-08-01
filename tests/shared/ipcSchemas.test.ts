@@ -84,7 +84,7 @@ describe('ipc schemas', () => {
     expect(contentToText(msg.content)).toContain('look')
   })
 
-  it('accepts all nine providers', () => {
+  it('accepts all ten providers', () => {
     for (const id of [
       'openai',
       'anthropic',
@@ -94,18 +94,20 @@ describe('ipc schemas', () => {
       'groq',
       'openrouter',
       'xai',
-      'mistral'
+      'mistral',
+      'custom'
     ]) {
       expect(ProviderIdSchema.parse(id)).toBe(id)
     }
-    expect(PROVIDER_DEFAULTS).toHaveLength(9)
+    expect(PROVIDER_DEFAULTS).toHaveLength(10)
     expect(ListModelsRequestSchema.parse({ provider: 'groq' }).provider).toBe('groq')
     expect(IPC.listModels).toBe('models:list')
   })
 
-  it('lists nine secret providers including ollama', () => {
-    expect(SECRET_PROVIDERS).toHaveLength(9)
+  it('lists ten secret providers including ollama and custom', () => {
+    expect(SECRET_PROVIDERS).toHaveLength(10)
     expect(SECRET_PROVIDERS).toContain('ollama')
+    expect(SECRET_PROVIDERS).toContain('custom')
     expect(SecretProviderSchema.safeParse('ollama').success).toBe(true)
     expect(emptySecretStatus().openai).toBe(false)
     expect(emptySecretStatus().ollama).toBe(false)
@@ -241,6 +243,16 @@ describe('ipc schemas', () => {
         cachedInputTokens: 800
       }).cachedInputTokens
     ).toBe(800)
+    expect(
+      AgentEventSchema.parse({
+        type: 'step_usage',
+        runId: 'r1',
+        step: 3,
+        inputTokens: 1000,
+        outputTokens: 50,
+        cacheCreationInputTokens: 400
+      }).cacheCreationInputTokens
+    ).toBe(400)
     expect(
       AgentEventSchema.parse({
         type: 'context_usage',
@@ -450,7 +462,21 @@ describe('ipc schemas', () => {
   it('seeds deepseek without legacy chat ids', () => {
     const seeds = seedModelsFor('deepseek')
     expect(seeds.every((m) => !m.id.includes('deepseek-chat'))).toBe(true)
+    expect(seeds.every((m) => !m.id.includes('deepseek-reasoner'))).toBe(true)
     expect(ModelInfoSchema.parse(seeds[0]).supportsTools).toBe(true)
+  })
+
+  it('seeds mid-2026 defaults for major providers', () => {
+    expect(seedModelsFor('openai').map((m) => m.id)).toEqual([
+      'gpt-5.6',
+      'gpt-5.6-terra',
+      'gpt-5.6-luna'
+    ])
+    expect(seedModelsFor('anthropic')[0]?.id).toBe('claude-opus-5')
+    expect(seedModelsFor('gemini')[0]?.id).toBe('gemini-3.6-flash')
+    expect(seedModelsFor('xai')[0]?.id).toBe('grok-4-latest')
+    expect(seedModelsFor('openai')[0]?.supportsThinking).toBe(true)
+    expect(seedModelsFor('openai')[0]?.contextWindow).toBe(1_048_576)
   })
 
   it('keeps DEFAULT_SETTINGS aligned with SettingsSchema (incl. telemetry)', () => {

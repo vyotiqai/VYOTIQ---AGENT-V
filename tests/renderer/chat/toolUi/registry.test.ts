@@ -25,7 +25,9 @@ const FORMER_FALLBACK_TOOLS = [
   'mcp_get_prompt',
   'ask_question',
   'switch_mode',
-  'git_commit'
+  'git_commit',
+  'generate_image',
+  'edit_image'
 ] as const
 
 describe('tool UI registry coverage', () => {
