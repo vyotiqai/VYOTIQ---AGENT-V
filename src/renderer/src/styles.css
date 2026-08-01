@@ -385,12 +385,16 @@
   }
 
   .sidebar-scroll-x::-webkit-scrollbar {
-    height: 6px;
+    height: 8px;
   }
 
   .sidebar-scroll-x::-webkit-scrollbar-thumb {
     background-color: var(--vy-border-strong);
     border-radius: 4px;
+  }
+
+  .sidebar-scroll-x::-webkit-scrollbar-thumb:hover {
+    background-color: var(--vy-muted);
   }
 
   .sidebar-scroll::-webkit-scrollbar-track {

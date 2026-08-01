@@ -55,6 +55,20 @@ export function formatModelDisplayName(id: string, displayName?: string): string
   return name
 }
 
+/** Drop a leading "Provider: " when the logo/group already identifies the source. */
+export function compactModelLabel(
+  label: string,
+  ...prefixes: Array<string | undefined>
+): string {
+  const m = /^([^:]+):\s+(.+)$/.exec(label)
+  if (!m) return label
+  const prefix = m[1]!.trim()
+  const rest = m[2]!.trim()
+  if (!rest) return label
+  const hit = prefixes.some((p) => p && p.trim().toLowerCase() === prefix.toLowerCase())
+  return hit ? rest : label
+}
+
 export function modelSupportsAudio(model: ModelInfo): boolean {
   return model.inputModalities.includes('audio')
 }
@@ -113,7 +127,11 @@ export function modelsToOptions(
         : providerLabel
     return {
       value: modelSelectionKey(provider, m.id),
-      label: formatModelDisplayName(m.id, m.displayName),
+      label: compactModelLabel(
+        formatModelDisplayName(m.id, m.displayName),
+        providerLabel,
+        group
+      ),
       group,
       subProvider: openRouterSubProvider(m.id),
       meta: m
@@ -149,11 +167,15 @@ export function resolvePickerOption(
   const found = optionsByProvider[parsed.provider]?.find((o) => o.value === key)
   if (found) return found
   const meta = modelMetaByValue[key]
-  const label = formatModelDisplayName(parsed.model, meta?.displayName)
   const group =
     parsed.provider === 'openrouter' && parsed.model.includes('/')
       ? openRouterGroup(parsed.model)
       : providerLabel(parsed.provider)
+  const label = compactModelLabel(
+    formatModelDisplayName(parsed.model, meta?.displayName),
+    providerLabel(parsed.provider),
+    group
+  )
   return {
     value: key,
     label,

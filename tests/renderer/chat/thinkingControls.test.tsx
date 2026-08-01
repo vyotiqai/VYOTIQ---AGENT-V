@@ -154,4 +154,22 @@ describe('ThinkingControls', () => {
     )
     expect(thinkingButton()).toBeTruthy()
   })
+
+  it('does not clip short Think label with overflow-hidden', () => {
+    render(
+      <ThinkingControls
+        provider="openai"
+        model="gpt-5.6"
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+      />
+    )
+    const button = thinkingButton()
+    expect(button.className).not.toMatch(/\btruncate\b/)
+    const label = button.querySelector('span')
+    expect(label).toBeTruthy()
+    expect(label!.className).not.toMatch(/\btruncate\b/)
+    expect(label!.className).toMatch(/leading-tight/)
+    expect(button.textContent).toMatch(/Think/)
+  })
 })

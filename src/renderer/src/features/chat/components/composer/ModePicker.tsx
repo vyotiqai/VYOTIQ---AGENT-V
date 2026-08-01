@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import { cn } from '@renderer/lib/ui/cn'
 import type { AgentInteractionMode } from '@shared/ipc'
+import { chromePillButton } from './composerChrome'
 
 const MODES: { value: AgentInteractionMode; label: string; short: string }[] = [
   { value: 'ask', label: 'Ask', short: 'Ask' },
@@ -51,19 +52,14 @@ export function ModePicker({
         disabled={locked}
         aria-label={ariaLabel}
         title={running ? ariaLabel : `${ariaLabel} Shift-click for previous.`}
-        className={cn(
-          'inline-flex h-7 items-center rounded-xl px-1.5 text-[11px] leading-none tracking-[var(--vy-tracking)]',
-          'vy-transition hover:bg-surface hover:text-fg active:bg-surface',
-          'disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]',
-          mode === 'agent' ? 'text-muted' : 'text-fg'
-        )}
+        className={cn(chromePillButton, 'text-fg')}
         onClick={(e) => {
           e.preventDefault()
           if (locked) return
           advance(e.shiftKey)
         }}
       >
-        <span className="truncate leading-none">{current.short}</span>
+        <span className="leading-tight">{current.short}</span>
       </button>
     </div>
   )

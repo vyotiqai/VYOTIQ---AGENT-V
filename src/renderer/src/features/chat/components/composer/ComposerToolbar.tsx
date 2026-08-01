@@ -10,6 +10,7 @@ import { ContextMeter, type ContextUsageState } from './ContextMeter'
 import { ModelPicker } from './ModelPicker'
 import { ModePicker } from './ModePicker'
 import { ThinkingControls } from './ThinkingControls'
+import { chromeLabelText } from './composerChrome'
 import type { ModelPickerOption } from './composerModelUtils'
 import type { ModelInfo } from '@shared/ipc'
 import type { AgentInteractionMode } from '@shared/ipc'
@@ -54,8 +55,9 @@ const iconCtl =
 
 /** Size to content; truncate only when the middle zone is constrained. */
 const modelPillTrigger = cn(
-  'inline-flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-xl border-0 bg-transparent px-1.5 text-[11px] leading-none tracking-[var(--vy-tracking)] text-muted',
-  'hover:bg-surface hover:text-fg active:bg-surface',
+  'inline-flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-xl border-0 bg-transparent px-2',
+  chromeLabelText,
+  'text-fg hover:bg-surface active:bg-surface',
   'vy-transition disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
 )
 
@@ -228,7 +230,7 @@ export function ComposerToolbar({
           running={running}
         />
         <ModelPicker
-          className="min-w-0 max-w-[14rem] shrink @max-[420px]:max-w-[min(100%,14rem)]"
+          className="min-w-0 max-w-[16rem] shrink @max-[420px]:max-w-[min(100%,16rem)]"
           triggerClassName={modelPillTrigger}
           providers={providers}
           optionsByProvider={optionsByProvider}

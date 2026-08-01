@@ -3,6 +3,7 @@ import { cn } from '@renderer/lib/ui/cn'
 import type { ProviderId, ThinkingEffort } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { modelSupportsThinking } from '@shared/reasoning'
+import { chromePillButton } from './composerChrome'
 
 const EFFORT_OPTIONS: { value: ThinkingEffort; label: string; short: string }[] = [
   { value: 'minimal', label: 'Minimal', short: 'Min' },
@@ -95,19 +96,14 @@ export function ThinkingControls({
         disabled={locked}
         aria-label={ariaLabel}
         title={running ? ariaLabel : `${ariaLabel} Shift-click for previous.`}
-        className={cn(
-          'inline-flex h-7 items-center gap-0 rounded-xl px-1.5 text-[11px] leading-none tracking-[var(--vy-tracking)]',
-          'vy-transition hover:bg-surface hover:text-fg active:bg-surface',
-          'disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]',
-          on ? 'text-fg' : 'text-muted'
-        )}
+        className={cn(chromePillButton, 'gap-0', on ? 'text-fg' : 'text-muted')}
         onClick={(e) => {
           e.preventDefault()
           if (locked) return
           advance(e.shiftKey)
         }}
       >
-        <span className="inline-flex min-w-0 items-center truncate leading-none">
+        <span className="inline-flex min-w-0 items-center leading-tight">
           Think
           <span className={cn('text-tertiary', on && 'text-muted')}> · </span>
           <span className={on ? 'text-fg' : 'text-tertiary'}>{current.short}</span>

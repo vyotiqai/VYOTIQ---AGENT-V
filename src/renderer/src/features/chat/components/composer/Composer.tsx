@@ -42,6 +42,7 @@ import {
   executeSlashResolveResult,
   type SlashClientHandlers
 } from './slashCommandExecute'
+import { resolveComposerPlaceholder } from './composerPlaceholder'
 
 export function Composer({
   provider,
@@ -249,32 +250,37 @@ export function Composer({
       sendFiles?: AttachedFile[],
       extras?: ComposerSendExtras
     ): Promise<boolean | void> => {
-      const boundWorkspace = workspacePath
-      const resolved = await resolveComposerMentions({
-        workspacePath: boundWorkspace,
-        draft: rawText,
-        existingFiles: sendFiles ?? [],
-        isCurrent: () => workspacePathRef.current === boundWorkspace
-      })
-      if (resolved.stale || workspacePathRef.current !== boundWorkspace) {
+      try {
+        const boundWorkspace = workspacePath
+        const resolved = await resolveComposerMentions({
+          workspacePath: boundWorkspace,
+          draft: rawText,
+          existingFiles: sendFiles ?? [],
+          isCurrent: () => workspacePathRef.current === boundWorkspace
+        })
+        if (resolved.stale || workspacePathRef.current !== boundWorkspace) {
+          return false
+        }
+        if (resolved.error) setFileError(resolved.error)
+        const hasExtras = Boolean(extras?.audio?.length || extras?.nativeFiles?.length)
+        if (
+          !resolved.text.trim() &&
+          !resolved.files.length &&
+          !(sendImages?.length) &&
+          !hasExtras
+        ) {
+          return false
+        }
+        return await onSend(
+          resolved.text,
+          sendImages?.length ? sendImages : undefined,
+          resolved.files.length ? resolved.files : undefined,
+          extras
+        )
+      } catch (err) {
+        setFileError(err instanceof Error ? err.message : 'Send failed')
         return false
       }
-      if (resolved.error) setFileError(resolved.error)
-      const hasExtras = Boolean(extras?.audio?.length || extras?.nativeFiles?.length)
-      if (
-        !resolved.text.trim() &&
-        !resolved.files.length &&
-        !(sendImages?.length) &&
-        !hasExtras
-      ) {
-        return false
-      }
-      return onSend(
-        resolved.text,
-        sendImages?.length ? sendImages : undefined,
-        resolved.files.length ? resolved.files : undefined,
-        extras
-      )
     },
     [workspacePath, onSend, setFileError]
   )
@@ -650,24 +656,13 @@ export function Composer({
                 requestAnimationFrame(syncCursor)
               }}
               onCaretChange={(offset) => setCursor(offset)}
-              placeholder={
-                composerPlaceholder ??
-                (!hasWorkspace
-                  ? 'Open a workspace to start chatting'
-                  : running
-                    ? 'Add a follow-up to steer the agent… — @ for context'
-                    : agentMode === 'ask'
-                      ? hasTranscript
-                        ? 'Ask a follow-up (read-only) — @ for context'
-                        : 'Ask about the codebase — @ for context'
-                      : agentMode === 'plan'
-                        ? hasTranscript
-                          ? 'Refine the plan… — @ for context'
-                          : 'Describe what to plan… — @ for context'
-                        : hasTranscript
-                          ? 'Send follow-up — @ for context'
-                          : 'Send a message — @ for context')
-              }
+              placeholder={resolveComposerPlaceholder({
+                hasWorkspace: Boolean(hasWorkspace),
+                running,
+                agentMode,
+                hasTranscript: Boolean(hasTranscript),
+                override: composerPlaceholder
+              })}
               disabled={inputLocked}
               aria-expanded={slash.open || mentions.open}
               aria-controls={

@@ -309,7 +309,7 @@ export const ComposerMentionInput = forwardRef<
     <div className="relative min-w-0">
       {empty && placeholder ? (
         <div
-          className="pointer-events-none absolute inset-0 text-md leading-relaxed text-muted"
+          className="pointer-events-none absolute inset-0 text-md leading-relaxed text-secondary"
           aria-hidden
         >
           {placeholder}

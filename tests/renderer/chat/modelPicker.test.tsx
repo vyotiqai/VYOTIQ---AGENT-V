@@ -4,10 +4,25 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { ModelPicker } from '@renderer/features/chat/components/composer/ModelPicker'
-import type { ModelPickerOption } from '@renderer/features/chat/components/composer/composerModelUtils'
+import {
+  compactModelLabel,
+  type ModelPickerOption
+} from '@renderer/features/chat/components/composer/composerModelUtils'
 
 afterEach(() => {
   cleanup()
+})
+
+describe('compactModelLabel', () => {
+  it('strips a matching provider or group prefix', () => {
+    expect(compactModelLabel('OpenAI: GPT-5.6 Luna Pro', 'OpenAI')).toBe('GPT-5.6 Luna Pro')
+    expect(compactModelLabel('Qwen: Qwen3.7 Flash', 'OpenRouter', 'Qwen')).toBe('Qwen3.7 Flash')
+  })
+
+  it('keeps labels when the prefix does not match', () => {
+    expect(compactModelLabel('Claude Opus 5 (Fast)', 'Anthropic')).toBe('Claude Opus 5 (Fast)')
+    expect(compactModelLabel('OpenAI: GPT-5.6', 'Anthropic')).toBe('OpenAI: GPT-5.6')
+  })
 })
 
 const openaiOptions: ModelPickerOption[] = [
@@ -174,5 +189,68 @@ describe('ModelPicker', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Select model/i }))
     expect(screen.getByText(/offline model list/i)).toBeTruthy()
+  })
+
+  it('reserves capability badge columns when Think is missing', () => {
+    render(
+      <ModelPicker
+        providers={['openai']}
+        optionsByProvider={optionsByProvider}
+        seedsByProvider={seedsByProvider}
+        modelMetaByValue={{}}
+        provider="openai"
+        model="gpt-5.6"
+        favoriteModels={[]}
+        recentModels={[]}
+        modelsWarning={null}
+        serviceTier="default"
+        onModelChange={vi.fn()}
+        onToggleFavorite={vi.fn()}
+        onServiceTierChange={vi.fn()}
+        onRefreshCatalog={vi.fn()}
+        triggerClassName="test-trigger"
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Select model/i }))
+    const row = screen.getByRole('option', { name: /gpt-4\.1/i })
+    const badges = row.querySelector('[data-capability-badges]')
+    expect(badges).toBeTruthy()
+    const chips = badges!.querySelectorAll(':scope > span')
+    expect(chips.length).toBe(3)
+    expect(chips[0]!.textContent).toBe('Think')
+    expect(chips[0]!.className).toMatch(/invisible/)
+    expect(chips[1]!.textContent).toBe('Vision')
+    expect(chips[1]!.className).toMatch(/invisible/)
+    expect(chips[2]!.textContent).toBe('Tools')
+    expect(chips[2]!.className).not.toMatch(/invisible/)
+  })
+
+  it('exposes full model label via title on rows', () => {
+    render(
+      <ModelPicker
+        providers={['openai']}
+        optionsByProvider={optionsByProvider}
+        seedsByProvider={seedsByProvider}
+        modelMetaByValue={{}}
+        provider="openai"
+        model="gpt-5.6"
+        favoriteModels={[]}
+        recentModels={[]}
+        modelsWarning={null}
+        serviceTier="default"
+        onModelChange={vi.fn()}
+        onToggleFavorite={vi.fn()}
+        onServiceTierChange={vi.fn()}
+        onRefreshCatalog={vi.fn()}
+        triggerClassName="test-trigger"
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Select model/i }))
+    const row = screen.getByRole('option', { name: /gpt-5\.6/i })
+    const label = within(row).getByTitle('gpt-5.6')
+    expect(label).toBeTruthy()
+    expect(label.className).toMatch(/truncate/)
   })
 })

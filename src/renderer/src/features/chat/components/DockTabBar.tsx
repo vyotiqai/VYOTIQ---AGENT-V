@@ -153,9 +153,10 @@ export function DockTabBar({
             <div
               key={tab.id}
               className={cn(
-                'group inline-flex h-7 max-w-[9rem] shrink-0 items-center',
+                'group inline-flex h-7 max-w-[9rem] shrink-0 items-center gap-0.5',
                 immersive ? 'rounded-full' : 'rounded-md',
-                selected ? 'bg-surface' : 'hover:bg-surface/60'
+                selected ? 'bg-surface' : 'hover:bg-surface/60',
+                closable ? 'pl-2.5 pr-1' : 'px-2.5'
               )}
             >
               <button
@@ -164,25 +165,24 @@ export function DockTabBar({
                 aria-selected={selected}
                 tabIndex={selected ? 0 : -1}
                 className={cn(
-                  'inline-flex h-full min-w-0 items-center gap-1 truncate text-[11px] leading-none focus-visible:vy-focus-ring',
+                  'inline-flex h-full min-w-0 flex-1 items-center gap-1.5 text-xs leading-tight focus-visible:vy-focus-ring',
                   immersive ? 'rounded-full' : 'rounded-md',
-                  closable ? 'pl-2.5 pr-0.5' : 'px-2.5',
-                  selected ? 'font-medium text-fg' : 'text-muted hover:text-fg'
+                  selected ? 'font-medium text-fg' : 'text-secondary hover:text-fg'
                 )}
                 onClick={() => onSelect(tab.id)}
               >
                 <Icon
                   name={tab.icon}
                   size={12}
-                  className={cn('shrink-0', selected ? 'text-fg' : 'text-muted')}
+                  className={cn('shrink-0', selected ? 'text-fg' : 'text-secondary')}
                 />
-                <span className="truncate leading-none">{tab.label}</span>
+                <span className="min-w-0 truncate leading-tight">{tab.label}</span>
               </button>
               {closable ? (
                 <button
                   type="button"
                   className={cn(
-                    'mr-0.5 shrink-0 rounded-full p-0.5 focus-visible:opacity-100 focus-visible:vy-focus-ring',
+                    'inline-grid size-5 shrink-0 place-items-center rounded-full focus-visible:opacity-100 focus-visible:vy-focus-ring',
                     selected
                       ? 'opacity-70 hover:bg-surface-2 hover:opacity-100'
                       : 'opacity-0 hover:bg-surface-2 group-hover:opacity-100 group-focus-within:opacity-100'

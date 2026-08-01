@@ -164,7 +164,7 @@ export function ChatList({
 
                 {workspace.expanded ? (
                   workspace.filteredRuns.length === 0 ? (
-                    <p className="m-0 ml-4 px-1 py-1 text-[11px] text-muted">
+                    <p className="m-0 ml-4 px-1 py-1 text-xs text-secondary">
                       {sessionQuery.trim() ? 'No matching chats' : 'No chats yet'}
                     </p>
                   ) : (
