@@ -7,7 +7,8 @@ const OPENAI_COMPAT_PROVIDERS = new Set<ProviderId>([
   'mistral',
   'deepseek',
   'openrouter',
-  'ollama'
+  'ollama',
+  'custom'
 ])
 
 /**

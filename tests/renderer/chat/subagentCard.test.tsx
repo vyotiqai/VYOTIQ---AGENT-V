@@ -64,6 +64,9 @@ describe('sub-agent transcript row', () => {
     render(<MessageList items={[item]} />)
 
     expect(screen.getByText('Investigated')).toBeTruthy()
+    // Completed tool bodies stay collapsed by default — expand then assert.
+    const header = screen.getByRole('button', { expanded: false })
+    fireEvent.click(header)
     expect(screen.getByText('Auth lives in src/auth.ts:12.')).toBeTruthy()
   })
 
@@ -80,8 +83,39 @@ describe('sub-agent transcript row', () => {
     })
     render(<MessageList items={[item]} />)
 
-    expect(screen.getByText(/Sub-agent context/)).toBeTruthy()
+    expect(screen.getByText(/Nested agent context/)).toBeTruthy()
     expect(screen.getByText(/step 2/)).toBeTruthy()
+  })
+
+  it('renders rich nestedAgent panel leaves when present', () => {
+    const item = subagentItem({
+      nestedAgent: {
+        subagentId: 'ab12',
+        leaves: [
+          { kind: 'text', id: 't1', text: 'Checking auth module' },
+          {
+            kind: 'tool',
+            id: 'n1',
+            tool: {
+              id: 'n1',
+              name: 'grep',
+              summary: 'session',
+              status: 'done',
+              content: 'src/auth.ts:12'
+            }
+          }
+        ]
+      },
+      toolExpanded: true
+    })
+    render(<MessageList items={[item]} />)
+
+    expect(screen.getByText(/Nested agent ab12/)).toBeTruthy()
+    expect(screen.getByText('Checking auth module')).toBeTruthy()
+    expect(screen.getByText('grep')).toBeTruthy()
+    expect(screen.getByText('session')).toBeTruthy()
+    // Legacy step list is suppressed when nestedAgent leaves are present.
+    expect(screen.queryByText(/grep session/)).toBeNull()
   })
 
   it('collapses and expands the nested group', () => {
@@ -90,5 +124,26 @@ describe('sub-agent transcript row', () => {
     const header = screen.getByRole('button', { expanded: true })
     fireEvent.click(header)
     expect(screen.getByRole('button', { expanded: false })).toBeTruthy()
+  })
+
+  it('surfaces persisted report path and truncation banner', () => {
+    const item = subagentItem({
+      tool: {
+        id: 'call-1',
+        name: 'subagent',
+        summary: 'Find where auth lives',
+        status: 'done',
+        contentTruncated: true,
+        content:
+          'Persisted report: .vyotiq/runs/r1/subagents/s1.md (re-read with `read` after compaction).\n\nAuth lives in src/auth.ts:12.'
+      },
+      toolExpanded: true
+    })
+    render(<MessageList items={[item]} />)
+
+    expect(screen.getByText('.vyotiq/runs/r1/subagents/s1.md')).toBeTruthy()
+    expect(screen.getByText(/Showing truncated preview/)).toBeTruthy()
+    expect(screen.getByText('Auth lives in src/auth.ts:12.')).toBeTruthy()
+    expect(screen.queryByText(/Diagnostics is unavailable/)).toBeNull()
   })
 })

@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, readFileSync } from 'fs'
 import { dirname } from 'path'
-import { resolveInsideWorkspace } from '../../workspace/safePath'
+import { resolveInsideWorkspace, assertResolvedInsideWorkspace } from '../../workspace/safePath'
 import { atomicWriteFile } from '@main/storage/atomicWrite'
 import { applyUnifiedDiff } from './edit'
+import { throwIfAborted } from './walk'
 
 export type MultiEditEntry = {
   path: string
@@ -24,7 +25,11 @@ type Planned = {
  * match halfway through a batch would otherwise leave the workspace in a state
  * neither the model nor the user asked for.
  */
-export function toolMultiEdit(workspaceRoot: string, edits: MultiEditEntry[]): string {
+export function toolMultiEdit(
+  workspaceRoot: string,
+  edits: MultiEditEntry[],
+  signal?: AbortSignal
+): string {
   if (!edits.length) throw new Error('multi_edit requires at least one edit')
 
   const planned: Planned[] = []
@@ -65,7 +70,10 @@ export function toolMultiEdit(workspaceRoot: string, edits: MultiEditEntry[]): s
   }
 
   for (const entry of planned) {
+    throwIfAborted(signal)
+    assertResolvedInsideWorkspace(workspaceRoot, dirname(entry.resolved))
     mkdirSync(dirname(entry.resolved), { recursive: true })
+    assertResolvedInsideWorkspace(workspaceRoot, entry.resolved)
     atomicWriteFile(entry.resolved, entry.next)
   }
 

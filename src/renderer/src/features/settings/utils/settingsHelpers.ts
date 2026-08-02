@@ -1,4 +1,4 @@
-import { SECRET_PROVIDERS, type McpServerStatus, type SecretProvider, type Settings } from '@shared/ipc'
+import { type McpServerStatus, type SecretProvider, type Settings } from '@shared/ipc'
 import { formatWorkspaceName } from '@renderer/lib/utils/formatWorkspaceName'
 
 export function isValidHttpUrl(value: string): boolean {
@@ -16,13 +16,9 @@ export function workspaceShort(path: string | null): string {
 
 export function defaultKeyProvider(
   settingsProvider: Settings['provider'],
-  secrets: Record<SecretProvider, boolean>
+  _secrets: Record<SecretProvider, boolean>
 ): SecretProvider {
-  if (settingsProvider !== 'ollama') return settingsProvider
-  const withKey = SECRET_PROVIDERS.find((p) => secrets[p])
-  if (withKey) return withKey
-  const missing = SECRET_PROVIDERS.find((p) => !secrets[p])
-  return missing ?? SECRET_PROVIDERS[0]
+  return settingsProvider
 }
 
 export function mcpStatusLabel(

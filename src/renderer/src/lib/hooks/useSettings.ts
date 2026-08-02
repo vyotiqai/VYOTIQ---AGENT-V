@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   DEFAULT_SETTINGS,
   emptySecretStatus,
@@ -15,9 +15,13 @@ export function useSettings() {
   const [encryptionAvailable, setEncryptionAvailable] = useState(true)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  /** Monotonic generation so out-of-order IPC replies cannot revert newer state. */
+  const generationRef = useRef(0)
 
   const refresh = useCallback(async () => {
+    const gen = ++generationRef.current
     const [s, k] = await Promise.all([window.vyotiq.getSettings(), window.vyotiq.secretStatus()])
+    if (gen !== generationRef.current) return
     if (s.ok) setSettings(s.data)
     else {
       logger.warn('getSettings failed', { scope: 'settings', err: s.error })
@@ -38,7 +42,11 @@ export function useSettings() {
   }, [refresh])
 
   const update = useCallback(async (partial: Partial<Settings>): Promise<IpcResult<Settings>> => {
+    const gen = ++generationRef.current
     const res = await window.vyotiq.setSettings(partial)
+    if (gen !== generationRef.current) {
+      return res
+    }
     if (res.ok) {
       setSettings(res.data)
       setError(null)

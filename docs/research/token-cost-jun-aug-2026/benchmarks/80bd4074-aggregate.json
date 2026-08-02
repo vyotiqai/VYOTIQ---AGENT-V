@@ -1,0 +1,700 @@
+{
+  "meta": {
+    "sessionDir": "C:\\Users\\admin\\AppData\\Roaming\\vyotiq\\workspaces\\7bc43636-041c-5d7d-8f48-557815f13472\\sessions\\80bd4074-f2ca-4423-96f9-984636d7d309",
+    "generatedAt": "2026-08-02T09:56:59.974Z",
+    "eventLines": 1805,
+    "label": "AppData evidence"
+  },
+  "receipt": {
+    "runId": "80bd4074-f2ca-4423-96f9-984636d7d309",
+    "status": "done",
+    "step": 155,
+    "compactionCount": 0,
+    "tokenUsage": {
+      "inputTokens": 40448,
+      "billedInputTokens": 4721077,
+      "peakInputTokens": 47049,
+      "outputTokens": 169050,
+      "reasoningTokens": 130255,
+      "cachedInputTokens": 38912,
+      "billedCachedInputTokens": 3493632
+    },
+    "toolStats": {
+      "totalCalls": 333,
+      "ok": 287,
+      "failed": 46,
+      "byName": {
+        "mcp_list_tools": {
+          "ok": 5,
+          "failed": 0
+        },
+        "request_mcp_tools": {
+          "ok": 26,
+          "failed": 0
+        },
+        "list_dir": {
+          "ok": 9,
+          "failed": 0
+        },
+        "mcp__code-review-graph__build_or_update_graph_tool": {
+          "ok": 2,
+          "failed": 4
+        },
+        "glob": {
+          "ok": 12,
+          "failed": 0
+        },
+        "terminal": {
+          "ok": 96,
+          "failed": 4
+        },
+        "mcp_list_resources": {
+          "ok": 1,
+          "failed": 0
+        },
+        "memory_read": {
+          "ok": 2,
+          "failed": 0
+        },
+        "git_status": {
+          "ok": 2,
+          "failed": 0
+        },
+        "memory_list": {
+          "ok": 1,
+          "failed": 0
+        },
+        "read": {
+          "ok": 101,
+          "failed": 0
+        },
+        "Skill": {
+          "ok": 3,
+          "failed": 0
+        },
+        "grep": {
+          "ok": 4,
+          "failed": 0
+        },
+        "mcp__code-review-graph__list_graph_stats_tool": {
+          "ok": 1,
+          "failed": 1
+        },
+        "mcp__code-review-graph__get_minimal_context_tool": {
+          "ok": 2,
+          "failed": 0
+        },
+        "memory_write": {
+          "ok": 8,
+          "failed": 0
+        },
+        "mcp__code-review-graph__run_postprocess_tool": {
+          "ok": 1,
+          "failed": 0
+        },
+        "mcp__code-review-graph__embed_graph_tool": {
+          "ok": 4,
+          "failed": 0
+        },
+        "mcp__code-review-graph__detect_changes_tool": {
+          "ok": 0,
+          "failed": 3
+        },
+        "mcp__code-review-graph__get_architecture_overview_tool": {
+          "ok": 0,
+          "failed": 2
+        },
+        "mcp__code-review-graph__get_hub_nodes_tool": {
+          "ok": 0,
+          "failed": 2
+        },
+        "mcp__code-review-graph__get_knowledge_gaps_tool": {
+          "ok": 0,
+          "failed": 6
+        },
+        "mcp__code-review-graph__get_suggested_questions_tool": {
+          "ok": 0,
+          "failed": 6
+        },
+        "mcp__code-review-graph__get_review_context_tool": {
+          "ok": 1,
+          "failed": 4
+        },
+        "mcp__code-review-graph__get_impact_radius_tool": {
+          "ok": 1,
+          "failed": 5
+        },
+        "mcp__code-review-graph__list_flows_tool": {
+          "ok": 0,
+          "failed": 2
+        },
+        "mcp__code-review-graph__list_communities_tool": {
+          "ok": 0,
+          "failed": 2
+        },
+        "mcp__code-review-graph__generate_wiki_tool": {
+          "ok": 0,
+          "failed": 3
+        },
+        "mcp__code-review-graph__query_graph_tool": {
+          "ok": 0,
+          "failed": 2
+        },
+        "edit": {
+          "ok": 3,
+          "failed": 0
+        },
+        "str_replace": {
+          "ok": 2,
+          "failed": 0
+        }
+      }
+    },
+    "failureClusters": [
+      {
+        "key": "mcp__code-review-graph__get_knowledge_gaps_tool: MCP tool \"mcp__code-review-graph__get_knowledge_gaps_tool\" is not in this step's",
+        "count": 6
+      },
+      {
+        "key": "mcp__code-review-graph__get_suggested_questions_tool: MCP tool \"mcp__code-review-graph__get_suggested_questions_tool\" is not in this s",
+        "count": 6
+      },
+      {
+        "key": "mcp__code-review-graph__get_impact_radius_tool: MCP tool \"mcp__code-review-graph__get_impact_radius_tool\" is not in this step's ",
+        "count": 5
+      },
+      {
+        "key": "mcp__code-review-graph__build_or_update_graph_tool: [MCP mcp__code-review-graph__build_or_update_graph_tool error] Error calling too",
+        "count": 4
+      },
+      {
+        "key": "mcp__code-review-graph__get_review_context_tool: MCP tool \"mcp__code-review-graph__get_review_context_tool\" is not in this step's",
+        "count": 4
+      },
+      {
+        "key": "mcp__code-review-graph__detect_changes_tool: MCP tool \"mcp__code-review-graph__detect_changes_tool\" is not in this step's too",
+        "count": 3
+      },
+      {
+        "key": "mcp__code-review-graph__generate_wiki_tool: MCP tool \"mcp__code-review-graph__generate_wiki_tool\" is not in this step's tool",
+        "count": 3
+      },
+      {
+        "key": "mcp__code-review-graph__get_architecture_overview_tool: MCP tool \"mcp__code-review-graph__get_architecture_overview_tool\" is not in this",
+        "count": 2
+      },
+      {
+        "key": "mcp__code-review-graph__get_hub_nodes_tool: MCP tool \"mcp__code-review-graph__get_hub_nodes_tool\" is not in this step's tool",
+        "count": 2
+      },
+      {
+        "key": "mcp__code-review-graph__list_communities_tool: MCP tool \"mcp__code-review-graph__list_communities_tool\" is not in this step's t",
+        "count": 2
+      },
+      {
+        "key": "mcp__code-review-graph__list_flows_tool: MCP tool \"mcp__code-review-graph__list_flows_tool\" is not in this step's tool ca",
+        "count": 2
+      },
+      {
+        "key": "mcp__code-review-graph__query_graph_tool: MCP tool \"mcp__code-review-graph__query_graph_tool\" is not in this step's tool c",
+        "count": 2
+      }
+    ]
+  },
+  "compactionFile": {
+    "summary": "__vyotiq_context_trim_watermark__",
+    "createdAt": "2026-08-02T09:06:54.268Z",
+    "tokenEstimate": 59704,
+    "foldedMessages": 398
+  },
+  "toolCatalog": {
+    "names": [
+      "read",
+      "edit",
+      "search",
+      "glob",
+      "grep",
+      "list_dir",
+      "multi_edit",
+      "str_replace",
+      "delete",
+      "todo_write",
+      "web_fetch",
+      "mcp_list_tools",
+      "request_mcp_tools",
+      "mcp_list_resources",
+      "mcp_read_resource",
+      "mcp_list_prompts",
+      "mcp_get_prompt",
+      "ask_question",
+      "switch_mode",
+      "terminal",
+      "memory_list",
+      "memory_read",
+      "memory_write",
+      "Skill",
+      "git_status",
+      "git_diff",
+      "git_commit",
+      "web_search",
+      "browser_navigate",
+      "browser_snapshot",
+      "browser_click",
+      "browser_type",
+      "browser_scroll",
+      "browser_fill",
+      "browser_tabs",
+      "browser_back",
+      "browser_forward",
+      "browser_wait_for_selector",
+      "browser_wait_for_url",
+      "browser_press_key",
+      "browser_select_option",
+      "subagent",
+      "diagnostics",
+      "generate_image",
+      "edit_image"
+    ],
+    "rawKeys": [
+      "version",
+      "keptNames",
+      "fingerprint",
+      "updatedAt"
+    ]
+  },
+  "typeCount": {
+    "status": 16,
+    "mcp_tools_omitted": 13,
+    "context_usage": 306,
+    "thinking_done": 152,
+    "tool_call_delta": 335,
+    "step_usage": 151,
+    "assistant_message": 152,
+    "tool_start": 333,
+    "tool_result": 333,
+    "token_cost_hint": 10,
+    "follow_up_applied": 1,
+    "writes_checkpoint": 3
+  },
+  "stepUsage": {
+    "count": 151,
+    "billedInputTokens": 4721077,
+    "billedCachedInputTokens": 3493632,
+    "cacheHitPctOfBilledInput": 74.00074177989471,
+    "peakInputTokens": 47049,
+    "minInputTokens": 11137,
+    "avgInputTokens": 31265.41059602649,
+    "billedOutputTokens": 169050,
+    "billedReasoningTokens": 130255,
+    "reasoningPctOfOutput": 77.05116829340432
+  },
+  "contextUsage": {
+    "count": 306,
+    "layeredCount": 151,
+    "hotspotHist": {
+      "history": 136,
+      "tools": 10,
+      "system": 0,
+      "other": 5
+    },
+    "toolsToHistoryTransition": {
+      "from": {
+        "step": 10,
+        "inputTokens": 14919,
+        "systemTokens": 2342,
+        "historyTokens": 4120,
+        "toolsTokens": 7420,
+        "bufferTokens": 150000,
+        "hotspot": "tools",
+        "toolDefCount": 47,
+        "source": "step_usage"
+      },
+      "to": {
+        "step": 16,
+        "inputTokens": 18851,
+        "systemTokens": 2334,
+        "historyTokens": 9902,
+        "toolsTokens": 7780,
+        "bufferTokens": 150000,
+        "hotspot": "history",
+        "toolDefCount": 48,
+        "source": "step_usage"
+      }
+    },
+    "firstLayered": [
+      {
+        "step": 1,
+        "inputTokens": 11137,
+        "systemTokens": 2343,
+        "historyTokens": 154,
+        "toolsTokens": 6659,
+        "bufferTokens": 150000,
+        "hotspot": "tools",
+        "toolDefCount": 45,
+        "source": "step_usage"
+      },
+      {
+        "step": 2,
+        "inputTokens": 12655,
+        "systemTokens": 2342,
+        "historyTokens": 1046,
+        "toolsTokens": 7420,
+        "bufferTokens": 150000,
+        "hotspot": "tools",
+        "toolDefCount": 47,
+        "source": "step_usage"
+      },
+      {
+        "step": 3,
+        "inputTokens": 13359,
+        "systemTokens": 2342,
+        "historyTokens": 2295,
+        "toolsTokens": 7420,
+        "bufferTokens": 150000,
+        "hotspot": "tools",
+        "toolDefCount": 47,
+        "source": "step_usage"
+      },
+      {
+        "step": 4,
+        "inputTokens": 13603,
+        "systemTokens": 2342,
+        "historyTokens": 2534,
+        "toolsTokens": 7420,
+        "bufferTokens": 150000,
+        "hotspot": "tools",
+        "toolDefCount": 47,
+        "source": "step_usage"
+      },
+      {
+        "step": 5,
+        "inputTokens": 13737,
+        "systemTokens": 2342,
+        "historyTokens": 2703,
+        "toolsTokens": 7420,
+        "bufferTokens": 150000,
+        "hotspot": "tools",
+        "toolDefCount": 47,
+        "source": "step_usage"
+      },
+      {
+        "step": 6,
+        "inputTokens": 14066,
+        "systemTokens": 2342,
+        "historyTokens": 3122,
+        "toolsTokens": 7420,
+        "bufferTokens": 150000,
+        "hotspot": "tools",
+        "toolDefCount": 47,
+        "source": "step_usage"
+      }
+    ],
+    "midLayered": [
+      {
+        "step": 76,
+        "inputTokens": 41268,
+        "systemTokens": 2466,
+        "historyTokens": 52466,
+        "toolsTokens": 6659,
+        "bufferTokens": 150000,
+        "hotspot": "history",
+        "toolDefCount": 45,
+        "source": "step_usage"
+      },
+      {
+        "step": 77,
+        "inputTokens": 42186,
+        "systemTokens": 2466,
+        "historyTokens": 54025,
+        "toolsTokens": 6659,
+        "bufferTokens": 150000,
+        "hotspot": "history",
+        "toolDefCount": 45,
+        "source": "step_usage"
+      },
+      {
+        "step": 79,
+        "inputTokens": 41144,
+        "systemTokens": 2466,
+        "historyTokens": 54752,
+        "toolsTokens": 6659,
+        "bufferTokens": 150000,
+        "hotspot": "history",
+        "toolDefCount": 45,
+        "source": "step_usage"
+      },
+      {
+        "step": 80,
+        "inputTokens": 14883,
+        "systemTokens": 2466,
+        "historyTokens": 6956,
+        "toolsTokens": 6659,
+        "bufferTokens": 150000,
+        "hotspot": "balanced",
+        "toolDefCount": 45,
+        "source": "step_usage"
+      },
+      {
+        "step": 81,
+        "inputTokens": 17012,
+        "systemTokens": 2466,
+        "historyTokens": 10084,
+        "toolsTokens": 6659,
+        "bufferTokens": 150000,
+        "hotspot": "history",
+        "toolDefCount": 45,
+        "source": "step_usage"
+      }
+    ],
+    "lastLayered": [
+      {
+        "step": 151,
+        "inputTokens": 38873,
+        "systemTokens": 2755,
+        "historyTokens": 39995,
+        "toolsTokens": 6659,
+        "bufferTokens": 150000,
+        "hotspot": "history",
+        "toolDefCount": 45,
+        "source": "step_usage"
+      },
+      {
+        "step": 152,
+        "inputTokens": 39102,
+        "systemTokens": 2755,
+        "historyTokens": 40195,
+        "toolsTokens": 6659,
+        "bufferTokens": 150000,
+        "hotspot": "history",
+        "toolDefCount": 45,
+        "source": "step_usage"
+      },
+      {
+        "step": 153,
+        "inputTokens": 39671,
+        "systemTokens": 2755,
+        "historyTokens": 41182,
+        "toolsTokens": 6659,
+        "bufferTokens": 150000,
+        "hotspot": "history",
+        "toolDefCount": 45,
+        "source": "step_usage"
+      },
+      {
+        "step": 154,
+        "inputTokens": 39963,
+        "systemTokens": 2755,
+        "historyTokens": 41504,
+        "toolsTokens": 6659,
+        "bufferTokens": 150000,
+        "hotspot": "history",
+        "toolDefCount": 45,
+        "source": "step_usage"
+      },
+      {
+        "step": 155,
+        "inputTokens": 40448,
+        "systemTokens": 2755,
+        "historyTokens": 42253,
+        "toolsTokens": 6659,
+        "bufferTokens": 150000,
+        "hotspot": "history",
+        "toolDefCount": 45,
+        "source": "step_usage"
+      }
+    ],
+    "maxLayeredInput": 47049,
+    "maxHistory": 54756,
+    "maxTools": 8147,
+    "steadyToolsTokens": 6659
+  },
+  "mcp": {
+    "omitEvents": 13,
+    "omitSamples": [
+      {
+        "type": "mcp_tools_omitted",
+        "runId": "80bd4074-f2ca-4423-96f9-984636d7d309",
+        "invokeId": 1,
+        "omittedCount": 30,
+        "omittedPreview": "mcp__code-review-graph__build_or_update_graph_tool, mcp__code-review-graph__run_postprocess_tool, mcp__code-review-graph__get_minimal_context_tool, mcp__code-review-graph__get_impact_radius_tool, mcp__code-review-graph__query_graph_tool, mcp__code-review-graph__get_review_context_tool, mcp__code-review-graph__semantic_search_nodes_tool, mcp__code-review-graph__embed_graph_tool"
+      },
+      {
+        "type": "mcp_tools_omitted",
+        "runId": "80bd4074-f2ca-4423-96f9-984636d7d309",
+        "invokeId": 1,
+        "omittedCount": 28,
+        "omittedPreview": "mcp__code-review-graph__get_minimal_context_tool, mcp__code-review-graph__get_impact_radius_tool, mcp__code-review-graph__query_graph_tool, mcp__code-review-graph__get_review_context_tool, mcp__code-review-graph__semantic_search_nodes_tool, mcp__code-review-graph__embed_graph_tool, mcp__code-review-graph__list_graph_stats_tool, mcp__code-review-graph__get_docs_section_tool"
+      },
+      {
+        "type": "mcp_tools_omitted",
+        "runId": "80bd4074-f2ca-4423-96f9-984636d7d309",
+        "invokeId": 1,
+        "omittedCount": 30,
+        "omittedPreview": "mcp__code-review-graph__build_or_update_graph_tool, mcp__code-review-graph__run_postprocess_tool, mcp__code-review-graph__get_minimal_context_tool, mcp__code-review-graph__get_impact_radius_tool, mcp__code-review-graph__query_graph_tool, mcp__code-review-graph__get_review_context_tool, mcp__code-review-graph__semantic_search_nodes_tool, mcp__code-review-graph__embed_graph_tool"
+      },
+      {
+        "type": "mcp_tools_omitted",
+        "runId": "80bd4074-f2ca-4423-96f9-984636d7d309",
+        "invokeId": 1,
+        "omittedCount": 27,
+        "omittedPreview": "mcp__code-review-graph__get_minimal_context_tool, mcp__code-review-graph__get_impact_radius_tool, mcp__code-review-graph__get_review_context_tool, mcp__code-review-graph__semantic_search_nodes_tool, mcp__code-review-graph__embed_graph_tool, mcp__code-review-graph__list_graph_stats_tool, mcp__code-review-graph__get_docs_section_tool, mcp__code-review-graph__find_large_functions_tool"
+      },
+      {
+        "type": "mcp_tools_omitted",
+        "runId": "80bd4074-f2ca-4423-96f9-984636d7d309",
+        "invokeId": 2,
+        "omittedCount": 30,
+        "omittedPreview": "mcp__code-review-graph__build_or_update_graph_tool, mcp__code-review-graph__run_postprocess_tool, mcp__code-review-graph__get_minimal_context_tool, mcp__code-review-graph__get_impact_radius_tool, mcp__code-review-graph__query_graph_tool, mcp__code-review-graph__get_review_context_tool, mcp__code-review-graph__semantic_search_nodes_tool, mcp__code-review-graph__embed_graph_tool"
+      }
+    ],
+    "requestMcpToolsStarts": 26,
+    "mcpListToolsStarts": 5,
+    "notInCatalogCount": 20,
+    "notInCatalogByName": {
+      "mcp__code-review-graph__detect_changes_tool": 3,
+      "mcp__code-review-graph__get_hub_nodes_tool": 2,
+      "mcp__code-review-graph__list_flows_tool": 2,
+      "mcp__code-review-graph__list_communities_tool": 2,
+      "mcp__code-review-graph__generate_wiki_tool": 3,
+      "mcp__code-review-graph__query_graph_tool": 2,
+      "mcp__code-review-graph__list_graph_stats_tool": 1,
+      "mcp__code-review-graph__get_impact_radius_tool": 5
+    },
+    "failedToolResults": 46
+  },
+  "hints": {
+    "count": 10,
+    "kinds": {
+      "high_thinking_on_long_run": 10
+    }
+  },
+  "compactionEvents": 0,
+  "stepCostCurveSample": {
+    "first5": [
+      {
+        "i": 1,
+        "step": 1,
+        "inputTokens": 11137,
+        "cachedInputTokens": 1536,
+        "reasoningTokens": 384,
+        "outputTokens": 512
+      },
+      {
+        "i": 2,
+        "step": 2,
+        "inputTokens": 12655,
+        "cachedInputTokens": 1920,
+        "reasoningTokens": 587,
+        "outputTokens": 670
+      },
+      {
+        "i": 3,
+        "step": 3,
+        "inputTokens": 13359,
+        "cachedInputTokens": 2176,
+        "reasoningTokens": 71,
+        "outputTokens": 191
+      },
+      {
+        "i": 4,
+        "step": 4,
+        "inputTokens": 13603,
+        "cachedInputTokens": 2176,
+        "reasoningTokens": 66,
+        "outputTokens": 159
+      },
+      {
+        "i": 5,
+        "step": 5,
+        "inputTokens": 13737,
+        "cachedInputTokens": 2176,
+        "reasoningTokens": 134,
+        "outputTokens": 244
+      }
+    ],
+    "mid5": [
+      {
+        "i": 74,
+        "step": 76,
+        "inputTokens": 41268,
+        "cachedInputTokens": 34176,
+        "reasoningTokens": 3193,
+        "outputTokens": 3546
+      },
+      {
+        "i": 75,
+        "step": 77,
+        "inputTokens": 42186,
+        "cachedInputTokens": 10752,
+        "reasoningTokens": 2104,
+        "outputTokens": 2530
+      },
+      {
+        "i": 76,
+        "step": 79,
+        "inputTokens": 41144,
+        "cachedInputTokens": 34944,
+        "reasoningTokens": 3363,
+        "outputTokens": 3700
+      },
+      {
+        "i": 77,
+        "step": 80,
+        "inputTokens": 14883,
+        "cachedInputTokens": 10752,
+        "reasoningTokens": 1191,
+        "outputTokens": 1461
+      },
+      {
+        "i": 78,
+        "step": 81,
+        "inputTokens": 17012,
+        "cachedInputTokens": 10752,
+        "reasoningTokens": 144,
+        "outputTokens": 460
+      }
+    ],
+    "last5": [
+      {
+        "i": 147,
+        "step": 151,
+        "inputTokens": 38873,
+        "cachedInputTokens": 36736,
+        "reasoningTokens": 39,
+        "outputTokens": 192
+      },
+      {
+        "i": 148,
+        "step": 152,
+        "inputTokens": 39102,
+        "cachedInputTokens": 37504,
+        "reasoningTokens": 479,
+        "outputTokens": 566
+      },
+      {
+        "i": 149,
+        "step": 153,
+        "inputTokens": 39671,
+        "cachedInputTokens": 38144,
+        "reasoningTokens": 99,
+        "outputTokens": 255
+      },
+      {
+        "i": 150,
+        "step": 154,
+        "inputTokens": 39963,
+        "cachedInputTokens": 38272,
+        "reasoningTokens": 342,
+        "outputTokens": 466
+      },
+      {
+        "i": 151,
+        "step": 155,
+        "inputTokens": 40448,
+        "cachedInputTokens": 38912,
+        "reasoningTokens": 1116,
+        "outputTokens": 1632
+      }
+    ]
+  }
+}

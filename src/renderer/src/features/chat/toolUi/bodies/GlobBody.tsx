@@ -4,13 +4,13 @@ import type { ToolBodyProps } from '../types'
 import { parseGlobData } from '../parsers/glob'
 import { Chip, PathList, TruncatedBanner } from '../primitives'
 
-export function GlobBody({ tool, loading, loadFailed }: ToolBodyProps) {
+export function GlobBody({ tool, loading, loadFailed, inGroup }: ToolBodyProps) {
   const data = useMemo(() => parseGlobData(tool), [tool])
 
   return (
     <div>
       <div className={`${TOOL_BODY_PAD} flex flex-wrap items-center gap-2 pb-1`}>
-        <Chip>{data.pattern}</Chip>
+        {!inGroup ? <Chip>{data.pattern}</Chip> : null}
         <span className="text-[10px] tabular-nums text-tertiary">
           {data.paths.length} {data.paths.length === 1 ? 'file' : 'files'}
           {data.truncated ? ' (truncated)' : ''}

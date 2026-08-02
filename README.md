@@ -1,6 +1,6 @@
 # Vyotiq Agent V
 
-Lean Electron desktop coding agent: natural-language harness, workspace tools, multi-provider chat, live context management, and file-backed long-term memory. Includes a built-in live agent browser (navigate, snapshot, click, type). No terminal UI, embedding RAG, or GitHub.
+Lean Electron desktop coding agent: natural-language harness, workspace tools, multi-provider chat, live context management, and file-backed long-term memory. Includes a built-in live agent browser (navigate, snapshot, click, type), interactive terminal dock (xterm + `node-pty` when available), git Changes panel, and optional GitHub pull-request panel via the [`gh`](https://cli.github.com/) CLI (`gh auth login` required). No embedding RAG.
 
 ## Stack
 
@@ -16,6 +16,17 @@ pnpm install
 pnpm dev
 ```
 
+### Interactive terminal (`node-pty`)
+
+The Terminal panel prefers a real PTY via optional `node-pty` (matched to Electron’s ABI via postinstall / `@electron/rebuild`). If the native module cannot load, a pipe-shell fallback is used (line editing / resize degraded).
+
+On Windows, a full source rebuild needs Visual Studio Build Tools with **Spectre-mitigated libraries**. Prebuilds for Electron often work without a local compile — do not force `npm_config_build_from_source`. To rebuild explicitly:
+
+```bash
+npx @electron/rebuild -f -w node-pty
+```
+
+Project paths with spaces are fine when using prebuilds; if a source rebuild fails, rebuild once via a junction (`mklink /J C:\vyotiq-dev "<repo>"`) without renaming the project.
 ## Scripts
 
 | Script | Purpose |
@@ -28,16 +39,18 @@ pnpm dev
 
 ## Smoke test
 
-1. Start [Ollama](https://ollama.com) and `ollama pull qwen2.5` (or set an API key in Settings).
+1. Start [Ollama](https://ollama.com) and `ollama pull qwen2.5`, **or** set the Ollama base URL to `https://ollama.com` and save an [Ollama Cloud API key](https://ollama.com/settings/keys) in Settings (or use another provider’s API key).
 2. `pnpm dev` → pick a workspace → send a message.
 3. Confirm tool rows (`read` / `search` / `memory_*` / …), streaming text, and **Stop** cancels the run.
 
-## Providers (9)
+## Providers (10)
 
-OpenAI · Anthropic · Gemini · Ollama · DeepSeek · Groq · OpenRouter · xAI · Mistral
+OpenAI · Anthropic · Gemini · Ollama · DeepSeek · Groq · OpenRouter · xAI · Mistral · Custom (OpenAI-compatible)
 
+- **Ollama:** Local daemon by default (no key). Saving an Ollama API key automatically uses **Ollama Cloud** (`https://ollama.com`).
+- **Custom:** Any OpenAI-compatible `/v1` host (Cerebras, Fireworks, Together, vLLM, …). Set the base URL in Settings; local hosts need no key.
 - **Extended thinking:** Reasoning-capable models stream a separate thinking channel (collapsed in chat). Configure in the composer **model picker** (thinking on/off, effort, show/hide), along with compaction.
-- **OpenAI** reasoning models use the **Responses API** (`/v1/responses`) with reasoning summaries and tool-loop continuity.
+- **OpenAI** GPT-5 / o-series models use the **Responses API** (`/v1/responses`) by default (thinking off still uses Responses without reasoning). GPT-5.6+ sends explicit prompt-cache breakpoints on the system prefix.
 - **Gemini** thinking models use the **Interactions API** (`/v1beta/interactions`) with stateful `previous_interaction_id`.
 - **Anthropic** uses **Messages API** extended/adaptive thinking; **DeepSeek** and **OpenRouter** use Chat Completions with `reasoning_content` / `reasoning` replay on tool steps.
 - Non-thinking models keep **Chat Completions / Messages / streamGenerateContent** paths.
@@ -49,7 +62,7 @@ OpenAI · Anthropic · Gemini · Ollama · DeepSeek · Groq · OpenRouter · xAI
 
 - Universal client context pipeline: budget layers, tool-result trimming, structured compaction, workspace snapshot, always-on memory index + state injection, live context-window meter in the composer.
 - Read-only built-in tools may run in parallel when the model requests multiple calls in one step. MCP tools always run serially and are not auto-exempt from approval via `readOnlyHint` (session/workspace allowlists can still skip prompts).
-- **Marketplace** (sidebar): Discover / Featured catalog for MCP servers, skills, and plugins; Manage installs and configures them (stdio / HTTP / SSE). Settings → Registry holds the optional remote catalog URL. Enabled skills inject into the system prompt; plugins expand nested MCP + skills + rules.
+- **Marketplace** (sidebar): Discover / Featured catalog for MCP servers, skills, and plugins; Manage installs and configures them (stdio / HTTP / SSE). Settings → Registry holds the optional remote catalog URL. Enabled skills contribute name/description metadata to the system prompt (full `SKILL.md` loads via the `Skill` tool or `/slash`); plugins expand nested MCP + skills + rules.
 - Anthropic also sends server `cache_control` + `context_management` (`clear_tool_uses` / `compact`) when available.
 - Long-term memory lives at `{workspace}/.vyotiq/memory/` (`index.md`, `notes/*.md`, optional `state.md`) with tools `memory_list` / `memory_read` / `memory_write`.
 
@@ -57,7 +70,7 @@ OpenAI · Anthropic · Gemini · Ollama · DeepSeek · Groq · OpenRouter · xAI
 
 ## Layout
 
-See [docs/architecture.md](docs/architecture.md) for process boundaries, import aliases (`@shared`, `@renderer/lib`, `@main`), feature folder conventions, and the composer variant contract.
+See [docs/architecture.md](docs/architecture.md) for process boundaries, import aliases (`@shared`, `@renderer/lib`, `@main`), feature folder conventions, and the composer variant contract. For harness failure modes → section → evidence mapping, see [docs/harness-handbook.md](docs/harness-handbook.md).
 
 ```
 src/main/          # window, security, IPC, secrets, agent loop / tools / providers / context / logging
@@ -90,7 +103,7 @@ Project-local agent memory stays at `{workspace}/.vyotiq/memory/` only. The syst
 
 When adding or changing a built-in tool, update its argument schema, handler, and runtime limits/classification together. Keep the tool description as a short capability blurb; `tests/main/unit/toolsSchema.test.ts` checks registry/handler parity and the harness boundary.
 
-**Run file contract:** `messages.jsonl` is the canonical chat transcript (one JSON object per line: user/assistant/tool messages). `events.jsonl` is an append-only ops log (`status`, `step_usage`, `context_usage`, etc. with ISO `at` timestamps); full tool output is stored only in `messages.jsonl`. The UI rebuilds the chat timeline from `messages.jsonl` on reload and shows run telemetry in the Activity panel. Legacy session-only runs under `{userData}/sessions/` are migrated into the workspace AppData sessions folder on first startup.
+**Run file contract:** `messages.jsonl` is the canonical chat transcript (one JSON object per line: user/assistant/tool messages). `events.jsonl` is an append-only ops log (`status`, `step_usage`, `context_usage`, etc. with ISO `at` timestamps); full tool output is stored only in `messages.jsonl`. The UI rebuilds the chat timeline from `messages.jsonl` on reload and shows run telemetry in the composer context meter. Legacy session-only runs under `{userData}/sessions/` are migrated into the workspace AppData sessions folder on first startup.
 
 Copy `.env.example` → `.env` if you want an optional Sentry DSN locally (gitignored).
 
@@ -117,4 +130,4 @@ VITE_SENTRY_DSN=https://<key>@o<org>.ingest.sentry.io/<project>
 
 ## Scope (kept lean)
 
-Tools: `read` · `list_dir` · `glob` · `grep` · `search` · `edit` · `str_replace` · `multi_edit` · `delete` · `todo_write` · `web_fetch` · `web_search` · `browser_navigate` · `browser_snapshot` · `browser_scroll` · `browser_click` · `browser_type` · `browser_fill` · `browser_tabs` · `browser_back` · `browser_forward` · `browser_wait_for_selector` · `browser_wait_for_url` · `browser_press_key` · `browser_select_option` · `mcp_list_tools` · `subagent` · `terminal` · `git_status` · `git_diff` · `diagnostics` · `memory_list` · `memory_read` · `memory_write` (no terminal panel).
+Tools: `read` · `list_dir` · `glob` · `grep` · `search` · `edit` · `str_replace` · `multi_edit` · `delete` · `todo_write` · `web_fetch` · `web_search` · `browser_navigate` · `browser_snapshot` · `browser_scroll` · `browser_click` · `browser_type` · `browser_fill` · `browser_tabs` · `browser_back` · `browser_forward` · `browser_wait_for_selector` · `browser_wait_for_url` · `browser_press_key` · `browser_select_option` · `mcp_list_tools` · `mcp_list_resources` · `mcp_read_resource` · `mcp_list_prompts` · `mcp_get_prompt` · `subagent` · `ask_question` · `switch_mode` · `terminal` · `git_status` · `git_diff` · `git_commit` · `diagnostics` · `memory_list` · `memory_read` · `memory_write`. Side rail: Browser / Terminal / Changes / Plan panels.

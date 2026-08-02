@@ -26,7 +26,8 @@ import {
   VyotiqPluginManifestSchema,
   type McpServer
 } from '../../shared/ipc'
-import { parseSkillFrontmatter } from '../agent/skills/parse'
+import { parseSkillFrontmatter, skillPackageVersion } from '../agent/skills/parse'
+import { resolveSkillMdPath } from '../agent/skills/paths'
 import { getSettings, setSettings } from '../settings/settings'
 import { formatError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
@@ -35,11 +36,13 @@ import { getInstalledItem, readMarketplaceIndex, upsertInstalledItem } from './i
 import {
   bundledPackagePath,
   marketplacePackageDir,
-  marketplacePackagesRoot
+  marketplacePackagesRoot,
+  resolveInstalledPackageRoot
 } from './paths'
 import { remoteMcpIdFromUrl, headersWithoutAuthorization } from '../../shared/utils/mcpAuth'
 import { setMcpAuthToken } from '../settings/secrets'
 import { synthesizeVyotiqMcpManifest } from './mcpImport'
+import { sanitizeMcpManifestEnv } from './sanitizeMcpEnv'
 import { withCompatibleUvxArgs } from '../agent/mcp/uvxCompat'
 import { downloadPublicUrlToFile } from '../agent/tools/webFetch'
 
@@ -54,10 +57,14 @@ export type DetectedPackage = {
   root: string
 }
 
+function hasSkillPackageMarker(dir: string): boolean {
+  return resolveSkillMdPath(dir) != null
+}
+
 export function detectPackageAt(root: string): DetectedPackage {
   const mcpPath = join(root, 'vyotiq.mcp.json')
   const pluginPath = join(root, 'vyotiq.plugin.json')
-  const skillPath = join(root, 'skill.md')
+  const skillPath = resolveSkillMdPath(root)
 
   if (existsSync(mcpPath)) {
     const manifest = VyotiqMcpManifestSchema.parse(JSON.parse(readFileSync(mcpPath, 'utf8')))
@@ -81,25 +88,61 @@ export function detectPackageAt(root: string): DetectedPackage {
       root
     }
   }
-  if (existsSync(skillPath)) {
+  if (skillPath) {
     const skill = parseSkillFrontmatter(readFileSync(skillPath, 'utf8'))
     return {
       kind: 'skill',
       id: skill.name,
       name: skill.name,
-      version: skill.version ?? '1.0.0',
+      version: skillPackageVersion(skill),
       description: skill.description,
       root
     }
   }
-  throw new Error('Not a Vyotiq package (need vyotiq.mcp.json, vyotiq.plugin.json, or skill.md)')
+  throw new Error(
+    'Not a Vyotiq package (need vyotiq.mcp.json, vyotiq.plugin.json, or SKILL.md)'
+  )
 }
 
 /**
  * Reject zip-slip / symlink escapes after extract. Throws and leaves callers to
  * clean up the temp tree.
  */
-function assertExtractContained(destDir: string): void {
+export function isContainmentOrSymlinkError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /symlink|escaped destination|extract rejected|Archive extract/i.test(msg)
+}
+
+/**
+ * Allowlist git clone targets for marketplace installs.
+ * Rejects file://, ext::, and bare local paths that could turn install into arbitrary I/O.
+ */
+export function assertSafeGitCloneUrl(target: string): string {
+  const t = target.trim()
+  if (!t) throw new Error('Git clone URL is required')
+  const lower = t.toLowerCase()
+  if (lower.startsWith('file:') || lower.startsWith('ext::') || lower.startsWith('ext:')) {
+    throw new Error('Git clone URL scheme is not allowed (file/ext)')
+  }
+  // SCP-like: git@host:path or user@host:path (no scheme)
+  if (/^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+[:/]/.test(t) && !t.includes('://')) {
+    return t
+  }
+  let parsed: URL
+  try {
+    parsed = new URL(t)
+  } catch {
+    throw new Error('Git clone URL must be https://, http://, ssh://, or git@host:path')
+  }
+  const protocol = parsed.protocol.toLowerCase()
+  if (protocol !== 'https:' && protocol !== 'http:' && protocol !== 'ssh:' && protocol !== 'git:') {
+    throw new Error(`Git clone URL scheme not allowed: ${parsed.protocol}`)
+  }
+  return t
+}
+
+/** @internal Exported for unit tests — zip-slip / symlink post-extract gate. */
+export function assertExtractContained(destDir: string): void {
   const root = realpathSync(destDir)
   const rootPrefix = root.endsWith(sep) ? root : root + sep
   const walk = (dir: string): void => {
@@ -136,7 +179,7 @@ function findPackageRoot(extractedDir: string): string {
   if (
     existsSync(join(extractedDir, 'vyotiq.mcp.json')) ||
     existsSync(join(extractedDir, 'vyotiq.plugin.json')) ||
-    existsSync(join(extractedDir, 'skill.md'))
+    hasSkillPackageMarker(extractedDir)
   ) {
     return extractedDir
   }
@@ -146,7 +189,7 @@ function findPackageRoot(extractedDir: string): string {
     if (
       existsSync(join(candidate, 'vyotiq.mcp.json')) ||
       existsSync(join(candidate, 'vyotiq.plugin.json')) ||
-      existsSync(join(candidate, 'skill.md'))
+      hasSkillPackageMarker(candidate)
     ) {
       return candidate
     }
@@ -185,7 +228,7 @@ export function mcpServerFromManifest(root: string): McpServer {
     transport: manifest.transport,
     command: manifest.command,
     args: manifest.args,
-    env: manifest.env,
+    env: sanitizeMcpManifestEnv(manifest.env),
     url: manifest.url,
     headers: manifest.headers,
     ...(manifest.allowedTools?.length ? { allowedTools: manifest.allowedTools } : {}),
@@ -211,7 +254,7 @@ export function syncMarketplaceMcpIntoSettings(): void {
   const fromMarketplace: McpServer[] = []
   for (const item of index.items) {
     if (item.kind !== 'mcp') continue
-    const root = join(marketplacePackagesRoot(), item.packagePath)
+    const root = resolveInstalledPackageRoot(item.packagePath)
     if (!existsSync(join(root, 'vyotiq.mcp.json'))) continue
     try {
       const server = mcpServerFromManifest(root)
@@ -224,7 +267,7 @@ export function syncMarketplaceMcpIntoSettings(): void {
         if (prev.transport) server.transport = prev.transport
         if (prev.command !== undefined) server.command = prev.command
         if (prev.args) server.args = prev.args
-        if (prev.env) server.env = prev.env
+        if (prev.env) server.env = sanitizeMcpManifestEnv(prev.env)
         if (prev.url !== undefined) server.url = prev.url
         if (prev.headers) server.headers = prev.headers
       }
@@ -234,7 +277,7 @@ export function syncMarketplaceMcpIntoSettings(): void {
       if (server.command?.trim().toLowerCase() === 'uvx') {
         server.env = {
           PYTHONIOENCODING: 'utf-8',
-          ...(server.env ?? {})
+          ...(sanitizeMcpManifestEnv(server.env) ?? {})
         }
       }
       fromMarketplace.push(server)
@@ -246,8 +289,10 @@ export function syncMarketplaceMcpIntoSettings(): void {
       })
     }
   }
-  // Plugin-expanded MCP is handled in resolveEffectiveMcpServers
-  setSettings({ mcpServers: [...manual, ...fromMarketplace] })
+  // Plugin-expanded MCP is handled in resolveEffectiveMcpServers.
+  // Skip ack: untrusted sources are gated in installMarketplacePackage; bundled
+  // sync must not fail assertMcpServersAcked (AppData: marketplace:install IPC).
+  setSettings({ mcpServers: [...manual, ...fromMarketplace] }, { skipMcpAck: true })
 }
 
 /**
@@ -260,7 +305,7 @@ function repairBundledMcpManifestsFromResources(): void {
     if (item.kind !== 'mcp' || item.installSource !== 'bundled') continue
     const bundledRoot = bundledPackagePath(item.id)
     const src = join(bundledRoot, 'vyotiq.mcp.json')
-    const dest = join(marketplacePackagesRoot(), item.packagePath, 'vyotiq.mcp.json')
+    const dest = join(resolveInstalledPackageRoot(item.packagePath), 'vyotiq.mcp.json')
     if (!existsSync(src) || !existsSync(dest)) continue
     try {
       const next = readFileSync(src, 'utf8')
@@ -316,6 +361,7 @@ async function materializeToTemp(req: MarketplaceInstallRequest): Promise<{
 
   if (source === 'path') {
     if (!existsSync(target)) throw new Error(`Path not found: ${target}`)
+    assertExtractContained(target)
     return { root: target, cleanup: () => {}, source }
   }
 
@@ -383,10 +429,21 @@ async function materializeToTemp(req: MarketplaceInstallRequest): Promise<{
   }
 
   if (source === 'git') {
+    const cloneUrl = assertSafeGitCloneUrl(target)
     const cloneDir = join(tmp, 'repo')
-    await execFileAsync('git', ['clone', '--depth', '1', target, cloneDir], {
-      timeout: 120_000
-    })
+    await execFileAsync(
+      'git',
+      ['-c', 'protocol.file.allow=never', 'clone', '--depth', '1', cloneUrl, cloneDir],
+      {
+        timeout: 120_000
+      }
+    )
+    try {
+      assertExtractContained(cloneDir)
+    } catch (err) {
+      cleanup()
+      throw err
+    }
     return { root: findPackageRoot(cloneDir), cleanup, source }
   }
 
@@ -440,7 +497,8 @@ async function materializeToTemp(req: MarketplaceInstallRequest): Promise<{
     const extractDir = join(tmp, 'extract')
     try {
       await extractArchive(archivePath, extractDir)
-    } catch {
+    } catch (err) {
+      if (isContainmentOrSymlinkError(err)) throw err
       // try as tarball
       const tgzPath = join(tmp, 'pkg.tgz')
       renameSync(archivePath, tgzPath)
@@ -458,10 +516,11 @@ export async function installMarketplacePackage(
 ): Promise<MarketplaceInstallResult> {
   const req = MarketplaceInstallRequestSchema.parse(raw)
   const settings = getSettings()
-  const remoteSources = new Set(['registry', 'git', 'npm', 'zip', 'remote'])
-  if (remoteSources.has(req.source) && !settings.marketplace?.remoteInstallAcked) {
+  // Untrusted sources (including local path folders) require the registry ack.
+  const ackRequiredSources = new Set(['registry', 'git', 'npm', 'zip', 'remote', 'path'])
+  if (ackRequiredSources.has(req.source) && !settings.marketplace?.remoteInstallAcked) {
     throw new Error(
-      'Acknowledge remote marketplace installs in Settings → Registry before installing from registry, git, npm, zip, or remote MCP URLs.'
+      'Acknowledge marketplace install risk in Settings → Registry before installing from registry, git, npm, zip, path, or remote MCP URLs.'
     )
   }
   const { root, cleanup, source } = await materializeToTemp(req)
@@ -495,7 +554,7 @@ export async function installMarketplacePackage(
       // Reject remote URL installs that would overwrite a different remote package id collision.
       const prior = getInstalledItem(detected.id)
       if (prior && prior.kind === 'mcp' && req.source === 'remote') {
-        const priorRoot = join(marketplacePackagesRoot(), prior.packagePath)
+        const priorRoot = resolveInstalledPackageRoot(prior.packagePath)
         const priorManifest = join(priorRoot, 'vyotiq.mcp.json')
         if (existsSync(priorManifest)) {
           try {

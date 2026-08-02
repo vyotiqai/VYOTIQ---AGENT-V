@@ -1,23 +1,18 @@
 import { z } from 'zod'
 import type { ChatMessage, ProviderId } from '../ipc'
+import {
+  ThinkingApiSchema,
+  ThinkingEffortSchema,
+  type ThinkingApi,
+  type ThinkingEffort
+} from '../ipc/schemas/providers'
 
-export const ThinkingEffortSchema = z.enum([
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max'
-])
-export type ThinkingEffort = z.infer<typeof ThinkingEffortSchema>
-
-export const ThinkingApiSchema = z.enum([
-  'responses',
-  'interactions',
-  'messages',
-  'chat_completions'
-])
-export type ThinkingApi = z.infer<typeof ThinkingApiSchema>
+export {
+  ThinkingApiSchema,
+  ThinkingEffortSchema,
+  type ThinkingApi,
+  type ThinkingEffort
+}
 
 export const ThinkingConfigSchema = z.object({
   enabled: z.boolean(),
@@ -98,21 +93,85 @@ export function thinkingApiFor(id: string, providerId: ProviderId): ThinkingApi 
     case 'xai':
     case 'mistral':
     case 'ollama':
+    case 'custom':
       return 'chat_completions'
     default:
       return undefined
   }
 }
 
-/** Anthropic adaptive thinking is available on Opus 4.7+ / Sonnet 5+ / Fable 5+. */
+/**
+ * Anthropic adaptive thinking + output_config.effort (4.6+, 5.x, Fable/Mythos).
+ * Prefer ModelInfo.thinkingMode === 'adaptive' when catalog provides it.
+ */
 export function anthropicUsesAdaptiveThinking(modelId: string): boolean {
-  return /claude-(opus-4-[78]|opus-4\.[78]|sonnet-5|fable-5|mythos)/i.test(modelId)
+  const m = modelId.toLowerCase()
+  if (/claude-(fable-5|mythos|opus-5|sonnet-5)/i.test(m)) return true
+  // Opus/Sonnet 4.6, 4.7, 4.8 (hyphen or dotted)
+  if (/claude-(opus|sonnet)-4[.-]([6-9]|\d{2,})/i.test(m)) return true
+  if (/claude-(opus|sonnet)-4-[6-9]/i.test(m)) return true
+  return false
 }
 
-/** Anthropic manual budget_tokens mode for older Claude 4.x models. */
+/** Anthropic manual budget_tokens mode for older Claude models (pre-4.6). */
 export function anthropicUsesManualThinking(modelId: string): boolean {
   if (!modelSupportsThinking(modelId, 'anthropic')) return false
   return !anthropicUsesAdaptiveThinking(modelId)
+}
+
+/** Clamp product effort to Anthropic output_config.effort (no minimal). */
+export function normalizeEffortForAnthropic(effort?: ThinkingEffort): string {
+  if (!effort || effort === 'minimal') return 'low'
+  return effort
+}
+
+/** Map product effort → legacy Anthropic budget_tokens. */
+export function anthropicBudgetTokensForEffort(effort?: ThinkingEffort): number {
+  switch (effort) {
+    case 'minimal':
+    case 'low':
+      return 2_048
+    case 'high':
+      return 16_384
+    case 'xhigh':
+    case 'max':
+      return 32_768
+    case 'medium':
+    default:
+      return 8_192
+  }
+}
+
+/** DeepSeek reasoning_effort: low | high | max (+ none via thinking disabled). */
+export function normalizeEffortForDeepSeek(effort?: ThinkingEffort): string {
+  switch (effort) {
+    case 'minimal':
+    case 'low':
+      return 'low'
+    case 'xhigh':
+    case 'max':
+      return 'max'
+    case 'medium':
+    case 'high':
+    default:
+      return 'high'
+  }
+}
+
+/** Pick effort allowed by catalog; fall back to preferred then medium. */
+export function coerceEffortToAllowed(
+  effort: ThinkingEffort | undefined,
+  allowed: readonly ThinkingEffort[] | undefined,
+  fallback: ThinkingEffort = 'medium'
+): ThinkingEffort {
+  const preferred = effort ?? fallback
+  if (!allowed || allowed.length === 0) return preferred
+  if (allowed.includes(preferred)) return preferred
+  const order: ThinkingEffort[] = ['medium', 'high', 'low', 'minimal', 'xhigh', 'max']
+  for (const e of order) {
+    if (allowed.includes(e)) return e
+  }
+  return allowed[0]!
 }
 
 export function parseProviderReasoningState(value: unknown): ProviderReasoningState | undefined {
@@ -147,16 +206,23 @@ export function normalizeEffortForGeminiInteractions(effort?: ThinkingEffort): s
   }
 }
 
-/** Groq / xAI OpenAI-compat chat: none, low, medium, high (Groq also accepts default). */
+/** Groq / xAI OpenAI-compat chat effort normalization. */
 export function normalizeEffortForOpenAiCompatReasoning(
   effort: ThinkingEffort | undefined,
   providerId: 'groq' | 'xai'
 ): string {
   const e = effort ?? 'medium'
+  if (providerId === 'xai') {
+    if (e === 'minimal' || e === 'low') return 'low'
+    if (e === 'xhigh' || e === 'max') return 'high'
+    if (e === 'medium' || e === 'high') return e
+    return 'medium'
+  }
+  // Groq
   if (e === 'minimal') return 'none'
   if (e === 'xhigh' || e === 'max') return 'high'
   if (e === 'low' || e === 'medium' || e === 'high') return e
-  return providerId === 'groq' ? 'default' : 'medium'
+  return 'default'
 }
 
 /** Rough token estimate for opaque reasoning replay blobs. */

@@ -39,31 +39,35 @@ export function MemoryListBody({ tool, loading, loadFailed }: ToolBodyProps) {
   )
 }
 
-export function MemoryReadBody({ tool, loading, loadFailed }: ToolBodyProps) {
+export function MemoryReadBody({ tool, loading, loadFailed, inGroup }: ToolBodyProps) {
   const data = useMemo(() => parseMemoryReadData(tool), [tool])
 
   return (
     <div>
-      <div className="border-b border-border px-3 py-1 font-mono text-[10px] text-tertiary">
-        {data.path}
-      </div>
+      {!inGroup ? (
+        <div className="border-b border-border px-3 py-1 font-mono text-[10px] text-tertiary">
+          {data.path}
+        </div>
+      ) : null}
       {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
       <CodeBlock lines={data.lines} />
     </div>
   )
 }
 
-export function MemoryWriteBody({ tool }: ToolBodyProps) {
+export function MemoryWriteBody({ tool, inGroup }: ToolBodyProps) {
   const data = useMemo(() => parseMemoryWriteData(tool), [tool])
 
   return (
     <div>
-      <div className="flex items-baseline justify-between gap-2 border-b border-border px-3 py-1">
-        <span className="truncate font-mono text-[10px] text-tertiary">{data.path}</span>
-        <span className="shrink-0 text-[10px] tabular-nums text-tertiary">
-          {data.charCount} chars
-        </span>
-      </div>
+      {!inGroup ? (
+        <div className="flex items-baseline justify-between gap-2 border-b border-border px-3 py-1">
+          <span className="truncate font-mono text-[10px] text-tertiary">{data.path}</span>
+          <span className="shrink-0 text-[10px] tabular-nums text-tertiary">
+            {data.charCount} chars
+          </span>
+        </div>
+      ) : null}
       <CodeBlock lines={data.preview.split('\n')} />
     </div>
   )

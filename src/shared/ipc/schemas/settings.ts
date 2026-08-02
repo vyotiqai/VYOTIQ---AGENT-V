@@ -1,20 +1,33 @@
 import { z } from 'zod'
-import { ProviderIdSchema, ServiceTierSchema } from './providers'
+import {
+  ProviderIdSchema,
+  ServiceTierSchema,
+  ThinkingEffortSchema,
+  type ThinkingEffort
+} from './providers'
 import {
   DEFAULT_MARKETPLACE_SETTINGS,
   MarketplaceSettingsSchema,
   McpTransportSchema
 } from './marketplace'
 
-export const ThinkingEffortSchema = z.enum([
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max'
+export type { ThinkingEffort }
+
+export const ImageGenProviderIdSchema = z.enum([
+  'openai',
+  'gemini',
+  'xai',
+  'openrouter',
+  'custom'
 ])
-export type ThinkingEffort = z.infer<typeof ThinkingEffortSchema>
+export type ImageGenProviderId = z.infer<typeof ImageGenProviderIdSchema>
+
+/** `auto` picks OpenAI → Gemini → xAI → OpenRouter → custom (if enabled) by available key. */
+export const ImageProviderSettingSchema = z.union([
+  z.literal('auto'),
+  ImageGenProviderIdSchema
+])
+export type ImageProviderSetting = z.infer<typeof ImageProviderSettingSchema>
 
 export const ThemeIdSchema = z.enum(['system', 'light', 'dark'])
 export type ThemeId = z.infer<typeof ThemeIdSchema>
@@ -112,12 +125,13 @@ export const SettingsSchema = z.object({
   provider: ProviderIdSchema,
   model: z.string().min(1),
   ollamaBaseUrl: z.string().min(1),
+  /** OpenAI-compatible base URL for the `custom` provider (must end with `/v1`). */
+  customOpenAiBaseUrl: z.string().min(1).default('http://127.0.0.1:8080/v1'),
   theme: ThemeIdSchema,
   telemetryEnabled: z.boolean().default(false),
   mcpServers: z.array(McpServerSchema).default([]),
   compactionTriggerRatio: z.number().min(0.5).max(0.95).default(0.7),
   keepRecentTurns: z.number().int().min(4).max(50).default(12),
-  memoryAutoPromote: z.boolean().default(true),
   thinkingEnabled: z.boolean().default(true),
   thinkingEffort: ThinkingEffortSchema.default('medium'),
   showThinking: z.boolean().default(true),
@@ -134,10 +148,40 @@ export const SettingsSchema = z.object({
    * Empty = auto-detect from package.json scripts / tsc.
    */
   diagnosticsCommand: z.string().default(''),
+  /**
+   * When true, `/harness-review` may one-shot rewrite the proposed harness body via the LLM.
+   * Default off — rule-based notes-append only. Apply stays human-gated.
+   */
+  harnessProposalRewriter: z.boolean().default(false),
+  /**
+   * When true, the agent may call `switch_mode` mid-run as the task phase changes.
+   * When false, only the user changes mode (composer picker or slash). Default off.
+   */
+  autoModeSwitch: z.boolean().default(false),
   /** When set, sub-agents use this provider instead of `provider`. */
   subagentProvider: ProviderIdSchema.optional(),
   /** When set, sub-agents use this model instead of `model`. */
   subagentModel: z.string().min(1).optional(),
+  /**
+   * Default provider for the `generate_image` tool. `auto` = first available key
+   * (prefer matching chat provider when it is openai/gemini/xai).
+   */
+  imageProvider: ImageProviderSettingSchema.default('auto'),
+  /**
+   * Optional default image model for `generate_image`. Empty = provider default
+   * (gpt-image-2 / gemini-3.1-flash-image / grok-imagine-image-quality).
+   */
+  imageModel: z.string().default(''),
+  /**
+   * When true, image tools may use the Custom OpenAI-compatible base URL after a
+   * capability probe. Off by default — chat Completions ≠ Images API.
+   */
+  customImageEnabled: z.boolean().default(false),
+  /**
+   * GitHub App / OAuth App client ID for in-app device-flow Connect.
+   * Empty falls back to `VYOTIQ_GITHUB_CLIENT_ID` env.
+   */
+  githubClientId: z.string().default(''),
   marketplace: MarketplaceSettingsSchema.default(DEFAULT_MARKETPLACE_SETTINGS)
 })
 export type Settings = z.infer<typeof SettingsSchema>
@@ -146,12 +190,12 @@ export const DEFAULT_SETTINGS: Settings = {
   provider: 'ollama',
   model: 'qwen2.5',
   ollamaBaseUrl: 'http://127.0.0.1:11434',
+  customOpenAiBaseUrl: 'http://127.0.0.1:8080/v1',
   theme: 'system',
   telemetryEnabled: false,
   mcpServers: [],
   compactionTriggerRatio: 0.7,
   keepRecentTurns: 12,
-  memoryAutoPromote: true,
   thinkingEnabled: true,
   thinkingEffort: 'medium',
   showThinking: true,
@@ -163,6 +207,12 @@ export const DEFAULT_SETTINGS: Settings = {
   toolApproval: DEFAULT_TOOL_APPROVAL,
   terminalShell: 'auto',
   diagnosticsCommand: '',
+  harnessProposalRewriter: false,
+  autoModeSwitch: false,
+  imageProvider: 'auto',
+  imageModel: '',
+  customImageEnabled: false,
+  githubClientId: '',
   marketplace: DEFAULT_MARKETPLACE_SETTINGS
 }
 

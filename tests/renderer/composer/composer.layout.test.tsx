@@ -16,7 +16,6 @@ const chatSettings: EffectiveChatSettings = {
   model: 'qwen2.5',
   compactionTriggerRatio: DEFAULT_SETTINGS.compactionTriggerRatio,
   keepRecentTurns: DEFAULT_SETTINGS.keepRecentTurns,
-  memoryAutoPromote: DEFAULT_SETTINGS.memoryAutoPromote,
   thinkingEnabled: DEFAULT_SETTINGS.thinkingEnabled,
   thinkingEffort: DEFAULT_SETTINGS.thinkingEffort,
   showThinking: DEFAULT_SETTINGS.showThinking
@@ -63,14 +62,13 @@ describe('Composer layout', () => {
     expect(toolbarIdx).toBeGreaterThan(textareaIdx)
   })
 
-  it('keeps toolbar after textarea when multiline', () => {
+  it('keeps toolbar after message input when multiline', () => {
     render(<Composer {...composerProps} />)
 
     const shell = document.querySelector('[data-composer-shell]')
-    const textarea = screen.getByRole('textbox', { name: /^Message$/i }) as HTMLTextAreaElement
-    fireEvent.change(textarea, {
-      target: { value: 'line one\nline two\nline three\nline four\nline five' }
-    })
+    const textarea = screen.getByRole('textbox', { name: /^Message$/i })
+    textarea.textContent = 'line one\nline two\nline three\nline four\nline five'
+    fireEvent.input(textarea)
 
     const toolbar = shell?.querySelector('[data-composer-toolbar]')
     const children = Array.from(shell!.children).filter((el) => el.tagName !== 'INPUT')

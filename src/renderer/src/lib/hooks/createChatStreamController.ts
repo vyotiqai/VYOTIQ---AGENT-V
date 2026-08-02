@@ -2,11 +2,14 @@ import type {
   AgentEvent,
   AgentInteractionMode,
   AttachedFile,
+  ComposerSendExtras,
   ChatMessage,
   IncompleteReason,
   PersistedEvent,
   ToolApprovalDecision,
-  ToolApprovalRequest
+  ToolApprovalRequest,
+  AgentQuestionAnswer,
+  AgentQuestionRequest
 } from '@shared/ipc'
 import {
   emptyStepUsageTotals,
@@ -36,6 +39,7 @@ import {
   stripToolShapedAssistantTextForStream,
   uiAttachments,
   MAX_SUBAGENT_PROGRESS_ENTRIES,
+  reduceNestedAgentEvent,
   type UiItem,
   type UiToolRow
 } from '@shared/transcript'
@@ -47,6 +51,12 @@ import {
   subagentContextUsageFromEvent,
   summarizeContextUsageFromEvents
 } from '@shared/utils/contextUsage'
+import {
+  compactionTriggerFromRaw,
+  DEFAULT_COMPACTION_TRIGGER_RATIO,
+  allocateBudgetShares
+} from '@shared/domain/contextBudget'
+import { recordUiResume, recordUiSuspendSkip } from './chatUiPerf'
 
 /** A sub-agent's progress is a live view, not a log; keep the recent tail. */
 const CANCEL_RECOVERY_POLL_MS = 500
@@ -57,14 +67,16 @@ function withPresentationLock(tool: UiToolRow, name: string, argsPreview?: strin
   // OpenAI often sends nameless first deltas; locking on placeholder "tool" would
   // permanently demote terminal/edit/etc. to compact.
   if (!resolvedName) return tool
+  const preview = argsPreview ?? tool.argsPreview
+  const summary = tool.summary
   if (tool.presentation && tool.name && tool.name !== 'tool') {
-    // Recompute terminal when args arrive so read-only commands can demote.
+    // Recompute terminal when args/summary arrive so read-only commands can demote.
     if (resolvedName === 'terminal') {
-      return { ...tool, presentation: toolPresentation(resolvedName, argsPreview) }
+      return { ...tool, presentation: toolPresentation(resolvedName, preview, summary) }
     }
     return tool
   }
-  return { ...tool, presentation: toolPresentation(resolvedName, argsPreview) }
+  return { ...tool, presentation: toolPresentation(resolvedName, preview, summary) }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -169,18 +181,32 @@ function insertBeforeTrailingTools(items: UiItem[], next: UiItem | UiItem[]): Ui
   return [...closeOpenGroupTimings(items), ...batch]
 }
 
+/**
+ * Where to splice a new tool row into the transcript.
+ * Prefer the stretch after the latest user message when that user sits after the
+ * last assistant (follow-up / continue) — otherwise tools land before the bubble
+ * and inherit the previous turnIndex.
+ */
 function toolInsertIndex(items: UiItem[]): number {
+  let lastUser = -1
   let lastAssistant = -1
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
-    if (item.kind === 'message' && item.role === 'assistant') {
-      lastAssistant = i
-      break
-    }
+    if (item.kind !== 'message') continue
+    if (lastUser < 0 && item.role === 'user') lastUser = i
+    if (lastAssistant < 0 && item.role === 'assistant') lastAssistant = i
+    if (lastUser >= 0 && lastAssistant >= 0) break
   }
+
+  if (lastUser > lastAssistant) {
+    let insertAt = lastUser + 1
+    while (insertAt < items.length && items[insertAt]?.kind === 'tool') insertAt++
+    return insertAt
+  }
+
   if (lastAssistant < 0) return items.length
   let insertAt = lastAssistant + 1
-  while (insertAt < items.length && items[insertAt].kind === 'tool') insertAt++
+  while (insertAt < items.length && items[insertAt]?.kind === 'tool') insertAt++
   return insertAt
 }
 
@@ -280,12 +306,10 @@ function pruneOrphanDeltaToolRows(
       return false
     }
 
-    // Real id from a delta that the final assistant_message dropped.
-    if (toolCalls && toolCalls.length > 0) {
-      changed = true
-      return false
-    }
-    return true
+    // Real id from a delta that the final assistant_message dropped (including
+    // text-only steps where toolCalls is empty/absent).
+    changed = true
+    return false
   })
   return changed ? next : items
 }
@@ -300,6 +324,27 @@ function closeTrailingGroupIfIdle(items: UiItem[], endedAt = Date.now()): UiItem
     if (item.tool.status === 'running') return items
   }
   return closeOpenGroupTimings(items, endedAt)
+}
+
+/** Force-fail any tool still marked running (terminal status / interrupted turn). */
+function failRunningTools(
+  items: UiItem[],
+  reason: 'Cancelled' | 'Interrupted' | 'Stopped'
+): UiItem[] {
+  let changed = false
+  const next = items.map((item) => {
+    if (item.kind !== 'tool' || item.tool.status !== 'running') return item
+    changed = true
+    return {
+      ...item,
+      tool: {
+        ...item.tool,
+        status: 'fail' as const,
+        content: item.tool.content ?? reason
+      }
+    }
+  })
+  return changed ? next : items
 }
 
 function isPendingToolId(id: string): boolean {
@@ -376,15 +421,79 @@ function replaceAt(items: UiItem[], index: number, next: UiItem): UiItem[] {
   return copy
 }
 
+/** Drop pending question prompts, either one answered or all of them. */
+function clearQuestions(items: UiItem[], requestId?: string): UiItem[] {
+  return items.filter((item) => {
+    if (item.kind !== 'question') return true
+    if (requestId && item.question.requestId !== requestId) return true
+    return false
+  })
+}
+
+/**
+ * `messagesToUiItems` rebuilds chrome without timestamps. After edit/resend,
+ * copy `at` / `groupTiming` from the prior UI so earlier turns keep "Worked for…".
+ */
+function carryTimingFromPriorItems(nextItems: UiItem[], priorItems: UiItem[]): UiItem[] {
+  if (priorItems.length === 0) return nextItems
+  const priorById = new Map(priorItems.map((item) => [item.id, item]))
+  let changed = false
+  const out = nextItems.map((item) => {
+    const prior = priorById.get(item.id)
+    if (!prior || prior.kind !== item.kind) return item
+    if (item.kind === 'message' && prior.kind === 'message') {
+      if (item.at || !prior.at) return item
+      changed = true
+      return { ...item, at: prior.at }
+    }
+    if (item.kind === 'tool' && prior.kind === 'tool') {
+      const at = item.at ?? prior.at
+      const groupTiming = item.groupTiming ?? prior.groupTiming
+      if (at === item.at && groupTiming === item.groupTiming) return item
+      changed = true
+      return {
+        ...item,
+        ...(at ? { at } : {}),
+        ...(groupTiming ? { groupTiming } : {})
+      }
+    }
+    return item
+  })
+  return changed ? out : nextItems
+}
+
+/** Drop question panels gated on a settled ask_question tool call. */
+function clearQuestionsForTool(items: UiItem[], toolCallId: string): UiItem[] {
+  return items.filter(
+    (item) => !(item.kind === 'question' && item.question.toolCallId === toolCallId)
+  )
+}
+
 /** Drop pending approval prompts, either one answered or all of them. */
 function clearApprovals(items: UiItem[], requestId?: string): UiItem[] {
   let changed = false
   const next = items.map((item) => {
-    if (item.kind !== 'tool' || !item.approval) return item
-    if (requestId && item.approval.requestId !== requestId) return item
-    changed = true
-    const { approval: _approval, ...rest } = item
-    return rest
+    if (item.kind !== 'tool') return item
+    let nextItem = item
+    if (item.approval && (!requestId || item.approval.requestId === requestId)) {
+      changed = true
+      const { approval: _approval, ...rest } = item
+      nextItem = rest
+    }
+    if (nextItem.kind === 'tool' && nextItem.nestedAgent?.leaves.some((l) => l.kind === 'tool' && l.approval)) {
+      const leaves = nextItem.nestedAgent.leaves.map((leaf) => {
+        if (leaf.kind !== 'tool' || !leaf.approval) return leaf
+        if (requestId && leaf.approval.requestId !== requestId) return leaf
+        changed = true
+        const { approval: _a, ...rest } = leaf
+        return rest
+      })
+      nextItem = {
+        ...nextItem,
+        nestedAgent: { ...nextItem.nestedAgent, leaves }
+      }
+    }
+    return nextItem
   })
   return changed ? next : items
 }
@@ -444,13 +553,23 @@ function findToolResultRowIndex(
   return -1
 }
 
-function errorFromPersisted(events: PersistedEvent[]): string | null {
+function errorMessageFromPersisted(events: PersistedEvent[]): string | null {
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i]?.event
     if (!isAgentEvent(event)) continue
     if (event.type === 'error') return event.message
   }
   return null
+}
+
+function errorFromPersisted(
+  events: PersistedEvent[],
+  dismissedErrorMessage: string | null = null
+): string | null {
+  const message = errorMessageFromPersisted(events)
+  if (!message) return null
+  if (dismissedErrorMessage && dismissedErrorMessage === message) return null
+  return message
 }
 
 /** A turn that ended before the work was finished, offering a Continue affordance. */
@@ -506,7 +625,20 @@ function writeCheckpointFromPersisted(events: PersistedEvent[]): WriteCheckpoint
   return null
 }
 
-function hydrateFromDisk(kept: ChatMessage[], events: PersistedEvent[]) {
+function modeFromPersisted(events: PersistedEvent[]): AgentInteractionMode | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]?.event
+    if (!isAgentEvent(event)) continue
+    if (event.type === 'mode_changed') return event.mode
+  }
+  return null
+}
+
+function hydrateFromDisk(
+  kept: ChatMessage[],
+  events: PersistedEvent[],
+  dismissedErrorMessage: string | null = null
+) {
   const items = applyEventTimestamps(
     applyPersistedLiveTools(messagesToUiItems(kept), events),
     events
@@ -516,18 +648,24 @@ function hydrateFromDisk(kept: ChatMessage[], events: PersistedEvent[]) {
       ...item,
       tool: {
         ...item.tool,
-        presentation: toolPresentation(item.tool.name, item.tool.argsPreview)
+        presentation: toolPresentation(item.tool.name, item.tool.argsPreview, item.tool.summary)
       }
     }
   })
   return {
     messages: kept,
-    error: errorFromPersisted(events),
+    error: errorFromPersisted(events, dismissedErrorMessage),
     incomplete: incompleteFromPersisted(events),
     contextUsage: summarizeContextUsageFromEvents(events),
     items: finalizeHydratedTranscript(items, events),
     writeCheckpoint: writeCheckpointFromPersisted(events)
   }
+}
+
+export type PendingFollowUpState = {
+  id: string
+  itemId: string
+  preview: string
 }
 
 export type ChatStreamState = {
@@ -548,11 +686,28 @@ export type ChatStreamState = {
   collapsedTurnIndices: number[]
   /** Latest turn write checkpoint for Undo on the Files Changed card. */
   writeCheckpoint: WriteCheckpointState | null
+  /** Mid-run follow-ups waiting to be injected into the live agent loop. */
+  pendingFollowUps: PendingFollowUpState[]
 }
 
 export type ChatStreamController = ChatStreamState & {
   workspacePath: string
-  send: (text: string, images?: string[], files?: AttachedFile[]) => Promise<boolean>
+  send: (
+    text: string,
+    images?: string[],
+    files?: AttachedFile[],
+    extras?: ComposerSendExtras
+  ) => Promise<boolean>
+  /** Replace a past user message, restore write checkpoints, truncate later turns, re-run. */
+  editAndResend: (
+    editMessageIndex: number,
+    text: string,
+    images?: string[],
+    files?: AttachedFile[],
+    extras?: ComposerSendExtras
+  ) => Promise<boolean>
+  /** Drop a still-queued mid-run follow-up before the loop applies it. */
+  removeFollowUp: (id: string) => Promise<boolean>
   stop: () => Promise<void>
   reset: () => void
   loadTranscript: (loaded: ChatMessage[], events?: PersistedEvent[]) => void
@@ -573,6 +728,8 @@ export type ChatStreamController = ChatStreamState & {
   /** Park a gated tool call on its transcript row until the reader answers. */
   handleApprovalRequest: (request: ToolApprovalRequest) => void
   respondToApproval: (requestId: string, decision: ToolApprovalDecision) => Promise<void>
+  handleQuestionRequest: (request: AgentQuestionRequest) => void
+  respondToQuestion: (requestId: string, answers: AgentQuestionAnswer[]) => Promise<void>
   /** Reload transcript from disk when a run finished but IPC was missed. */
   syncFromDisk: (runId: string) => Promise<boolean>
   /** Update meter + notice after a manual Compact now. */
@@ -592,6 +749,14 @@ export type ChatStreamController = ChatStreamState & {
     fullyResolved: boolean
   }) => void
   handleEvent: (event: AgentEvent) => void
+  /**
+   * When true, high-frequency stream events are ignored (agent still runs in main).
+   * Call `resumeUiIfNeeded` when the run becomes visible again.
+   */
+  setUiSuspended: (suspended: boolean) => void
+  /** Clear suspend and rehydrate transcript from disk if stream events were skipped. */
+  resumeUiIfNeeded: () => Promise<void>
+  readonly uiSuspended: boolean
   subscribe: (listener: () => void) => () => void
   subscribeItems: (listener: () => void) => () => void
   subscribeMeta: (listener: () => void) => () => void
@@ -605,6 +770,14 @@ export type ChatStreamController = ChatStreamState & {
   dispose: () => void
 }
 
+/** Events still applied while UI is suspended (approvals/questions use separate handlers). */
+const UI_SUSPEND_ALLOWED_EVENTS = new Set<AgentEvent['type']>([
+  'status',
+  'error',
+  'incomplete',
+  'mode_changed'
+])
+
 export type CreateChatStreamControllerOptions = {
   workspacePath: string
   runId?: string | null
@@ -612,12 +785,14 @@ export type CreateChatStreamControllerOptions = {
   onTerminal?: () => void
   /** Current Ask / Plan / Agent mode for chatStart. */
   getAgentMode?: () => AgentInteractionMode
+  /** Sync composer mode when the agent calls switch_mode. */
+  onAgentModeChange?: (mode: AgentInteractionMode) => void
 }
 
 export function createChatStreamController(
   options: CreateChatStreamControllerOptions
 ): ChatStreamController {
-  const { workspacePath, onRunIdAssigned, onTerminal, getAgentMode } = options
+  const { workspacePath, onRunIdAssigned, onTerminal, getAgentMode, onAgentModeChange } = options
   const listeners = new Set<() => void>()
   const itemsListeners = new Set<() => void>()
   const metaListeners = new Set<() => void>()
@@ -633,6 +808,12 @@ export function createChatStreamController(
   let awaitingRun = false
   let pendingCancel = false
   let ignoreStreamEvents = false
+  /** Skip transcript-mutating stream events while the run is not UI-visible. */
+  let uiSuspended = false
+  /** True after stream events were dropped while suspended — needs disk catch-up. */
+  let needsUiCatchUp = false
+  /** Bumped on suspend / new resume so in-flight catch-up cannot unsuspend stale work. */
+  let uiResumeGeneration = 0
   // A run is reused across turns, so runId alone cannot separate the live turn from a
   // prior one still draining. Events carry the invoke that produced them.
   let activeInvokeId: number | null = null
@@ -645,6 +826,8 @@ export function createChatStreamController(
   let completedTurnSeq = 0
   let runningTurnSeq = 0
   let lastRunErrorMessage: string | null = null
+  /** Persisted error message dismissed by the reader; hydrate skips restoring it. */
+  let dismissedErrorMessage: string | null = null
   let usageTotals: StepUsageTotals = emptyStepUsageTotals()
   let streamPatchRaf: number | null = null
   let pendingTextDelta = ''
@@ -882,7 +1065,8 @@ export function createChatStreamController(
     pendingRun: false,
     transcriptLoading: false,
     collapsedTurnIndices: [],
-    writeCheckpoint: null
+    writeCheckpoint: null,
+    pendingFollowUps: []
   }
 
   const notify = (): void => {
@@ -941,6 +1125,8 @@ export function createChatStreamController(
     runId = null
     contentRunId = null
     ignoreStreamEvents = false
+    dismissedErrorMessage = null
+    lastRunErrorMessage = null
     if (activeInvokeId != null) supersededInvokeIds.add(activeInvokeId)
     activeInvokeId = null
     usageTotals = emptyStepUsageTotals()
@@ -958,7 +1144,8 @@ export function createChatStreamController(
       runStartedAt: null,
       pendingRun: false,
       collapsedTurnIndices: [],
-      writeCheckpoint: null
+      writeCheckpoint: null,
+      pendingFollowUps: []
     })
   }
 
@@ -978,6 +1165,129 @@ export function createChatStreamController(
     return activeInvokeId != null && event.invokeId !== activeInvokeId
   }
 
+  const discardPendingStreamPatches = (): void => {
+    pendingTextDelta = ''
+    pendingThinkingDelta = ''
+    pendingToolCallDeltas = []
+    if (streamPatchRaf != null) {
+      cancelAnimationFrame(streamPatchRaf)
+      streamPatchRaf = null
+    }
+  }
+
+  const setUiSuspended = (suspended: boolean): void => {
+    if (disposed) return
+    if (suspended === uiSuspended) return
+    if (suspended) {
+      discardPendingStreamPatches()
+      uiSuspended = true
+      // Invalidate any in-flight resume so catch-up cannot clear a later suspend.
+      uiResumeGeneration += 1
+      // needsUiCatchUp is set only when stream events are skipped while suspended.
+    } else {
+      uiSuspended = false
+    }
+  }
+
+  /** Force-reload transcript while preserving live running state (after UI suspend). */
+  const catchUpUiFromDisk = async (id: string): Promise<boolean> => {
+    if (closedRuns.has(id) || disposed) return false
+    let liveInvokeId: number | null = null
+    let stillActive = false
+    let pendingFromMain: { id: string; preview: string }[] = []
+    if (window.vyotiq?.listActiveRuns) {
+      const active = await window.vyotiq.listActiveRuns()
+      if (closedRuns.has(id) || disposed) return false
+      if (active.ok) {
+        const live = active.data.find((entry) => entry.runId === id)
+        stillActive = Boolean(live)
+        liveInvokeId = live?.invokeId ?? null
+        pendingFromMain = live?.pendingFollowUps ?? []
+      }
+    } else {
+      stillActive = state.running || state.pendingRun
+    }
+    if (!window.vyotiq?.loadRun) return false
+    const res = await window.vyotiq.loadRun(workspacePath, id)
+    if (closedRuns.has(id) || disposed) return false
+    if (!res.ok) {
+      logger.warn('catchUpUiFromDisk loadRun failed', {
+        scope: 'chat',
+        correlationId: id,
+        err: toLogErr(res.error)
+      })
+      return false
+    }
+    let events: PersistedEvent[] = []
+    let eventsLoadError: string | null = null
+    if (window.vyotiq.loadRunEvents) {
+      const eventsRes = await window.vyotiq.loadRunEvents(workspacePath, id)
+      if (closedRuns.has(id) || disposed) return false
+      if (eventsRes.ok) events = eventsRes.data
+      else eventsLoadError = eventsRes.error
+    }
+    const kept = messagesForNextTurn(res.data.messages)
+    assistantId = null
+    reasoningId = null
+    runId = id
+    contentRunId = id
+    if (liveInvokeId != null) activeInvokeId = liveInvokeId
+    const mode = modeFromPersisted(events)
+    if (mode) onAgentModeChange?.(mode)
+    const hydratedPending: PendingFollowUpState[] =
+      pendingFromMain.length > 0
+        ? pendingFromMain.map((entry) => {
+            const local = state.pendingFollowUps.find((p) => p.id === entry.id)
+            return {
+              id: entry.id,
+              itemId: local?.itemId ?? `followup-${entry.id}`,
+              preview: local?.preview ?? entry.preview
+            }
+          })
+        : state.pendingFollowUps
+    patch({
+      ...hydrateFromDisk(kept, events, dismissedErrorMessage),
+      pendingFollowUps: hydratedPending,
+      runId: id,
+      pendingRun: false,
+      running: stillActive,
+      runStartedAt: stillActive ? state.runStartedAt ?? Date.now() : null,
+      ...(eventsLoadError ? { error: eventsLoadError } : {})
+    })
+    if (!stillActive) onTerminal?.()
+    return true
+  }
+
+  const resumeUiIfNeeded = async (): Promise<void> => {
+    if (disposed) return
+    const hadCatchUp = needsUiCatchUp
+    if (!hadCatchUp) {
+      setUiSuspended(false)
+      recordUiResume(false)
+      return
+    }
+    // Stay suspended until disk catch-up finishes so live events cannot apply
+    // and then be clobbered by a stale hydrateFromDisk patch. One pass only:
+    // a live stream during await would otherwise loop forever.
+    const gen = ++uiResumeGeneration
+    recordUiResume(true)
+    needsUiCatchUp = false
+    const id = runId ?? contentRunId
+    const ok = id ? await catchUpUiFromDisk(id) : true
+    if (disposed || gen !== uiResumeGeneration) return
+    if (!ok) {
+      // Stay catch-up pending, but re-enable live events so the transcript is
+      // not frozen forever if disk sync failed. A later resumeUiIfNeeded retries.
+      needsUiCatchUp = true
+      setUiSuspended(false)
+      return
+    }
+    // Deltas skipped during catch-up are not on this disk snapshot; clear the
+    // flag so we unsuspend and continue from the live stream afterward.
+    needsUiCatchUp = false
+    setUiSuspended(false)
+  }
+
   const handleEvent = (event: AgentEvent): void => {
     if (disposed) return
     if (closedRuns.has(event.runId)) return
@@ -992,6 +1302,12 @@ export function createChatStreamController(
     }
 
     if (ignoreStreamEvents) return
+
+    if (uiSuspended && !UI_SUSPEND_ALLOWED_EVENTS.has(event.type)) {
+      needsUiCatchUp = true
+      recordUiSuspendSkip()
+      return
+    }
 
     if (
       event.type !== 'text_delta' &&
@@ -1201,31 +1517,58 @@ export function createChatStreamController(
             event.toolCallId
           )
         )
-      } else if (
-        !items.some(
-          (item) =>
-            item.kind === 'tool' &&
-            item.tool.status === 'running' &&
-            item.tool.name === event.name
-        )
-      ) {
-        // No live same-name row to complete — create one (hydrate / late result).
-        nextItems = appendTool(
-          items,
-          {
-            kind: 'tool' as const,
-            id: event.toolCallId,
-            tool: {
+      } else if (existingIdx < 0) {
+        // findToolResultRowIndex should have matched any same-name running row
+        // (summary, then FIFO). If it still missed, complete the oldest same-name
+        // runner instead of appending a second row that leaves the original spinning.
+        const runningSame = runningToolIndices(items).filter((idx) => {
+          const item = items[idx]
+          return item.kind === 'tool' && item.tool.name === event.name
+        })
+        if (runningSame.length > 0) {
+          const idx = runningSame[0]!
+          const row = items[idx]
+          if (row?.kind === 'tool') {
+            nextItems = replaceAt(
+              items,
+              idx,
+              withCanonicalToolId(
+                {
+                  ...row,
+                  approval: undefined,
+                  toolExpanded: row.toolExpanded === false ? false : undefined,
+                  tool: {
+                    ...row.tool,
+                    name: event.name,
+                    summary: event.summary,
+                    status: event.ok ? 'done' : 'fail',
+                    content: event.content ?? row.tool.content,
+                    contentTruncated: event.contentTruncated ?? row.tool.contentTruncated
+                  }
+                },
+                event.toolCallId
+              )
+            )
+          }
+        } else {
+          // No live same-name row to complete — create one (hydrate / late result).
+          nextItems = appendTool(
+            items,
+            {
+              kind: 'tool' as const,
               id: event.toolCallId,
-              name: event.name,
-              summary: event.summary,
-              status: event.ok ? 'done' : 'fail',
-              content: event.content,
-              contentTruncated: event.contentTruncated
-            }
-          },
-          state.runStartedAt
-        )
+              tool: {
+                id: event.toolCallId,
+                name: event.name,
+                summary: event.summary,
+                status: event.ok ? 'done' : 'fail',
+                content: event.content,
+                contentTruncated: event.contentTruncated
+              }
+            },
+            state.runStartedAt
+          )
+        }
       }
       const nextMessages = appendToolResult(
         state.messages,
@@ -1234,8 +1577,14 @@ export function createChatStreamController(
         event.content ?? event.summary,
         event.ok
       )
+      // ask_question UI is a separate item; clear it when the tool settles
+      // (answer, interrupt, timeout) so a stale panel cannot outlive the wait.
+      const itemsForPatch =
+        event.name === 'ask_question'
+          ? clearQuestionsForTool(nextItems, event.toolCallId)
+          : nextItems
       patch({
-        items: closeTrailingGroupIfIdle(nextItems),
+        items: closeTrailingGroupIfIdle(itemsForPatch),
         messages: nextMessages
       })
     } else if (event.type === 'terminal_output_delta') {
@@ -1295,8 +1644,28 @@ export function createChatStreamController(
           subagentContextUsage: usage
         })
       })
+    } else if (event.type === 'subagent_event') {
+      const idx = findToolRowIndex(state.items, event.parentToolCallId)
+      const item = idx >= 0 ? state.items[idx] : undefined
+      if (!item || item.kind !== 'tool') return
+      const nested = event.event as AgentEvent
+      patch({
+        items: replaceAt(state.items, idx, {
+          ...item,
+          nestedAgent: reduceNestedAgentEvent(item.nestedAgent, event.subagentId, nested),
+          toolExpanded:
+            item.toolExpanded === false
+              ? false
+              : item.tool.status === 'running'
+                ? true
+                : item.toolExpanded
+        })
+      })
+    } else if (event.type === 'mode_changed') {
+      onAgentModeChange?.(event.mode)
     } else if (event.type === 'error') {
       lastRunErrorMessage = event.message
+      dismissedErrorMessage = null
       logger.warn('Agent run error', {
         scope: 'chat',
         correlationId: event.runId,
@@ -1330,6 +1699,8 @@ export function createChatStreamController(
               }
             : item
         )
+      // Keep pending question cards — provider retry must not strand the run
+      // without a way to answer (approvals already survive via the filter above).
       patch({ items: nextItems })
     } else if (event.type === 'incomplete') {
       patch({
@@ -1355,6 +1726,43 @@ export function createChatStreamController(
           files
         }
       })
+    } else if (event.type === 'follow_up_queued') {
+      // Local send already tracked the entry; ignore duplicates from IPC echo.
+      if (state.pendingFollowUps.some((entry) => entry.id === event.id)) return
+      patch({
+        pendingFollowUps: [
+          ...state.pendingFollowUps,
+          {
+            id: event.id,
+            itemId: `followup-${event.id}`,
+            preview: event.preview?.trim() || `Follow-up #${event.position}`
+          }
+        ]
+      })
+    } else if (event.type === 'follow_up_applied') {
+      const applied = new Set(event.ids)
+      const nextPending = state.pendingFollowUps.filter((entry) => !applied.has(entry.id))
+      // Idempotent merge — optimistic send already appended; reattach/echo paths may not.
+      let nextMessages = state.messages
+      if (event.messages?.length) {
+        const existingTail = state.messages.slice(-event.messages.length)
+        const alreadyPresent =
+          existingTail.length === event.messages.length &&
+          existingTail.every((msg, i) => {
+            const incoming = event.messages[i]
+            return (
+              msg.role === incoming?.role &&
+              contentDisplayText(msg.content) === contentDisplayText(incoming.content)
+            )
+          })
+        if (!alreadyPresent) {
+          nextMessages = messagesForNextTurn([...state.messages, ...event.messages])
+        }
+      }
+      patch({
+        pendingFollowUps: nextPending,
+        ...(nextMessages !== state.messages ? { messages: nextMessages } : {})
+      })
     } else if (event.type === 'step_usage') {
       const usage = stepUsageFromEvent(event)
       if (usage) {
@@ -1370,7 +1778,7 @@ export function createChatStreamController(
         }
       }
     } else if (event.type === 'context_usage') {
-      const ctx = contextUsageFromEvent(event, usageTotals)
+      const ctx = contextUsageFromEvent(event, usageTotals, state.contextUsage?.layers)
       if (ctx) patch({ contextUsage: ctx })
     } else if (event.type === 'status') {
       if (event.status === 'running') {
@@ -1408,11 +1816,19 @@ export function createChatStreamController(
         completedTurnSeq = turnSeq
         const sessionRunId = runId ?? event.runId
         runId = sessionRunId
+        const dropUnapplied = true
+        const unappliedItemIds = dropUnapplied
+          ? new Set(state.pendingFollowUps.map((entry) => entry.itemId))
+          : null
+        if (event.status === 'error' && !state.error) {
+          dismissedErrorMessage = null
+        }
         patch({
           pendingRun: false,
           running: false,
           runId: sessionRunId,
           runStartedAt: null,
+          pendingFollowUps: [],
           // Keep compaction notice readable after the run ends; cleared on next send.
           runNotice:
             state.runNotice?.startsWith('Context summarized') === true ? state.runNotice : null,
@@ -1420,25 +1836,24 @@ export function createChatStreamController(
           ...(event.status === 'error' && !state.error
             ? { error: lastRunErrorMessage ?? 'Run failed' }
             : {}),
-          items: clearApprovals(closeOpenGroupTimings(state.items)).map((item) => {
-            if (item.kind === 'message' && (item.streaming || item.thinkingStreaming)) {
-              return { ...item, streaming: false, thinkingStreaming: false }
-            }
-            if (item.kind === 'tool' && item.tool.status === 'running') {
-              const interrupted =
+          items: clearQuestions(
+            clearApprovals(
+              failRunningTools(
+                closeOpenGroupTimings(
+                  unappliedItemIds && unappliedItemIds.size > 0
+                    ? state.items.filter((item) => !unappliedItemIds.has(item.id))
+                    : state.items
+                ),
                 event.status === 'cancelled'
                   ? 'Cancelled'
                   : event.status === 'error'
                     ? 'Interrupted'
                     : 'Stopped'
-              return {
-                ...item,
-                tool: {
-                  ...item.tool,
-                  status: 'fail' as const,
-                  content: item.tool.content ?? interrupted
-                }
-              }
+              )
+            )
+          ).map((item) => {
+            if (item.kind === 'message' && (item.streaming || item.thinkingStreaming)) {
+              return { ...item, streaming: false, thinkingStreaming: false }
             }
             return item
           })
@@ -1451,11 +1866,16 @@ export function createChatStreamController(
   const send = async (
     text: string,
     images?: string[],
-    files?: AttachedFile[]
+    files?: AttachedFile[],
+    extras?: ComposerSendExtras
   ): Promise<boolean> => {
     const trimmed = text.trim()
-    if ((!trimmed && !images?.length && !files?.length) || state.running || state.transcriptLoading)
+    const hasExtras = Boolean(extras?.audio?.length || extras?.nativeFiles?.length)
+    if ((!trimmed && !images?.length && !files?.length && !hasExtras) || state.transcriptLoading)
       return false
+    if (state.running) {
+      return followUp(text, images, files, extras)
+    }
     if (!workspacePath) {
       patch({ error: 'Pick a workspace before starting a chat.' })
       return false
@@ -1472,7 +1892,7 @@ export function createChatStreamController(
     if (activeInvokeId != null) supersededInvokeIds.add(activeInvokeId)
     activeInvokeId = null
     turnSeq += 1
-    const content = buildUserContent(text, images, files)
+    const content = buildUserContent(text, images, files, extras)
     const user: ChatMessage = { role: 'user', content }
     const priorMessages = state.messages
     const nextMessages = messagesForNextTurn([...priorMessages, user])
@@ -1546,7 +1966,15 @@ export function createChatStreamController(
       supersededInvokeIds.add(res.data.invokeId)
       closeRun(res.data.runId)
       runId = null
-      patch({ pendingRun: false, running: false, runStartedAt: null, runId: null })
+      // Clear the pre-run "Stopping…" notice — chatCancel does not emit a
+      // terminal status for a run that never started streaming.
+      patch({
+        pendingRun: false,
+        running: false,
+        runStartedAt: null,
+        runId: null,
+        runNotice: null
+      })
       const cancelRes = await window.vyotiq.chatCancel(res.data.runId)
       if (!cancelRes.ok) {
         logger.warn('chatCancel failed after pending stop', {
@@ -1566,6 +1994,353 @@ export function createChatStreamController(
     return true
   }
 
+  const editAndResend = async (
+    editMessageIndex: number,
+    text: string,
+    images?: string[],
+    files?: AttachedFile[],
+    extras?: ComposerSendExtras
+  ): Promise<boolean> => {
+    const trimmed = text.trim()
+    const hasExtras = Boolean(extras?.audio?.length || extras?.nativeFiles?.length)
+    if ((!trimmed && !images?.length && !files?.length && !hasExtras) || state.transcriptLoading) {
+      return false
+    }
+    if (!workspacePath) {
+      patch({ error: 'Pick a workspace before editing a prompt.' })
+      return false
+    }
+    const id = runId ?? contentRunId
+    if (!id) {
+      patch({ error: 'No run to edit. Send a message first.' })
+      return false
+    }
+    if (
+      editMessageIndex < 0 ||
+      editMessageIndex >= state.messages.length ||
+      state.messages[editMessageIndex]?.role !== 'user'
+    ) {
+      patch({ error: 'Cannot edit that message.' })
+      return false
+    }
+
+    const content = buildUserContent(text, images, files, extras)
+    const user: ChatMessage = { role: 'user', content }
+    const priorMessages = state.messages
+    const priorItems = state.items
+    const priorFollowUps = state.pendingFollowUps
+    const priorIncomplete = state.incomplete
+    const priorWriteCheckpoint = state.writeCheckpoint
+    const priorCollapsed = state.collapsedTurnIndices
+    const nextMessages = messagesForNextTurn([...priorMessages.slice(0, editMessageIndex), user])
+    const sentAt = new Date().toISOString()
+    const editedUserId = messageUiId('user', editMessageIndex)
+    const nextItems = carryTimingFromPriorItems(
+      messagesToUiItems(nextMessages),
+      priorItems
+    ).map((item) => {
+      if (item.kind === 'message' && item.role === 'user' && item.id === editedUserId) {
+        return { ...item, at: sentAt }
+      }
+      return item
+    })
+
+    patch({
+      error: null,
+      runNotice: null,
+      incomplete: null,
+      writeCheckpoint: null,
+      pendingFollowUps: [],
+      collapsedTurnIndices: priorCollapsed.filter((i) => i <= editMessageIndex),
+      messages: nextMessages,
+      items: nextItems
+    })
+
+    lastRunErrorMessage = null
+    usageTotals = emptyStepUsageTotals()
+    pendingCancel = false
+    ignoreStreamEvents = false
+    if (activeInvokeId != null) supersededInvokeIds.add(activeInvokeId)
+    activeInvokeId = null
+    turnSeq += 1
+    assistantId = null
+    reasoningId = null
+    toolContentCache.clear()
+
+    awaitingRun = true
+    patch({
+      pendingRun: true,
+      running: true,
+      runStartedAt: Date.now(),
+      runId: id
+    })
+
+    const mode = getAgentMode?.() ?? 'agent'
+    const res = await window.vyotiq.chatRewindAndStart({
+      workspacePath,
+      runId: id,
+      editMessageIndex,
+      editedUserMessage: user,
+      mode
+    })
+
+    if (!res.ok) {
+      awaitingRun = false
+      logger.error('chatRewindAndStart failed', {
+        scope: 'chat',
+        correlationId: id,
+        err: toLogErr(res.error)
+      })
+      patch({
+        error: res.error,
+        running: false,
+        runStartedAt: null,
+        pendingRun: false,
+        messages: priorMessages,
+        items: priorItems,
+        pendingFollowUps: priorFollowUps,
+        incomplete: priorIncomplete,
+        writeCheckpoint: priorWriteCheckpoint,
+        collapsedTurnIndices: priorCollapsed
+      })
+      return false
+    }
+
+    if (pendingCancel) {
+      pendingCancel = false
+      awaitingRun = false
+      supersededInvokeIds.add(res.data.invokeId)
+      closeRun(res.data.runId)
+      runId = null
+      patch({
+        pendingRun: false,
+        running: false,
+        runStartedAt: null,
+        runId: null,
+        runNotice: null
+      })
+      const cancelRes = await window.vyotiq.chatCancel(res.data.runId)
+      if (!cancelRes.ok) {
+        logger.warn('chatCancel failed after pending stop (rewind)', {
+          scope: 'chat',
+          correlationId: res.data.runId,
+          err: cancelRes.error
+        })
+      }
+      return true
+    }
+
+    if (!closedRuns.has(res.data.runId)) {
+      assignRunId(res.data.runId)
+    }
+    activeInvokeId = res.data.invokeId
+    supersededInvokeIds.delete(res.data.invokeId)
+    awaitingRun = false
+    return true
+  }
+
+  const followUp = async (
+    text: string,
+    images?: string[],
+    files?: AttachedFile[],
+    extras?: ComposerSendExtras
+  ): Promise<boolean> => {
+    const trimmed = text.trim()
+    const id = runId
+    const hasExtras = Boolean(extras?.audio?.length || extras?.nativeFiles?.length)
+    if ((!trimmed && !images?.length && !files?.length && !hasExtras) || !state.running) return false
+    if (!id) {
+      patch({
+        error: state.pendingRun
+          ? 'Wait for the run to start before sending a follow-up.'
+          : 'No active run to follow up on.'
+      })
+      return false
+    }
+    if (!workspacePath) {
+      patch({ error: 'Pick a workspace before sending a follow-up.' })
+      return false
+    }
+    const content = buildUserContent(text, images, files, extras)
+    const user: ChatMessage = { role: 'user', content }
+    const priorMessages = state.messages
+    const nextMessages = messagesForNextTurn([...priorMessages, user])
+    const userItemId = messageUiId('user', nextMessages.length - 1)
+    const imageUrls = contentImages(content)
+    const attachments = uiAttachments(content)
+    const displayText = contentDisplayText(content)
+    const sentAt = new Date().toISOString()
+    const preview = displayText.trim() || (attachments.length ? attachments[0]!.name : 'Follow-up')
+    patch({
+      error: null,
+      messages: nextMessages,
+      items: prependClosed(state.items, {
+        kind: 'message',
+        id: userItemId,
+        role: 'user',
+        content: displayText,
+        images: imageUrls.length ? imageUrls : undefined,
+        attachments: attachments.length ? attachments : undefined,
+        at: sentAt
+      })
+    })
+    const res = await window.vyotiq.chatFollowUp({ runId: id, message: user })
+    if (!res.ok) {
+      logger.warn('chatFollowUp failed', {
+        scope: 'chat',
+        correlationId: id,
+        err: toLogErr(res.error)
+      })
+      // Main already marked the turn complete while the renderer still shows
+      // running — convert the optimistic follow-up into an incremental chatStart.
+      if (/not active/i.test(res.error)) {
+        // Mirror send() preflight so a prior terminal ignore flag cannot drop the new invoke.
+        ignoreStreamEvents = false
+        if (activeInvokeId != null) supersededInvokeIds.add(activeInvokeId)
+        activeInvokeId = null
+        turnSeq += 1
+        patch({
+          error: null,
+          pendingRun: true,
+          running: true,
+          runStartedAt: state.runStartedAt ?? Date.now(),
+          runId: id
+        })
+        const mode = getAgentMode?.() ?? 'agent'
+        const startRes = await window.vyotiq.chatStart({
+          incremental: true,
+          newMessages: [user],
+          workspacePath,
+          runId: id,
+          mode
+        })
+        if (!startRes.ok) {
+          awaitingRun = false
+          logger.error('chatStart after follow-up race failed', {
+            scope: 'chat',
+            correlationId: id,
+            err: toLogErr(startRes.error)
+          })
+          patch({
+            error: startRes.error,
+            running: false,
+            runStartedAt: null,
+            pendingRun: false,
+            messages: priorMessages,
+            items: state.items.filter((item) => item.id !== userItemId)
+          })
+          return false
+        }
+        if (!closedRuns.has(startRes.data.runId)) {
+          assignRunId(startRes.data.runId)
+        }
+        activeInvokeId = startRes.data.invokeId
+        supersededInvokeIds.delete(startRes.data.invokeId)
+        awaitingRun = false
+        return true
+      }
+      patch({
+        error: res.error,
+        messages: priorMessages,
+        items: state.items.filter((item) => item.id !== userItemId)
+      })
+      return false
+    }
+    patch({
+      pendingFollowUps: [
+        ...state.pendingFollowUps.filter((entry) => entry.id !== res.data.id),
+        { id: res.data.id, itemId: userItemId, preview }
+      ]
+    })
+    return true
+  }
+
+  const removeFollowUp = async (followUpId: string): Promise<boolean> => {
+    const id = runId
+    const pending = state.pendingFollowUps.find((entry) => entry.id === followUpId)
+    if (!id || !pending) return false
+    const res = await window.vyotiq.chatFollowUpRemove({ runId: id, id: followUpId })
+    if (!res.ok) {
+      logger.warn('chatFollowUpRemove failed', {
+        scope: 'chat',
+        correlationId: id,
+        err: toLogErr(res.error)
+      })
+      return false
+    }
+    const nextPending = state.pendingFollowUps.filter((entry) => entry.id !== followUpId)
+    if (!res.data.removed) {
+      // Already drained by the loop — drop local queue chrome only.
+      patch({ pendingFollowUps: nextPending })
+      return true
+    }
+    const nextMessages = [...state.messages]
+    const indexMatch = /^user-(\d+)$/.exec(pending.itemId)
+    if (indexMatch) {
+      const idx = Number(indexMatch[1])
+      if (nextMessages[idx]?.role === 'user') {
+        nextMessages.splice(idx, 1)
+      }
+    } else {
+      // Reattach uses followup-<uuid> itemIds — fall back to preview match.
+      for (let i = nextMessages.length - 1; i >= 0; i--) {
+        const msg = nextMessages[i]
+        if (msg?.role === 'user' && contentDisplayText(msg.content) === pending.preview) {
+          nextMessages.splice(i, 1)
+          break
+        }
+      }
+    }
+    patch({
+      pendingFollowUps: nextPending,
+      messages: nextMessages,
+      items: state.items.filter((item) => item.id !== pending.itemId)
+    })
+    return true
+  }
+
+  const clearPendingFollowUps = (removeItems: boolean): void => {
+    if (state.pendingFollowUps.length === 0) return
+    const pending = state.pendingFollowUps
+    const itemIds = new Set(pending.map((entry) => entry.itemId))
+    let nextMessages = state.messages
+    if (removeItems) {
+      nextMessages = [...state.messages]
+      const indices = pending
+        .map((entry) => {
+          const match = /^user-(\d+)$/.exec(entry.itemId)
+          return match ? Number(match[1]) : -1
+        })
+        .filter((idx) => idx >= 0)
+        .sort((a, b) => b - a)
+      for (const idx of indices) {
+        if (nextMessages[idx]?.role === 'user') {
+          nextMessages.splice(idx, 1)
+        }
+      }
+      // Drop any remaining by preview (reattach / echo itemIds).
+      for (const entry of pending) {
+        if (/^user-\d+$/.test(entry.itemId)) continue
+        for (let i = nextMessages.length - 1; i >= 0; i--) {
+          const msg = nextMessages[i]
+          if (msg?.role === 'user' && contentDisplayText(msg.content) === entry.preview) {
+            nextMessages.splice(i, 1)
+            break
+          }
+        }
+      }
+    }
+    patch({
+      pendingFollowUps: [],
+      ...(removeItems
+        ? {
+            items: state.items.filter((item) => !itemIds.has(item.id)),
+            messages: nextMessages
+          }
+        : {})
+    })
+  }
+
   const syncFromDisk = async (id: string): Promise<boolean> => {
     if (!window.vyotiq?.loadRun) return false
     const res = await window.vyotiq.loadRun(workspacePath, id)
@@ -1578,9 +2353,11 @@ export function createChatStreamController(
       return false
     }
     let events: PersistedEvent[] = []
+    let eventsLoadError: string | null = null
     if (window.vyotiq.loadRunEvents) {
       const eventsRes = await window.vyotiq.loadRunEvents(workspacePath, id)
       if (eventsRes.ok) events = eventsRes.data
+      else eventsLoadError = eventsRes.error
     }
     const kept = messagesForNextTurn(res.data.messages)
     assistantId = null
@@ -1589,8 +2366,11 @@ export function createChatStreamController(
     contentRunId = id
     awaitingRun = false
     pendingCancel = false
+    const mode = modeFromPersisted(events)
+    if (mode) onAgentModeChange?.(mode)
     patch({
-      ...hydrateFromDisk(kept, events),
+      ...hydrateFromDisk(kept, events, dismissedErrorMessage),
+      ...(eventsLoadError ? { error: eventsLoadError } : {}),
       runId: null,
       pendingRun: false,
       running: false,
@@ -1616,15 +2396,27 @@ export function createChatStreamController(
       }
       await sleep(CANCEL_RECOVERY_POLL_MS)
     }
-    patch({ error: cancelError })
+    patch({
+      error: cancelError,
+      running: false,
+      pendingRun: false,
+      runStartedAt: null,
+      runTerminalTick: state.runTerminalTick + 1
+    })
+    clearPendingFollowUps(true)
+    onTerminal?.()
   }
 
   const stop = async (): Promise<void> => {
     const id = runId
     if (!id) {
       pendingCancel = true
+      if (state.pendingRun || state.running || awaitingRun) {
+        patch({ runNotice: 'Stopping…' })
+      }
       return
     }
+    clearPendingFollowUps(true)
     const res = await window.vyotiq.chatCancel(id)
     if (!res.ok) {
       logger.warn('chatCancel failed', {
@@ -1665,8 +2457,10 @@ export function createChatStreamController(
     activeInvokeId = null
     usageTotals = emptyStepUsageTotals()
     toolContentCache.clear()
+    const mode = modeFromPersisted(rows)
+    if (mode) onAgentModeChange?.(mode)
     patch({
-      ...hydrateFromDisk(kept, rows),
+      ...hydrateFromDisk(kept, rows, dismissedErrorMessage),
       collapsedTurnIndices: []
     })
   }
@@ -1710,24 +2504,42 @@ export function createChatStreamController(
     if (closedRuns.has(id) || disposed) return
     // Poll/mount can race a terminal status — verify the run is still live.
     let liveInvokeId: number | null = null
+    let pendingFromMain: { id: string; preview: string }[] = []
     if (window.vyotiq?.listActiveRuns) {
       const active = await window.vyotiq.listActiveRuns()
       if (!active.ok || !active.data.some((entry) => entry.runId === id)) {
         await syncFromDisk(id)
         return
       }
-      liveInvokeId = active.data.find((entry) => entry.runId === id)?.invokeId ?? null
+      const live = active.data.find((entry) => entry.runId === id)
+      liveInvokeId = live?.invokeId ?? null
+      pendingFromMain = live?.pendingFollowUps ?? []
     }
     if (closedRuns.has(id) || disposed) return
     runId = id
     contentRunId = id
+    // Live reattach must accept new events even if a prior terminal set ignoreStreamEvents.
+    ignoreStreamEvents = false
     if (liveInvokeId != null) activeInvokeId = liveInvokeId
+    const hydratedPending: PendingFollowUpState[] =
+      pendingFromMain.length > 0
+        ? pendingFromMain.map((entry) => {
+            const local = state.pendingFollowUps.find((p) => p.id === entry.id)
+            return {
+              id: entry.id,
+              // Prefer live optimistic itemIds (`user-N`) so remove/stop can roll back messages.
+              itemId: local?.itemId ?? `followup-${entry.id}`,
+              preview: local?.preview ?? entry.preview
+            }
+          })
+        : state.pendingFollowUps
     patch({
       runId: id,
       running: true,
       pendingRun: false,
       runStartedAt: state.runStartedAt ?? Date.now(),
-      error: null
+      error: null,
+      pendingFollowUps: hydratedPending
     })
     if (state.items.length > 0) {
       let events: PersistedEvent[] = []
@@ -1753,13 +2565,21 @@ export function createChatStreamController(
       return
     }
     let events: PersistedEvent[] = []
+    let eventsLoadError: string | null = null
     if (window.vyotiq.loadRunEvents) {
       const eventsRes = await window.vyotiq.loadRunEvents(workspacePath, id)
       if (closedRuns.has(id) || disposed) return
       if (eventsRes.ok) events = eventsRes.data
+      else eventsLoadError = eventsRes.error
     }
     const kept = messagesForNextTurn(res.data.messages)
-    patch(hydrateFromDisk(kept, events))
+    const mode = modeFromPersisted(events)
+    if (mode) onAgentModeChange?.(mode)
+    patch({
+      ...hydrateFromDisk(kept, events, dismissedErrorMessage),
+      pendingFollowUps: hydratedPending,
+      ...(eventsLoadError ? { error: eventsLoadError } : {})
+    })
   }
 
   const setToolExpanded = (toolCallId: string, expanded: boolean): void => {
@@ -1793,6 +2613,48 @@ export function createChatStreamController(
       argsPreview: request.argsPreview,
       mutating: request.mutating
     }
+
+    // Nested agent approval — attach under the parent subagent tool panel.
+    if (request.parentToolCallId) {
+      const parentIdx = findToolRowIndex(state.items, request.parentToolCallId)
+      const parent = parentIdx >= 0 ? state.items[parentIdx] : undefined
+      if (parent?.kind === 'tool') {
+        const nested = parent.nestedAgent ?? {
+          subagentId: request.subagentId ?? 'nested',
+          leaves: []
+        }
+        const leaves = [...nested.leaves]
+        const leafIdx = leaves.findIndex((l) => l.kind === 'tool' && l.id === request.toolCallId)
+        if (leafIdx >= 0) {
+          const leaf = leaves[leafIdx]!
+          if (leaf.kind === 'tool') {
+            leaves[leafIdx] = { ...leaf, approval }
+          }
+        } else {
+          leaves.push({
+            kind: 'tool',
+            id: request.toolCallId,
+            tool: {
+              id: request.toolCallId,
+              name: request.name,
+              summary: request.summary,
+              status: 'running',
+              ...(request.argsPreview ? { argsPreview: request.argsPreview } : {})
+            },
+            approval
+          })
+        }
+        patch({
+          items: replaceAt(state.items, parentIdx, {
+            ...parent,
+            nestedAgent: { ...nested, leaves },
+            toolExpanded: parent.toolExpanded === false ? false : true
+          })
+        })
+        return
+      }
+    }
+
     const idx = findToolRowIndex(state.items, request.toolCallId)
     if (idx < 0 || state.items[idx]?.kind !== 'tool') {
       // The row should already exist, but the loop is parked either way: show
@@ -1827,7 +2689,12 @@ export function createChatStreamController(
     requestId: string,
     decision: ToolApprovalDecision
   ): Promise<void> => {
-    const res = await window.vyotiq?.respondToolApproval?.(requestId, decision)
+    if (!runId) {
+      const message = 'No active run for tool approval.'
+      patch({ error: message })
+      throw new Error(message)
+    }
+    const res = await window.vyotiq?.respondToolApproval?.(requestId, decision, runId)
     if (!res) {
       const message = 'Tool approval is unavailable.'
       logger.warn('Tool approval response unavailable', { scope: 'chat' })
@@ -1842,12 +2709,87 @@ export function createChatStreamController(
       patch({ error: res.error })
       throw new Error(res.error)
     }
-    // Only clear the card after main accepted the decision — otherwise the run
-    // stays parked with no way to answer again.
+    // Main returns ok(false) when the requestId is unknown — leave the card so
+    // the user can retry; otherwise the run stays parked with no UI.
+    if (res.data !== true) {
+      const message = 'Tool approval was not accepted. Try again.'
+      logger.warn('Tool approval response not accepted', { scope: 'chat' })
+      patch({ error: message })
+      throw new Error(message)
+    }
     patch({ items: clearApprovals(state.items, requestId), error: null })
   }
 
+  const handleQuestionRequest = (request: AgentQuestionRequest): void => {
+    if (closedRuns.has(request.runId)) return
+    if (runId && request.runId !== runId) return
+
+    // Always surface a question card — even with no prior tool_start row — so a
+    // lost/late push cannot leave the run parked with only a non-interactive tool.
+    const questionItem: Extract<UiItem, { kind: 'question' }> = {
+      kind: 'question',
+      id: `question:${request.requestId}`,
+      question: {
+        requestId: request.requestId,
+        toolCallId: request.toolCallId,
+        ...(request.title ? { title: request.title } : {}),
+        questions: request.questions.map((q) => ({
+          id: q.id,
+          prompt: q.prompt,
+          type: q.type,
+          ...(q.options?.length ? { options: q.options } : {}),
+          ...(q.allowCustom === true ? { allowCustom: true } : {})
+        }))
+      },
+      at: new Date().toISOString()
+    }
+    const existingIdx = state.items.findIndex(
+      (item) => item.kind === 'question' && item.question.requestId === request.requestId
+    )
+    if (existingIdx >= 0) {
+      patch({ items: replaceAt(state.items, existingIdx, questionItem) })
+      return
+    }
+    patch({ items: [...state.items, questionItem] })
+  }
+
+  const respondToQuestion = async (
+    requestId: string,
+    answers: AgentQuestionAnswer[]
+  ): Promise<void> => {
+    if (!runId) {
+      const message = 'No active run for question response.'
+      patch({ error: message })
+      throw new Error(message)
+    }
+    const res = await window.vyotiq?.respondAgentQuestion?.(requestId, answers, runId)
+    if (!res) {
+      const message = 'Question response is unavailable.'
+      logger.warn('Agent question response unavailable', { scope: 'chat' })
+      patch({ error: message })
+      throw new Error(message)
+    }
+    if (!res.ok) {
+      logger.warn('Agent question response rejected', {
+        scope: 'chat',
+        err: toLogErr(res.error)
+      })
+      patch({ error: res.error })
+      throw new Error(res.error)
+    }
+    // Main returns ok(false) when the requestId is unknown — leave the card so
+    // the user can retry; otherwise the run stays parked with no UI.
+    if (res.data !== true) {
+      const message = 'Question answer was not accepted. Try again.'
+      logger.warn('Agent question response not accepted', { scope: 'chat' })
+      patch({ error: message })
+      throw new Error(message)
+    }
+    patch({ items: clearQuestions(state.items, requestId), error: null })
+  }
+
   const clearError = (): void => {
+    if (state.error) dismissedErrorMessage = state.error
     patch({ error: null })
   }
 
@@ -1904,6 +2846,22 @@ export function createChatStreamController(
         toolCallId,
         err: toLogErr(res.error)
       })
+      const idx = findToolRowIndex(state.items, toolCallId)
+      const item = idx >= 0 ? state.items[idx] : undefined
+      if (item?.kind === 'tool') {
+        const notice = "Couldn't load full output."
+        patch({
+          items: replaceAt(state.items, idx, {
+            ...item,
+            tool: {
+              ...item.tool,
+              content: item.tool.content ? `${item.tool.content}\n\n${notice}` : notice,
+              // Stop expand retries from looping on a permanent failure.
+              contentTruncated: false
+            }
+          })
+        })
+      }
       return null
     }
     patchToolContent(toolCallId, res.data.content)
@@ -1939,6 +2897,17 @@ export function createChatStreamController(
     if (disposed) return
     const estimated = result.estimatedTokens ?? result.tokenEstimate
     const prev = state.contextUsage
+    const summaryTokens = Math.max(0, result.tokenEstimate)
+    const historyTokens = Math.max(0, estimated - summaryTokens)
+    const window = result.contextWindow ?? prev?.window ?? 0
+    const buffer = window > 0 ? allocateBudgetShares(window).buffer : 0
+    // Summary is injected into system on the next assemble; kept turns are history.
+    const compactLayers = {
+      system: summaryTokens,
+      history: historyTokens,
+      tools: 0,
+      buffer
+    }
     patch({
       runNotice: 'Context summarized to stay within the model window.',
       contextUsage: prev
@@ -1950,6 +2919,7 @@ export function createChatStreamController(
             source: 'estimate',
             window: result.contextWindow ?? prev.window,
             contentWindow: result.contentWindow ?? prev.contentWindow,
+            layers: compactLayers,
             updatedAt: new Date().toISOString()
           }
         : result.contextWindow && result.contentWindow
@@ -1959,9 +2929,12 @@ export function createChatStreamController(
               estimatedTokens: estimated,
               window: result.contextWindow,
               contentWindow: result.contentWindow,
-              compactionTrigger: Math.floor(result.contextWindow * 0.7),
+              compactionTrigger: compactionTriggerFromRaw(
+                result.contextWindow,
+                DEFAULT_COMPACTION_TRIGGER_RATIO
+              ),
               source: 'estimate',
-              layers: { system: 0, history: estimated, tools: 0, buffer: 0 },
+              layers: compactLayers,
               stepUsage: emptyStepUsageTotals(),
               updatedAt: new Date().toISOString()
             }
@@ -2061,11 +3034,19 @@ export function createChatStreamController(
     get writeCheckpoint() {
       return state.writeCheckpoint
     },
+    get pendingFollowUps() {
+      return state.pendingFollowUps
+    },
     get disposed() {
       return disposed
     },
+    get uiSuspended() {
+      return uiSuspended
+    },
     workspacePath,
     send,
+    editAndResend,
+    removeFollowUp,
     stop,
     reset,
     loadTranscript,
@@ -2079,11 +3060,15 @@ export function createChatStreamController(
     toggleTurnCollapsed,
     handleApprovalRequest,
     respondToApproval,
+    handleQuestionRequest,
+    respondToQuestion,
     syncFromDisk,
     applyManualCompaction,
     markWriteCheckpointUndone,
     applyWriteCheckpointResolution,
     handleEvent,
+    setUiSuspended,
+    resumeUiIfNeeded,
     subscribe,
     subscribeItems,
     subscribeMeta,

@@ -8,7 +8,12 @@ import {
   type CompactionData
 } from '../schemas/compaction'
 import { collectStructuredResponse } from '../schemas/structured'
-import { estimateMessagesTokens, estimateTextTokens } from './estimate'
+import {
+  estimateMessagesTokens,
+  estimateMessagesTokensAsync,
+  estimateTextTokensAsync
+} from './estimate'
+import { stripLeadingOrphanToolMessages } from './historyTrim'
 import { KEEP_RECENT_TURNS, type CompactionRecord } from './types'
 
 const COMPACTION_PROMPT = `Summarize this coding-agent session for future context. Be concise and factual. Do not invent files or decisions.`
@@ -23,6 +28,13 @@ const COMPACTION_FREEFORM_PROMPT = `Summarize this coding-agent session for futu
 ## Next Steps
 
 Be concise and factual. Do not invent files or decisions.`
+
+function capRollingSummary(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text
+  const tail = text.slice(-maxChars)
+  const firstNewline = tail.indexOf('\n')
+  return firstNewline > 0 ? `…${tail.slice(firstNewline)}` : `… ${tail}`
+}
 
 async function streamFreeformSummary(input: {
   provider: LlmProvider
@@ -171,19 +183,24 @@ export async function compactMessages(input: {
   )
   const charCap = tokenCap * 4
 
-  const prior = input.priorSummary?.trim() ?? ''
+  const prior = capRollingSummary(input.priorSummary?.trim() ?? '', charCap)
   const chunks = chunkMessagesForCap(input.messages, Math.max(2000, charCap - 500))
-  if (chunks.length === 0 && !prior) return null
+  if (chunks.length === 0) {
+    return prior
+      ? {
+          summary: prior,
+          createdAt: new Date().toISOString(),
+          tokenEstimate: await estimateTextTokensAsync(prior)
+        }
+      : null
+  }
 
   let mergedPrior = prior
   const parts: string[] = []
 
-  for (const chunk of chunks.length > 0 ? chunks : [[]]) {
+  for (const chunk of chunks) {
     if (input.signal.aborted) return null
-    const priorBlock = mergedPrior
-      ? `## Prior session summary\n${mergedPrior}\n\n## Recent history to fold\n`
-      : ''
-    const historyText = (priorBlock + formatMessagesForCompaction(chunk)).slice(0, charCap)
+    const historyText = formatMessagesForCompaction(chunk).slice(0, charCap)
     if (!historyText.trim()) continue
 
     const summary = await summarizeHistoryChunk({
@@ -197,7 +214,9 @@ export async function compactMessages(input: {
     })
     if (!summary) continue
     parts.push(summary)
-    mergedPrior = mergedPrior ? `${mergedPrior}\n\n---\n\n${summary}` : summary
+    mergedPrior = mergedPrior
+      ? capRollingSummary(`${mergedPrior}\n\n---\n\n${summary}`, charCap)
+      : capRollingSummary(summary, charCap)
   }
 
   if (parts.length === 0) {
@@ -209,11 +228,11 @@ export async function compactMessages(input: {
     return null
   }
 
-  const merged = parts.length === 1 && !prior ? parts[0]! : mergedPrior
+  const merged = capRollingSummary(parts.length === 1 && !prior ? parts[0]! : mergedPrior, charCap)
   return {
     summary: merged,
     createdAt: new Date().toISOString(),
-    tokenEstimate: estimateTextTokens(merged)
+    tokenEstimate: await estimateTextTokensAsync(merged)
   }
 }
 
@@ -242,9 +261,17 @@ export function preserveRecentMessages(
     start = Math.min(start + 2, messages.length - 1)
   }
 
-  let kept = messages.slice(start)
-  while (kept.length > 1 && kept[0].role === 'tool') {
-    kept = kept.slice(1)
+  let kept = stripLeadingOrphanToolMessages(messages.slice(start))
+  // Budget/index trim landed inside a tool turn — rewind to include the owner.
+  while (kept.length === 0 && start > 0) {
+    start--
+    kept = stripLeadingOrphanToolMessages(messages.slice(start))
+  }
+  if (kept.length === 0) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role !== 'tool') return messages.slice(i)
+    }
+    return messages.slice(-1)
   }
 
   if (historyBudgetTokens && model) {
@@ -256,10 +283,64 @@ export function preserveRecentMessages(
       if (dropIdx < 0) break
       const nextUser = kept.findIndex((m, idx) => idx > dropIdx && m.role === 'user')
       const end = nextUser >= 0 ? nextUser : kept.length
-      kept = kept.slice(end)
-      while (kept.length > 1 && kept[0].role === 'tool') {
-        kept = kept.slice(1)
+      let next = stripLeadingOrphanToolMessages(kept.slice(end))
+      if (next.length === 0) break
+      kept = next
+    }
+  }
+
+  return kept
+}
+
+/** Async variant — BPE for uncached strings runs off the main thread when workers are available. */
+export async function preserveRecentMessagesAsync(
+  messages: ChatMessage[],
+  keepTurns = KEEP_RECENT_TURNS,
+  historyBudgetTokens?: number,
+  model?: ModelInfo
+): Promise<ChatMessage[]> {
+  let userTurns = 0
+  let start = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') {
+      userTurns++
+      if (userTurns >= keepTurns) {
+        start = i
+        break
       }
+    }
+  }
+
+  if (userTurns < keepTurns) {
+    if (!historyBudgetTokens || !model) return messages
+    if ((await estimateMessagesTokensAsync(messages, model)) <= historyBudgetTokens) return messages
+    start = Math.min(start + 2, messages.length - 1)
+  }
+
+  let kept = stripLeadingOrphanToolMessages(messages.slice(start))
+  while (kept.length === 0 && start > 0) {
+    start--
+    kept = stripLeadingOrphanToolMessages(messages.slice(start))
+  }
+  if (kept.length === 0) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role !== 'tool') return messages.slice(i)
+    }
+    return messages.slice(-1)
+  }
+
+  if (historyBudgetTokens && model) {
+    while (
+      kept.length > 2 &&
+      (await estimateMessagesTokensAsync(kept, model)) > historyBudgetTokens
+    ) {
+      const dropIdx = kept.findIndex((m) => m.role === 'user')
+      if (dropIdx < 0) break
+      const nextUser = kept.findIndex((m, idx) => idx > dropIdx && m.role === 'user')
+      const end = nextUser >= 0 ? nextUser : kept.length
+      const next = stripLeadingOrphanToolMessages(kept.slice(end))
+      if (next.length === 0) break
+      kept = next
     }
   }
 

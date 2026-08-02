@@ -3,6 +3,8 @@ import {
   ChatMessageSchema,
   ChatStartRequestSchema,
   ChatStartResultSchema,
+  ChatFollowUpRequestSchema,
+  ChatFollowUpResultSchema,
   CancelRunRequestSchema,
   CompactRunRequestSchema,
   DeleteRunRequestSchema,
@@ -16,6 +18,8 @@ import {
   ModelInfoSchema,
   ProviderIdSchema,
   AgentEventSchema,
+  AgentQuestionRequestSchema,
+  AgentQuestionResponseSchema,
   WindowMaximizedChangedSchema,
   LoadRunRequestSchema,
   LoadToolResultRequestSchema,
@@ -35,6 +39,7 @@ import {
   ToolApprovalRequestSchema,
   ToolApprovalResponseSchema,
   ActiveRunSchema,
+  GitStatusResultSchema,
   GitStatusSchema
 } from '@shared/ipc'
 import { IPC } from '@shared/channels'
@@ -79,7 +84,7 @@ describe('ipc schemas', () => {
     expect(contentToText(msg.content)).toContain('look')
   })
 
-  it('accepts all nine providers', () => {
+  it('accepts all ten providers', () => {
     for (const id of [
       'openai',
       'anthropic',
@@ -89,20 +94,23 @@ describe('ipc schemas', () => {
       'groq',
       'openrouter',
       'xai',
-      'mistral'
+      'mistral',
+      'custom'
     ]) {
       expect(ProviderIdSchema.parse(id)).toBe(id)
     }
-    expect(PROVIDER_DEFAULTS).toHaveLength(9)
+    expect(PROVIDER_DEFAULTS).toHaveLength(10)
     expect(ListModelsRequestSchema.parse({ provider: 'groq' }).provider).toBe('groq')
     expect(IPC.listModels).toBe('models:list')
   })
 
-  it('lists eight secret providers without ollama', () => {
-    expect(SECRET_PROVIDERS).toHaveLength(8)
-    expect(SECRET_PROVIDERS).not.toContain('ollama')
-    expect(SecretProviderSchema.safeParse('ollama').success).toBe(false)
+  it('lists ten secret providers including ollama and custom', () => {
+    expect(SECRET_PROVIDERS).toHaveLength(10)
+    expect(SECRET_PROVIDERS).toContain('ollama')
+    expect(SECRET_PROVIDERS).toContain('custom')
+    expect(SecretProviderSchema.safeParse('ollama').success).toBe(true)
     expect(emptySecretStatus().openai).toBe(false)
+    expect(emptySecretStatus().ollama).toBe(false)
   })
 
   it('keeps SecretsStatus shape (encryptionAvailable + keys)', () => {
@@ -130,6 +138,26 @@ describe('ipc schemas', () => {
 
   it('parses cancel and agent events', () => {
     expect(CancelRunRequestSchema.parse({ runId: 'abc' })).toEqual({ runId: 'abc' })
+    expect(
+      ChatFollowUpRequestSchema.parse({
+        runId: 'abc',
+        message: { role: 'user', content: 'steer' }
+      })
+    ).toEqual({
+      runId: 'abc',
+      message: { role: 'user', content: 'steer' }
+    })
+    expect(ChatFollowUpResultSchema.parse({ id: 'fu-1', position: 1, queueLength: 1 })).toEqual({
+      id: 'fu-1',
+      position: 1,
+      queueLength: 1
+    })
+    expect(() =>
+      ChatFollowUpRequestSchema.parse({
+        runId: 'abc',
+        message: { role: 'assistant', content: 'nope' }
+      })
+    ).toThrow()
     expect(
       AgentEventSchema.parse({
         type: 'tool_result',
@@ -217,6 +245,16 @@ describe('ipc schemas', () => {
     ).toBe(800)
     expect(
       AgentEventSchema.parse({
+        type: 'step_usage',
+        runId: 'r1',
+        step: 3,
+        inputTokens: 1000,
+        outputTokens: 50,
+        cacheCreationInputTokens: 400
+      }).cacheCreationInputTokens
+    ).toBe(400)
+    expect(
+      AgentEventSchema.parse({
         type: 'context_usage',
         runId: 'r1',
         step: 1,
@@ -242,6 +280,30 @@ describe('ipc schemas', () => {
         step: 2
       }).type
     ).toBe('stream_reset')
+    expect(
+      AgentEventSchema.parse({
+        type: 'mode_changed',
+        runId: 'r1',
+        mode: 'plan'
+      }).mode
+    ).toBe('plan')
+    expect(
+      AgentQuestionRequestSchema.parse({
+        requestId: 'q1',
+        runId: 'r1',
+        toolCallId: 't1',
+        questions: [
+          { id: 'q1', prompt: 'Ready?', type: 'single', options: ['yes', 'no'] }
+        ]
+      }).questions[0]!.prompt
+    ).toBe('Ready?')
+    expect(
+      AgentQuestionResponseSchema.parse({
+        requestId: 'q1',
+        runId: 'r1',
+        answers: [{ questionId: 'q1', values: ['yes'] }]
+      }).answers
+    ).toEqual([{ questionId: 'q1', values: ['yes'] }])
     expect(
       AgentEventSchema.parse({
         type: 'incomplete',
@@ -295,6 +357,33 @@ describe('ipc schemas', () => {
         model: 'gpt-test'
       }).model
     ).toBe('gpt-test')
+    expect(
+      AgentEventSchema.parse({
+        type: 'follow_up_queued',
+        runId: 'r1',
+        id: 'fu-1',
+        position: 1,
+        queueLength: 1,
+        preview: 'please also fix tests'
+      }).preview
+    ).toBe('please also fix tests')
+    expect(
+      AgentEventSchema.parse({
+        type: 'follow_up_queued',
+        runId: 'r1',
+        id: 'fu-1',
+        position: 1,
+        queueLength: 1
+      }).id
+    ).toBe('fu-1')
+    expect(
+      AgentEventSchema.parse({
+        type: 'follow_up_applied',
+        runId: 'r1',
+        ids: ['fu-1'],
+        messages: [{ role: 'user', content: 'steer' }]
+      }).ids
+    ).toEqual(['fu-1'])
     expect(WindowMaximizedChangedSchema.parse(true)).toBe(true)
     expect(LoadRunRequestSchema.parse({ workspacePath: '/ws', runId: 'r1' })).toEqual({
       workspacePath: '/ws',
@@ -363,18 +452,38 @@ describe('ipc schemas', () => {
   it('wraps ipc ok/fail helpers', () => {
     expect(ok({ runId: 'x' })).toEqual({ ok: true, data: { runId: 'x' } })
     expect(fail('nope')).toEqual({ ok: false, error: 'nope' })
+    expect(fail('nope', 'IPC_HANDLER')).toEqual({
+      ok: false,
+      error: 'nope',
+      code: 'IPC_HANDLER'
+    })
   })
 
   it('seeds deepseek without legacy chat ids', () => {
     const seeds = seedModelsFor('deepseek')
     expect(seeds.every((m) => !m.id.includes('deepseek-chat'))).toBe(true)
+    expect(seeds.every((m) => !m.id.includes('deepseek-reasoner'))).toBe(true)
     expect(ModelInfoSchema.parse(seeds[0]).supportsTools).toBe(true)
+  })
+
+  it('seeds mid-2026 defaults for major providers', () => {
+    expect(seedModelsFor('openai').map((m) => m.id)).toEqual([
+      'gpt-5.6',
+      'gpt-5.6-terra',
+      'gpt-5.6-luna'
+    ])
+    expect(seedModelsFor('anthropic')[0]?.id).toBe('claude-opus-5')
+    expect(seedModelsFor('gemini')[0]?.id).toBe('gemini-3.6-flash')
+    expect(seedModelsFor('xai')[0]?.id).toBe('grok-4-latest')
+    expect(seedModelsFor('openai')[0]?.supportsThinking).toBe(true)
+    expect(seedModelsFor('openai')[0]?.contextWindow).toBe(1_048_576)
   })
 
   it('keeps DEFAULT_SETTINGS aligned with SettingsSchema (incl. telemetry)', () => {
     const parsed = SettingsSchema.parse(DEFAULT_SETTINGS)
     expect(parsed).toEqual(DEFAULT_SETTINGS)
     expect(parsed.telemetryEnabled).toBe(false)
+    expect(parsed.autoModeSwitch).toBe(false)
     // Legacy settings files omit telemetryEnabled — default fills it
     const legacy = SettingsSchema.parse({
       provider: 'ollama',
@@ -383,6 +492,7 @@ describe('ipc schemas', () => {
       theme: 'system'
     })
     expect(legacy.telemetryEnabled).toBe(false)
+    expect(legacy.autoModeSwitch).toBe(false)
     expect(SetSettingsRequestSchema.parse({ telemetryEnabled: true })).toEqual({
       telemetryEnabled: true
     })
@@ -437,7 +547,7 @@ describe('ipc schemas', () => {
     expect(() => ChatStartResultSchema.parse({ runId: 'r1' })).toThrow()
     expect(
       ActiveRunSchema.parse({ runId: 'r1', workspacePath: '/ws', invokeId: 2 })
-    ).toEqual({ runId: 'r1', workspacePath: '/ws', invokeId: 2 })
+    ).toEqual({ runId: 'r1', workspacePath: '/ws', invokeId: 2, pendingFollowUps: [] })
     expect(() => ActiveRunSchema.parse({ runId: 'r1', workspacePath: '/ws' })).toThrow()
   })
 
@@ -456,9 +566,10 @@ describe('ipc schemas', () => {
     expect(
       ToolApprovalResponseSchema.parse({
         requestId: 'req-1',
+        runId: 'r1',
         decision: 'once'
       })
-    ).toEqual({ requestId: 'req-1', decision: 'once' })
+    ).toEqual({ requestId: 'req-1', runId: 'r1', decision: 'once' })
     expect(
       GitStatusSchema.parse({
         branch: 'main',
@@ -474,10 +585,70 @@ describe('ipc schemas', () => {
             status: 'modified',
             added: 2,
             removed: 0,
-            binary: false
+            addedStaged: 0,
+            removedStaged: 0,
+            addedUnstaged: 2,
+            removedUnstaged: 0,
+            binary: false,
+            staged: false,
+            unstaged: true
           }
         ]
       }).branch
     ).toBe('main')
+    expect(GitStatusResultSchema.parse({ kind: 'not_repo' })).toEqual({ kind: 'not_repo' })
+    expect(
+      GitStatusResultSchema.parse({
+        kind: 'unavailable',
+        detail: 'Git is not installed or not on PATH'
+      }).kind
+    ).toBe('unavailable')
+  })
+
+  it('parses stage/unstage path and github auth schemas', async () => {
+    const {
+      GitStagePathsRequestSchema,
+      GitUnstagePathsRequestSchema,
+      GitBranchesResultSchema,
+      GithubAuthStatusSchema,
+      ShellOpenExternalRequestSchema,
+      SettingsSchema,
+      DEFAULT_SETTINGS
+    } = await import('@shared/ipc')
+    expect(
+      GitStagePathsRequestSchema.parse({ workspacePath: '/ws', paths: ['a.ts'] }).paths
+    ).toEqual(['a.ts'])
+    expect(
+      GitUnstagePathsRequestSchema.parse({ workspacePath: '/ws', paths: ['a.ts'] }).paths[0]
+    ).toBe('a.ts')
+    expect(GitBranchesResultSchema.parse([{ name: 'main', current: true }])).toHaveLength(1)
+    expect(
+      GithubAuthStatusSchema.parse({
+        ghAvailable: true,
+        clientIdConfigured: false,
+        hasAppToken: false,
+        pending: false,
+        userCode: null,
+        verificationUri: null,
+        error: null
+      }).pending
+    ).toBe(false)
+    expect(ShellOpenExternalRequestSchema.parse({ url: 'https://github.com' }).url).toContain(
+      'github'
+    )
+    expect(SettingsSchema.parse(DEFAULT_SETTINGS).githubClientId).toBe('')
+  })
+
+  it('parses pty list/create request schemas', async () => {
+    const { PtyCreateRequestSchema, PtyListRequestSchema, PtyResizeRequestSchema } =
+      await import('@shared/ipc')
+    expect(PtyListRequestSchema.parse({})).toEqual({})
+    expect(PtyListRequestSchema.parse({ workspacePath: '/ws' })).toEqual({
+      workspacePath: '/ws'
+    })
+    expect(
+      PtyCreateRequestSchema.parse({ workspacePath: '/ws', cols: 80, rows: 24 }).workspacePath
+    ).toBe('/ws')
+    expect(PtyResizeRequestSchema.safeParse({ id: 'x', cols: 0, rows: 24 }).success).toBe(false)
   })
 })

@@ -51,7 +51,10 @@ export function parseMcpData(
   const display = parseMcpToolDisplay(tool.name)
   const args = parseArgsRecord(tool.argsPreview)
   const content = tool.content ?? ''
-  const isError = content.startsWith('[MCP') && content.includes('error')
+  const isError =
+    tool.status === 'fail' ||
+    (content.startsWith('[MCP') && /error/i.test(content)) ||
+    /MCP invoke failed/i.test(content)
   const serverId = display?.serverId ?? 'unknown'
   const serverName = mcpServerNames?.get(serverId) ?? serverId
   const toolName = display?.toolName ?? tool.name

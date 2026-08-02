@@ -33,7 +33,7 @@ vi.mock('@main/settings/settings', () => ({
     model: 'qwen2.5',
     ollamaBaseUrl: 'http://127.0.0.1:11434',
     theme: 'system',
-    telemetryEnabled: false
+    telemetryEnabled: false,
   }),
   readLegacyWorkspacePath: () => null
 }))
@@ -171,5 +171,11 @@ describe('runAgent steps', () => {
     const eventsPath = join(resolveRunDir(workspace, runId), 'events.jsonl')
     expect(readFileSync(eventsPath, 'utf8')).toContain('"type":"step_usage"')
     expect(readFileSync(eventsPath, 'utf8')).toContain('"cachedInputTokens":900')
+    expect(readFileSync(eventsPath, 'utf8')).toContain('"source":"provider"')
+    expect(events.filter((e) => e.type === 'context_usage').length).toBeGreaterThanOrEqual(1)
+    const providerCtx = events.find(
+      (e) => e.type === 'context_usage' && (e as { source?: string }).source === 'provider'
+    ) as { inputTokens?: number } | undefined
+    expect(providerCtx?.inputTokens).toBe(1200)
   })
 })

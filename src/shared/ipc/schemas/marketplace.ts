@@ -1,7 +1,26 @@
 import { z } from 'zod'
+import { isSafeWorkspaceRelPath } from '../../utils/workspacePath'
+import { isAllowedMarketplaceIconUrl } from '../../utils/marketplaceIconUrl'
 
 export const MarketplaceKindSchema = z.enum(['mcp', 'skill', 'plugin'])
 export type MarketplaceKind = z.infer<typeof MarketplaceKindSchema>
+
+/** Safe single path segment for marketplace id / version (no traversal). */
+export const MarketplaceSegmentSchema = z
+  .string()
+  .min(1)
+  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/, {
+    message: 'must be a safe path segment (letters, digits, . _ -)'
+  })
+  .refine((id) => !id.includes('__'), { message: 'must not contain "__"' })
+
+/** Relative path under a package root — aligned with isSafeWorkspaceRelPath. */
+export const MarketplaceRelPathSchema = z
+  .string()
+  .min(1)
+  .refine((p) => isSafeWorkspaceRelPath(p), {
+    message: 'must be a relative path without ..'
+  })
 
 export const MarketplaceInstallSourceSchema = z.enum([
   'registry',
@@ -23,12 +42,9 @@ export const VyotiqMcpManifestSchema = z
   .object({
     schemaVersion: z.literal(1),
     kind: z.literal('mcp'),
-    id: z
-      .string()
-      .min(1)
-      .refine((id) => !id.includes('__'), { message: 'id must not contain "__"' }),
+    id: MarketplaceSegmentSchema,
     name: z.string().min(1),
-    version: z.string().min(1),
+    version: MarketplaceSegmentSchema,
     description: z.string().default(''),
     transport: McpTransportSchema.default('stdio'),
     command: z.string().optional(),
@@ -49,6 +65,13 @@ export const VyotiqMcpManifestSchema = z
         path: ['command']
       })
     }
+    if (val.command && !isSafeWorkspaceRelPath(val.command)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'command must be a safe relative path or bare binary name (no .., absolute, or traversal)',
+        path: ['command']
+      })
+    }
     if ((val.transport === 'http' || val.transport === 'sse') && !(val.url ?? '').trim()) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -59,27 +82,44 @@ export const VyotiqMcpManifestSchema = z
   })
 export type VyotiqMcpManifest = z.infer<typeof VyotiqMcpManifestSchema>
 
-/** Frontmatter fields for `skill.md` (Vyotiq-native). */
+/** Agent Skills (agentskills.io) frontmatter for `SKILL.md`. */
+const SkillNameSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, {
+    message: 'name must be lowercase alphanumeric with single hyphens (no leading/trailing/--)'
+  })
+  .refine((n) => !/(?:^|-)(?:anthropic|claude)(?:-|$)/i.test(n), {
+    message: 'name must not contain reserved words anthropic or claude'
+  })
+
 export const SkillFrontmatterSchema = z.object({
-  name: z.string().min(1),
-  description: z.string().min(1),
-  version: z.string().min(1).optional()
+  name: SkillNameSchema,
+  description: z.string().min(1).max(1024),
+  license: z.string().min(1).optional(),
+  compatibility: z.string().min(1).max(500).optional(),
+  metadata: z.record(z.string(), z.string()).optional(),
+  'allowed-tools': z.string().min(1).optional()
 })
 export type SkillFrontmatter = z.infer<typeof SkillFrontmatterSchema>
+
+/** Marketplace package version from skill metadata (defaults to 1.0.0). */
+export function skillPackageVersion(fm: Pick<SkillFrontmatter, 'metadata'>): string {
+  const v = fm.metadata?.version?.trim()
+  return v && v.length > 0 ? v : '1.0.0'
+}
 
 export const VyotiqPluginManifestSchema = z.object({
   schemaVersion: z.literal(1),
   kind: z.literal('plugin'),
-  id: z
-    .string()
-    .min(1)
-    .refine((id) => !id.includes('__'), { message: 'id must not contain "__"' }),
+  id: MarketplaceSegmentSchema,
   name: z.string().min(1),
-  version: z.string().min(1),
+  version: MarketplaceSegmentSchema,
   description: z.string().default(''),
-  mcp: z.array(z.string()).default([]),
-  skills: z.array(z.string()).default([]),
-  rules: z.array(z.string()).default([])
+  mcp: z.array(MarketplaceRelPathSchema).default([]),
+  skills: z.array(MarketplaceRelPathSchema).default([]),
+  rules: z.array(MarketplaceRelPathSchema).default([])
 })
 export type VyotiqPluginManifest = z.infer<typeof VyotiqPluginManifestSchema>
 
@@ -129,7 +169,7 @@ export const MarketplaceCatalogEntrySchema = z.object({
   description: z.string().default(''),
   kind: MarketplaceKindSchema,
   downloadUrl: z.string().optional(),
-  bundledPath: z.string().optional(),
+  bundledPath: MarketplaceRelPathSchema.optional(),
   source: z.enum(['bundled', 'remote']).default('remote'),
   publisher: z.string().optional(),
   verified: z.boolean().optional(),
@@ -138,8 +178,15 @@ export const MarketplaceCatalogEntrySchema = z.object({
   category: z.string().optional(),
   featuredRank: z.number().int().optional(),
   /** Relative path under resources/marketplace/ (e.g. icons/filesystem.svg). */
-  iconPath: z.string().optional(),
-  iconUrl: z.string().optional(),
+  iconPath: MarketplaceRelPathSchema.optional(),
+  /** Image data URL only; invalid/remote schemes are dropped (not a catalog parse failure). */
+  iconUrl: z
+    .string()
+    .optional()
+    .transform((v) => {
+      if (v == null || v.trim() === '') return undefined
+      return isAllowedMarketplaceIconUrl(v) ? v.trim() : undefined
+    }),
   /** When false, UI shows Coming soon instead of Install. Default true. */
   installable: z.boolean().optional(),
   contentsPreview: MarketplaceContentsPreviewSchema.optional()
@@ -162,7 +209,21 @@ export const MarketplaceInstalledItemSchema = z.object({
   installSource: MarketplaceInstallSourceSchema,
   installedAt: z.string().min(1),
   /** Relative path under marketplace/packages/{id}/{version} */
-  packagePath: z.string().min(1)
+  /** Relative path under marketplace/packages — must be `{id}/{version}`. */
+  packagePath: z
+    .string()
+    .min(1)
+    .refine(
+      (p) => {
+        const t = p.trim().replace(/\\/g, '/')
+        const parts = t.split('/')
+        return (
+          parts.length === 2 &&
+          parts.every((seg) => /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(seg) && !seg.includes('__'))
+        )
+      },
+      { message: 'packagePath must be id/version with safe segments' }
+    )
 })
 export type MarketplaceInstalledItem = z.infer<typeof MarketplaceInstalledItemSchema>
 
@@ -196,6 +257,14 @@ export const DEFAULT_MARKETPLACE_SETTINGS: MarketplaceSettings = {
   registryUrl: '',
   remoteInstallAcked: false
 }
+
+/** Main-only ack write — renderer must not set remoteInstallAcked via setSettings. */
+export const MarketplaceRemoteInstallAckRequestSchema = z.object({
+  acked: z.boolean()
+})
+export type MarketplaceRemoteInstallAckRequest = z.infer<
+  typeof MarketplaceRemoteInstallAckRequestSchema
+>
 
 export const MarketplaceInstallRequestSchema = z.object({
   source: MarketplaceInstallSourceSchema,

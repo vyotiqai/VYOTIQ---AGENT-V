@@ -1,5 +1,5 @@
 import type { ChatMessage, CompactRunResult, ProviderId } from '../../shared/ipc'
-import { ollamaOpenAiBaseUrl } from '../../shared/domain/providers'
+import { providerNeedsKey, resolveProviderChatBaseUrl } from '../../shared/domain/providers'
 import { DEFAULT_SETTINGS } from '../../shared/ipc'
 import { logger } from '../../shared/logger'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
@@ -7,9 +7,9 @@ import { getSecret, hasStoredSecretBlob, secretStatus } from '@main/settings/sec
 import { getSettings } from '@main/settings/settings'
 import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/workspace/workspaces'
 import { allocateBudget, contentWindow, contextWindowFor } from './context/budget'
-import { compactMessages, preserveRecentMessages } from './context/compact'
-import { estimateMessagesTokens } from './context/estimate'
-import { promoteCompactionToMemory } from './context/memoryPromote'
+import { compactMessages, preserveRecentMessagesAsync } from './context/compact'
+import { estimateMessagesTokensAsync } from './context/estimate'
+import { applyFoldedMessagesWatermark } from './context/historyTrim'
 import { isTrimWatermarkCompaction, KEEP_RECENT_TURNS } from './context/types'
 import { resolveModelInfo } from './modelResolve'
 import { getProvider } from './providers'
@@ -47,8 +47,9 @@ export async function compactRunNow(input: {
   }
 
   const providerId: ProviderId = settings.provider
-  const apiKey = providerId === 'ollama' ? null : getSecret(providerId)
-  if (providerId !== 'ollama' && !apiKey) {
+  const apiKey = getSecret(providerId)
+  const baseUrl = resolveProviderChatBaseUrl(providerId, settings, apiKey)
+  if (providerNeedsKey(providerId, baseUrl ?? settings.ollamaBaseUrl) && !apiKey) {
     const status = secretStatus()
     const storedBlob = hasStoredSecretBlob(providerId)
     const message = !status.encryptionAvailable
@@ -62,7 +63,10 @@ export async function compactRunNow(input: {
   const existing = loadCompaction(runDir)
   const folded = existing?.foldedMessages ?? 0
   const all = loadMessages(input.workspacePath, input.runId)
-  const working: ChatMessage[] = folded > 0 && folded < all.length ? all.slice(folded) : all
+  // Same watermark helper as resume — avoids orphan leading tool rows.
+  const applied = applyFoldedMessagesWatermark(all, folded)
+  const working = applied.messages
+  const baseFolded = applied.foldedMessages
 
   if (working.length < MIN_MESSAGES_TO_COMPACT) {
     throw new CompactionUnavailableError('Not enough history to compact yet.')
@@ -71,10 +75,9 @@ export async function compactRunNow(input: {
   const keepRecent = settings.keepRecentTurns ?? KEEP_RECENT_TURNS
   const signal = AbortSignal.timeout(COMPACT_TIMEOUT_MS)
   const provider = getProvider(providerId)
-  const baseUrl = providerId === 'ollama' ? ollamaOpenAiBaseUrl(settings.ollamaBaseUrl) : undefined
   const model = await resolveModelInfo(providerId, settings.model, apiKey, baseUrl, signal)
 
-  const kept = preserveRecentMessages(
+  const kept = await preserveRecentMessagesAsync(
     working,
     keepRecent,
     allocateBudget(model).history,
@@ -101,19 +104,10 @@ export async function compactRunNow(input: {
 
   if (!record) throw new CompactionUnavailableError('The model returned no summary.')
 
-  const foldedMessages = folded + toSummarize.length
+  const foldedMessages = baseFolded + toSummarize.length
   const compactionRecord = { ...record, foldedMessages }
-  saveCompaction(runDir, compactionRecord)
-  if (settings.memoryAutoPromote) {
-    try {
-      promoteCompactionToMemory(input.workspacePath, compactionRecord)
-    } catch (err) {
-      logger.warn('Memory auto-promote failed', {
-        scope: 'agent',
-        correlationId: input.runId,
-        err
-      })
-    }
+  if (!saveCompaction(runDir, compactionRecord)) {
+    throw new CompactionUnavailableError('Failed to persist compaction record.')
   }
 
   logger.info('Manual compaction complete', {
@@ -125,7 +119,7 @@ export async function compactRunNow(input: {
   })
 
   const remainingEstimate =
-    estimateMessagesTokens(kept, model) + (record.tokenEstimate ?? 0)
+    (await estimateMessagesTokensAsync(kept, model)) + (record.tokenEstimate ?? 0)
 
   return {
     summary: record.summary,

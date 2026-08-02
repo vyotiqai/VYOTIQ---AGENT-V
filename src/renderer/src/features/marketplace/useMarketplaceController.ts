@@ -15,7 +15,7 @@ import type {
 
 export type MarketplaceFeedback = { kind: 'success' | 'error' | 'warning'; text: string }
 
-const REMOTE_INSTALL_SOURCES = new Set(['registry', 'git', 'npm', 'zip', 'remote'])
+const REMOTE_INSTALL_SOURCES = new Set(['registry', 'git', 'npm', 'zip', 'remote', 'path'])
 const QUERY_DEBOUNCE_MS = 250
 
 export function useMarketplaceController({
@@ -37,11 +37,33 @@ export function useMarketplaceController({
   const [catalogLoading, setCatalogLoading] = useState(true)
   const [installed, setInstalled] = useState<MarketplaceIndex>({ schemaVersion: 1, items: [] })
   const [busy, setBusy] = useState(false)
+  const busyDepthRef = useRef(0)
+  const beginBusy = useCallback(() => {
+    busyDepthRef.current += 1
+    if (busyDepthRef.current === 1) setBusy(true)
+  }, [])
+  const endBusy = useCallback(() => {
+    busyDepthRef.current = Math.max(0, busyDepthRef.current - 1)
+    if (busyDepthRef.current === 0) setBusy(false)
+  }, [])
   const [saving, setSaving] = useState(false)
-  const [feedback, setFeedback] = useState<MarketplaceFeedback | null>(null)
+  const [feedback, setFeedbackState] = useState<MarketplaceFeedback | null>(null)
+  const feedbackSeqRef = useRef(0)
+  /** Bump seq so overlapping ops cannot wipe a newer message with a stale success/error. */
+  const setFeedback = useCallback((fb: MarketplaceFeedback | null): number => {
+    const seq = ++feedbackSeqRef.current
+    setFeedbackState(fb)
+    return seq
+  }, [])
+  const setFeedbackIfCurrent = useCallback((seq: number, fb: MarketplaceFeedback | null): boolean => {
+    if (seq !== feedbackSeqRef.current) return false
+    setFeedbackState(fb)
+    return true
+  }, [])
   const [mcpStatus, setMcpStatus] = useState<McpServerStatus[]>([])
   const [mcpStatusLoading, setMcpStatusLoading] = useState(false)
   const mcpStatusReqIdRef = useRef(0)
+  const reloadReqIdRef = useRef(0)
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query), QUERY_DEBOUNCE_MS)
@@ -70,10 +92,16 @@ export function useMarketplaceController({
           : await window.vyotiq.mcpStatus(payload)
       if (reqId !== mcpStatusReqIdRef.current) return
       if (res.ok) setMcpStatus(res.data.servers)
+      else {
+        setFeedback({
+          kind: 'error',
+          text: res.code ? `${res.error} (${res.code})` : res.error
+        })
+      }
     } finally {
       if (reqId === mcpStatusReqIdRef.current) setMcpStatusLoading(false)
     }
-  }, [activeWorkspacePath])
+  }, [activeWorkspacePath, setFeedback])
 
   const runUpdate = useCallback(
     async (partial: Partial<Settings>): Promise<boolean> => {
@@ -89,10 +117,11 @@ export function useMarketplaceController({
         setSaving(false)
       }
     },
-    [onUpdate]
+    [onUpdate, setFeedback]
   )
 
   const reload = useCallback(async () => {
+    const reqId = ++reloadReqIdRef.current
     setCatalogLoading(true)
     try {
       const [browseRes, installedRes] = await Promise.all([
@@ -103,14 +132,15 @@ export function useMarketplaceController({
         ),
         window.vyotiq.marketplaceListInstalled()
       ])
+      if (reqId !== reloadReqIdRef.current) return
       if (browseRes.ok) setCatalog(browseRes.data.packages)
       else setFeedback({ kind: 'error', text: browseRes.error })
       if (installedRes.ok) setInstalled(installedRes.data)
       else setFeedback({ kind: 'error', text: installedRes.error })
     } finally {
-      setCatalogLoading(false)
+      if (reqId === reloadReqIdRef.current) setCatalogLoading(false)
     }
-  }, [kindFilter, debouncedQuery])
+  }, [kindFilter, debouncedQuery, setFeedback])
 
   const refreshCatalog = useCallback(async () => {
     setCatalogLoading(true)
@@ -131,11 +161,7 @@ export function useMarketplaceController({
 
   useEffect(() => {
     void reload()
-  }, [reload])
-
-  useEffect(() => {
-    void reload()
-  }, [settings.marketplace?.registryUrl]) // eslint-disable-line react-hooks/exhaustive-deps -- reload on registry URL change only
+  }, [reload, settings.marketplace?.registryUrl])
 
   useEffect(() => {
     const onCatalogRefreshed = (): void => {
@@ -148,28 +174,23 @@ export function useMarketplaceController({
   }, [reload])
 
   useEffect(() => {
-    void loadMcpStatus()
+    // Refresh connections on open so connect errors / recovery are visible.
+    void loadMcpStatus(true)
   }, [loadMcpStatus, installed.items.length, settings.mcpServers])
 
   const ensureRemoteAck = useCallback(async (): Promise<boolean> => {
     if (settings.marketplace?.remoteInstallAcked) return true
-    const ok = window.confirm(
-      'Remote marketplace packages and MCP endpoints are unsigned. Install only from sources you trust. Continue?'
-    )
-    if (!ok) return false
-    return runUpdate({
-      marketplace: {
-        ...settings.marketplace,
-        registryUrl: settings.marketplace?.registryUrl ?? '',
-        remoteInstallAcked: true
-      }
-    })
-  }, [runUpdate, settings.marketplace])
+    const res = await window.vyotiq.marketplaceAckRemoteInstall(true)
+    if (!res.ok) return false
+    if (!res.data.marketplace?.remoteInstallAcked) return false
+    await onReloadSettings?.()
+    return true
+  }, [onReloadSettings, settings.marketplace?.remoteInstallAcked])
 
   const runInstall = useCallback(
     async (payload: MarketplaceInstallRequest): Promise<boolean> => {
-      setBusy(true)
-      setFeedback(null)
+      beginBusy()
+      const epoch = setFeedback(null)
       try {
         if (REMOTE_INSTALL_SOURCES.has(payload.source)) {
           const acked = await ensureRemoteAck()
@@ -177,7 +198,7 @@ export function useMarketplaceController({
         }
         const res = await window.vyotiq.marketplaceInstall(payload)
         if (!res.ok) {
-          setFeedback({ kind: 'error', text: res.error })
+          setFeedbackIfCurrent(epoch, { kind: 'error', text: res.error })
           return false
         }
         const { item, authTokenStored } = res.data
@@ -188,7 +209,7 @@ export function useMarketplaceController({
               ? ' Warning: Bearer token could not be stored in OS secure storage — configure auth under Installed.'
               : ' Bearer token stored in OS secure storage.'
         }
-        setFeedback({
+        setFeedbackIfCurrent(epoch, {
           kind: authTokenStored === false ? 'error' : 'success',
           text: `Installed ${item.name} (${item.kind}) — enabled by default; tools load into the agent when connected.${tokenHint}`
         })
@@ -197,10 +218,19 @@ export function useMarketplaceController({
         await loadMcpStatus(true)
         return true
       } finally {
-        setBusy(false)
+        endBusy()
       }
     },
-    [ensureRemoteAck, loadMcpStatus, onReloadSettings, reload]
+    [
+      ensureRemoteAck,
+      loadMcpStatus,
+      onReloadSettings,
+      reload,
+      beginBusy,
+      endBusy,
+      setFeedback,
+      setFeedbackIfCurrent
+    ]
   )
 
   const installFromCatalog = useCallback(
@@ -224,7 +254,8 @@ export function useMarketplaceController({
 
   const setEnabled = useCallback(
     async (item: MarketplaceInstalledItem, enabled: boolean) => {
-      setBusy(true)
+      beginBusy()
+      const epoch = ++feedbackSeqRef.current
       try {
         const res = await window.vyotiq.marketplaceSetEnabled(item.id, enabled)
         if (!res.ok) {
@@ -235,23 +266,23 @@ export function useMarketplaceController({
         if (item.kind === 'mcp' || item.kind === 'plugin') {
           await onReloadSettings?.()
           await loadMcpStatus(true)
-          setFeedback({
+          setFeedbackIfCurrent(epoch, {
             kind: 'success',
             text: enabled
               ? `${item.name} enabled — connecting and loading tools for the agent.`
               : `${item.name} disabled.`
           })
         } else {
-          setFeedback({
+          setFeedbackIfCurrent(epoch, {
             kind: 'success',
             text: enabled ? `${item.name} enabled.` : `${item.name} disabled.`
           })
         }
       } finally {
-        setBusy(false)
+        endBusy()
       }
     },
-    [loadMcpStatus, onReloadSettings]
+    [loadMcpStatus, onReloadSettings, beginBusy, endBusy, setFeedback, setFeedbackIfCurrent]
   )
 
   const uninstall = useCallback(
@@ -259,7 +290,8 @@ export function useMarketplaceController({
       if (!window.confirm('Uninstall this package? Auth secrets for its MCP servers will be cleared.')) {
         return
       }
-      setBusy(true)
+      beginBusy()
+      const epoch = ++feedbackSeqRef.current
       try {
         const res = await window.vyotiq.marketplaceUninstall(id)
         if (!res.ok) {
@@ -267,32 +299,36 @@ export function useMarketplaceController({
           return
         }
         setInstalled(res.data)
-        setFeedback({ kind: 'success', text: 'Uninstalled' })
+        setFeedbackIfCurrent(epoch, { kind: 'success', text: 'Uninstalled' })
         await onReloadSettings?.()
         await loadMcpStatus(true)
       } finally {
-        setBusy(false)
+        endBusy()
       }
     },
-    [loadMcpStatus, onReloadSettings]
+    [loadMcpStatus, onReloadSettings, beginBusy, endBusy, setFeedback, setFeedbackIfCurrent]
   )
 
   const detectMcp = useCallback(
     async (input: string): Promise<McpDetectResult | null> => {
-      setBusy(true)
+      beginBusy()
       setFeedback(null)
       try {
         const trimmed = input.trim()
+        // Match main `classifyMcpInput` ack gates: git / npm / remote / JSON configs.
+        // Plain stdio launcher lines (npx/uvx/…) ack at apply time, not detect.
+        const looksLikeJson = trimmed.startsWith('{') || trimmed.startsWith('[')
+        const looksLikeGit =
+          /^git@|^ssh:\/\/|^git:\/\//i.test(trimmed) ||
+          /\.git$/i.test(trimmed) ||
+          /^https?:\/\/(www\.)?(github\.com|gitlab\.com|bitbucket\.org)\b/i.test(trimmed)
+        const looksLikeRemote =
+          /^https?:\/\//i.test(trimmed) && !looksLikeGit
         const looksLikeNpm =
-          !trimmed.startsWith('{') &&
+          !looksLikeJson &&
           !/\s/.test(trimmed) &&
           /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/i.test(trimmed)
-        const needsAck =
-          /^https?:\/\//i.test(trimmed) ||
-          /^git@/i.test(trimmed) ||
-          looksLikeNpm ||
-          trimmed.startsWith('{')
-        if (needsAck) {
+        if (looksLikeJson || looksLikeGit || looksLikeRemote || looksLikeNpm) {
           const acked = await ensureRemoteAck()
           if (!acked) return null
         }
@@ -303,29 +339,25 @@ export function useMarketplaceController({
         }
         return res.data
       } finally {
-        setBusy(false)
+        endBusy()
       }
     },
-    [ensureRemoteAck]
+    [ensureRemoteAck, beginBusy, endBusy]
   )
 
   const applyDetectedMcp = useCallback(
     async (payload: McpApplyDetectedRequest): Promise<boolean> => {
-      setBusy(true)
-      setFeedback(null)
+      beginBusy()
+      const epoch = setFeedback(null)
       try {
-        const needsAck =
-          Boolean(payload.install) || Boolean(payload.server?.url?.trim())
-        if (needsAck) {
-          const acked = await ensureRemoteAck()
-          if (!acked) return false
-        }
+        const acked = await ensureRemoteAck()
+        if (!acked) return false
         const res = await window.vyotiq.marketplaceApplyDetectedMcp(payload)
         if (!res.ok) {
-          setFeedback({ kind: 'error', text: res.error })
+          setFeedbackIfCurrent(epoch, { kind: 'error', text: res.error })
           return false
         }
-        setFeedback({
+        setFeedbackIfCurrent(epoch, {
           kind: 'success',
           text:
             res.data.applied === 'marketplace'
@@ -337,15 +369,24 @@ export function useMarketplaceController({
         await loadMcpStatus(true)
         return true
       } finally {
-        setBusy(false)
+        endBusy()
       }
     },
-    [ensureRemoteAck, loadMcpStatus, onReloadSettings, reload]
+    [
+      ensureRemoteAck,
+      loadMcpStatus,
+      onReloadSettings,
+      reload,
+      beginBusy,
+      endBusy,
+      setFeedback,
+      setFeedbackIfCurrent
+    ]
   )
 
   const scanExternalMcp = useCallback(
     async (paths?: string[]): Promise<McpImportExternalResult | null> => {
-      setBusy(true)
+      beginBusy()
       setFeedback(null)
       try {
         const res = await window.vyotiq.marketplaceScanExternalMcp(
@@ -363,22 +404,19 @@ export function useMarketplaceController({
         }
         return res.data
       } finally {
-        setBusy(false)
+        endBusy()
       }
     },
-    []
+    [beginBusy, endBusy]
   )
 
   const importExternalMcp = useCallback(
     async (payload: McpImportExternalRequest): Promise<boolean> => {
-      setBusy(true)
+      beginBusy()
       setFeedback(null)
       try {
-        const remotes = (payload.servers ?? []).some((s) => Boolean(s.url?.trim()))
-        if (remotes || payload.json?.includes('"url"')) {
-          const acked = await ensureRemoteAck()
-          if (!acked) return false
-        }
+        const acked = await ensureRemoteAck()
+        if (!acked) return false
         const res = await window.vyotiq.marketplaceImportExternalMcp(payload)
         if (!res.ok) {
           setFeedback({ kind: 'error', text: res.error })
@@ -397,10 +435,10 @@ export function useMarketplaceController({
         await loadMcpStatus(true)
         return true
       } finally {
-        setBusy(false)
+        endBusy()
       }
     },
-    [ensureRemoteAck, loadMcpStatus, onReloadSettings, reload]
+    [ensureRemoteAck, loadMcpStatus, onReloadSettings, reload, beginBusy, endBusy]
   )
 
   return {

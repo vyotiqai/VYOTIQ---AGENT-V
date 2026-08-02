@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { MarketplaceCatalogEntry, Settings, WorkspaceSettingsOverride } from '@shared/ipc'
 import { CHAT_GUTTER, MARKETPLACE_COLUMN } from '@renderer/lib/utils/layout'
-import { cn } from '@renderer/lib/ui'
+import { Button, cn } from '@renderer/lib/ui'
 import { useMarketplaceController } from './useMarketplaceController'
 import { MarketplaceHome } from './MarketplaceHome'
 import { MarketplaceDetail } from './MarketplaceDetail'
@@ -75,11 +75,23 @@ export function MarketplaceView({
     setPane({ kind: 'detail', entryId: entry.id, fallback: entry })
   }
 
+  const openBrowse = (): void => {
+    setManageFocusServerId(null)
+    setPane({ kind: 'home' })
+  }
+
+  const openManage = (returnTo?: { entryId: string; fallback: MarketplaceCatalogEntry }): void => {
+    setPane(returnTo ? { kind: 'manage', returnTo } : { kind: 'manage' })
+  }
+
+  const browseActive = pane.kind === 'home' || pane.kind === 'detail'
+  const manageActive = pane.kind === 'manage'
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-bg animate-fade-in">
       <header
         className={cn(
-          'flex shrink-0 items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-5'
+          'flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-5'
         )}
       >
         <div className="min-w-0">
@@ -90,16 +102,42 @@ export function MarketplaceView({
             MCP servers, skills, and plugins for the agent.
           </p>
         </div>
-        {onClose ? (
-          <button
-            ref={closeRef}
-            type="button"
-            className="shrink-0 text-sm text-secondary vy-transition hover:text-fg focus-visible:vy-focus-ring"
-            onClick={onClose}
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <div
+            className="flex gap-1"
+            role="tablist"
+            aria-label="Marketplace sections"
           >
-            Close
-          </button>
-        ) : null}
+            <Button
+              role="tab"
+              aria-selected={browseActive}
+              variant="subtle"
+              className={browseActive ? 'bg-surface-2 text-fg-strong' : undefined}
+              onClick={openBrowse}
+            >
+              Browse
+            </Button>
+            <Button
+              role="tab"
+              aria-selected={manageActive}
+              variant="subtle"
+              className={manageActive ? 'bg-surface-2 text-fg-strong' : undefined}
+              onClick={() => openManage()}
+            >
+              Manage
+            </Button>
+          </div>
+          {onClose ? (
+            <button
+              ref={closeRef}
+              type="button"
+              className="shrink-0 text-sm text-secondary vy-transition hover:text-fg focus-visible:vy-focus-ring"
+              onClick={onClose}
+            >
+              Close
+            </button>
+          ) : null}
+        </div>
       </header>
 
       <div className={cn('min-h-0 flex-1 overflow-y-auto', CHAT_GUTTER, 'py-5')}>
@@ -109,19 +147,16 @@ export function MarketplaceView({
               controller={controller}
               selectedEntryId={selectedEntryId}
               onOpenDetail={openDetail}
-              onOpenManage={() => setPane({ kind: 'manage' })}
+              onOpenManage={() => openManage()}
             />
           ) : null}
           {pane.kind === 'detail' && detailEntry ? (
             <MarketplaceDetail
               entry={detailEntry}
               controller={controller}
-              onBack={() => setPane({ kind: 'home' })}
+              onBack={openBrowse}
               onOpenManage={() =>
-                setPane({
-                  kind: 'manage',
-                  returnTo: { entryId: detailEntry.id, fallback: detailEntry }
-                })
+                openManage({ entryId: detailEntry.id, fallback: detailEntry })
               }
             />
           ) : null}

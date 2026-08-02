@@ -20,6 +20,8 @@ export interface TokenUsage {
   totalTokens?: number
   /** Input tokens served from provider prompt cache (OpenAI, DeepSeek, Groq, Anthropic, Gemini). */
   cachedInputTokens?: number
+  /** Input tokens written into the prompt cache this step (Anthropic cache_creation). */
+  cacheCreationInputTokens?: number
   /** Reasoning / thinking tokens billed as output (provider-specific). */
   reasoningTokens?: number
 }
@@ -43,6 +45,8 @@ export interface StreamChunk {
   toolCall?: ToolCall
   toolCallDelta?: { index: number; id?: string; name?: string; arguments?: string }
   error?: string
+  /** Structured failure code for `error` chunks (e.g. PROVIDER_HTTP vs PROVIDER_STREAM). */
+  errorCode?: string
   usage?: TokenUsage
   /** Anthropic server-side compaction summary (not user-visible assistant text). */
   compaction?: string
@@ -72,6 +76,16 @@ export interface ProviderChatRequest {
   messages: ChatMessage[]
   tools: ToolDefinition[]
   system?: string
+  /**
+   * Stable/volatile system split for prompt caching.
+   * - Anthropic: stable gets `cache_control`; volatile is unmarked in system blocks.
+   * - OpenAI-compat / Gemini / DeepSeek: stable is the leading system/developer
+   *   instruction; volatile is appended *after* history so the clock/snapshot do
+   *   not bust the cacheable tools+system+history prefix.
+   * When set, preferred over a single combined `system` string.
+   */
+  systemStable?: string
+  systemVolatile?: string
   signal: AbortSignal
   apiKey?: string | null
   baseUrl?: string
@@ -82,6 +96,12 @@ export interface ProviderChatRequest {
     enableContextManagement: boolean
     clearToolUsesKeep: number
     compactTriggerTokens?: number
+    /** Server clear_tool_uses input_tokens trigger (Anthropic context editing). */
+    clearToolUsesTriggerTokens?: number
+    /** Min tokens cleared per activation — avoids cache-busting micro-clears. */
+    clearToolUsesAtLeastTokens?: number
+    /** Tool names whose uses/results are never server-cleared. */
+    clearToolUsesExcludeTools?: string[]
   }
   responseFormat?: ResponseFormat
   toolChoice?: 'auto' | 'none' | 'required'
@@ -96,7 +116,7 @@ export interface ProviderChatRequest {
   reasoningState?: ProviderReasoningState
   /** Resolved model metadata for routing (Responses vs Completions, etc.). */
   modelInfo?: ModelInfo
-  /** API service tier (flex / priority) when supported. */
+  /** API service tier (`flex` / `priority`). UI labels `priority` as Fast (OpenAI Fast mode). */
   serviceTier?: ServiceTier
 }
 

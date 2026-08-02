@@ -1,11 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AgentInteractionMode, AttachedFile, ProviderId, ServiceTier, SlashCommandDescriptor } from '@shared/ipc'
+import type {
+  AgentInteractionMode,
+  AttachedAudio,
+  AttachedFile,
+  AttachedNativeFile,
+  ComposerSendExtras,
+  ProviderId,
+  ServiceTier,
+  SlashCommandDescriptor
+} from '@shared/ipc'
 import { buildUserContent } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
-import { triggerKey } from '@shared/slashCommands'
+import { resolveSlashCommandForSubmit } from '@shared/slashCommands'
 import { Alert, cn } from '@renderer/lib/ui'
-import { CHAT_COLUMN, CHAT_GUTTER, FLOATING_CHROME, FLOATING_CHROME_SHADOW_BOTTOM } from '@renderer/lib/utils/layout'
-import { ComposerTextarea } from './ComposerTextarea'
+import {
+  CHAT_COLUMN,
+  CHAT_GUTTER,
+  CHAT_STAGE_INSET,
+  FLOATING_CHROME,
+  FLOATING_CHROME_SHADOW_BOTTOM
+} from '@renderer/lib/utils/layout'
+import { ComposerMentionInput, type ComposerMentionInputHandle } from './ComposerMentionInput'
 import { ComposerToolbar, type ComposerVariant } from './ComposerToolbar'
 import { ComposerAttachments } from './ComposerAttachments'
 import { ComposerStatus } from './ComposerStatus'
@@ -13,18 +28,21 @@ import { PlanHandoff } from './PlanHandoff'
 import { useComposerDraft } from './useComposerDraft'
 import { useComposerImages, MAX_IMAGES } from './useComposerImages'
 import { useComposerFiles, ATTACHMENT_ACCEPT, MAX_FILES, isImageFile } from './useComposerFiles'
+import { useComposerAudio, isAudioFile } from './useComposerAudio'
 import { useComposerModels } from './useComposerModels'
-import { pickVisionFallback } from './composerModelUtils'
+import { pickAudioFallback, pickVisionFallback } from './composerModelUtils'
 import { useWorkspaceHotUi } from '@renderer/lib/hooks/workspaceHotUiStore'
 import { SlashCommandMenu } from './SlashCommandMenu'
 import { useSlashCommands } from './useSlashCommands'
+import { MentionMenu } from './MentionMenu'
+import { useComposerMentions } from './useComposerMentions'
+import { resolveComposerMentions } from './resolveMentions'
+import { mentionMarker, type MentionMenuItem } from './mentionModel'
 import {
   executeSlashResolveResult,
   type SlashClientHandlers
 } from './slashCommandExecute'
-
-const HERO_HINT =
-  'Type / for commands — try /code-review, /compact, /create-rule'
+import { resolveComposerPlaceholder } from './composerPlaceholder'
 
 export function Composer({
   provider,
@@ -34,6 +52,7 @@ export function Composer({
   hasWorkspace,
   hasTranscript,
   ollamaBaseUrl,
+  customOpenAiBaseUrl,
   modelsRefreshKey,
   draft,
   onDraftChange,
@@ -50,6 +69,8 @@ export function Composer({
   onAgentModeChange = () => {},
   onSend,
   onStop,
+  pendingFollowUps = [],
+  onRemoveFollowUp,
   composerPlaceholder,
   bannerError,
   runNotice,
@@ -64,8 +85,15 @@ export function Composer({
   leading,
   trailing,
   variant = 'dock',
+  sideRailPad = true,
   className,
-  slashHandlers
+  slashHandlers,
+  seedImages,
+  seedFiles,
+  seedAudio,
+  seedNativeFiles,
+  onCancelEdit,
+  imageReadyHint = null
 }: {
   provider: ProviderId
   model: string
@@ -74,6 +102,7 @@ export function Composer({
   hasWorkspace?: boolean
   hasTranscript?: boolean
   ollamaBaseUrl?: string
+  customOpenAiBaseUrl?: string
   modelsRefreshKey?: string | number
   draft?: string
   onDraftChange?: (draft: string) => void
@@ -92,9 +121,12 @@ export function Composer({
   onSend: (
     text: string,
     images?: string[],
-    files?: AttachedFile[]
+    files?: AttachedFile[],
+    extras?: import('@shared/ipc').ComposerSendExtras
   ) => boolean | void | Promise<boolean | void>
   onStop: () => void
+  pendingFollowUps?: import('@renderer/lib/hooks/createChatStreamController').PendingFollowUpState[]
+  onRemoveFollowUp?: (id: string) => void
   composerPlaceholder?: string
   bannerError?: string | null
   runNotice?: string | null
@@ -112,19 +144,41 @@ export function Composer({
   /** Docked chrome below the composer, e.g. the repository line. */
   trailing?: React.ReactNode
   variant?: ComposerVariant
+  /** When false, use symmetric gutter (immersive Agent — no floating side rail). */
+  sideRailPad?: boolean
   className?: string
   slashHandlers?: SlashClientHandlers
+  /** One-shot attachment seed when mounting an inline edit composer. */
+  seedImages?: string[]
+  seedFiles?: AttachedFile[]
+  seedAudio?: AttachedAudio[]
+  seedNativeFiles?: AttachedNativeFile[]
+  /** Escape / cancel while editing a prompt bubble. */
+  onCancelEdit?: () => void
+  /** Shown in toolbar when image generation keys are configured. */
+  imageReadyHint?: string | null
 }) {
-  const taRef = useRef<HTMLTextAreaElement>(null)
+  const taRef = useRef<ComposerMentionInputHandle>(null)
+  const focusInput = useCallback(() => taRef.current?.focus(), [])
+  const mentionAnchorRef = useRef<HTMLDivElement | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
-  const locked = Boolean(disabled || running)
+  const workspacePathRef = useRef(workspacePath)
+  workspacePathRef.current = workspacePath
+  const inputLocked = Boolean(disabled)
+  const settingsLocked = Boolean(disabled || running)
   const hotUi = useWorkspaceHotUi(workspacePath)
-  const resolvedDraft = workspacePath ? hotUi.composerDraft : (draft ?? '')
+  // Inline edit must keep its own draft; dock uses hot UI when a workspace is bound.
+  const resolvedDraft =
+    variant === 'inline'
+      ? (draft ?? '')
+      : workspacePath
+        ? hotUi.composerDraft
+        : (draft ?? '')
   const [cursor, setCursor] = useState(0)
 
   const syncCursor = useCallback((): void => {
-    const el = taRef.current
-    if (el) setCursor(el.selectionStart ?? 0)
+    const handle = taRef.current
+    if (handle) setCursor(handle.getSelectionStart())
   }, [])
 
   const {
@@ -136,30 +190,121 @@ export function Composer({
     removeImage
   } = useComposerImages()
 
+  const preferNativePdfRef = useRef(false)
+
   const {
     files,
     setFiles,
+    nativeFiles,
+    setNativeFiles,
     fileError,
     setFileError,
     extracting,
     addFiles,
-    removeFile
-  } = useComposerFiles()
+    removeFile,
+    removeNativeFile
+  } = useComposerFiles({ getPreferNativePdf: () => preferNativePdfRef.current })
+
+  const { audio, setAudio, audioError, addAudio, removeAudio } = useComposerAudio()
+
+  const seededRef = useRef(false)
+  useEffect(() => {
+    if (seededRef.current) return
+    seededRef.current = true
+    if (seedImages?.length) setImages(seedImages.slice(0, MAX_IMAGES))
+    if (seedFiles?.length) setFiles(seedFiles.slice(0, MAX_FILES))
+    if (seedAudio?.length) setAudio(seedAudio)
+    if (seedNativeFiles?.length) setNativeFiles(seedNativeFiles)
+  }, [seedImages, seedFiles, seedAudio, seedNativeFiles, setImages, setFiles, setAudio, setNativeFiles])
 
   const slash = useSlashCommands({
     workspacePath,
     text: resolvedDraft,
     cursor,
-    enabled: !locked && Boolean(hasWorkspace),
+    enabled: !inputLocked && Boolean(hasWorkspace),
     onListError: slashHandlers?.onNotice
   })
 
-  const findCommandByTrigger = useCallback(
-    (trigger: string): SlashCommandDescriptor | null => {
-      const key = triggerKey(trigger)
-      return slash.commands.find((c) => triggerKey(c.trigger) === key) ?? null
+  const mentions = useComposerMentions({
+    workspacePath,
+    text: resolvedDraft,
+    cursor,
+    enabled: !inputLocked && Boolean(hasWorkspace) && !slash.open
+  })
+
+  const onMentionAccept = useCallback(
+    (item: MentionMenuItem) => {
+      const result = mentions.acceptItem(item)
+      if (!result) return
+      if (result.action === 'navigate') {
+        mentions.setView(result.view)
+        return
+      }
+      if (result.action === 'show-more') {
+        mentions.showMore()
+        return
+      }
+      onDraftChange?.(result.nextText)
+      setCursor(result.nextCursor)
+      requestAnimationFrame(() => {
+        taRef.current?.setSelectionStart(result.nextCursor)
+        taRef.current?.focus()
+      })
+      mentions.dismiss()
     },
-    [slash.commands]
+    [mentions, onDraftChange]
+  )
+
+  const sendWithMentions = useCallback(
+    async (
+      rawText: string,
+      sendImages?: string[],
+      sendFiles?: AttachedFile[],
+      extras?: ComposerSendExtras
+    ): Promise<boolean | void> => {
+      try {
+        const boundWorkspace = workspacePath
+        const resolved = await resolveComposerMentions({
+          workspacePath: boundWorkspace,
+          draft: rawText,
+          existingFiles: sendFiles ?? [],
+          isCurrent: () => workspacePathRef.current === boundWorkspace
+        })
+        if (resolved.stale || workspacePathRef.current !== boundWorkspace) {
+          return false
+        }
+        if (resolved.error) setFileError(resolved.error)
+        const hasExtras = Boolean(extras?.audio?.length || extras?.nativeFiles?.length)
+        if (
+          !resolved.text.trim() &&
+          !resolved.files.length &&
+          !(sendImages?.length) &&
+          !hasExtras
+        ) {
+          return false
+        }
+        return await onSend(
+          resolved.text,
+          sendImages?.length ? sendImages : undefined,
+          resolved.files.length ? resolved.files : undefined,
+          extras
+        )
+      } catch (err) {
+        setFileError(err instanceof Error ? err.message : 'Send failed')
+        return false
+      }
+    },
+    [workspacePath, onSend, setFileError]
+  )
+
+  const resolveSlashSubmitCommand = useCallback(
+    async (triggerOrId: string): Promise<SlashCommandDescriptor | null> => {
+      const commands = await slash.ensureCommands()
+      const byId = commands.find((c) => c.id === triggerOrId)
+      if (byId) return byId
+      return resolveSlashCommandForSubmit(triggerOrId, commands, slash.activeCommand)
+    },
+    [slash]
   )
 
   const resolveAndExecute = useCallback(
@@ -167,7 +312,8 @@ export function Composer({
       command: SlashCommandDescriptor,
       trailingText: string,
       sendImages: string[],
-      sendFiles: AttachedFile[]
+      sendFiles: AttachedFile[],
+      extras?: ComposerSendExtras
     ): Promise<boolean> => {
       if (!window.vyotiq?.slashCommandsResolve) return false
 
@@ -185,14 +331,34 @@ export function Composer({
         command.availability === 'disconnected' ||
         command.availability === 'needs_auth'
       ) {
+        const notice =
+          command.description?.includes(' — ')
+            ? command.description.split(' — ').slice(1).join(' — ')
+            : command.availability === 'needs_auth'
+              ? 'MCP server needs authentication — open Marketplace to connect.'
+              : 'MCP server not connected — open Marketplace to reconnect.'
+        slashHandlers?.onNotice?.(notice)
         slashHandlers?.onOpenMarketplace?.(command.mcpServerId)
         return false
       }
 
+      // Trailing text may include @mention markers (skill chip submit / typed after /cmd).
+      const boundWorkspace = workspacePath
+      const resolvedTrailing = await resolveComposerMentions({
+        workspacePath: boundWorkspace,
+        draft: trailingText,
+        existingFiles: sendFiles,
+        isCurrent: () => workspacePathRef.current === boundWorkspace
+      })
+      if (resolvedTrailing.stale || workspacePathRef.current !== boundWorkspace) {
+        return false
+      }
+      if (resolvedTrailing.error) setFileError(resolvedTrailing.error)
+
       const res = await window.vyotiq.slashCommandsResolve({
         id: command.id,
         workspacePath: workspacePath ?? null,
-        trailingText
+        trailingText: resolvedTrailing.text
       })
       if (!res.ok) {
         slashHandlers?.onNotice?.(res.error)
@@ -216,10 +382,11 @@ export function Composer({
 
       if (outcome === 'sent' && res.data.action === 'send') {
         const ok = await Promise.resolve(
-          onSend(
+          sendWithMentions(
             res.data.message,
             sendImages.length ? sendImages : undefined,
-            sendFiles.length ? sendFiles : undefined
+            resolvedTrailing.files.length ? resolvedTrailing.files : undefined,
+            extras
           )
         )
         return ok !== false
@@ -231,45 +398,66 @@ export function Composer({
       if (outcome === 'failed') return false
       return true
     },
-    [workspacePath, slashHandlers, onCompactContext, onSend, slash]
+    [workspacePath, slashHandlers, onCompactContext, sendWithMentions, slash, setFileError]
   )
 
   const onSlashAccept = useCallback(
     (command: SlashCommandDescriptor): void => {
-      const token = slash.token
-      const trailingForResolve = token?.trailingText ?? ''
-      const snapshot = resolvedDraft
-      if (token && onDraftChange) {
-        const before = resolvedDraft.slice(0, token.start)
-        const afterToken = resolvedDraft.slice(token.end).replace(/^\s+/, '')
-        onDraftChange(`${before}${afterToken}`.trimStart())
+      // Marketplace / connectivity CTAs — do not insert or send.
+      if (command.availability === 'not_installed' && command.packageId) {
+        void Promise.resolve(
+          slashHandlers?.onMarketplaceAction?.(command.packageId, 'install')
+        ).then(() => {
+          void slash.reload()
+        })
+        return
+      }
+      if (command.availability === 'disabled' && command.packageId) {
+        void Promise.resolve(
+          slashHandlers?.onMarketplaceAction?.(command.packageId, 'enable')
+        ).then(() => {
+          void slash.reload()
+        })
+        return
+      }
+      if (
+        command.availability === 'disconnected' ||
+        command.availability === 'needs_auth'
+      ) {
+        const notice =
+          command.description?.includes(' — ')
+            ? command.description.split(' — ').slice(1).join(' — ')
+            : command.availability === 'needs_auth'
+              ? 'MCP server needs authentication — open Marketplace to connect.'
+              : 'MCP server not connected — open Marketplace to reconnect.'
+        slashHandlers?.onNotice?.(notice)
+        slashHandlers?.onOpenMarketplace?.(command.mcpServerId)
+        return
       }
 
-      void resolveAndExecute(command, trailingForResolve, images, files).then((ok) => {
-        if (ok) {
-          onDraftChange?.('')
-          setImages([])
-          setImageError(null)
-          setFiles([])
-          setFileError(null)
-        } else {
-          // Restore pre-strip draft on CTA / IPC failure / pending marketplace.
-          onDraftChange?.(snapshot)
-        }
+      // All slash kinds → chip; user adds trailing text then sends.
+      const token = slash.token
+      const before = token ? resolvedDraft.slice(0, token.start) : resolvedDraft
+      const after = token
+        ? resolvedDraft.slice(token.end).replace(/^\s+/, '')
+        : ''
+      const insertion = `${mentionMarker({
+        kind: 'slash',
+        slashKind: command.kind,
+        trigger: command.trigger,
+        commandId: command.id
+      })} `
+      const nextText = `${before}${insertion}${after}`
+      const nextCursor = before.length + insertion.length
+      onDraftChange?.(nextText)
+      setCursor(nextCursor)
+      requestAnimationFrame(() => {
+        taRef.current?.setSelectionStart(nextCursor)
+        taRef.current?.focus()
       })
+      slash.dismiss()
     },
-    [
-      slash.token,
-      resolvedDraft,
-      onDraftChange,
-      resolveAndExecute,
-      images,
-      files,
-      setImages,
-      setImageError,
-      setFiles,
-      setFileError
-    ]
+    [slash, resolvedDraft, onDraftChange, slashHandlers]
   )
 
   const onSlashSubmit = useCallback(
@@ -277,9 +465,10 @@ export function Composer({
       command: SlashCommandDescriptor,
       trailingText: string,
       sendImages: string[],
-      sendFiles: AttachedFile[]
+      sendFiles: AttachedFile[],
+      extras?: ComposerSendExtras
     ): Promise<boolean> => {
-      return resolveAndExecute(command, trailingText, sendImages, sendFiles)
+      return resolveAndExecute(command, trailingText, sendImages, sendFiles, extras)
     },
     [resolveAndExecute]
   )
@@ -292,17 +481,31 @@ export function Composer({
     setImageError,
     files,
     setFiles,
+    nativeFiles,
+    setNativeFiles,
+    audio,
+    setAudio,
     setFileError,
     running,
     disabled,
-    onSend,
+    onSend: sendWithMentions,
     slashMenuOpen: slash.open,
     slashActiveCommand: slash.activeCommand,
     onSlashMove: slash.moveActive,
     onSlashDismiss: slash.dismiss,
     onSlashAccept,
     onSlashSubmit,
-    findCommandByTrigger
+    resolveSlashSubmitCommand,
+    mentionMenuOpen: mentions.open,
+    mentionActiveItem: mentions.activeItem,
+    onMentionMove: (delta: number) => {
+      const len = mentions.items.length
+      if (!len) return
+      mentions.setActiveIndex((i) => Math.max(0, Math.min(len - 1, i + delta)))
+    },
+    onMentionDismiss: mentions.dismiss,
+    onMentionAccept,
+    onMentionBack: mentions.goBack
   })
 
   const [refreshingCatalog, setRefreshingCatalog] = useState(false)
@@ -326,15 +529,21 @@ export function Composer({
     provider,
     model,
     ollamaBaseUrl,
+    customOpenAiBaseUrl,
     modelsRefreshKey,
     hasWorkspace,
     hasImages: images.length > 0,
+    hasAudio: audio.length > 0,
     browsedProvider
   })
 
+  preferNativePdfRef.current = Boolean(
+    modelMetaByValue?.[model]?.inputModalities?.includes('file')
+  )
+
   const catalogLoading = catalogFetchLoading || refreshingCatalog
 
-  const ensureVisionModel = (): void => {
+  const ensureVisionModel = useCallback((): void => {
     if (running) return
     const fallback = pickVisionFallback(catalog, model, {
       ...filterOpts,
@@ -343,33 +552,70 @@ export function Composer({
     if (fallback && fallback !== model) {
       onProviderModel(provider, fallback)
     }
-  }
+  }, [running, catalog, model, filterOpts, onProviderModel, provider])
+
+  const ensureAudioModel = useCallback((): void => {
+    if (running) return
+    const fallback = pickAudioFallback(catalog, model, {
+      ...filterOpts,
+      hasAudio: true
+    })
+    if (fallback && fallback !== model) {
+      onProviderModel(provider, fallback)
+    }
+  }, [running, catalog, model, filterOpts, onProviderModel, provider])
+
+  // Cover picker, draft restore, and any setImages path — not only onPickAttachments.
+  useEffect(() => {
+    if (images.length > 0) ensureVisionModel()
+  }, [images.length, ensureVisionModel])
+
+  useEffect(() => {
+    if (audio.length > 0) ensureAudioModel()
+  }, [audio.length, ensureAudioModel])
 
   const onPickAttachments = async (list: FileList | null): Promise<void> => {
     if (!list?.length) return
     const picked = Array.from(list)
     const imageFiles = picked.filter(isImageFile)
-    const documents = picked.filter((file) => !isImageFile(file))
-    if (imageFiles.length) {
-      await onPickImages(imageFiles)
-      ensureVisionModel()
-    }
+    const audioFiles = picked.filter((file) => !isImageFile(file) && isAudioFile(file))
+    const documents = picked.filter((file) => !isImageFile(file) && !isAudioFile(file))
+    if (imageFiles.length) await onPickImages(imageFiles)
+    if (audioFiles.length) await addAudio(audioFiles)
     if (documents.length) await addFiles(documents)
   }
 
   const isDock = variant === 'dock'
+  const isInline = variant === 'inline'
+  const slashListId = `slash-command-menu-${variant}`
+  const mentionListId = `composer-mention-menu-${variant}`
 
   return (
     <div
       className={cn(
         isDock
-          ? 'pointer-events-none absolute inset-x-0 bottom-0 z-sticky bg-bg pb-3 before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-8 before:bg-gradient-to-t before:from-bg before:to-transparent'
+          ? // Full-bleed floating dock: scrollbar-gutter matches the transcript
+            // scrollport. Side-rail pad clears the floating rail. No opaque bar —
+            // fade + chrome shadow keep it floating over the transcript.
+            'pointer-events-none absolute inset-x-0 bottom-0 z-sticky overflow-y-hidden pb-3 [scrollbar-gutter:stable] before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-6 before:bg-gradient-to-t before:from-bg before:via-bg/70 before:to-transparent'
           : 'shrink-0 w-full pb-0 pt-0',
-        isDock ? CHAT_GUTTER : '',
+        isDock ? (sideRailPad ? CHAT_STAGE_INSET : CHAT_GUTTER) : '',
         className
       )}
       data-composer-dock={isDock ? true : undefined}
-      data-composer-hero={!isDock ? true : undefined}
+      data-composer-hero={variant === 'hero' ? true : undefined}
+      data-composer-inline={isInline ? true : undefined}
+      onKeyDown={
+        isInline && onCancelEdit
+          ? (e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault()
+                e.stopPropagation()
+                onCancelEdit()
+              }
+            }
+          : undefined
+      }
     >
       <div
         className={cn(isDock && CHAT_COLUMN, 'flex flex-col gap-2')}
@@ -407,56 +653,91 @@ export function Composer({
             }}
           />
 
+          {pendingFollowUps.length > 0 ? (
+            <div
+              className="col-span-full flex flex-wrap items-center gap-1.5"
+              data-follow-up-queue
+              aria-label="Queued follow-ups"
+            >
+              {pendingFollowUps.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="inline-flex max-w-full items-center gap-1 rounded-lg bg-surface-2 px-2 py-1 text-[11px] text-muted"
+                >
+                  <span className="min-w-0 truncate" title={entry.preview}>
+                    Queued: {entry.preview}
+                  </span>
+                  {onRemoveFollowUp ? (
+                    <button
+                      type="button"
+                      className="shrink-0 rounded px-1 text-muted hover:bg-surface hover:text-fg"
+                      aria-label="Remove queued follow-up"
+                      onClick={() => onRemoveFollowUp(entry.id)}
+                    >
+                      ×
+                    </button>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+
           <ComposerAttachments
             images={images}
             imageError={imageError}
             files={files}
+            nativeFiles={nativeFiles}
+            audio={audio}
             fileError={fileError}
+            audioError={audioError}
             extracting={extracting}
-            running={running}
+            attachLocked={inputLocked}
             onRemove={removeImage}
             onRemoveFile={removeFile}
+            onRemoveNativeFile={removeNativeFile}
+            onRemoveAudio={removeAudio}
           />
 
-          <ComposerTextarea
-            ref={taRef}
-            className="col-span-full min-h-[32px] max-h-40 min-w-0 border-0 bg-transparent p-0 text-md leading-relaxed shadow-none focus-visible:ring-0"
-            value={text}
-            onChange={(next) => {
-              setText(next)
-              requestAnimationFrame(syncCursor)
-            }}
-            onKeyDown={(e) => {
-              onKeyDown(e)
-              requestAnimationFrame(syncCursor)
-            }}
-            onSelect={syncCursor}
-            onClick={syncCursor}
-            onKeyUp={syncCursor}
-            placeholder={
-              composerPlaceholder ??
-              (agentMode === 'ask'
-                ? hasTranscript
-                  ? 'Ask a follow-up (read-only)'
-                  : 'Ask about the codebase (read-only)'
-                : agentMode === 'plan'
-                  ? hasTranscript
-                    ? 'Refine the plan…'
-                    : 'Describe what to plan…'
-                  : hasTranscript
-                    ? 'Send follow-up'
-                    : 'Send a message')
-            }
-            disabled={locked}
-            aria-expanded={slash.open}
-            aria-controls={slash.open ? 'slash-command-menu' : undefined}
-            aria-autocomplete={slash.open ? 'list' : undefined}
-            aria-activedescendant={
-              slash.open && slash.activeCommand
-                ? `slash-command-menu-opt-${slash.activeCommand.id}`
-                : undefined
-            }
-          />
+          <div ref={mentionAnchorRef} className="col-span-full min-w-0">
+            <ComposerMentionInput
+              ref={taRef}
+              className="min-h-[32px] max-h-40 min-w-0 border-0 bg-transparent p-0 text-md leading-relaxed shadow-none focus-visible:ring-0"
+              value={text}
+              onChange={(next) => {
+                setText(next)
+                requestAnimationFrame(syncCursor)
+              }}
+              onKeyDown={(e) => {
+                onKeyDown(e)
+                requestAnimationFrame(syncCursor)
+              }}
+              onCaretChange={(offset) => setCursor(offset)}
+              placeholder={resolveComposerPlaceholder({
+                hasWorkspace: Boolean(hasWorkspace),
+                running,
+                agentMode,
+                hasTranscript: Boolean(hasTranscript),
+                override: composerPlaceholder
+              })}
+              disabled={inputLocked}
+              aria-expanded={slash.open || mentions.open}
+              aria-controls={
+                slash.open
+                  ? slashListId
+                  : mentions.open
+                    ? mentionListId
+                    : undefined
+              }
+              aria-autocomplete={slash.open || mentions.open ? 'list' : undefined}
+              aria-activedescendant={
+                slash.open && slash.activeCommand
+                  ? `${slashListId}-opt-${slash.activeCommand.id}`
+                  : mentions.open && mentions.activeItem
+                    ? `${mentionListId}-opt-${mentions.activeItem.id}`
+                    : undefined
+              }
+            />
+          </div>
 
           <SlashCommandMenu
             open={slash.open}
@@ -465,16 +746,31 @@ export function Composer({
             onActiveIndexChange={slash.setActiveIndex}
             onPick={onSlashAccept}
             onDismiss={slash.dismiss}
-            anchorRef={taRef}
-            listId="slash-command-menu"
+            anchorRef={mentionAnchorRef}
+            listId={slashListId}
             loading={slash.loading}
             listError={slash.listError}
+          />
+
+          <MentionMenu
+            open={mentions.open}
+            view={mentions.view}
+            items={mentions.items}
+            activeIndex={mentions.activeIndex}
+            onActiveIndexChange={mentions.setActiveIndex}
+            onPick={onMentionAccept}
+            onDismiss={mentions.dismiss}
+            onBack={mentions.goBack}
+            anchorRef={mentionAnchorRef}
+            listId={mentionListId}
+            loading={mentions.loading}
           />
 
           <ComposerToolbar
             variant={variant}
             disabled={disabled}
-            locked={locked}
+            locked={settingsLocked}
+            attachDisabled={inputLocked}
             imageCount={images.length}
             fileCount={files.length}
             onAttachClick={() => {
@@ -515,6 +811,9 @@ export function Composer({
             contextUsage={contextUsage}
             metaStore={metaStore}
             onCompactContext={onCompactContext}
+            onCancelEdit={isInline ? onCancelEdit : undefined}
+            imageReadyHint={imageReadyHint}
+            focusInput={focusInput}
           />
         </form>
 
@@ -539,12 +838,6 @@ export function Composer({
         ) : null}
 
         {isDock ? trailing : null}
-
-        {!isDock ? (
-          <p className="m-0 mt-4 text-center text-xs leading-relaxed tracking-[var(--vy-tracking)] text-muted">
-            {HERO_HINT}
-          </p>
-        ) : null}
       </div>
     </div>
   )

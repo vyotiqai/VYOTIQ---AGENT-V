@@ -1,19 +1,10 @@
 import { useMemo } from 'react'
 import { cn } from '@renderer/lib/ui'
-import { TOOL_BODY_INNER } from '@renderer/lib/utils/layout'
-import { isUnresolvedToolName } from '@shared/toolSummary'
+import { TOOL_BODY_INNER, TOOL_BODY_PAD } from '@renderer/lib/utils/layout'
 import { humanizeSnakeCase } from '@shared/utils/mcpToolMeta'
 import type { ToolBodyProps } from '../types'
 import { parseMcpData } from '../parsers/mcp'
 import { CodeBlock, CopyButton, PathList, TruncatedBanner } from '../primitives'
-
-function formatJson(value: unknown): string {
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch {
-    return String(value)
-  }
-}
 
 function McpResultBody({
   data,
@@ -84,6 +75,21 @@ export function McpBody({ tool, loading, loadFailed, mcpServerNames }: ToolBodyP
     [tool, mcpServerNames]
   )
   const showServerChip = data.serverName !== data.serverId
+  const argChips = useMemo(() => {
+    if (!data.args) return [] as string[]
+    return Object.entries(data.args)
+      .slice(0, 4)
+      .map(([key, value]) => {
+        const raw =
+          typeof value === 'string'
+            ? value
+            : value == null
+              ? ''
+              : JSON.stringify(value)
+        const clipped = raw.length > 40 ? `${raw.slice(0, 40)}…` : raw
+        return `${key}=${clipped}`
+      })
+  }, [data.args])
 
   return (
     <div className="flex flex-col gap-2">
@@ -94,42 +100,49 @@ export function McpBody({ tool, loading, loadFailed, mcpServerNames }: ToolBodyP
           </span>
         ) : null}
         <span className="font-medium text-[11px] text-fg">{humanizeSnakeCase(data.toolName)}</span>
+        {data.isError ? (
+          <span className="text-[10px] font-medium text-danger">Error</span>
+        ) : null}
       </div>
-      {data.args && Object.keys(data.args).length > 0 ? (
-        <div className={TOOL_BODY_INNER}>
-          <h4 className="m-0 mb-1 text-[10px] font-medium text-tertiary">Arguments</h4>
-          <pre className="m-0 max-h-24 overflow-auto rounded-sm border border-border bg-surface px-2 py-1 font-mono text-[10px] text-fg/75">
-            {formatJson(data.args)}
-          </pre>
+      {argChips.length > 0 ? (
+        <div className={`${TOOL_BODY_INNER} flex flex-wrap gap-1`}>
+          {argChips.map((chip) => (
+            <span
+              key={chip}
+              className="max-w-full truncate rounded-sm border border-border bg-surface px-1.5 py-px font-mono text-[10px] text-tertiary"
+              title={chip}
+            >
+              {chip}
+            </span>
+          ))}
         </div>
       ) : null}
-      <div>
-        <h4 className={cn(TOOL_BODY_INNER, 'm-0 pb-0 text-[10px] font-medium text-tertiary')}>
-          Result
-        </h4>
-        <McpResultBody
-          data={data}
-          loading={loading}
-          loadFailed={loadFailed}
-          truncated={tool.contentTruncated === true}
-        />
-      </div>
+      <McpResultBody
+        data={data}
+        loading={loading}
+        loadFailed={loadFailed}
+        truncated={tool.contentTruncated === true}
+      />
     </div>
   )
 }
 
+/** Last-resort body for unknown tool names — content only, never argsPreview. */
 export function FallbackBody({ tool, loading, loadFailed }: ToolBodyProps) {
-  const unresolved = isUnresolvedToolName(tool.name)
+  const content = (tool.content ?? '').trim()
   return (
     <div>
       {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
-      <pre
-        className="m-0 max-h-48 overflow-auto px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-fg/80 [overflow-wrap:anywhere]"
-        aria-busy={loading || undefined}
-      >
-        {!unresolved && tool.argsPreview ? `args: ${tool.argsPreview}\n\n` : ''}
-        {tool.content ?? ''}
-      </pre>
+      {content ? (
+        <p
+          className={`${TOOL_BODY_PAD} m-0 max-h-48 overflow-auto text-[11px] leading-relaxed whitespace-pre-wrap text-fg/80 [overflow-wrap:anywhere]`}
+          aria-busy={loading || undefined}
+        >
+          {content}
+        </p>
+      ) : loading ? (
+        <p className={`${TOOL_BODY_PAD} m-0 text-[11px] text-tertiary`}>Working…</p>
+      ) : null}
     </div>
   )
 }

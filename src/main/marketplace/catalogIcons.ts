@@ -19,7 +19,12 @@ export function enrichCatalogEntryIcons(
           ? 'image/png'
           : lower.endsWith('.webp')
             ? 'image/webp'
-            : 'application/octet-stream'
+            : lower.endsWith('.jpg') || lower.endsWith('.jpeg')
+              ? 'image/jpeg'
+              : lower.endsWith('.gif')
+                ? 'image/gif'
+                : null
+      if (!mime) return entry
       return MarketplaceCatalogEntrySchema.parse({
         ...entry,
         iconUrl: `data:${mime};base64,${buf.toString('base64')}`

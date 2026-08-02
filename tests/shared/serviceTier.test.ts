@@ -27,6 +27,11 @@ describe('serviceTier', () => {
     expect(serviceTierForApiBody('default')).toBeUndefined()
     expect(serviceTierForApiBody('priority')).toBe('priority')
   })
+
+  it('labels priority tier as Fast in the UI', async () => {
+    const { SERVICE_TIER_LABELS } = await import('@shared/domain/serviceTier')
+    expect(SERVICE_TIER_LABELS.priority).toBe('Fast')
+  })
 })
 
 describe('modelSelection', () => {

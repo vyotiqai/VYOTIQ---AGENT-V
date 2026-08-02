@@ -330,7 +330,7 @@ describe('settings', () => {
       />
     )
     fireEvent.click(screen.getByRole('button', { name: /^Providers$/i }))
-    expect(screen.getByText(/1\/8 saved/i)).toBeTruthy()
+    expect(screen.getByText(/1\/10 saved/i)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /Refresh models/i }))
     expect(
       await screen.findByText(/seed models for Ollama.*Cannot reach Ollama/i)
@@ -399,7 +399,7 @@ describe('settings', () => {
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /^Manage$/i }))
+    fireEvent.click(screen.getByRole('tab', { name: /^Manage$/i }))
     expect(await screen.findByRole('tab', { name: /^Installed$/i })).toBeTruthy()
     await waitFor(() => expect(window.vyotiq.mcpStatus).toHaveBeenCalled())
 
@@ -498,7 +498,7 @@ describe('settings', () => {
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /^Manage$/i }))
+    fireEvent.click(screen.getByRole('tab', { name: /^Manage$/i }))
     expect(await screen.findByRole('tab', { name: /^Installed$/i })).toBeTruthy()
     expect(await screen.findByText(/Connected · 2 tools/i)).toBeTruthy()
   })
@@ -517,7 +517,7 @@ describe('settings', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /^Registry$/i }))
     expect(await screen.findByLabelText(/Registry URL/i)).toBeTruthy()
-    expect(screen.getByLabelText(/Acknowledge remote install risk/i)).toBeTruthy()
+    expect(screen.getByLabelText(/Acknowledge marketplace install risk/i)).toBeTruthy()
     expect(screen.queryByRole('button', { name: /^Browse$/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /^Installed$/i })).toBeNull()
   })

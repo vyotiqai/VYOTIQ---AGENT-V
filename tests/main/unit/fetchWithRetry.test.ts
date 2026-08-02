@@ -115,4 +115,17 @@ describe('fetchWithRetry', () => {
     ).rejects.toMatchObject({ name: 'AbortError' })
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
+
+  it('throws AbortError when aborted during network retry backoff', async () => {
+    const controller = new AbortController()
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error('ECONNRESET'), { code: 'ECONNRESET' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const pending = fetchWithRetry('https://example.test', { signal: controller.signal })
+    await Promise.resolve()
+    controller.abort()
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+  })
 })

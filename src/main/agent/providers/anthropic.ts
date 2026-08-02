@@ -2,7 +2,7 @@ import type { ChatMessage, MessageContent, ModelInfo } from '../../../shared/ipc
 import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
 import type { AnthropicThinkingBlock } from '../../../shared/reasoning'
-import { baseModelInfo, parseDataUrl } from './normalize'
+import { baseModelInfo, parseDataUrl, thinkingPartialFromCatalogRow, wireSupportedInputModalities } from './normalize'
 import type {
   LlmProvider,
   ListModelsRequest,
@@ -32,9 +32,27 @@ function mergeContent(a: unknown, b: unknown): Array<Record<string, unknown>> {
 function toAnthropicContent(content: MessageContent): string | Array<Record<string, unknown>> {
   if (typeof content === 'string') return content
   const blocks: Array<Record<string, unknown>> = []
-  for (const p of providerContentParts(content)) {
+  for (const p of providerContentParts(content, { image: true, fileNative: true, audio: false })) {
     if (p.type === 'text') {
       blocks.push({ type: 'text', text: p.text })
+      continue
+    }
+    if (p.type === 'file_native') {
+      blocks.push({
+        type: 'document',
+        source: {
+          type: 'base64',
+          media_type: p.mime || 'application/pdf',
+          data: p.data
+        }
+      })
+      continue
+    }
+    if (p.type === 'audio') {
+      blocks.push({
+        type: 'text',
+        text: '[audio omitted: Anthropic does not support native audio input]'
+      })
       continue
     }
     const data = parseDataUrl(p.url)
@@ -68,6 +86,7 @@ function toAnthropicMessages(messages: ChatMessage[]): {
       continue
     }
     if (m.role === 'tool') {
+      if (!m.toolCallId) continue
       out.push({
         role: 'user',
         content: [
@@ -141,15 +160,30 @@ function toAnthropicMessages(messages: ChatMessage[]): {
 }
 
 function applyCacheControl(
-  system: string | undefined,
+  system: string | { stable: string; volatile: string } | undefined,
   messages: Array<Record<string, unknown>>
 ): {
   system: Array<Record<string, unknown>> | undefined
   messages: Array<Record<string, unknown>>
 } {
-  const systemBlocks = system
-    ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
-    : undefined
+  let systemBlocks: Array<Record<string, unknown>> | undefined
+  if (system && typeof system === 'object') {
+    systemBlocks = []
+    if (system.stable) {
+      // Stable prefix only — volatile loop hints / snapshot must not bust the cache.
+      systemBlocks.push({
+        type: 'text',
+        text: system.stable,
+        cache_control: { type: 'ephemeral' }
+      })
+    }
+    if (system.volatile) {
+      systemBlocks.push({ type: 'text', text: system.volatile })
+    }
+    if (!systemBlocks.length) systemBlocks = undefined
+  } else if (typeof system === 'string' && system) {
+    systemBlocks = [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
+  }
 
   // Mark the last non-empty user/assistant content block for cache breakpoint
   const cloned = messages.map((m) => ({ ...m, content: m.content }))
@@ -221,11 +255,10 @@ async function postAnthropicMessages(
 
   if (body.output_config) {
     const next = { ...body }
-    delete next.context_management
     delete next.output_config
     push(
       next,
-      stripAnthropicBetas(betaStr, 'context-management', 'compact', 'structured-outputs')
+      stripAnthropicBetas(betaStr, 'output-config', 'thinking')
     )
   }
 
@@ -260,14 +293,12 @@ async function postAnthropicMessages(
 
 /** Exported for tests — build Anthropic messages request body. */
 export function buildAnthropicBody(req: ProviderChatRequest): Record<string, unknown> {
-  const converted = toAnthropicMessages([
-    ...(req.system ? [{ role: 'system' as const, content: req.system }] : []),
-    ...req.messages
-  ])
-  const cached = applyCacheControl(
-    typeof converted.system === 'string' ? converted.system : undefined,
-    converted.messages
-  )
+  const converted = toAnthropicMessages(req.messages)
+  const systemForCache =
+    req.systemStable !== undefined || req.systemVolatile !== undefined
+      ? { stable: req.systemStable ?? '', volatile: req.systemVolatile ?? '' }
+      : req.system
+  const cached = applyCacheControl(systemForCache, converted.messages)
   const tools = req.tools.map((t) => ({
     name: t.name,
     description: t.description,
@@ -336,6 +367,7 @@ export const anthropicProvider: LlmProvider = {
         caps?.vision === true ||
         (inputMods?.includes('image') ?? false) ||
         /claude|vision/i.test(id)
+      const thinkingPartial = thinkingPartialFromCatalogRow(row, 'anthropic')
       out.push(
         baseModelInfo(id, {
           displayName: typeof row.display_name === 'string' ? row.display_name : id,
@@ -344,13 +376,12 @@ export const anthropicProvider: LlmProvider = {
           maxOutputTokens:
             typeof row.max_tokens === 'number' ? row.max_tokens : undefined,
           inputModalities: inputMods
-            ? (inputMods.filter((m) =>
-                ['text', 'image', 'audio', 'file'].includes(m)
-              ) as ModelInfo['inputModalities'])
+            ? wireSupportedInputModalities(inputMods, supportsVision, 'anthropic')
             : undefined,
           supportsTools: caps?.tools !== false,
-          supportsVision
-        })
+          supportsVision,
+          ...thinkingPartial
+        }, 'anthropic')
       )
     }
     return out
@@ -361,15 +392,14 @@ export const anthropicProvider: LlmProvider = {
       return
     }
 
-    const converted = toAnthropicMessages([
-      ...(req.system ? [{ role: 'system' as const, content: req.system }] : []),
-      ...req.messages
-    ])
+    const converted = toAnthropicMessages(req.messages)
 
-    const cached = applyCacheControl(
-      typeof converted.system === 'string' ? converted.system : undefined,
-      converted.messages
-    )
+    const systemForCache =
+      req.systemStable !== undefined || req.systemVolatile !== undefined
+        ? { stable: req.systemStable ?? '', volatile: req.systemVolatile ?? '' }
+        : req.system
+
+    const cached = applyCacheControl(systemForCache, converted.messages)
 
     const tools = req.tools.map((t) => ({
       name: t.name,
@@ -412,12 +442,32 @@ export const anthropicProvider: LlmProvider = {
     }
 
     if (native && native.enableContextManagement) {
-      const edits: Array<Record<string, unknown>> = [
-        {
-          type: 'clear_tool_uses_20250919',
-          keep: { type: 'tool_uses', value: native.clearToolUsesKeep }
+      const clearEdit: Record<string, unknown> = {
+        type: 'clear_tool_uses_20250919',
+        keep: { type: 'tool_uses', value: native.clearToolUsesKeep }
+      }
+      if (
+        typeof native.clearToolUsesTriggerTokens === 'number' &&
+        native.clearToolUsesTriggerTokens > 0
+      ) {
+        clearEdit.trigger = {
+          type: 'input_tokens',
+          value: native.clearToolUsesTriggerTokens
         }
-      ]
+      }
+      if (
+        typeof native.clearToolUsesAtLeastTokens === 'number' &&
+        native.clearToolUsesAtLeastTokens > 0
+      ) {
+        clearEdit.clear_at_least = {
+          type: 'input_tokens',
+          value: native.clearToolUsesAtLeastTokens
+        }
+      }
+      if (native.clearToolUsesExcludeTools && native.clearToolUsesExcludeTools.length > 0) {
+        clearEdit.exclude_tools = [...native.clearToolUsesExcludeTools]
+      }
+      const edits: Array<Record<string, unknown>> = [clearEdit]
       const compactTrigger = native.compactTriggerTokens ?? 8_000
       edits.push({
         type: 'compact_20260112',
@@ -483,12 +533,16 @@ export const anthropicProvider: LlmProvider = {
       const cachedInputTokens = hasCacheRead
         ? usage.cache_read_input_tokens
         : lastUsage?.cachedInputTokens
+      const cacheCreationInputTokens = hasCacheCreate
+        ? usage.cache_creation_input_tokens
+        : lastUsage?.cacheCreationInputTokens
       const reasoningTokens = hasReasoning ? usage.thinking_tokens : lastUsage?.reasoningTokens
 
       const next: TokenUsage = {
         inputTokens: inputTokens as number | undefined,
         outputTokens: outputTokens as number | undefined,
         cachedInputTokens: cachedInputTokens as number | undefined,
+        cacheCreationInputTokens: cacheCreationInputTokens as number | undefined,
         reasoningTokens: reasoningTokens as number | undefined
       }
       if (next.inputTokens !== undefined && next.outputTokens !== undefined) {

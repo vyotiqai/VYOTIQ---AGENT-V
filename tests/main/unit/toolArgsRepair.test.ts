@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { repairToolArgs } from '@main/agent/toolArgsRepair'
+import { MAX_REPAIR_BYTES, repairToolArgs } from '@main/agent/toolArgsRepair'
 
 describe('repairToolArgs', () => {
   it('returns valid JSON unchanged', () => {
@@ -46,7 +46,20 @@ describe('repairToolArgs', () => {
     expect(repairToolArgs('')).toBeNull()
   })
 
+  it('repairs large truncated edit payloads (live Luna ~293 KiB case)', () => {
+    // Under the old 256 KiB cap this returned null and became TOOL_ARGS.
+    const body = 'x'.repeat(280_000)
+    const raw = `{"path":"contract.md","contents":"${body}`
+    expect(raw.length).toBeGreaterThan(256 * 1024)
+    expect(raw.length).toBeLessThanOrEqual(MAX_REPAIR_BYTES)
+    const repaired = repairToolArgs(raw)
+    expect(repaired && JSON.parse(repaired)).toEqual({
+      path: 'contract.md',
+      contents: body
+    })
+  })
+
   it('refuses absurdly large payloads rather than scanning them', () => {
-    expect(repairToolArgs(`{"a":"${'x'.repeat(300_000)}`)).toBeNull()
+    expect(repairToolArgs(`{"a":"${'x'.repeat(MAX_REPAIR_BYTES)}`)).toBeNull()
   })
 })

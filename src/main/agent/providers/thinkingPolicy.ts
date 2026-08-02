@@ -1,29 +1,44 @@
 import type { ProviderChatRequest } from './types'
 import {
+  anthropicBudgetTokensForEffort,
   anthropicUsesAdaptiveThinking,
   anthropicUsesManualThinking,
+  normalizeEffortForAnthropic,
   type AnthropicThinkingBlock
 } from '../../../shared/reasoning'
 
-const DEFAULT_MANUAL_BUDGET = 10_000
-
-/** Build Anthropic thinking + effort request fields when enabled. */
+/** Build Anthropic thinking + effort request fields. */
 export function anthropicThinkingFields(req: ProviderChatRequest): Record<string, unknown> {
-  if (!req.thinking?.enabled) return {}
-
   const model = req.model
-  const effort = req.thinking.effort ?? 'medium'
+  const mode =
+    req.modelInfo?.thinkingMode ??
+    (anthropicUsesAdaptiveThinking(model)
+      ? 'adaptive'
+      : anthropicUsesManualThinking(model)
+        ? 'manual'
+        : undefined)
+
+  if (!req.thinking?.enabled) {
+    // Explicit disable for models that may think by default (adaptive / Opus 5+).
+    if (mode === 'adaptive' || anthropicUsesAdaptiveThinking(model)) {
+      return { thinking: { type: 'disabled' } }
+    }
+    return {}
+  }
+
+  const effort = normalizeEffortForAnthropic(req.thinking.effort)
   const display = req.thinking.display ?? 'summarized'
 
-  if (anthropicUsesAdaptiveThinking(model)) {
+  if (mode === 'adaptive' || (!mode && anthropicUsesAdaptiveThinking(model))) {
     return {
       thinking: { type: 'adaptive', display },
       output_config: { effort }
     }
   }
 
-  if (anthropicUsesManualThinking(model)) {
-    const budget = req.thinking.maxTokens ?? DEFAULT_MANUAL_BUDGET
+  if (mode === 'manual' || anthropicUsesManualThinking(model)) {
+    const budget =
+      req.thinking.maxTokens ?? anthropicBudgetTokensForEffort(req.thinking.effort)
     const maxTokens = Math.max(
       defaultAnthropicMaxTokens(model, req.maxOutputTokens),
       budget + 1024

@@ -4,11 +4,12 @@ export type EffectiveChatSettings = Pick<
   Settings,
   | 'provider'
   | 'model'
+  | 'ollamaBaseUrl'
+  | 'customOpenAiBaseUrl'
   | 'subagentProvider'
   | 'subagentModel'
   | 'compactionTriggerRatio'
   | 'keepRecentTurns'
-  | 'memoryAutoPromote'
   | 'thinkingEnabled'
   | 'thinkingEffort'
   | 'showThinking'
@@ -28,11 +29,12 @@ export function resolveEffectiveSettings(
     return {
       provider: global.provider,
       model: global.model,
+      ollamaBaseUrl: global.ollamaBaseUrl,
+      customOpenAiBaseUrl: global.customOpenAiBaseUrl,
       subagentProvider: global.subagentProvider,
       subagentModel: global.subagentModel,
       compactionTriggerRatio: global.compactionTriggerRatio,
       keepRecentTurns: global.keepRecentTurns,
-      memoryAutoPromote: global.memoryAutoPromote,
       thinkingEnabled: global.thinkingEnabled,
       thinkingEffort: global.thinkingEffort,
       showThinking: global.showThinking,
@@ -42,11 +44,12 @@ export function resolveEffectiveSettings(
   return {
     provider: override.provider ?? global.provider,
     model: override.model ?? global.model,
+    ollamaBaseUrl: override.ollamaBaseUrl ?? global.ollamaBaseUrl,
+    customOpenAiBaseUrl: override.customOpenAiBaseUrl ?? global.customOpenAiBaseUrl,
     subagentProvider: override.subagentProvider ?? global.subagentProvider,
     subagentModel: override.subagentModel ?? global.subagentModel,
     compactionTriggerRatio: override.compactionTriggerRatio ?? global.compactionTriggerRatio,
     keepRecentTurns: override.keepRecentTurns ?? global.keepRecentTurns,
-    memoryAutoPromote: override.memoryAutoPromote ?? global.memoryAutoPromote,
     thinkingEnabled: override.thinkingEnabled ?? global.thinkingEnabled,
     thinkingEffort: override.thinkingEffort ?? global.thinkingEffort,
     showThinking: override.showThinking ?? global.showThinking,

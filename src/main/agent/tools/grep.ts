@@ -8,6 +8,7 @@ import {
   throwIfAborted,
   yieldToEventLoop
 } from './walk'
+import { compileUserRegex } from './safeUserRegex'
 
 export const GREP_SCAN_CAP = 20_000
 export const GREP_MAX_FILE_BYTES = 512 * 1024
@@ -27,11 +28,7 @@ export type GrepOptions = {
 }
 
 function compile(pattern: string, caseSensitive: boolean): RegExp {
-  try {
-    return new RegExp(pattern, caseSensitive ? 'g' : 'gi')
-  } catch {
-    throw new Error(`Invalid regex pattern: ${pattern}`)
-  }
+  return compileUserRegex(pattern, caseSensitive ? 'g' : 'gi')
 }
 
 function clip(line: string): string {

@@ -1,4 +1,5 @@
 import { cn } from '@renderer/lib/ui'
+import { isAllowedMarketplaceIconUrl } from '@shared/utils/marketplaceIconUrl'
 
 export function PackageIcon({
   name,
@@ -12,11 +13,12 @@ export function PackageIcon({
   className?: string
 }) {
   const letter = (name.trim()[0] ?? '?').toUpperCase()
+  const safeIcon = iconUrl && isAllowedMarketplaceIconUrl(iconUrl) ? iconUrl : undefined
 
-  if (iconUrl) {
+  if (safeIcon) {
     return (
       <img
-        src={iconUrl}
+        src={safeIcon}
         alt=""
         width={size}
         height={size}

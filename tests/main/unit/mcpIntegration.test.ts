@@ -72,6 +72,22 @@ describe('MCP stdio integration', () => {
     }
   })
 
+  it('blocks process-control keys from server.env overlay', () => {
+    const env = buildMcpChildEnv(
+      {
+        PATH: '/evil',
+        NODE_OPTIONS: '--require evil',
+        PYTHONPATH: '/evil',
+        SAFE_TOKEN: 'ok'
+      },
+      { PATH: '/usr/bin' }
+    )
+    expect(env.PATH).toBe('/usr/bin')
+    expect(env.NODE_OPTIONS).toBeUndefined()
+    expect(env.PYTHONPATH).toBeUndefined()
+    expect(env.SAFE_TOKEN).toBe('ok')
+  })
+
   it('connects, lists tools, invokes echo, and disconnects', async () => {
     await connectMcpServer(echoServer)
 
@@ -230,6 +246,25 @@ describe('syncMcpServers', () => {
     // Second sync should skip the spawn (same config, within cooldown) and keep the error.
     await syncMcpServers([bad])
     expect(getMcpServerStatus([bad])[0]?.error).toBe(first)
+  })
+
+  it('forceRetryFailures clears cooldown and re-attempts connect', async () => {
+    const bad = {
+      id: 'bad-force-retry',
+      name: 'Bad',
+      enabled: true,
+      command: 'vyotiq-nonexistent-mcp-command-force',
+      args: [] as string[]
+    }
+    await syncMcpServers([bad])
+    const first = getMcpServerStatus([bad])[0]?.error
+    expect(first).toBeTruthy()
+
+    await syncMcpServers([bad], { forceRetryFailures: true })
+    const second = getMcpServerStatus([bad])[0]?.error
+    expect(second).toBeTruthy()
+    // Re-attempted (error string may match) but status still disconnected.
+    expect(getMcpServerStatus([bad])[0]?.connected).toBe(false)
   })
 
   it('reconnects when connection config changes', async () => {

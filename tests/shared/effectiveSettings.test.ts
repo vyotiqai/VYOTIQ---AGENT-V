@@ -28,11 +28,11 @@ describe('resolveEffectiveSettings', () => {
       showThinking: false,
       compactionTriggerRatio: 0.85,
       keepRecentTurns: 20,
-      memoryAutoPromote: false
     })
     expect(effective).toEqual({
       provider: 'openai',
       model: 'gpt-5.6',
+      ollamaBaseUrl: DEFAULT_SETTINGS.ollamaBaseUrl,
       subagentProvider: 'anthropic',
       subagentModel: 'claude-sonnet-5',
       thinkingEnabled: false,
@@ -40,7 +40,6 @@ describe('resolveEffectiveSettings', () => {
       showThinking: false,
       compactionTriggerRatio: 0.85,
       keepRecentTurns: 20,
-      memoryAutoPromote: false,
       toolApproval: DEFAULT_SETTINGS.toolApproval
     })
   })

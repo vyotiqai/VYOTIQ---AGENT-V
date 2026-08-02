@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
-  fileBadge,
   parseDiffPreview,
   parseEditCardData,
-  parseTerminalCardData
+  parseTerminalCardData,
+  parseUnifiedDiff
 } from '@renderer/features/chat/toolUi'
 import type { UiToolRow } from '@shared/transcript'
 
@@ -110,6 +110,37 @@ describe('parseDiffPreview', () => {
     ])
   })
 
+  it('skips git header metadata in parseUnifiedDiff', () => {
+    const diff = [
+      'diff --git a/.cursor/rules/x.mdc b/.cursor/rules/x.mdc',
+      'new file mode 100644',
+      'index 0000000..abc1234',
+      '--- /dev/null',
+      '+++ b/.cursor/rules/x.mdc',
+      '@@ -0,0 +1,2 @@',
+      '+line one',
+      '+line two'
+    ].join('\n')
+    const lines = parseUnifiedDiff(diff)
+    expect(lines.map((line) => line.text)).toEqual(['line one', 'line two'])
+    expect(lines.every((line) => line.kind === 'add')).toBe(true)
+    expect(lines.some((line) => line.text.includes('diff --git'))).toBe(false)
+    expect(lines.some((line) => line.text.includes('index '))).toBe(false)
+  })
+
+  it('stops parseUnifiedDiff after maxLines', () => {
+    const diff = [
+      '@@ -0,0 +1,5 @@',
+      '+one',
+      '+two',
+      '+three',
+      '+four',
+      '+five'
+    ].join('\n')
+    const lines = parseUnifiedDiff(diff, 2)
+    expect(lines.map((line) => line.text)).toEqual(['one', 'two'])
+  })
+
   it('separates hunks so distant edits do not read as adjacent', () => {
     const diff = ['@@ -1,1 +1,1 @@', '+first', '@@ -50,1 +50,1 @@', '+later'].join('\n')
     const kinds = parseDiffPreview(
@@ -153,23 +184,5 @@ describe('parseDiffPreview', () => {
     expect(lines.some((line) => line.kind === 'context' && line.text === 'api/layout.tsx')).toBe(
       true
     )
-  })
-})
-
-describe('fileBadge', () => {
-  it('marks a file with its extension', () => {
-    expect(fileBadge('src/features/chat/ChatView.tsx')).toBe('tsx')
-    expect(fileBadge('C:\\ws\\styles.css')).toBe('css')
-  })
-
-  it('shortens extensions that are spelled out', () => {
-    expect(fileBadge('a.javascript')).toBe('js')
-    expect(fileBadge('notes.markdown')).toBe('md')
-  })
-
-  it('declines when there is nothing useful to show', () => {
-    expect(fileBadge('Makefile')).toBeNull()
-    expect(fileBadge('.gitignore')).toBeNull()
-    expect(fileBadge('archive.backup2024')).toBeNull()
   })
 })

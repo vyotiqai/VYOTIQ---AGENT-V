@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { anthropicProvider } from '@main/agent/providers/anthropic'
 import { openrouterProvider } from '@main/agent/providers/openai'
 import { streamOpenAiResponses } from '@main/agent/providers/openaiResponses'
-import { iterateSseData, iterateSseJson } from '@main/agent/providers/sse'
+import { iterateSseData, iterateSseJson, STREAM_IDLE_TIMEOUT_MS } from '@main/agent/providers/sse'
 import type { ProviderChatRequest, StreamChunk } from '@main/agent/providers/types'
 
 function sseBody(frames: string[]): Response {
@@ -59,6 +59,7 @@ async function collect(gen: AsyncGenerator<StreamChunk>): Promise<StreamChunk[]>
 describe('SSE frame parsing', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+    vi.useRealTimers()
   })
 
   it('reassembles frames split across read boundaries', async () => {
@@ -97,6 +98,50 @@ describe('SSE frame parsing', () => {
       break
     }
     expect(cancelled()).toBe(true)
+  })
+
+  it('throws StreamIdleTimeoutError when no bytes arrive within the idle window', async () => {
+    vi.useFakeTimers()
+    const { res, cancelled } = neverEndingResponse([])
+    const pending = iterateSseData(res, new AbortController().signal, {
+      idleTimeoutMs: 1_000
+    }).next()
+    const expectation = expect(pending).rejects.toMatchObject({
+      name: 'StreamIdleTimeoutError',
+      idleMs: 1_000
+    })
+    await vi.advanceTimersByTimeAsync(1_000)
+    await expectation
+    expect(cancelled()).toBe(true)
+  })
+
+  it('resets the idle timer when SSE keep-alive comments arrive', async () => {
+    vi.useFakeTimers()
+    let controller!: ReadableStreamDefaultController<Uint8Array>
+    const encoder = new TextEncoder()
+    const res = new Response(
+      new ReadableStream<Uint8Array>({
+        start(c) {
+          controller = c
+        }
+      })
+    )
+    const pending = iterateSseData(res, new AbortController().signal, {
+      idleTimeoutMs: 5_000
+    }).next()
+
+    await vi.advanceTimersByTimeAsync(4_000)
+    controller.enqueue(encoder.encode(': OPENROUTER PROCESSING\n'))
+    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(4_000)
+    controller.enqueue(encoder.encode('data: hello\n\n'))
+    controller.close()
+
+    await expect(pending).resolves.toEqual({ done: false, value: 'hello' })
+  })
+
+  it('exposes the default idle threshold at 10 minutes', () => {
+    expect(STREAM_IDLE_TIMEOUT_MS).toBe(10 * 60 * 1000)
   })
 })
 
@@ -344,6 +389,38 @@ describe('gemini mid-stream tool_call', () => {
       name: 'read',
       arguments: '{"path":"a.ts"}'
     })
+  })
+
+  it('uses generateContent when thinking is disabled even if thinkingApi is interactions', async () => {
+    const { geminiProvider } = await import('@main/agent/providers/gemini')
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      expect(url).toMatch(/generateContent|:streamGenerateContent/)
+      expect(url).not.toMatch(/interactions/)
+      return sseBody([
+        'data: {"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}\n\n',
+        'data: {"candidates":[{"finishReason":"STOP"}]}\n\n'
+      ])
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await collect(
+      geminiProvider.streamChat(
+        baseReq({
+          model: 'gemini-2.5-flash',
+          apiKey: 'test-key',
+          tools: [],
+          thinking: { enabled: false },
+          modelInfo: {
+            id: 'gemini-2.5-flash',
+            label: 'Gemini 2.5 Flash',
+            contextWindow: 1_000_000,
+            thinkingApi: 'interactions'
+          } as never
+        })
+      )
+    )
+    expect(fetchMock).toHaveBeenCalled()
   })
 })
 

@@ -251,6 +251,6 @@ describe('importExternalMcpServers name preservation', () => {
           }
         ]
       })
-    ).toThrow(/Acknowledge remote/)
+    ).toThrow(/Acknowledge marketplace|Acknowledge remote/i)
   })
 })

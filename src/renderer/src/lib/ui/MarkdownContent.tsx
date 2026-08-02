@@ -16,6 +16,8 @@ import { highlightCode } from '@renderer/lib/markdown/markdownHighlight'
 import {
   balanceOutsideFences,
   closeOpenFence,
+  isFenceCloser,
+  parseFenceLine,
   trailingOpenFenceBody
 } from '@renderer/lib/markdown/fenceUtils'
 import { markdownSanitizeSchema, sanitizeHighlightedHtml } from '@renderer/lib/markdown/markdownSanitize'
@@ -24,9 +26,9 @@ import { useDocumentTheme } from './useDocumentTheme'
 
 export { trailingOpenFenceBody } from '@renderer/lib/markdown/fenceUtils'
 
-/** Close an unclosed fence so streaming partials still parse as code. */
+/** Close an unclosed fence and balance incomplete inline markdown for streaming. */
 export function prepareStreamingMarkdown(content: string): string {
-  return closeOpenFence(content)
+  return balanceOutsideFences(closeOpenFence(content))
 }
 
 /** Balance unclosed inline markdown when a stream completes. */
@@ -34,39 +36,54 @@ export function balanceIncompleteMarkdown(content: string): string {
   return balanceOutsideFences(content)
 }
 
+type MarkdownBlock = { source: string; start: number }
+
 /**
  * Split markdown into stable block units (paragraphs / fences / headings).
  * Finished blocks keep stable identity so React.memo can skip them while the
- * last block streams.
+ * last block streams. Fence boundaries use the same CommonMark rules as
+ * {@link closeOpenFence} (variable length, indented openers).
  */
-export function splitMarkdownBlocks(source: string): string[] {
+export function splitMarkdownBlocks(source: string): MarkdownBlock[] {
   if (!source) return []
-  const blocks: string[] = []
+  const lines = source.split('\n')
+  const blocks: MarkdownBlock[] = []
   let i = 0
-  const len = source.length
-  while (i < len) {
-    if (source.startsWith('```', i) || source.startsWith('~~~', i)) {
-      const fence = source.slice(i, i + 3)
-      const close = source.indexOf(`\n${fence}`, i + 3)
-      if (close < 0) {
-        blocks.push(source.slice(i))
+  while (i < lines.length) {
+    const start = i
+    const parsed = parseFenceLine(lines[i]!)
+    if (parsed) {
+      const open = parsed.open
+      let j = i + 1
+      while (j < lines.length && !isFenceCloser(lines[j]!, open)) j++
+      if (j >= lines.length) {
+        blocks.push({ start, source: lines.slice(i).join('\n') })
         break
       }
-      const end = close + 1 + 3
-      const afterNewline = source[end] === '\n' ? end + 1 : end
-      blocks.push(source.slice(i, afterNewline))
-      i = afterNewline
+      // Include closer; keep a trailing newline when more content follows so the
+      // next block's start index stays stable across streaming ticks.
+      const end = j + 1
+      const chunk = lines.slice(i, end).join('\n')
+      blocks.push({ start, source: end < lines.length ? `${chunk}\n` : chunk })
+      i = end
       continue
     }
-    const nextBreak = source.indexOf('\n\n', i)
-    if (nextBreak < 0) {
-      blocks.push(source.slice(i))
-      break
+
+    // Paragraph / prose: consume through the next blank line (inclusive) or up
+    // to the next fence opener.
+    let j = i + 1
+    while (j < lines.length) {
+      if (lines[j] === '') {
+        j++
+        break
+      }
+      if (parseFenceLine(lines[j]!)) break
+      j++
     }
-    blocks.push(source.slice(i, nextBreak + 2))
-    i = nextBreak + 2
+    blocks.push({ start, source: lines.slice(i, j).join('\n') })
+    i = j
   }
-  return blocks.filter((b) => b.length > 0)
+  return blocks.filter((b) => b.source.length > 0)
 }
 
 /** Max highlighted fence entries retained across the renderer session. */
@@ -207,8 +224,9 @@ function FencedCodePre({
   }
 
   const className = child.props.className ?? ''
-  const text = String(child.props.children ?? '').replace(/\n$/, '')
-  const unstable = openFenceBody !== null && text.replace(/\n+$/, '') === openFenceBody.replace(/\n+$/, '')
+  const normalize = (s: string) => s.replace(/\n+$/, '')
+  const text = normalize(String(child.props.children ?? ''))
+  const unstable = openFenceBody !== null && text === normalize(openFenceBody)
   return <FencedCodeBlock text={text} className={className} unstable={unstable} />
 }
 
@@ -218,6 +236,11 @@ function buildMarkdownComponents(openFenceBody: string | null) {
       <a href={href} target="_blank" rel="noreferrer noopener" className="text-fg-strong underline">
         {children}
       </a>
+    ),
+    table: ({ children }: { children?: React.ReactNode }) => (
+      <div className="markdown-table-scroll my-2 max-w-full overflow-x-auto" data-markdown-table-scroll>
+        <table>{children}</table>
+      </div>
     ),
     code: ({
       className: codeClass,
@@ -272,13 +295,14 @@ export function MarkdownContent({
     [streaming, content]
   )
   const blocks = useMemo(() => splitMarkdownBlocks(markdown), [markdown])
+  const hasVisibleContent = content.trim().length > 0
 
-  if (!content && !streaming) return null
+  if (!hasVisibleContent) return null
 
   return (
     <div
       className={cn(
-        'markdown-body text-sm leading-relaxed text-fg [overflow-wrap:anywhere]',
+        'markdown-body text-sm leading-relaxed text-fg [overflow-wrap:anywhere] [&_table]:[overflow-wrap:normal] [&_th]:[overflow-wrap:normal] [&_td]:[overflow-wrap:normal] [&_pre]:[overflow-wrap:normal]',
         className
       )}
     >
@@ -286,17 +310,11 @@ export function MarkdownContent({
         const isLast = index === blocks.length - 1
         const blockOpenFence = streaming && isLast ? openFenceBody : null
         // Stable keys so streaming deltas update `source` instead of remounting.
-        const key =
-          streaming && isLast ? `md-block-${index}-tail` : `md-block-${index}`
+        const key = `md-block-${block.start}`
         return (
-          <MemoMarkdownBlock key={key} source={block} openFenceBody={blockOpenFence} />
+          <MemoMarkdownBlock key={key} source={block.source} openFenceBody={blockOpenFence} />
         )
       })}
-      {streaming ? (
-        <span className="streaming-caret-inline" aria-hidden>
-          ▍
-        </span>
-      ) : null}
     </div>
   )
 }

@@ -3,6 +3,7 @@ import { scrubString } from './scrub'
 
 export type ErrorCode =
   | 'AGENT_LOOP'
+  | 'AGENT_QUESTION'
   | 'IPC_VALIDATION'
   | 'IPC_HANDLER'
   | 'IPC_CLIENT'
@@ -12,6 +13,9 @@ export type ErrorCode =
   | 'PROVIDER_RATE'
   | 'PROVIDER_STREAM'
   | 'PROVIDER_TIMEOUT'
+  | 'SECRETS'
+  | 'SETTINGS'
+  | 'TOOL_APPROVAL'
   | 'TOOL_EXEC'
   | 'UNCAUGHT'
   | 'WORKSPACE'

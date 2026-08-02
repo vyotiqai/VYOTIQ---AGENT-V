@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { toolResultEventForIpc, toolResultEventForPersistence, TOOL_RESULT_IPC_PREVIEW_CHARS } from '@shared/utils/toolResultIpc'
+import {
+  toolMessageForIpc,
+  toolResultEventForIpc,
+  toolResultEventForPersistence,
+  TOOL_RESULT_IPC_PREVIEW_CHARS
+} from '@shared/utils/toolResultIpc'
 
 describe('toolResultEventForIpc', () => {
   it('passes through small tool results unchanged', () => {
@@ -90,5 +95,26 @@ describe('toolResultEventForPersistence', () => {
     const slim = toolResultEventForPersistence(event)
     if (slim.type !== 'tool_result') return
     expect(slim.content).toBe('Failed to parse tool arguments')
+  })
+})
+
+describe('toolMessageForIpc', () => {
+  it('bounds historical tool messages and marks them for lazy loading', () => {
+    const content = 'x'.repeat(TOOL_RESULT_IPC_PREVIEW_CHARS + 500)
+    const trimmed = toolMessageForIpc({
+      role: 'tool',
+      toolCallId: 'c1',
+      toolName: 'read',
+      ok: true,
+      content
+    })
+    expect(typeof trimmed.content).toBe('string')
+    expect(String(trimmed.content).length).toBeLessThan(content.length)
+    expect(trimmed.contentTruncated).toBe(true)
+  })
+
+  it('does not alter provider-facing non-tool history', () => {
+    const message = { role: 'assistant' as const, content: 'answer' }
+    expect(toolMessageForIpc(message)).toBe(message)
   })
 })

@@ -38,6 +38,24 @@ describe('validateAgainstJsonSchema', () => {
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error).toMatch(/string/)
   })
+
+  it('rejects malformed patterns without crashing', () => {
+    const result = validateAgainstJsonSchema(
+      { type: 'string', pattern: '[invalid' },
+      'hello'
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toMatch(/Invalid pattern/)
+  })
+
+  it('applies type before enum so a contradictory enum does not bypass type', () => {
+    const result = validateAgainstJsonSchema(
+      { type: 'string', enum: [null] },
+      null
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toMatch(/Expected a string/)
+  })
 })
 
 describe('omitted MCP tools hint', () => {
@@ -81,15 +99,15 @@ describe('geminiFunctionCallingMode', () => {
 })
 
 describe('isCurrentInvoke', () => {
-  it('detects when a newer invoke superseded the previous one', () => {
+  it('keeps the same invoke until clearRunAbort (no overlap while unwinding)', () => {
     resetActiveRunsForTests()
     const first = registerRunAbort('run-a', '/tmp/ws')
     expect(isCurrentInvoke('run-a', first.invokeId)).toBe(true)
     markRunTurnComplete('run-a', first.invokeId)
+    // turnComplete must not spawn a second invoke — that raced the prior finally.
     const second = registerRunAbort('run-a', '/tmp/ws')
-    expect(second.invokeId).not.toBe(first.invokeId)
-    expect(isCurrentInvoke('run-a', first.invokeId)).toBe(false)
-    expect(isCurrentInvoke('run-a', second.invokeId)).toBe(true)
+    expect(second.invokeId).toBe(first.invokeId)
+    expect(isCurrentInvoke('run-a', first.invokeId)).toBe(true)
     resetActiveRunsForTests()
   })
 })

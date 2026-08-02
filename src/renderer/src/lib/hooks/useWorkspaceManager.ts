@@ -6,10 +6,12 @@ import type {
   RunSummary,
   ToolApprovalRequest,
   ToolApprovalDecision,
+  AgentQuestionRequest,
   WorkspaceSettingsOverride,
   WorkspaceUiState,
   WorkspacesState
 } from '@shared/ipc'
+import type { UiAgentQuestionAnswer } from '@shared/transcript'
 import { toLogErr } from '@shared/errors'
 import { logger } from '@shared/logger'
 import { workspacePathsEqual, findByWorkspacePath } from '@shared/workspacePathMatch'
@@ -17,6 +19,7 @@ import {
   createChatStreamController,
   type ChatStreamController
 } from './createChatStreamController'
+import { ensureChatUiPerfDump } from './chatUiPerf'
 import {
   clearWorkspaceHotUi,
   getWorkspaceHotUi,
@@ -27,26 +30,113 @@ import {
 
 const ACTIVE_RUNS_POLL_MS = 5_000
 const ACTIVE_RUNS_WARN_INTERVAL_MS = 60_000
+
+/** Rehydrate ask_question cards after remount while main is still waiting. */
+async function restorePendingQuestions(
+  controller: ChatStreamController,
+  runId: string
+): Promise<void> {
+  if (!window.vyotiq?.listPendingAgentQuestions) return
+  const res = await window.vyotiq.listPendingAgentQuestions(runId)
+  if (!res.ok) return
+  for (const request of res.data) {
+    controller.handleQuestionRequest(request)
+  }
+}
+
+/** Rehydrate tool-approval cards after remount while main is still waiting. */
+async function restorePendingApprovals(
+  controller: ChatStreamController,
+  runId: string
+): Promise<void> {
+  if (!window.vyotiq?.listPendingToolApprovals) return
+  const res = await window.vyotiq.listPendingToolApprovals(runId)
+  if (!res.ok) return
+  for (const request of res.data) {
+    controller.handleApprovalRequest(request)
+  }
+}
 const ORPHAN_SYNC_DEBOUNCE_MS = 600
 const OPEN_RUN_TAB_LIMIT = 10
 /** Cap orphan IPC buffers for runIds not yet mapped to a controller. */
 const ORPHAN_EVENT_BUFFER_MAX = 128
 const ORPHAN_APPROVAL_BUFFER_MAX = 16
-/** Prefer dropping these when the orphan buffer is full — keep terminals and tool chrome. */
-const ORPHAN_DROPPABLE_TYPES = new Set<AgentEvent['type']>([
-  'text_delta',
-  'thinking_delta',
-  'step_usage',
-  'context_usage'
+const ORPHAN_QUESTION_BUFFER_MAX = 16
+/** Prefer coalescing same-type usage under orphan backpressure instead of dropping. */
+const ORPHAN_USAGE_TYPES = new Set<AgentEvent['type']>(['step_usage', 'context_usage'])
+
+const ORPHAN_DELTA_TYPES = new Set<AgentEvent['type']>(['text_delta', 'thinking_delta'])
+/** Never FIFO-drop these under backpressure while a non-critical remains (or incoming). */
+const ORPHAN_CRITICAL_TYPES = new Set<AgentEvent['type']>([
+  'tool_start',
+  'tool_result',
+  'status',
+  'writes_checkpoint',
+  'incomplete',
+  'error',
+  'subagent_event',
+  'subagent_update',
+  'compaction',
+  'mode_changed'
 ])
 const UI_PERSIST_DEBOUNCE_MS = 300
 const LIST_RUNS_DEBOUNCE_MS = 300
+
+/**
+ * Under orphan backpressure, drop an older usage event only when a later
+ * same-type usage remains (latest meter wins). Never sacrifice the sole meter.
+ */
+function coalesceOldestOrphanUsage(buffered: AgentEvent[]): boolean {
+  const dropIdx = buffered.findIndex((ev) => ORPHAN_USAGE_TYPES.has(ev.type))
+  if (dropIdx < 0) return false
+  const victim = buffered[dropIdx]!
+  for (let i = dropIdx + 1; i < buffered.length; i++) {
+    if (buffered[i]!.type === victim.type) {
+      buffered.splice(dropIdx, 1)
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * Under orphan backpressure, fold the oldest stream delta into a later same-type
+ * delta so token text is preserved instead of discarded.
+ */
+function coalesceOldestOrphanDelta(buffered: AgentEvent[]): boolean {
+  const dropIdx = buffered.findIndex((ev) => ORPHAN_DELTA_TYPES.has(ev.type))
+  if (dropIdx < 0) return false
+  const victim = buffered[dropIdx]!
+  for (let i = dropIdx + 1; i < buffered.length; i++) {
+    const next = buffered[i]!
+    if (next.type !== victim.type) continue
+    if (victim.type === 'text_delta' && next.type === 'text_delta') {
+      buffered[i] = { ...next, text: victim.text + next.text }
+      buffered.splice(dropIdx, 1)
+      return true
+    }
+    if (victim.type === 'thinking_delta' && next.type === 'thinking_delta') {
+      if (
+        victim.step !== undefined &&
+        next.step !== undefined &&
+        victim.step !== next.step
+      ) {
+        continue
+      }
+      buffered[i] = { ...next, text: victim.text + next.text }
+      buffered.splice(dropIdx, 1)
+      return true
+    }
+  }
+  return false
+}
 
 /** @internal Exported for tests. */
 export const WORKSPACE_MANAGER_LIMITS = {
   OPEN_RUN_TAB_LIMIT,
   ORPHAN_EVENT_BUFFER_MAX,
-  ORPHAN_APPROVAL_BUFFER_MAX
+  ORPHAN_APPROVAL_BUFFER_MAX,
+  ORPHAN_QUESTION_BUFFER_MAX
 } as const
 
 export type WorkspaceUiSlice = {
@@ -60,6 +150,58 @@ const DRAFT_SCROLL_KEY = '__draft__'
 
 function scrollKeyForRun(runId: string | null): string {
   return runId ?? DRAFT_SCROLL_KEY
+}
+
+/** Keep scroll entries for open tabs and active run; draft only while drafting. @internal */
+export function pruneScrollTopByRunId(
+  scrollTopByRunId: Record<string, number>,
+  keep: { openRunIds: string[]; activeRunId: string | null }
+): Record<string, number> {
+  const allowed = new Set<string>([...keep.openRunIds])
+  if (keep.activeRunId) allowed.add(keep.activeRunId)
+  else allowed.add(DRAFT_SCROLL_KEY)
+  const next: Record<string, number> = {}
+  for (const [key, value] of Object.entries(scrollTopByRunId)) {
+    if (allowed.has(key)) next[key] = value
+  }
+  return next
+}
+
+/** Remove one deleted run's scroll entry. @internal */
+export function omitRunScrollTop(
+  scrollTopByRunId: Record<string, number>,
+  runId: string
+): Record<string, number> {
+  if (!(runId in scrollTopByRunId)) return scrollTopByRunId
+  const { [runId]: _removed, ...rest } = scrollTopByRunId
+  return rest
+}
+
+/** Drop open tabs / active run that no longer exist on disk. @internal */
+export function reconcileOpenRunIds(
+  openRunIds: string[],
+  activeRunId: string | null,
+  runIdsOnDisk: string[],
+  previouslyKnownRunIds: string[]
+): { openRunIds: string[]; activeRunId: string | null; changed: boolean } {
+  const existing = new Set(runIdsOnDisk)
+  const stale = new Set(previouslyKnownRunIds.filter((id) => !existing.has(id)))
+  if (stale.size === 0) {
+    return { openRunIds, activeRunId, changed: false }
+  }
+  const pruned = openRunIds.filter((id) => !stale.has(id))
+  let nextActive = activeRunId
+  if (nextActive && stale.has(nextActive)) {
+    nextActive = pruned[pruned.length - 1] ?? null
+  }
+  if (nextActive && !pruned.includes(nextActive)) {
+    pruned.push(nextActive)
+  }
+  const changed =
+    pruned.length !== openRunIds.length ||
+    pruned.some((id, i) => id !== openRunIds[i]) ||
+    nextActive !== activeRunId
+  return { openRunIds: pruned, activeRunId: nextActive, changed }
 }
 
 export type WorkspaceContext = {
@@ -97,7 +239,10 @@ function uiStateFromContext(ctx: WorkspaceContext): WorkspaceUiState {
     activeRunId: ctx.activeRunId,
     openRunIds: [...ctx.openRunIds],
     scrollTop,
-    scrollTopByRunId: { ...ctx.ui.scrollTopByRunId },
+    scrollTopByRunId: pruneScrollTopByRunId(ctx.ui.scrollTopByRunId, {
+      openRunIds: ctx.openRunIds,
+      activeRunId: ctx.activeRunId
+    }),
     composerDraft: ctx.ui.composerDraft,
     agentMode: ctx.ui.agentMode
   }
@@ -105,12 +250,16 @@ function uiStateFromContext(ctx: WorkspaceContext): WorkspaceUiState {
 
 function contextFromRegistry(path: string, registry: WorkspacesState): WorkspaceContext {
   const ui = registry.uiStateByPath[path] ?? defaultUiState()
-  const scrollTopByRunId = { ...(ui.scrollTopByRunId ?? {}) }
+  let scrollTopByRunId = { ...(ui.scrollTopByRunId ?? {}) }
   if (ui.scrollTop > 0 && ui.activeRunId && scrollTopByRunId[ui.activeRunId] === undefined) {
     scrollTopByRunId[ui.activeRunId] = ui.scrollTop
   } else if (ui.scrollTop > 0 && !ui.activeRunId && scrollTopByRunId[DRAFT_SCROLL_KEY] === undefined) {
     scrollTopByRunId[DRAFT_SCROLL_KEY] = ui.scrollTop
   }
+  scrollTopByRunId = pruneScrollTopByRunId(scrollTopByRunId, {
+    openRunIds: ui.openRunIds ?? [],
+    activeRunId: ui.activeRunId ?? null
+  })
   return {
     path,
     runs: [],
@@ -149,9 +298,12 @@ export function useWorkspaceManager() {
 
   const controllersRef = useRef(new Map<string, ChatStreamController>())
   const contextsRef = useRef(contexts)
+  const registryRef = useRef(registry)
   const persistTimersRef = useRef(new Map<string, number>())
+  const uiWriteGenerationRef = useRef(new Map<string, number>())
   const eventBufferRef = useRef(new Map<string, AgentEvent[]>())
   const approvalBufferRef = useRef(new Map<string, ToolApprovalRequest[]>())
+  const questionBufferRef = useRef(new Map<string, AgentQuestionRequest[]>())
   const switchReqIdRef = useRef(0)
   const runIdToWorkspaceRef = useRef(new Map<string, string>())
   /** Runs whose controller/routing was disposed; drop late events until reopened. */
@@ -164,6 +316,50 @@ export function useWorkspaceManager() {
   const orphanSyncTimersRef = useRef(new Map<string, number>())
 
   const bump = useCallback(() => setRevision((r) => r + 1), [])
+
+  useEffect(() => {
+    registryRef.current = registry
+  }, [registry])
+
+  useEffect(() => {
+    ensureChatUiPerfDump()
+  }, [])
+
+  /** True when this run's transcript is the mounted chat surface. */
+  const isRunUiVisible = useCallback((runId: string): boolean => {
+    if (backgroundRunIdsRef.current.has(runId)) return false
+    const ws = runIdToWorkspaceRef.current.get(runId)
+    if (!ws) return false
+    const activePath = registryRef.current?.activePath
+    if (!activePath || !workspacePathsEqual(ws, activePath)) return false
+    const ctx = contextsRef.current[ws]
+    if (!ctx) return false
+    if (ctx.activeRunId === runId) return true
+    // Draft composer (activeRunId null): accept events for a new/pending run on this
+    // workspace so the chatStart → first-event race is not suspended.
+    if (ctx.activeRunId == null) return true
+    return false
+  }, [])
+
+  const applyUiSuspendForController = useCallback(
+    (runId: string, ctrl: ChatStreamController): void => {
+      if (isRunUiVisible(runId)) {
+        void ctrl.resumeUiIfNeeded()
+      } else {
+        ctrl.setUiSuspended(true)
+      }
+    },
+    [isRunUiVisible]
+  )
+
+  const suspendAllExcept = useCallback((visibleRunId: string | null): void => {
+    for (const [key, ctrl] of controllersRef.current.entries()) {
+      if (key.startsWith('__draft__:')) continue
+      const id = ctrl.runId ?? (key.startsWith('__draft__:') ? null : key)
+      if (!id || id === visibleRunId) continue
+      ctrl.setUiSuspended(true)
+    }
+  }, [])
 
   useEffect(() => {
     const merged: Record<string, WorkspaceContext> = { ...contexts }
@@ -205,15 +401,19 @@ export function useWorkspaceManager() {
       persistTimersRef.current.delete(path)
       const ctx = snapshot ?? contextsRef.current[path]
       if (!ctx || !window.vyotiq?.updateWorkspaceUiState) return
-      void window.vyotiq.updateWorkspaceUiState(path, uiStateFromContext(ctx)).then((res) => {
-        if (!res.ok) {
-          logger.warn('updateWorkspaceUiState failed', {
-            scope: 'workspaces',
-            path,
-            err: toLogErr(res.error)
-          })
-        }
-      })
+      const gen = (uiWriteGenerationRef.current.get(path) ?? 0) + 1
+      uiWriteGenerationRef.current.set(path, gen)
+      void window.vyotiq
+        .updateWorkspaceUiState(path, { ...uiStateFromContext(ctx), writeGeneration: gen })
+        .then((res) => {
+          if (!res.ok) {
+            logger.warn('updateWorkspaceUiState failed', {
+              scope: 'workspaces',
+              path,
+              err: toLogErr(res.error)
+            })
+          }
+        })
     }, UI_PERSIST_DEBOUNCE_MS)
     persistTimersRef.current.set(path, timerId)
   }, [])
@@ -235,7 +435,9 @@ export function useWorkspaceManager() {
     for (const workspacePath of paths) {
       const ctx = contextsRef.current[workspacePath]
       if (!ctx) continue
-      const ui = uiStateFromContext(ctx)
+      const gen = (uiWriteGenerationRef.current.get(workspacePath) ?? 0) + 1
+      uiWriteGenerationRef.current.set(workspacePath, gen)
+      const ui = { ...uiStateFromContext(ctx), writeGeneration: gen }
       const api = window.vyotiq
       if (!api) continue
       const sync = (
@@ -271,13 +473,43 @@ export function useWorkspaceManager() {
     []
   )
 
+  const flushBufferedQuestions = useCallback(
+    (runId: string, ctrl: ChatStreamController) => {
+      const buffered = questionBufferRef.current.get(runId)
+      if (!buffered?.length) return
+      questionBufferRef.current.delete(runId)
+      for (const request of buffered) ctrl.handleQuestionRequest(request)
+    },
+    []
+  )
+
   const bufferOrphanEvent = useCallback((runId: string, event: AgentEvent): void => {
     if (forgottenRunIdsRef.current.has(runId)) return
     const buffered = eventBufferRef.current.get(runId) ?? []
     if (buffered.length >= ORPHAN_EVENT_BUFFER_MAX) {
-      const droppableIdx = buffered.findIndex((ev) => ORPHAN_DROPPABLE_TYPES.has(ev.type))
-      if (droppableIdx >= 0) buffered.splice(droppableIdx, 1)
-      else buffered.shift()
+      if (coalesceOldestOrphanDelta(buffered)) {
+        // Folded older stream delta into a later one.
+      } else if (coalesceOldestOrphanUsage(buffered)) {
+        // Dropped an older usage event; a newer same-type meter remains.
+      } else {
+        // Prefer freeing stream deltas, then usage meters, over tool/status chrome.
+        const deltaIdx = buffered.findIndex((ev) => ORPHAN_DELTA_TYPES.has(ev.type))
+        if (deltaIdx >= 0) buffered.splice(deltaIdx, 1)
+        else {
+          const usageIdx = buffered.findIndex((ev) => ORPHAN_USAGE_TYPES.has(ev.type))
+          if (usageIdx >= 0) buffered.splice(usageIdx, 1)
+          else {
+            const nonCriticalIdx = buffered.findIndex((ev) => !ORPHAN_CRITICAL_TYPES.has(ev.type))
+            if (nonCriticalIdx >= 0) buffered.splice(nonCriticalIdx, 1)
+            else if (!ORPHAN_CRITICAL_TYPES.has(event.type)) {
+              // Buffer is all critical — drop the incoming non-critical instead.
+              return
+            } else {
+              buffered.shift()
+            }
+          }
+        }
+      }
     }
     buffered.push(event)
     eventBufferRef.current.set(runId, buffered)
@@ -293,10 +525,21 @@ export function useWorkspaceManager() {
     approvalBufferRef.current.set(runId, buffered)
   }, [])
 
+  const bufferOrphanQuestion = useCallback((runId: string, request: AgentQuestionRequest): void => {
+    if (forgottenRunIdsRef.current.has(runId)) return
+    const buffered = questionBufferRef.current.get(runId) ?? []
+    if (buffered.length >= ORPHAN_QUESTION_BUFFER_MAX) {
+      buffered.shift()
+    }
+    buffered.push(request)
+    questionBufferRef.current.set(runId, buffered)
+  }, [])
+
   const forgetRunRouting = useCallback((runId: string): void => {
     forgottenRunIdsRef.current.add(runId)
     eventBufferRef.current.delete(runId)
     approvalBufferRef.current.delete(runId)
+    questionBufferRef.current.delete(runId)
     runIdToWorkspaceRef.current.delete(runId)
     controllersRef.current.get(runId)?.dispose()
     controllersRef.current.delete(runId)
@@ -320,9 +563,10 @@ export function useWorkspaceManager() {
       if (ctrl) {
         flushBufferedEvents(runId, ctrl)
         flushBufferedApprovals(runId, ctrl)
+        flushBufferedQuestions(runId, ctrl)
       }
     },
-    [flushBufferedApprovals, flushBufferedEvents, touchLru]
+    [flushBufferedApprovals, flushBufferedEvents, flushBufferedQuestions, touchLru]
   )
 
   const maybeEvictControllers = useCallback(
@@ -366,37 +610,44 @@ export function useWorkspaceManager() {
           }
         }
         registerRunId(assignedId, workspacePath)
-        setContexts((prev) => {
-          const ctx = prev[workspacePath]
-          if (!ctx) return prev
-          if (ctx.activeRunId === assignedId) return prev
+        const ctx = contextsRef.current[workspacePath]
+        if (!ctx) {
+          void refreshRunsRef.current(workspacePath)
+          return
+        }
+        if (ctx.activeRunId === assignedId) {
+          void refreshRunsRef.current(workspacePath)
+          return
+        }
 
-          let openRunIds: string[]
-          if (
-            ctx.activeRunId &&
-            ctx.activeRunId !== assignedId &&
-            ctx.openRunIds.includes(ctx.activeRunId)
-          ) {
-            openRunIds = ctx.openRunIds.map((id) => (id === ctx.activeRunId ? assignedId : id))
-            if (!openRunIds.includes(assignedId)) {
-              openRunIds = [...openRunIds, assignedId]
-            }
-          } else if (ctx.openRunIds.includes(assignedId)) {
-            openRunIds = ctx.openRunIds
-          } else {
-            openRunIds = [...ctx.openRunIds, assignedId]
+        let openRunIds: string[]
+        if (
+          ctx.activeRunId &&
+          ctx.activeRunId !== assignedId &&
+          ctx.openRunIds.includes(ctx.activeRunId)
+        ) {
+          openRunIds = ctx.openRunIds.map((id) => (id === ctx.activeRunId ? assignedId : id))
+          if (!openRunIds.includes(assignedId)) {
+            openRunIds = [...openRunIds, assignedId]
           }
+        } else if (ctx.openRunIds.includes(assignedId)) {
+          openRunIds = ctx.openRunIds
+        } else {
+          openRunIds = [...ctx.openRunIds, assignedId]
+        }
 
-          maybeEvictControllers(workspacePath, openRunIds, assignedId)
-          return {
-            ...prev,
-            [workspacePath]: {
-              ...ctx,
-              activeRunId: assignedId,
-              openRunIds
-            }
-          }
-        })
+        maybeEvictControllers(workspacePath, openRunIds, assignedId)
+        const nextCtx: WorkspaceContext = {
+          ...ctx,
+          activeRunId: assignedId,
+          openRunIds
+        }
+        contextsRef.current = { ...contextsRef.current, [workspacePath]: nextCtx }
+        setContexts((prev) => ({
+          ...prev,
+          [workspacePath]: nextCtx
+        }))
+        schedulePersistUiState(workspacePath, nextCtx)
         void refreshRunsRef.current(workspacePath)
       }
 
@@ -409,13 +660,28 @@ export function useWorkspaceManager() {
         runId,
         onRunIdAssigned,
         onTerminal,
-        getAgentMode: () => contextsRef.current[workspacePath]?.ui.agentMode ?? 'agent'
+        getAgentMode: () => contextsRef.current[workspacePath]?.ui.agentMode ?? 'agent',
+        onAgentModeChange: (mode) => {
+          const ctx = contextsRef.current[workspacePath]
+          if (!ctx || ctx.ui.agentMode === mode) return
+          const nextCtx: WorkspaceContext = {
+            ...ctx,
+            ui: { ...ctx.ui, agentMode: mode }
+          }
+          contextsRef.current = { ...contextsRef.current, [workspacePath]: nextCtx }
+          setContexts((prev) => ({ ...prev, [workspacePath]: nextCtx }))
+          schedulePersistUiState(workspacePath, nextCtx)
+        }
       })
       controllersRef.current.set(key, controller)
-      if (runId) registerRunId(runId, workspacePath)
+      if (runId) {
+        registerRunId(runId, workspacePath)
+        void restorePendingQuestions(controller, runId)
+        void restorePendingApprovals(controller, runId)
+      }
       return controller
     },
-    [bump, maybeEvictControllers, registerRunId, touchLru]
+    [bump, maybeEvictControllers, registerRunId, schedulePersistUiState, touchLru]
   )
 
   const refreshRuns = useCallback(
@@ -427,14 +693,39 @@ export function useWorkspaceManager() {
         const ctx = prev[workspacePath]
         if (!ctx) return prev
         if (res.ok) {
+          const runIds = res.data.runs.map((r) => r.runId)
+          const reconciled = reconcileOpenRunIds(
+            ctx.openRunIds,
+            ctx.activeRunId,
+            runIds,
+            ctx.runs.map((r) => r.runId)
+          )
+          const nextCtx: WorkspaceContext = {
+            ...ctx,
+            runs: res.data.runs,
+            runsCapped: res.data.capped,
+            runsError: null,
+            ...(reconciled.changed
+              ? {
+                  openRunIds: reconciled.openRunIds,
+                  activeRunId: reconciled.activeRunId,
+                  ui: {
+                    ...ctx.ui,
+                    scrollTopByRunId: pruneScrollTopByRunId(ctx.ui.scrollTopByRunId, {
+                      openRunIds: reconciled.openRunIds,
+                      activeRunId: reconciled.activeRunId
+                    })
+                  }
+                }
+              : {})
+          }
+          if (reconciled.changed) {
+            contextsRef.current = { ...contextsRef.current, [workspacePath]: nextCtx }
+            schedulePersistUiState(workspacePath, nextCtx)
+          }
           return {
             ...prev,
-            [workspacePath]: {
-              ...ctx,
-              runs: res.data.runs,
-              runsCapped: res.data.capped,
-              runsError: null
-            }
+            [workspacePath]: nextCtx
           }
         }
         logger.warn('listRuns failed', { scope: 'runs', err: toLogErr(res.error) })
@@ -450,7 +741,7 @@ export function useWorkspaceManager() {
       })
       bump()
     },
-    [bump]
+    [bump, schedulePersistUiState]
   )
 
   refreshRunsRef.current = refreshRuns
@@ -494,7 +785,24 @@ export function useWorkspaceManager() {
         if (window.vyotiq.loadRunEvents) {
           const eventsRes = await window.vyotiq.loadRunEvents(workspacePath, runId)
           if (!stillCurrent()) return
-          if (eventsRes.ok) events = eventsRes.data
+          if (eventsRes.ok) {
+            events = eventsRes.data
+          } else {
+            logger.warn('loadRunEvents failed on restore', {
+              scope: 'runs',
+              correlationId: runId,
+              err: eventsRes.error
+            })
+            setContexts((prev) => {
+              const ctx = prev[workspacePath]
+              if (!ctx) return prev
+              return {
+                ...prev,
+                [workspacePath]: { ...ctx, runsError: eventsRes.error }
+              }
+            })
+            bump()
+          }
         }
         if (!stillCurrent()) return
         ctrl.hydrateTranscript(res.data.messages, events)
@@ -515,16 +823,21 @@ export function useWorkspaceManager() {
 
   const reattachActiveRuns = useCallback(
     async (entries: { runId: string; workspacePath: string }[]): Promise<void> => {
+      let didReattach = false
       for (const entry of entries) {
         runIdToWorkspaceRef.current.set(entry.runId, entry.workspacePath)
         const ctrl = ensureController(entry.workspacePath, entry.runId)
         if (!ctrl.running) {
           await ctrl.reattachActiveRun(entry.runId)
+          didReattach = true
         }
+        await restorePendingQuestions(ctrl, entry.runId)
+        await restorePendingApprovals(ctrl, entry.runId)
+        applyUiSuspendForController(entry.runId, ctrl)
       }
-      bump()
+      if (didReattach) bump()
     },
-    [bump, ensureController]
+    [applyUiSuspendForController, bump, ensureController]
   )
 
   const pollActiveRuns = useCallback(async (): Promise<void> => {
@@ -746,9 +1059,12 @@ export function useWorkspaceManager() {
         bufferOrphanEvent(event.runId, event)
         return
       }
+      if (!isRunUiVisible(event.runId)) {
+        ctrl.setUiSuspended(true)
+      }
       ctrl.handleEvent(event)
     })
-  }, [bufferOrphanEvent, ensureController])
+  }, [bufferOrphanEvent, ensureController, isRunUiVisible])
 
   useEffect(() => {
     if (!window.vyotiq?.onToolApprovalRequest) return
@@ -764,6 +1080,21 @@ export function useWorkspaceManager() {
       ctrl.handleApprovalRequest(request)
     })
   }, [bufferOrphanApproval, ensureController])
+
+  useEffect(() => {
+    if (!window.vyotiq?.onAgentQuestionRequest) return
+    return window.vyotiq.onAgentQuestionRequest((request) => {
+      const workspacePath = runIdToWorkspaceRef.current.get(request.runId)
+      const ctrl =
+        controllersRef.current.get(request.runId) ??
+        (workspacePath ? ensureController(workspacePath, request.runId) : undefined)
+      if (!ctrl) {
+        bufferOrphanQuestion(request.runId, request)
+        return
+      }
+      ctrl.handleQuestionRequest(request)
+    })
+  }, [bufferOrphanQuestion, ensureController])
 
   useEffect(() => {
     void pollActiveRuns()
@@ -801,13 +1132,21 @@ export function useWorkspaceManager() {
       if (res.ok) {
         setWorkspaceError(null)
         applyRegistry(res.data)
+        const ctx = contextsRef.current[path]
+        const visibleRunId = ctx?.activeRunId ?? null
+        suspendAllExcept(visibleRunId)
+        if (visibleRunId) {
+          backgroundRunIdsRef.current.delete(visibleRunId)
+          const ctrl = ensureController(path, visibleRunId)
+          void ctrl.resumeUiIfNeeded()
+        }
         setChatSurfaceEpoch((t) => t + 1)
         setScrollRestoreToken((t) => t + 1)
       } else {
         setWorkspaceError(res.error)
       }
     },
-    [activeWorkspace, applyRegistry, flushPersistUiState]
+    [activeWorkspace, applyRegistry, ensureController, flushPersistUiState, suspendAllExcept]
   )
 
   const addWorkspace = useCallback(
@@ -833,31 +1172,29 @@ export function useWorkspaceManager() {
 
   const removeWorkspace = useCallback(
     async (path: string): Promise<void> => {
-      const ctx = contextsRef.current[path]
-      if (ctx) {
-        for (const run of ctx.runs) {
-          if (run.status === 'running') {
-            backgroundRunIdsRef.current.add(run.runId)
-          }
-        }
-        for (const runId of ctx.openRunIds) {
-          const ctrl = controllersRef.current.get(runId)
-          if (ctrl?.running || ctrl?.pendingRun) {
-            backgroundRunIdsRef.current.add(runId)
-          }
-        }
-        const draft = controllersRef.current.get(draftControllerKey(path))
-        if (draft?.running || draft?.pendingRun) {
-          const id = draft.runId
-          if (id) backgroundRunIdsRef.current.add(id)
-        }
+      const activeForWorkspace = activeRunsRef.current.filter((run) =>
+        workspacePathsEqual(run.workspacePath, path)
+      )
+      if (
+        activeForWorkspace.length > 0 &&
+        !window.confirm(
+          `This workspace has ${activeForWorkspace.length} active run(s). Stop ${
+            activeForWorkspace.length === 1 ? 'it' : 'them'
+          } and close the workspace?`
+        )
+      ) {
+        return
       }
 
       flushPersistUiState(path)
 
       if (!window.vyotiq?.removeWorkspace) return
-      const res = await window.vyotiq.removeWorkspace(path)
+      const res = await window.vyotiq.removeWorkspace(path, activeForWorkspace.length > 0)
       if (res.ok) {
+        for (const run of activeForWorkspace) {
+          backgroundRunIdsRef.current.delete(run.runId)
+          forgetRunRouting(run.runId)
+        }
         setWorkspaceError(null)
         applyRegistry(res.data)
         setContexts((prev) => {
@@ -869,7 +1206,7 @@ export function useWorkspaceManager() {
         setWorkspaceError(res.error)
       }
     },
-    [applyRegistry, contexts, flushPersistUiState]
+    [applyRegistry, flushPersistUiState, forgetRunRouting]
   )
 
   const getRunController = useCallback(
@@ -893,13 +1230,18 @@ export function useWorkspaceManager() {
         openRunIds
       }
       maybeEvictControllers(workspacePath, openRunIds, runId)
-      ensureController(workspacePath, runId)
+      if (runId) backgroundRunIdsRef.current.delete(runId)
+      const ctrl = ensureController(workspacePath, runId)
       contextsRef.current = { ...contextsRef.current, [workspacePath]: nextCtx }
       setContexts((prev) => ({
         ...prev,
         [workspacePath]: nextCtx
       }))
       schedulePersistUiState(workspacePath, nextCtx)
+      suspendAllExcept(runId)
+      if (runId) {
+        void ctrl.resumeUiIfNeeded()
+      }
       if (!sameTab) {
         flushPersistUiState(workspacePath)
         setChatSurfaceEpoch((t) => t + 1)
@@ -907,7 +1249,14 @@ export function useWorkspaceManager() {
       }
       bump()
     },
-    [bump, ensureController, flushPersistUiState, maybeEvictControllers, schedulePersistUiState]
+    [
+      bump,
+      ensureController,
+      flushPersistUiState,
+      maybeEvictControllers,
+      schedulePersistUiState,
+      suspendAllExcept
+    ]
   )
 
   const openRunTab = useCallback(
@@ -936,6 +1285,7 @@ export function useWorkspaceManager() {
       const ctrl = controllersRef.current.get(runId)
       if (ctrl?.running || ctrl?.pendingRun) {
         backgroundRunIdsRef.current.add(runId)
+        ctrl.setUiSuspended(true)
       } else {
         forgetRunRouting(runId)
       }
@@ -949,6 +1299,10 @@ export function useWorkspaceManager() {
         [activeWorkspace]: nextCtx
       }))
       schedulePersistUiState(activeWorkspace, nextCtx)
+      if (activeRunId) {
+        const nextCtrl = controllersRef.current.get(activeRunId)
+        if (nextCtrl) void nextCtrl.resumeUiIfNeeded()
+      }
       if (ctx.activeRunId === runId) {
         setChatSurfaceEpoch((t) => t + 1)
         setScrollRestoreToken((t) => t + 1)
@@ -956,6 +1310,23 @@ export function useWorkspaceManager() {
       bump()
     },
     [activeWorkspace, bump, forgetRunRouting, schedulePersistUiState]
+  )
+
+  const purgeDeletedRunUi = useCallback(
+    (workspacePath: string, runId: string): void => {
+      const ctx = contextsRef.current[workspacePath]
+      if (!ctx) return
+      const scrollTopByRunId = omitRunScrollTop(ctx.ui.scrollTopByRunId, runId)
+      if (scrollTopByRunId === ctx.ui.scrollTopByRunId) return
+      const nextCtx: WorkspaceContext = {
+        ...ctx,
+        ui: { ...ctx.ui, scrollTopByRunId }
+      }
+      contextsRef.current = { ...contextsRef.current, [workspacePath]: nextCtx }
+      setContexts((prev) => ({ ...prev, [workspacePath]: nextCtx }))
+      schedulePersistUiState(workspacePath, nextCtx)
+    },
+    [schedulePersistUiState]
   )
 
   const setComposerDraft = useCallback(
@@ -1087,6 +1458,12 @@ export function useWorkspaceManager() {
     []
   )
 
+  const onQuestionSubmit = useCallback(
+    (requestId: string, answers: UiAgentQuestionAnswer[]) =>
+      activeControllerRef.current?.respondToQuestion(requestId, answers) ?? Promise.resolve(),
+    []
+  )
+
   const subscribeActiveController = useCallback(
     (onStoreChange: () => void) => activeController?.subscribeMeta(onStoreChange) ?? (() => {}),
     [activeController]
@@ -1119,6 +1496,7 @@ export function useWorkspaceManager() {
         transcriptLoading: activeController.transcriptLoading,
         collapsedTurnIndices: activeController.collapsedTurnIndices,
         writeCheckpoint: activeController.writeCheckpoint,
+        pendingFollowUps: activeController.pendingFollowUps,
         subscribeItems: activeController.subscribeItems.bind(activeController),
         getItemsRevision: activeController.getItemsRevision.bind(activeController),
         getItems: () => activeController.items,
@@ -1141,6 +1519,7 @@ export function useWorkspaceManager() {
         transcriptLoading: false,
         collapsedTurnIndices: [] as number[],
         writeCheckpoint: null as ChatStreamController['writeCheckpoint'],
+        pendingFollowUps: [] as ChatStreamController['pendingFollowUps'],
         subscribeItems: (_listener: () => void) => () => {},
         getItemsRevision: () => 0,
         getItems: () => [] as ChatStreamController['items'],
@@ -1220,6 +1599,8 @@ export function useWorkspaceManager() {
       activeController
         ? {
             send: activeController.send.bind(activeController),
+            editAndResend: activeController.editAndResend.bind(activeController),
+            removeFollowUp: activeController.removeFollowUp.bind(activeController),
             stop: activeController.stop.bind(activeController),
             reset: activeController.reset.bind(activeController),
             loadTranscript: activeController.loadTranscript.bind(activeController),
@@ -1273,7 +1654,9 @@ export function useWorkspaceManager() {
     onGroupToggle,
     onTurnToggle,
     onApprovalDecision,
+    onQuestionSubmit,
     collapsedTurns,
-    chatActions
+    chatActions,
+    purgeDeletedRunUi
   }
 }

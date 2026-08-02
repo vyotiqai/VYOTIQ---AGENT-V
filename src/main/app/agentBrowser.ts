@@ -1,7 +1,8 @@
-import { BrowserWindow, session, type WebContents } from 'electron'
+import { WebContentsView, session, type WebContents } from 'electron'
 import { mkdirSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { IPC } from '../../shared/channels'
+import { workspacePathsEqual } from '../../shared/workspacePath'
 import { assertPublicUrl, isSyncBlockedUrl } from '@main/agent/tools/webFetch'
 import { getMainWindow } from '@main/app/window'
 import { isAbortError } from '../../shared/errors'
@@ -17,22 +18,25 @@ const MAX_NAV_TIMEOUT_MS = 60_000
 const DEFAULT_SNAPSHOT_CHARS = 40_000
 const MAX_INTERACTIVE_REFS = 80
 const SNAPSHOT_JPEG_QUALITY = 55
-const MAX_PREVIEW_BYTES = 150_000
 const PREVIEW_MAX_WIDTH = 960
 const DEFAULT_WAIT_TIMEOUT_MS = 15_000
 const MAX_WAIT_TIMEOUT_MS = 60_000
+export const MAX_BROWSER_TABS = 16
 
 type BrowserTab = {
   id: string
-  win: BrowserWindow
+  view: WebContentsView
   lastRefs: Map<string, BrowserElementRef>
+  workspacePath?: string
 }
+
+type EmbedBounds = { x: number; y: number; width: number; height: number }
 
 export type AgentBrowserState = {
   open: boolean
   url: string
   title: string
-  /** Optional JPEG data URL from the latest snapshot (UI preview only). */
+  /** @deprecated Preview removed — live WebContentsView is embedded in-app. */
   snapshotDataUrl?: string | null
   /** True while a navigation is in flight. */
   navigating?: boolean
@@ -47,22 +51,109 @@ let lastState: AgentBrowserState = {
   open: false,
   url: '',
   title: '',
-  snapshotDataUrl: null,
   navigating: false,
   tabs: [],
   canGoBack: false,
   canGoForward: false
 }
-/** Serialize navigate/click/type/snapshot across concurrent runs sharing the browser. */
-let browserOpChain: Promise<void> = Promise.resolve()
+/** Serialize navigate/click/type/snapshot per workspace (shared browser; cross-workspace concurrent). */
+const browserOpChains = new Map<string, Promise<void>>()
+const GLOBAL_BROWSER_LOCK_KEY = '__global__'
 let tabSeq = 0
+let embedBounds: EmbedBounds | null = null
 
-function withBrowserLock<T>(fn: () => Promise<T>): Promise<T> {
-  const run = browserOpChain.then(fn, fn)
-  browserOpChain = run.then(
+function isTabDestroyed(tab: BrowserTab): boolean {
+  try {
+    return tab.view.webContents.isDestroyed()
+  } catch {
+    return true
+  }
+}
+
+function tabContents(tab: BrowserTab): WebContents {
+  return tab.view.webContents
+}
+
+function destroyTab(tab: BrowserTab): void {
+  const main = getMainWindow()
+  if (main && !main.isDestroyed()) {
+    try {
+      main.contentView.removeChildView(tab.view)
+    } catch {
+      // already detached
+    }
+  }
+  if (!isTabDestroyed(tab)) {
+    tab.view.webContents.close()
+  }
+  tabs.delete(tab.id)
+}
+
+function attachTabView(tab: BrowserTab): void {
+  const main = getMainWindow()
+  if (!main || main.isDestroyed()) return
+  try {
+    main.contentView.removeChildView(tab.view)
+  } catch {
+    // not attached yet
+  }
+  // Later children paint above the window's main WebContentsView.
+  main.contentView.addChildView(tab.view)
+}
+
+function applyActiveViewBounds(): void {
+  for (const tab of tabs.values()) {
+    if (isTabDestroyed(tab)) continue
+    const active = tab.id === activeTabId && tabs.size > 0
+    const bounds = embedBounds
+    if (!active || !bounds || bounds.width < 1 || bounds.height < 1) {
+      tab.view.setVisible(false)
+      tab.view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+      continue
+    }
+
+    attachTabView(tab)
+    tab.view.setBounds(bounds)
+    tab.view.setVisible(true)
+    try {
+      tab.view.webContents.setBackgroundThrottling(false)
+    } catch {
+      // older Electron
+    }
+  }
+}
+
+export function setAgentBrowserBounds(bounds: EmbedBounds | null): void {
+  if (!bounds || bounds.width < 2 || bounds.height < 2) {
+    // Keep prior bounds if the renderer reports a transient empty rect during layout.
+    if (bounds != null && embedBounds) {
+      applyActiveViewBounds()
+      return
+    }
+    embedBounds = null
+  } else {
+    embedBounds = {
+      x: Math.round(bounds.x),
+      y: Math.round(bounds.y),
+      width: Math.round(bounds.width),
+      height: Math.round(bounds.height)
+    }
+  }
+  applyActiveViewBounds()
+}
+
+function withBrowserLock<T>(fn: () => Promise<T>, workspacePath?: string): Promise<T> {
+  const key = workspacePath && workspacePath.length > 0 ? workspacePath : GLOBAL_BROWSER_LOCK_KEY
+  const prev = browserOpChains.get(key) ?? Promise.resolve()
+  const run = prev.then(fn, fn)
+  const tail = run.then(
     () => undefined,
     () => undefined
   )
+  browserOpChains.set(key, tail)
+  void tail.finally(() => {
+    if (browserOpChains.get(key) === tail) browserOpChains.delete(key)
+  })
   return run
 }
 
@@ -73,30 +164,31 @@ function nextTabId(): string {
 
 function listTabStates(): Array<{ id: string; title: string; url: string; active: boolean }> {
   return [...tabs.values()].map((tab) => {
-    const destroyed = tab.win.isDestroyed()
+    const destroyed = isTabDestroyed(tab)
+    const wc = destroyed ? null : tabContents(tab)
     return {
       id: tab.id,
-      title: destroyed ? '' : tab.win.webContents.getTitle(),
-      url: destroyed ? '' : tab.win.webContents.getURL(),
+      title: wc ? wc.getTitle() : '',
+      url: wc ? wc.getURL() : '',
       active: tab.id === activeTabId
     }
   })
 }
 
-function navFlags(win: BrowserWindow | null): { canGoBack: boolean; canGoForward: boolean } {
-  if (!win || win.isDestroyed()) return { canGoBack: false, canGoForward: false }
-  const wc = win.webContents as WebContents & {
+function navFlags(wc: WebContents | null): { canGoBack: boolean; canGoForward: boolean } {
+  if (!wc || wc.isDestroyed()) return { canGoBack: false, canGoForward: false }
+  const histWc = wc as WebContents & {
     canGoBack?: () => boolean
     canGoForward?: () => boolean
     navigationHistory?: { canGoBack: () => boolean; canGoForward: () => boolean }
   }
-  const hist = wc.navigationHistory
+  const hist = histWc.navigationHistory
   if (hist) {
     return { canGoBack: hist.canGoBack(), canGoForward: hist.canGoForward() }
   }
   return {
-    canGoBack: typeof wc.canGoBack === 'function' ? wc.canGoBack() : false,
-    canGoForward: typeof wc.canGoForward === 'function' ? wc.canGoForward() : false
+    canGoBack: typeof histWc.canGoBack === 'function' ? histWc.canGoBack() : false,
+    canGoForward: typeof histWc.canGoForward === 'function' ? histWc.canGoForward() : false
   }
 }
 
@@ -109,37 +201,39 @@ function pushState(partial: Partial<AgentBrowserState>): void {
 
 function emitCurrent(extra?: Partial<AgentBrowserState>): void {
   const tab = activeTabId ? tabs.get(activeTabId) : undefined
-  const win = tab && !tab.win.isDestroyed() ? tab.win : null
-  if (!win) {
+  const wc = tab && !isTabDestroyed(tab) ? tabContents(tab) : null
+  if (!wc) {
     pushState({
       open: tabs.size > 0,
       url: '',
       title: '',
-      snapshotDataUrl: null,
       navigating: false,
       tabs: listTabStates(),
       canGoBack: false,
       canGoForward: false,
       ...extra
     })
+    applyActiveViewBounds()
     return
   }
-  const flags = navFlags(win)
+  const flags = navFlags(wc)
   pushState({
     open: true,
-    url: win.webContents.getURL(),
-    title: win.webContents.getTitle(),
+    url: wc.getURL(),
+    title: wc.getTitle(),
     tabs: listTabStates(),
     canGoBack: flags.canGoBack,
     canGoForward: flags.canGoForward,
     ...extra
   })
+  applyActiveViewBounds()
 }
 
 function attachAgentSecurity(wc: WebContents): void {
   wc.setWindowOpenHandler(({ url }) => {
     void withBrowserLock(async () => {
-      const tab = createTabWindow()
+      if (tabs.size >= MAX_BROWSER_TABS) return
+      const tab = createTab()
       activeTabId = tab.id
       try {
         await navigateUrlUnlocked(url, { tabId: tab.id })
@@ -174,21 +268,19 @@ async function enforcePublicPage(wc: WebContents): Promise<void> {
   } catch {
     if (wc.isDestroyed()) return
     void wc.loadURL('about:blank')
-    emitCurrent({ snapshotDataUrl: null })
+    emitCurrent()
   }
 }
 
-function createTabWindow(): BrowserTab {
+function createTab(workspacePath?: string): BrowserTab {
+  if (tabs.size >= MAX_BROWSER_TABS) {
+    throw new Error(
+      `Browser tab limit (${MAX_BROWSER_TABS}) reached. Close a tab before opening another.`
+    )
+  }
   const ses = session.fromPartition(PARTITION)
   const id = nextTabId()
-  const win = new BrowserWindow({
-    width: 1100,
-    height: 800,
-    minWidth: 640,
-    minHeight: 480,
-    show: false,
-    autoHideMenuBar: true,
-    title: `Vyotiq Browser — ${id}`,
+  const view = new WebContentsView({
     webPreferences: {
       session: ses,
       contextIsolation: true,
@@ -199,49 +291,57 @@ function createTabWindow(): BrowserTab {
     }
   })
 
-  attachAgentSecurity(win.webContents)
+  attachAgentSecurity(view.webContents)
 
-  const tab: BrowserTab = { id, win, lastRefs: new Map() }
+  const tab: BrowserTab = { id, view, lastRefs: new Map(), workspacePath }
   tabs.set(id, tab)
 
-  win.on('closed', () => {
+  attachTabView(tab)
+  view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+  view.setVisible(false)
+  try {
+    view.webContents.setBackgroundThrottling(false)
+  } catch {
+    // ignore
+  }
+
+  view.webContents.on('destroyed', () => {
     tabs.delete(id)
     if (activeTabId === id) {
       const next = tabs.keys().next().value as string | undefined
       activeTabId = next ?? null
     }
-    emitCurrent({
-      snapshotDataUrl: tabs.size === 0 ? null : lastState.snapshotDataUrl,
-      navigating: false
-    })
+    emitCurrent({ navigating: false })
   })
 
-  win.webContents.on('did-navigate', () => {
+  view.webContents.on('did-navigate', () => {
+    tab.lastRefs = new Map()
     if (activeTabId === id) emitCurrent()
   })
-  win.webContents.on('did-navigate-in-page', () => {
+  view.webContents.on('did-navigate-in-page', () => {
+    tab.lastRefs = new Map()
     if (activeTabId === id) emitCurrent()
   })
-  win.webContents.on('page-title-updated', () => {
+  view.webContents.on('page-title-updated', () => {
     if (activeTabId === id) emitCurrent()
   })
 
   return tab
 }
 
-function ensureTab(tabId?: string): BrowserTab {
+function ensureTab(tabId?: string, workspacePath?: string): BrowserTab {
   if (tabId) {
     const existing = tabs.get(tabId)
-    if (!existing || existing.win.isDestroyed()) {
+    if (!existing || isTabDestroyed(existing)) {
       throw new Error(`Unknown browser tab_id: ${tabId}`)
     }
     return existing
   }
   if (activeTabId) {
     const active = tabs.get(activeTabId)
-    if (active && !active.win.isDestroyed()) return active
+    if (active && !isTabDestroyed(active)) return active
   }
-  const tab = createTabWindow()
+  const tab = createTab(workspacePath)
   activeTabId = tab.id
   return tab
 }
@@ -249,7 +349,7 @@ function ensureTab(tabId?: string): BrowserTab {
 function requireTab(tabId?: string): BrowserTab {
   if (tabId) {
     const existing = tabs.get(tabId)
-    if (!existing || existing.win.isDestroyed()) {
+    if (!existing || isTabDestroyed(existing)) {
       throw new Error(`Unknown browser tab_id: ${tabId}`)
     }
     return existing
@@ -258,7 +358,7 @@ function requireTab(tabId?: string): BrowserTab {
     throw new Error('No browser page open. Call browser_navigate or browser_tabs open first.')
   }
   const active = tabs.get(activeTabId)
-  if (!active || active.win.isDestroyed()) {
+  if (!active || isTabDestroyed(active)) {
     throw new Error('No browser page open. Call browser_navigate or browser_tabs open first.')
   }
   return active
@@ -266,8 +366,10 @@ function requireTab(tabId?: string): BrowserTab {
 
 function activateTab(tab: BrowserTab): void {
   activeTabId = tab.id
-  if (!tab.win.isVisible()) tab.win.show()
-  tab.win.focus()
+  applyActiveViewBounds()
+  if (!isTabDestroyed(tab)) {
+    tabContents(tab).focus()
+  }
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -278,67 +380,97 @@ function throwIfAborted(signal?: AbortSignal): void {
   }
 }
 
-async function waitForLoad(win: BrowserWindow, signal: AbortSignal | undefined, timeoutMs: number): Promise<void> {
+async function waitForLoad(
+  wc: WebContents,
+  signal: AbortSignal | undefined,
+  timeoutMs: number
+): Promise<{ arm: () => void; checkIdle: () => void; done: Promise<void> }> {
   throwIfAborted(signal)
-  await new Promise<void>((resolve, reject) => {
-    const wc = win.webContents
-    let settled = false
-    const timer = setTimeout(() => {
-      finish(() => reject(new Error(`Navigation timed out after ${timeoutMs}ms`)))
-    }, timeoutMs)
+  let armed = false
+  let settled = false
+  let resolveDone!: () => void
+  let rejectDone!: (err: Error) => void
+  const done = new Promise<void>((resolve, reject) => {
+    resolveDone = resolve
+    rejectDone = reject
+  })
 
-    const onAbort = (): void => {
-      finish(() => {
-        const err = new Error('Aborted')
-        err.name = 'AbortError'
-        reject(err)
-      })
-    }
+  const timer = setTimeout(() => {
+    finish(() => rejectDone(new Error(`Navigation timed out after ${timeoutMs}ms`)))
+  }, timeoutMs)
 
-    const onDone = (): void => {
-      finish(() => resolve())
-    }
+  const onAbort = (): void => {
+    finish(() => {
+      const err = new Error('Aborted')
+      err.name = 'AbortError'
+      rejectDone(err)
+    })
+  }
 
-    const onFail = (
-      _event: Electron.Event,
-      errorCode: number,
-      errorDescription: string,
-      _validatedURL: string,
-      isMainFrame: boolean
-    ): void => {
-      if (!isMainFrame) return
-      // -3 is ABORTED (often from a superseding navigation).
-      if (errorCode === -3) return
-      finish(() => reject(new Error(errorDescription || `Navigation failed (${errorCode})`)))
-    }
+  const onDone = (): void => {
+    finish(() => resolveDone())
+  }
 
-    const finish = (fn: () => void): void => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      signal?.removeEventListener('abort', onAbort)
-      wc.removeListener('did-finish-load', onDone)
-      wc.removeListener('did-fail-load', onFail)
-      fn()
-    }
+  const onFail = (
+    _event: Electron.Event,
+    errorCode: number,
+    errorDescription: string,
+    _validatedURL: string,
+    isMainFrame: boolean
+  ): void => {
+    if (!isMainFrame) return
+    // -3 is ABORTED (often from a superseding navigation).
+    if (errorCode === -3) return
+    finish(() => rejectDone(new Error(errorDescription || `Navigation failed (${errorCode})`)))
+  }
 
+  const finish = (fn: () => void): void => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', onAbort)
+    wc.removeListener('did-finish-load', onDone)
+    wc.removeListener('did-fail-load', onFail)
+    wc.removeListener('did-stop-loading', onDone)
+    fn()
+  }
+
+  /** Attach listeners before loadURL so fast loads cannot race past us. */
+  const arm = (): void => {
+    if (armed) return
+    armed = true
     signal?.addEventListener('abort', onAbort, { once: true })
     wc.once('did-finish-load', onDone)
+    wc.once('did-stop-loading', onDone)
     wc.on('did-fail-load', onFail)
-  })
+  }
+
+  /** Call after loadURL — resolves if navigation already finished (cache hit). */
+  const checkIdle = (): void => {
+    if (armed && !settled && !wc.isLoading()) {
+      finish(() => resolveDone())
+    }
+  }
+
+  return { arm, checkIdle, done }
 }
 
 /** Navigate the agent browser to a public http(s) URL. */
 export async function navigateUrl(
   rawUrl: string,
-  opts: { signal?: AbortSignal; timeoutMs?: number; tabId?: string } = {}
+  opts: {
+    signal?: AbortSignal
+    timeoutMs?: number
+    tabId?: string
+    workspacePath?: string
+  } = {}
 ): Promise<string> {
-  return withBrowserLock(() => navigateUrlUnlocked(rawUrl, opts))
+  return withBrowserLock(() => navigateUrlUnlocked(rawUrl, opts), opts.workspacePath)
 }
 
 async function navigateUrlUnlocked(
   rawUrl: string,
-  opts: { signal?: AbortSignal; timeoutMs?: number; tabId?: string } = {}
+  opts: { signal?: AbortSignal; timeoutMs?: number; tabId?: string; workspacePath?: string } = {}
 ): Promise<string> {
   const url = await assertPublicUrl(rawUrl)
   throwIfAborted(opts.signal)
@@ -348,46 +480,49 @@ async function navigateUrlUnlocked(
     Math.max(1_000, opts.timeoutMs ?? DEFAULT_NAV_TIMEOUT_MS)
   )
 
-  const tab = ensureTab(opts.tabId)
+  const tab = ensureTab(opts.tabId, opts.workspacePath)
   activateTab(tab)
-  const win = tab.win
+  const wc = tabContents(tab)
   emitCurrent({ navigating: true })
 
   try {
-    const loadPromise = waitForLoad(win, opts.signal, timeoutMs)
-    void win.loadURL(url.toString())
-    await loadPromise
+    const { arm, checkIdle, done } = await waitForLoad(wc, opts.signal, timeoutMs)
+    arm()
+    await wc.loadURL(url.toString())
+    checkIdle()
+    await done
   } catch (err) {
     emitCurrent({ navigating: false })
     if (isAbortError(err)) throw err
     throw err
   }
 
-  const finalUrl = win.webContents.getURL()
+  const finalUrl = wc.getURL()
   try {
     await assertPublicUrl(finalUrl)
   } catch (err) {
-    void win.loadURL('about:blank')
-    emitCurrent({ snapshotDataUrl: null, navigating: false })
+    void wc.loadURL('about:blank')
+    emitCurrent({ navigating: false })
     throw err
   }
 
   tab.lastRefs = new Map()
   emitCurrent({ navigating: false })
-  const title = win.webContents.getTitle()
+  const title = wc.getTitle()
   return [`Navigated to ${finalUrl}`, `Title: ${title || '(none)'}`, `tab_id: ${tab.id}`].join('\n')
 }
 
-/** Accessibility text (+ optional JPEG on disk / UI preview) for the current page. */
+/** Accessibility text (+ optional JPEG on disk) for the current page. */
 export async function snapshotPage(
   opts: {
     signal?: AbortSignal
     maxChars?: number
     runDir?: string
     tabId?: string
+    workspacePath?: string
   } = {}
 ): Promise<string> {
-  return withBrowserLock(() => snapshotPageUnlocked(opts))
+  return withBrowserLock(() => snapshotPageUnlocked(opts), opts.workspacePath)
 }
 
 async function snapshotPageUnlocked(
@@ -401,11 +536,11 @@ async function snapshotPageUnlocked(
   throwIfAborted(opts.signal)
   const tab = requireTab(opts.tabId)
   activateTab(tab)
-  const win = tab.win
+  const wc = tabContents(tab)
 
   const maxChars = Math.max(1_000, opts.maxChars ?? DEFAULT_SNAPSHOT_CHARS)
-  const url = win.webContents.getURL()
-  const title = win.webContents.getTitle()
+  const url = wc.getURL()
+  const title = wc.getTitle()
 
   type SnapshotPayload = {
     text: string
@@ -413,7 +548,7 @@ async function snapshotPageUnlocked(
     items: Array<{ selector: string; tag: string; role: string; name: string }>
   }
 
-  const payload = (await win.webContents.executeJavaScript(
+  const payload = (await wc.executeJavaScript(
     `(() => {
       const cssEscape = (value) => {
         if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(value)
@@ -514,7 +649,7 @@ async function snapshotPageUnlocked(
 
   let imageNote = ''
   try {
-    let image = await win.webContents.capturePage()
+    let image = await wc.capturePage()
     const size = image.getSize()
     if (size.width > PREVIEW_MAX_WIDTH) {
       image = image.resize({ width: PREVIEW_MAX_WIDTH, quality: 'better' })
@@ -526,15 +661,9 @@ async function snapshotPageUnlocked(
       writeFileSync(join(dir, 'snapshot.jpg'), jpeg)
       imageNote = `\n\n[Screenshot saved under run browser/snapshot.jpg (${jpeg.length} bytes)]`
     }
-    if (jpeg.length > 0 && jpeg.length <= MAX_PREVIEW_BYTES) {
-      emitCurrent({
-        snapshotDataUrl: `data:image/jpeg;base64,${jpeg.toString('base64')}`
-      })
-    } else {
-      emitCurrent({ snapshotDataUrl: null })
-    }
-  } catch {
-    emitCurrent({ snapshotDataUrl: null })
+    // Live embed shows the page; JPEG is also loaded in the chat snapshot card.
+  } catch (err) {
+    imageNote = `\n\n[Screenshot capture failed: ${err instanceof Error ? err.message : String(err)}]`
   }
 
   const bodyBudget = Math.max(500, maxChars - 2_000)
@@ -573,11 +702,11 @@ type ElementHit = {
   css: string
 }
 
-const SETTLE_FALLBACK_MS = 400
+const SETTLE_FALLBACK_MS = 1_200
 const SETTLE_NAV_TIMEOUT_MS = 8_000
 
 async function settleAfterAction(
-  win: BrowserWindow,
+  wc: WebContents,
   signal: AbortSignal | undefined,
   opts: { waitForNav?: boolean; settleMs?: number } = {}
 ): Promise<void> {
@@ -590,7 +719,6 @@ async function settleAfterAction(
     return
   }
   const nav = new Promise<void>((resolve) => {
-    const wc = win.webContents
     const done = (): void => {
       wc.removeListener('did-finish-load', done)
       wc.removeListener('did-navigate-in-page', done)
@@ -608,7 +736,7 @@ async function resolveSelector(
   tab: BrowserTab,
   selector: string
 ): Promise<ElementHit> {
-  const win = tab.win
+  const wc = tabContents(tab)
   const target = parseBrowserTarget(selector)
   let css = target.kind === 'css' ? target.selector : ''
   if (target.kind === 'ref') {
@@ -621,7 +749,7 @@ async function resolveSelector(
     css = ref.selector
   }
 
-  const hit = (await win.webContents.executeJavaScript(
+  const hit = (await wc.executeJavaScript(
     `(() => {
       const css = ${JSON.stringify(css)}
       const all = Array.from(document.querySelectorAll(css))
@@ -704,9 +832,10 @@ export async function clickSelector(
     button?: 'left' | 'right' | 'middle'
     tabId?: string
     settleMs?: number
+    workspacePath?: string
   } = {}
 ): Promise<string> {
-  return withBrowserLock(() => clickSelectorUnlocked(selector, opts))
+  return withBrowserLock(() => clickSelectorUnlocked(selector, opts), opts.workspacePath)
 }
 
 async function clickSelectorUnlocked(
@@ -724,20 +853,20 @@ async function clickSelectorUnlocked(
 
   const tab = requireTab(opts.tabId)
   activateTab(tab)
-  const win = tab.win
+  const wc = tabContents(tab)
 
   const hit = await resolveSelector(tab, sel)
   throwIfAborted(opts.signal)
 
   const button = opts.button ?? 'left'
-  win.webContents.sendInputEvent({
+  wc.sendInputEvent({
     type: 'mouseDown',
     x: hit.x,
     y: hit.y,
     button,
     clickCount: 1
   })
-  win.webContents.sendInputEvent({
+  wc.sendInputEvent({
     type: 'mouseUp',
     x: hit.x,
     y: hit.y,
@@ -745,7 +874,7 @@ async function clickSelectorUnlocked(
     clickCount: 1
   })
 
-  await settleAfterAction(win, opts.signal, { waitForNav: true, settleMs: opts.settleMs })
+  await settleAfterAction(wc, opts.signal, { waitForNav: true, settleMs: opts.settleMs })
   emitCurrent()
   const label = hit.label ? ` "${hit.label}"` : ''
   const amb =
@@ -765,9 +894,10 @@ export async function typeText(
     pressEnter?: boolean
     tabId?: string
     settleMs?: number
+    workspacePath?: string
   } = {}
 ): Promise<string> {
-  return withBrowserLock(() => typeTextUnlocked(text, opts))
+  return withBrowserLock(() => typeTextUnlocked(text, opts), opts.workspacePath)
 }
 
 async function typeTextUnlocked(
@@ -789,7 +919,7 @@ async function typeTextUnlocked(
 
   const tab = requireTab(opts.tabId)
   activateTab(tab)
-  const win = tab.win
+  const wc = tabContents(tab)
 
   let focusNote = 'active element'
   let cssForFill: string | null = null
@@ -798,14 +928,14 @@ async function typeTextUnlocked(
     const hit = await resolveSelector(tab, selector)
     throwIfAborted(opts.signal)
     cssForFill = hit.css
-    win.webContents.sendInputEvent({
+    wc.sendInputEvent({
       type: 'mouseDown',
       x: hit.x,
       y: hit.y,
       button: 'left',
       clickCount: 1
     })
-    win.webContents.sendInputEvent({
+    wc.sendInputEvent({
       type: 'mouseUp',
       x: hit.x,
       y: hit.y,
@@ -814,7 +944,7 @@ async function typeTextUnlocked(
     })
     focusNote = `${hit.tag}${hit.label ? ` "${hit.label}"` : ''} (${selector})`
   } else {
-    await win.webContents.executeJavaScript(
+    await wc.executeJavaScript(
       `(() => {
         const el = document.activeElement
         if (el && typeof el.focus === 'function') el.focus()
@@ -828,7 +958,7 @@ async function typeTextUnlocked(
 
   let path = 'insertText'
   if (cssForFill && opts.clear) {
-    const filled = (await win.webContents.executeJavaScript(
+    const filled = (await wc.executeJavaScript(
       `(() => {
         const el = document.querySelector(${JSON.stringify(cssForFill)})
         if (!el) return false
@@ -850,29 +980,29 @@ async function typeTextUnlocked(
       path = 'input.value'
     } else {
       const selectMod = process.platform === 'darwin' ? 'meta' : 'control'
-      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: [selectMod] })
-      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: [selectMod] })
-      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' })
-      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' })
-      if (value.length > 0) win.webContents.insertText(value)
+      wc.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: [selectMod] })
+      wc.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: [selectMod] })
+      wc.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' })
+      wc.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' })
+      if (value.length > 0) wc.insertText(value)
     }
   } else {
     if (opts.clear) {
       const selectMod = process.platform === 'darwin' ? 'meta' : 'control'
-      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: [selectMod] })
-      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: [selectMod] })
-      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' })
-      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' })
+      wc.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: [selectMod] })
+      wc.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: [selectMod] })
+      wc.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' })
+      wc.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' })
     }
-    if (value.length > 0) win.webContents.insertText(value)
+    if (value.length > 0) wc.insertText(value)
   }
 
   if (opts.pressEnter) {
-    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' })
-    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
-    await settleAfterAction(win, opts.signal, { waitForNav: true, settleMs: opts.settleMs })
+    wc.sendInputEvent({ type: 'keyDown', keyCode: 'Return' })
+    wc.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
+    await settleAfterAction(wc, opts.signal, { waitForNav: true, settleMs: opts.settleMs })
   } else {
-    await settleAfterAction(win, opts.signal, { settleMs: opts.settleMs })
+    await settleAfterAction(wc, opts.signal, { settleMs: opts.settleMs })
   }
 
   emitCurrent()
@@ -890,9 +1020,10 @@ export async function scrollPage(
     deltaY?: number
     tabId?: string
     settleMs?: number
+    workspacePath?: string
   } = {}
 ): Promise<string> {
-  return withBrowserLock(() => scrollPageUnlocked(opts))
+  return withBrowserLock(() => scrollPageUnlocked(opts), opts.workspacePath)
 }
 
 async function scrollPageUnlocked(
@@ -908,7 +1039,7 @@ async function scrollPageUnlocked(
   throwIfAborted(opts.signal)
   const tab = requireTab(opts.tabId)
   activateTab(tab)
-  const win = tab.win
+  const wc = tabContents(tab)
   const selector = opts.selector?.trim()
   const dx = Number.isFinite(opts.deltaX) ? Number(opts.deltaX) : 0
   const dy = Number.isFinite(opts.deltaY) ? Number(opts.deltaY) : 0
@@ -916,7 +1047,7 @@ async function scrollPageUnlocked(
   if (selector) {
     const hit = await resolveSelector(tab, selector)
     throwIfAborted(opts.signal)
-    await settleAfterAction(win, opts.signal, { settleMs: opts.settleMs })
+    await settleAfterAction(wc, opts.signal, { settleMs: opts.settleMs })
     emitCurrent()
     return `Scrolled ${hit.tag}${hit.label ? ` "${hit.label}"` : ''} into view (${selector})`
   }
@@ -925,11 +1056,11 @@ async function scrollPageUnlocked(
     throw new Error('Provide selector to scroll into view, or deltaX/deltaY to scroll the page')
   }
 
-  await win.webContents.executeJavaScript(
+  await wc.executeJavaScript(
     `window.scrollBy(${dx}, ${dy}); true`,
     true
   )
-  await settleAfterAction(win, opts.signal, { settleMs: opts.settleMs })
+  await settleAfterAction(wc, opts.signal, { settleMs: opts.settleMs })
   emitCurrent()
   return `Scrolled page by (${dx}, ${dy})`
 }
@@ -938,9 +1069,15 @@ async function scrollPageUnlocked(
 export async function fillSelector(
   selector: string,
   value: string,
-  opts: { signal?: AbortSignal; pressEnter?: boolean; tabId?: string; settleMs?: number } = {}
+  opts: {
+    signal?: AbortSignal
+    pressEnter?: boolean
+    tabId?: string
+    settleMs?: number
+    workspacePath?: string
+  } = {}
 ): Promise<string> {
-  return withBrowserLock(() => fillSelectorUnlocked(selector, value, opts))
+  return withBrowserLock(() => fillSelectorUnlocked(selector, value, opts), opts.workspacePath)
 }
 
 async function fillSelectorUnlocked(
@@ -958,12 +1095,12 @@ async function fillSelectorUnlocked(
 
   const tab = requireTab(opts.tabId)
   activateTab(tab)
-  const win = tab.win
+  const wc = tabContents(tab)
 
   const hit = await resolveSelector(tab, sel)
   throwIfAborted(opts.signal)
 
-  const result = (await win.webContents.executeJavaScript(
+  const result = (await wc.executeJavaScript(
     `(() => {
       const el = document.querySelector(${JSON.stringify(hit.css)})
       if (!el) return { ok: false, reason: 'missing' }
@@ -997,11 +1134,11 @@ async function fillSelectorUnlocked(
   }
 
   if (opts.pressEnter) {
-    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' })
-    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
-    await settleAfterAction(win, opts.signal, { waitForNav: true, settleMs: opts.settleMs })
+    wc.sendInputEvent({ type: 'keyDown', keyCode: 'Return' })
+    wc.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
+    await settleAfterAction(wc, opts.signal, { waitForNav: true, settleMs: opts.settleMs })
   } else {
-    await settleAfterAction(win, opts.signal, { settleMs: opts.settleMs })
+    await settleAfterAction(wc, opts.signal, { settleMs: opts.settleMs })
   }
 
   emitCurrent()
@@ -1012,27 +1149,116 @@ async function fillSelectorUnlocked(
 export function focusAgentBrowser(): boolean {
   if (!activeTabId) return false
   const tab = tabs.get(activeTabId)
-  if (!tab || tab.win.isDestroyed()) return false
+  if (!tab || isTabDestroyed(tab)) return false
   activateTab(tab)
   return true
 }
 
 export function closeAgentBrowser(): void {
   for (const tab of [...tabs.values()]) {
-    if (!tab.win.isDestroyed()) tab.win.destroy()
+    destroyTab(tab)
   }
   tabs.clear()
   activeTabId = null
+  // Keep embedBounds — the chat panel is always visible and will host the next tab.
   pushState({
     open: false,
     url: '',
     title: '',
-    snapshotDataUrl: null,
     navigating: false,
     tabs: [],
     canGoBack: false,
     canGoForward: false
   })
+}
+
+/** Close browser tabs owned by a workspace (e.g. when the workspace is removed). */
+export function disposeAgentBrowserForWorkspace(workspacePath: string): number {
+  let closed = 0
+  for (const tab of [...tabs.values()]) {
+    if (!tab.workspacePath || !workspacePathsEqual(tab.workspacePath, workspacePath)) continue
+    destroyTab(tab)
+    closed += 1
+  }
+  if (activeTabId && !tabs.has(activeTabId)) {
+    activeTabId = tabs.keys().next().value ?? null
+  }
+  emitCurrent({ navigating: false })
+  return closed
+}
+
+export type BrowserClearKind = 'history' | 'cookies' | 'cache' | 'all'
+
+function clearTabNavigationHistory(): void {
+  for (const tab of tabs.values()) {
+    if (isTabDestroyed(tab)) continue
+    const wc = tab.view.webContents
+    try {
+      if (wc.navigationHistory && typeof wc.navigationHistory.clear === 'function') {
+        wc.navigationHistory.clear()
+      } else if (typeof wc.clearHistory === 'function') {
+        wc.clearHistory()
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  emitCurrent()
+}
+
+/** Clear storage/cache for the agent-browser partition only. */
+export async function clearAgentBrowserData(
+  kind: BrowserClearKind
+): Promise<{ cleared: BrowserClearKind }> {
+  const ses = session.fromPartition(PARTITION)
+  if (kind === 'history' || kind === 'all') {
+    // Reset in-tab navigation stacks without destroying live tabs.
+    // App-level Recents are cleared in the renderer.
+    clearTabNavigationHistory()
+  }
+  if (kind === 'cookies') {
+    await ses.clearStorageData({ storages: ['cookies'] })
+  } else if (kind === 'all') {
+    await ses.clearStorageData({
+      storages: [
+        'cookies',
+        'localstorage',
+        'indexdb',
+        'shadercache',
+        'serviceworkers',
+        'cachestorage',
+        'filesystem'
+      ]
+    })
+  }
+  if (kind === 'cache' || kind === 'all') {
+    await ses.clearCache()
+  }
+  return { cleared: kind }
+}
+
+/** Capture the active page to `{runDir}/browser/snapshot.jpg`. */
+export async function takeBrowserScreenshot(opts: {
+  runDir: string
+  tabId?: string
+  workspacePath?: string
+}): Promise<{ path: string }> {
+  return withBrowserLock(async () => {
+    const tab = requireTab(opts.tabId)
+    activateTab(tab)
+    const wc = tabContents(tab)
+    let image = await wc.capturePage()
+    const size = image.getSize()
+    if (size.width > PREVIEW_MAX_WIDTH) {
+      image = image.resize({ width: PREVIEW_MAX_WIDTH, quality: 'better' })
+    }
+    const jpeg = image.toJPEG(SNAPSHOT_JPEG_QUALITY)
+    const dir = join(opts.runDir, 'browser')
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    const path = join(dir, 'snapshot.jpg')
+    writeFileSync(path, jpeg)
+    return { path }
+  }, opts.workspacePath)
 }
 
 export function getAgentBrowserState(): AgentBrowserState {
@@ -1041,7 +1267,7 @@ export function getAgentBrowserState(): AgentBrowserState {
 
 export function selectBrowserTab(tabId: string): boolean {
   const tab = tabs.get(tabId)
-  if (!tab || tab.win.isDestroyed()) return false
+  if (!tab || isTabDestroyed(tab)) return false
   activateTab(tab)
   emitCurrent()
   return true
@@ -1069,17 +1295,17 @@ export async function browserGoForward(): Promise<boolean> {
 export function resetAgentBrowserForTests(): void {
   tabs.clear()
   activeTabId = null
+  embedBounds = null
   lastState = {
     open: false,
     url: '',
     title: '',
-    snapshotDataUrl: null,
     navigating: false,
     tabs: [],
     canGoBack: false,
     canGoForward: false
   }
-  browserOpChain = Promise.resolve()
+  browserOpChains.clear()
   tabSeq = 0
 }
 
@@ -1089,14 +1315,14 @@ function clampWaitTimeout(timeoutMs?: number): number {
 
 export async function manageTabs(
   action: 'list' | 'open' | 'close' | 'select',
-  opts: { tabId?: string; url?: string; signal?: AbortSignal } = {}
+  opts: { tabId?: string; url?: string; signal?: AbortSignal; workspacePath?: string } = {}
 ): Promise<string> {
-  return withBrowserLock(() => manageTabsUnlocked(action, opts))
+  return withBrowserLock(() => manageTabsUnlocked(action, opts), opts.workspacePath)
 }
 
 async function manageTabsUnlocked(
   action: 'list' | 'open' | 'close' | 'select',
-  opts: { tabId?: string; url?: string; signal?: AbortSignal } = {}
+  opts: { tabId?: string; url?: string; signal?: AbortSignal; workspacePath?: string } = {}
 ): Promise<string> {
   throwIfAborted(opts.signal)
   if (action === 'list') {
@@ -1107,10 +1333,14 @@ async function manageTabsUnlocked(
       .join('\n')
   }
   if (action === 'open') {
-    const tab = createTabWindow()
+    const tab = createTab(opts.workspacePath)
     activeTabId = tab.id
     if (opts.url?.trim()) {
-      return await navigateUrlUnlocked(opts.url.trim(), { signal: opts.signal, tabId: tab.id })
+      return await navigateUrlUnlocked(opts.url.trim(), {
+        signal: opts.signal,
+        tabId: tab.id,
+        workspacePath: opts.workspacePath
+      })
     }
     activateTab(tab)
     emitCurrent()
@@ -1122,28 +1352,28 @@ async function manageTabsUnlocked(
     const tab = requireTab(id)
     activateTab(tab)
     emitCurrent()
-    return `Selected tab ${tab.id}: ${tab.win.webContents.getURL() || '(blank)'}`
+    return `Selected tab ${tab.id}: ${tabContents(tab).getURL() || '(blank)'}`
   }
   // close
   const id = opts.tabId?.trim() || activeTabId
   if (!id) throw new Error('No tab to close')
   const tab = tabs.get(id)
-  if (!tab || tab.win.isDestroyed()) throw new Error(`Unknown browser tab_id: ${id}`)
-  tab.win.destroy()
+  if (!tab || isTabDestroyed(tab)) throw new Error(`Unknown browser tab_id: ${id}`)
+  destroyTab(tab)
   emitCurrent()
   return `Closed tab ${id}`
 }
 
 export async function goBack(
-  opts: { tabId?: string; signal?: AbortSignal } = {}
+  opts: { tabId?: string; signal?: AbortSignal; workspacePath?: string } = {}
 ): Promise<string> {
-  return withBrowserLock(() => goHistoryUnlocked('back', opts))
+  return withBrowserLock(() => goHistoryUnlocked('back', opts), opts.workspacePath)
 }
 
 export async function goForward(
-  opts: { tabId?: string; signal?: AbortSignal } = {}
+  opts: { tabId?: string; signal?: AbortSignal; workspacePath?: string } = {}
 ): Promise<string> {
-  return withBrowserLock(() => goHistoryUnlocked('forward', opts))
+  return withBrowserLock(() => goHistoryUnlocked('forward', opts), opts.workspacePath)
 }
 
 async function goHistoryUnlocked(
@@ -1153,28 +1383,30 @@ async function goHistoryUnlocked(
   throwIfAborted(opts.signal)
   const tab = requireTab(opts.tabId)
   activateTab(tab)
-  const win = tab.win
-  const flags = navFlags(win)
+  const wc = tabContents(tab)
+  const flags = navFlags(wc)
   if (dir === 'back' && !flags.canGoBack) throw new Error('No back history for this tab')
   if (dir === 'forward' && !flags.canGoForward) throw new Error('No forward history for this tab')
 
   emitCurrent({ navigating: true })
-  const loadPromise = waitForLoad(win, opts.signal, DEFAULT_NAV_TIMEOUT_MS)
-  if (dir === 'back') win.webContents.goBack()
-  else win.webContents.goForward()
+  const { arm, checkIdle, done } = await waitForLoad(wc, opts.signal, DEFAULT_NAV_TIMEOUT_MS)
+  arm()
+  if (dir === 'back') wc.goBack()
+  else wc.goForward()
+  checkIdle()
   try {
-    await loadPromise
+    await done
   } catch (err) {
     emitCurrent({ navigating: false })
     throw err
   }
 
-  const finalUrl = win.webContents.getURL()
+  const finalUrl = wc.getURL()
   try {
     await assertPublicUrl(finalUrl)
   } catch (err) {
-    void win.loadURL('about:blank')
-    emitCurrent({ snapshotDataUrl: null, navigating: false })
+    void wc.loadURL('about:blank')
+    emitCurrent({ navigating: false })
     throw err
   }
   tab.lastRefs = new Map()
@@ -1184,9 +1416,9 @@ async function goHistoryUnlocked(
 
 export async function waitForSelector(
   selector: string,
-  opts: { tabId?: string; timeoutMs?: number; signal?: AbortSignal } = {}
+  opts: { tabId?: string; timeoutMs?: number; signal?: AbortSignal; workspacePath?: string } = {}
 ): Promise<string> {
-  return withBrowserLock(() => waitForSelectorUnlocked(selector, opts))
+  return withBrowserLock(() => waitForSelectorUnlocked(selector, opts), opts.workspacePath)
 }
 
 async function waitForSelectorUnlocked(
@@ -1216,9 +1448,15 @@ async function waitForSelectorUnlocked(
 
 export async function waitForUrl(
   match: string,
-  opts: { tabId?: string; timeoutMs?: number; signal?: AbortSignal; regex?: boolean } = {}
+  opts: {
+    tabId?: string
+    timeoutMs?: number
+    signal?: AbortSignal
+    regex?: boolean
+    workspacePath?: string
+  } = {}
 ): Promise<string> {
-  return withBrowserLock(() => waitForUrlUnlocked(match, opts))
+  return withBrowserLock(() => waitForUrlUnlocked(match, opts), opts.workspacePath)
 }
 
 async function waitForUrlUnlocked(
@@ -1242,13 +1480,13 @@ async function waitForUrlUnlocked(
   }
   while (Date.now() < deadline) {
     throwIfAborted(opts.signal)
-    const url = tab.win.webContents.getURL()
+    const url = tabContents(tab).getURL()
     const ok = re ? re.test(url) : url.includes(needle)
     if (ok) return `URL matched: ${url}`
     await new Promise((r) => setTimeout(r, 100))
   }
   throw new Error(
-    `Timed out after ${timeoutMs}ms waiting for URL matching ${opts.regex ? '/' + needle + '/' : JSON.stringify(needle)} (last: ${tab.win.webContents.getURL()})`
+    `Timed out after ${timeoutMs}ms waiting for URL matching ${opts.regex ? '/' + needle + '/' : JSON.stringify(needle)} (last: ${tabContents(tab).getURL()})`
   )
 }
 
@@ -1259,9 +1497,10 @@ export async function pressKey(
     modifiers?: string[]
     signal?: AbortSignal
     settleMs?: number
+    workspacePath?: string
   } = {}
 ): Promise<string> {
-  return withBrowserLock(() => pressKeyUnlocked(key, opts))
+  return withBrowserLock(() => pressKeyUnlocked(key, opts), opts.workspacePath)
 }
 
 async function pressKeyUnlocked(
@@ -1278,22 +1517,22 @@ async function pressKeyUnlocked(
   if (!keyCode) throw new Error('key is required')
   const tab = requireTab(opts.tabId)
   activateTab(tab)
-  const win = tab.win
+  const wc = tabContents(tab)
   const modifiers = (opts.modifiers ?? []).map((m) => String(m).toLowerCase()) as Array<
     'command' | 'control' | 'ctrl' | 'shift' | 'alt' | 'meta'
   >
   const normalized = modifiers.map((m) => (m === 'ctrl' ? 'control' : m === 'command' ? 'meta' : m))
-  win.webContents.sendInputEvent({
+  wc.sendInputEvent({
     type: 'keyDown',
     keyCode,
     modifiers: normalized as Electron.InputEvent['modifiers']
   })
-  win.webContents.sendInputEvent({
+  wc.sendInputEvent({
     type: 'keyUp',
     keyCode,
     modifiers: normalized as Electron.InputEvent['modifiers']
   })
-  await settleAfterAction(win, opts.signal, {
+  await settleAfterAction(wc, opts.signal, {
     waitForNav: keyCode === 'Return' || keyCode === 'Enter',
     settleMs: opts.settleMs
   })
@@ -1311,9 +1550,10 @@ export async function selectOption(
     signal?: AbortSignal
     pressEnter?: boolean
     settleMs?: number
+    workspacePath?: string
   } = {}
 ): Promise<string> {
-  return withBrowserLock(() => selectOptionUnlocked(selector, opts))
+  return withBrowserLock(() => selectOptionUnlocked(selector, opts), opts.workspacePath)
 }
 
 async function selectOptionUnlocked(
@@ -1338,11 +1578,11 @@ async function selectOptionUnlocked(
 
   const tab = requireTab(opts.tabId)
   activateTab(tab)
-  const win = tab.win
+  const wc = tabContents(tab)
   const hit = await resolveSelector(tab, sel)
   throwIfAborted(opts.signal)
 
-  const result = (await win.webContents.executeJavaScript(
+  const result = (await wc.executeJavaScript(
     `(() => {
       const el = document.querySelector(${JSON.stringify(hit.css)})
       if (!el || el.tagName !== 'SELECT') return { ok: false, reason: 'not-select' }
@@ -1373,11 +1613,11 @@ async function selectOptionUnlocked(
   }
 
   if (opts.pressEnter) {
-    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' })
-    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
-    await settleAfterAction(win, opts.signal, { waitForNav: true, settleMs: opts.settleMs })
+    wc.sendInputEvent({ type: 'keyDown', keyCode: 'Return' })
+    wc.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
+    await settleAfterAction(wc, opts.signal, { waitForNav: true, settleMs: opts.settleMs })
   } else {
-    await settleAfterAction(win, opts.signal, { settleMs: opts.settleMs })
+    await settleAfterAction(wc, opts.signal, { settleMs: opts.settleMs })
   }
 
   emitCurrent()

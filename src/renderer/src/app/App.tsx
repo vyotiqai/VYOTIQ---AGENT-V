@@ -19,8 +19,10 @@ import {
   pushRecentModel,
   resolveServiceTier
 } from '@shared/domain/modelSelection'
+import { resolveImageReadyLabel } from '@shared/domain/imageCapability'
 import { logger } from '@shared/logger'
 import { workspacePathsEqual } from '@shared/workspacePathMatch'
+import { normalizeRelPath } from '../features/chat/utils/turnFileDiffs'
 
 /** Sent as a visible user turn when resuming a run that was cut short. */
 const CONTINUE_PROMPT = 'Continue from where you stopped.'
@@ -56,10 +58,12 @@ export function App() {
     onGroupToggle,
     onTurnToggle,
     onApprovalDecision,
+    onQuestionSubmit,
     collapsedTurns,
     openRunTab,
     openRunInWorkspace,
     closeRunTab,
+    purgeDeletedRunUi,
     setSessionQuery,
     addWorkspace,
     switchWorkspace,
@@ -89,12 +93,16 @@ export function App() {
   const settingsBackRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
+    const focusWhenRendered = (el: HTMLElement | null): void => {
+      if (!el) return
+      requestAnimationFrame(() => requestAnimationFrame(() => el.focus()))
+    }
     if (view === 'settings') {
-      window.setTimeout(() => settingsBackRef.current?.focus(), 0)
+      focusWhenRendered(settingsBackRef.current)
     } else if (view === 'marketplace') {
       // MarketplaceView focuses its Close control on mount.
     } else if (view === 'chat') {
-      window.setTimeout(() => chatHeadingRef.current?.focus(), 0)
+      focusWhenRendered(chatHeadingRef.current)
     }
   }, [view])
 
@@ -187,6 +195,16 @@ export function App() {
     activeContext?.settingsOverride
   )
 
+  const imageReadyHint = useMemo(
+    () =>
+      resolveImageReadyLabel({
+        imageProvider: settings.imageProvider,
+        secrets,
+        customImageEnabled: settings.customImageEnabled
+      }),
+    [settings.imageProvider, settings.customImageEnabled, secrets]
+  )
+
   const loadRunIntoTab = async (runId: string): Promise<void> => {
     if (!activeWorkspace) return
     await loadRunTranscriptIntoTab(activeWorkspace, runId)
@@ -237,13 +255,34 @@ export function App() {
   chatActionsRef.current = chatActions
 
   const onChatSend = useCallback(
-    async (text: string, images?: string[], files?: AttachedFile[]) =>
-      chatActionsRef.current?.send(text, images, files) ?? false,
+    async (
+      text: string,
+      images?: string[],
+      files?: AttachedFile[],
+      extras?: import('@shared/ipc').ComposerSendExtras
+    ) => chatActionsRef.current?.send(text, images, files, extras) ?? false,
+    []
+  )
+
+  const onChatEditAndResend = useCallback(
+    async (
+      editMessageIndex: number,
+      text: string,
+      images?: string[],
+      files?: AttachedFile[],
+      extras?: import('@shared/ipc').ComposerSendExtras
+    ) =>
+      chatActionsRef.current?.editAndResend?.(editMessageIndex, text, images, files, extras) ??
+      false,
     []
   )
 
   const onChatStop = useCallback(() => {
     void chatActionsRef.current?.stop()
+  }, [])
+
+  const onRemoveFollowUp = useCallback((id: string) => {
+    void chatActionsRef.current?.removeFollowUp?.(id)
   }, [])
 
   const onChatContinue = useCallback(() => {
@@ -272,7 +311,7 @@ export function App() {
         return false
       }
       if (chat.running) {
-        setSettingsError('Stop the run before resolving agent writes.')
+        setSettingsError('Stop the run to Keep/Discard agent writes.')
         return false
       }
       const checkpointId = chat.writeCheckpoint?.undone
@@ -298,7 +337,7 @@ export function App() {
         setUndoBusy(false)
       }
     },
-    [activeWorkspace, activeRunId, chat.running, chat.writeCheckpoint]
+    [activeWorkspace, activeRunId, chat.running, chat.writeCheckpoint, setSettingsError]
   )
 
   const onUndoWrites = useCallback(async (): Promise<boolean> => {
@@ -323,9 +362,17 @@ export function App() {
     if (!files?.length) return undefined
     const map = new Map<string, 'kept' | 'discarded' | undefined>()
     for (const f of files) {
-      map.set(f.path, f.resolved)
+      map.set(normalizeRelPath(f.path), f.resolved)
     }
     return map
+  }, [chat.writeCheckpoint])
+
+  const writeResolvablePaths = useMemo(() => {
+    const files = chat.writeCheckpoint?.files
+    if (!files?.length) return undefined
+    return new Set(
+      files.filter((f) => f.undoable !== false).map((f) => normalizeRelPath(f.path))
+    )
   }, [chat.writeCheckpoint])
 
   const slashHandlersValue = useMemo(
@@ -371,6 +418,51 @@ export function App() {
         })
         return true
       },
+      onHarnessApply: async (proposalPath?: string) => {
+        if (!activeWorkspace) {
+          setSettingsError('Open a workspace to apply a harness proposal.')
+          return false
+        }
+        const preview = await window.vyotiq.harnessPreviewApply({
+          workspacePath: activeWorkspace,
+          ...(proposalPath?.trim() ? { proposalPath: proposalPath.trim() } : {})
+        })
+        if (!preview.ok) {
+          setSettingsError(preview.error)
+          return false
+        }
+        if (!preview.data.changed) {
+          setSettingsError('Harness already matches the proposal — nothing to apply.')
+          return true
+        }
+        const ok = window.confirm(
+          `Apply harness proposal?\n\n${preview.data.relativePath}\n→ resources/harness/default.md only\n\nRuns fixed harness vitest subset; reverts that file on failure.\nEvaluator / gate-test changes need a normal PR.`
+        )
+        if (!ok) return false
+        const res = await window.vyotiq.harnessApply({
+          workspacePath: activeWorkspace,
+          ...(proposalPath?.trim() ? { proposalPath: proposalPath.trim() } : {}),
+          confirm: true
+        })
+        if (!res.ok) {
+          setSettingsError(res.error)
+          return false
+        }
+        if (!res.data.applied) {
+          setSettingsError(
+            res.data.reverted
+              ? `Harness apply reverted — tests failed.\n${res.data.validationOutput.slice(0, 800)}`
+              : res.data.validationOutput
+          )
+          return false
+        }
+        setSettingsError(null)
+        logger.info('Applied harness proposal', {
+          scope: 'slash',
+          path: res.data.relativePath
+        })
+        return true
+      },
       onMarketplaceAction: async (packageId: string, intent: 'install' | 'enable') => {
         if (intent === 'enable') {
           const res = await window.vyotiq.marketplaceSetEnabled(packageId, true)
@@ -405,6 +497,16 @@ export function App() {
                 kind: entry.kind,
                 version: entry.version
               }
+        // Registry installs require ack; prompt here so slash/skills paths match Marketplace UI.
+        if (payload.source === 'registry' && !settings.marketplace?.remoteInstallAcked) {
+          const ack = await window.vyotiq.marketplaceAckRemoteInstall(true)
+          if (!ack.ok) {
+            setSettingsError(ack.error)
+            return
+          }
+          if (!ack.data.marketplace?.remoteInstallAcked) return
+          await refresh()
+        }
         const res = await window.vyotiq.marketplaceInstall(payload)
         if (!res.ok) setSettingsError(res.error)
       },
@@ -423,7 +525,7 @@ export function App() {
         setSettingsError(message)
       }
     }),
-    [activeWorkspace, onCompactContext, onUndoWrites, setAgentMode]
+    [activeWorkspace, onCompactContext, onUndoWrites, refresh, setAgentMode, setSettingsError, settings.marketplace, update]
   )
 
   const operationalError = settingsError ?? workspaceError
@@ -463,11 +565,6 @@ export function App() {
     chatActions?.clearError()
   }
 
-  const onOpenRecent = (path: string): void => {
-    void addWorkspace(path)
-    setView('chat')
-  }
-
   const onRenameRun = async (runId: string, goal: string): Promise<void> => {
     if (!activeWorkspace || !window.vyotiq?.renameRun) return
     const res = await window.vyotiq.renameRun(activeWorkspace, runId, goal)
@@ -499,6 +596,7 @@ export function App() {
       setSettingsError(res.error)
       return
     }
+    purgeDeletedRunUi(activeWorkspace, runId)
     closeRunTab(runId)
     refreshActiveRuns()
   }
@@ -510,6 +608,7 @@ export function App() {
       setSettingsError(res.error)
       return
     }
+    purgeDeletedRunUi(path, runId)
     if (activeWorkspace && workspacePathsEqual(path, activeWorkspace)) {
       closeRunTab(runId)
     }
@@ -523,8 +622,10 @@ export function App() {
   const chatError = chat.error
   const modelsRefreshKey = `${
     settings.provider === 'ollama'
-      ? `ollama:${settings.ollamaBaseUrl}`
-      : `${settings.provider}:${secrets[settings.provider as SecretProvider] ? '1' : '0'}`
+      ? `ollama:${settings.ollamaBaseUrl}:${secrets.ollama ? '1' : '0'}`
+      : settings.provider === 'custom'
+        ? `custom:${settings.customOpenAiBaseUrl}:${secrets.custom ? '1' : '0'}`
+        : `${settings.provider}:${secrets[settings.provider as SecretProvider] ? '1' : '0'}`
   }:${modelsRefreshNonce}`
 
   const shellWorkspaceProps = {
@@ -611,6 +712,7 @@ export function App() {
           onSectionChange={setSettingsSection}
           onClose={() => setView('chat')}
           onUpdate={update}
+          onReloadSettings={refresh}
           onSaveSecret={saveSecret}
           onClearSecret={removeSecret}
           onSetTheme={(theme) => {
@@ -633,24 +735,26 @@ export function App() {
           onModelsRefreshed={() => setModelsRefreshNonce((n) => n + 1)}
         />
       ) : view === 'marketplace' ? (
-        <MarketplaceView
-          settings={settings}
-          onUpdate={update}
-          onReloadSettings={refresh}
-          activeWorkspacePath={activeWorkspace}
-          settingsOverridesByPath={registry?.settingsOverridesByPath ?? {}}
-          onSetSettingsOverride={setSettingsOverride}
-          focusServerId={marketplaceFocusServerId}
-          onFocusServerConsumed={() => setMarketplaceFocusServerId(null)}
-          onClose={() => setView('chat')}
-        />
+        <ErrorBoundary
+          title="Marketplace couldn't render"
+          resetKey={marketplaceFocusServerId ?? 'marketplace'}
+        >
+          <MarketplaceView
+            settings={settings}
+            onUpdate={update}
+            onReloadSettings={refresh}
+            activeWorkspacePath={activeWorkspace}
+            settingsOverridesByPath={registry?.settingsOverridesByPath ?? {}}
+            onSetSettingsOverride={setSettingsOverride}
+            focusServerId={marketplaceFocusServerId}
+            onFocusServerConsumed={() => setMarketplaceFocusServerId(null)}
+            onClose={() => setView('chat')}
+          />
+        </ErrorBoundary>
       ) : (
         <ErrorBoundary title="Chat couldn't render" resetKey={chatSurfaceEpoch}>
           <ChatView
-            hasOpenWorkspaces={openWorkspaces.length > 0}
-            recentPaths={registry?.recentPaths ?? []}
-            needsWorkspaceForMigration={registry?.needsWorkspaceForMigration}
-            pendingMigrationCount={registry?.pendingMigrationCount}
+            imageReadyHint={imageReadyHint}
             items={chat.items}
             itemsStore={{
               subscribeItems: chat.subscribeItems,
@@ -676,12 +780,11 @@ export function App() {
             provider={effectiveChatSettings.provider}
             model={effectiveChatSettings.model}
             ollamaBaseUrl={settings.ollamaBaseUrl}
+            customOpenAiBaseUrl={settings.customOpenAiBaseUrl}
             modelsRefreshKey={modelsRefreshKey}
             activeRunId={chat.runId ?? activeContext?.activeRunId ?? null}
             transcriptLoading={chat.transcriptLoading}
             headingRef={chatHeadingRef}
-            onOpenRecent={onOpenRecent}
-            onAddWorkspace={onPickWorkspace}
             onProviderModel={onProviderModel}
             favoriteModels={settings.favoriteModels}
             recentModels={settings.recentModels}
@@ -698,10 +801,16 @@ export function App() {
             onAgentModeChange={setAgentMode}
             onContinueInAgent={() => {
               setAgentMode('agent')
-              setComposerDraft('Implement the approved plan in plan.md.')
+              setComposerDraft(
+                'Implement the approved plan from plan.md (run artifact — read plan.md to load it).'
+              )
             }}
             onSend={onChatSend}
+            onEditAndResend={onChatEditAndResend}
+            messages={chat.messages}
             onStop={onChatStop}
+            pendingFollowUps={chat.pendingFollowUps}
+            onRemoveFollowUp={onRemoveFollowUp}
             onDismissError={onDismissChatBanner}
             onComposerDraftChange={setComposerDraft}
             restoreScrollTop={activeScrollTop}
@@ -716,14 +825,17 @@ export function App() {
             onTurnToggle={onTurnToggle}
             collapsedTurns={collapsedTurns}
             onApprovalDecision={onApprovalDecision}
+            onQuestionSubmit={onQuestionSubmit}
             mcpServerNames={mcpServerNames}
             slashHandlers={slashHandlersValue}
-            canUndoWrites={Boolean(
-              chat.writeCheckpoint && !chat.writeCheckpoint.undone && !chat.running
-            )}
+            canUndoWrites={Boolean(chat.writeCheckpoint && !chat.writeCheckpoint.undone)}
             undoBusy={undoBusy}
+            resolveBlockedReason={
+              chat.running ? 'Stop the run to Keep/Discard agent writes.' : null
+            }
             onUndoWrites={onUndoWrites}
             writeFileResolutions={writeFileResolutions}
+            writeResolvablePaths={writeResolvablePaths}
             onKeepWriteFile={onKeepWriteFile}
             onDiscardWriteFile={onDiscardWriteFile}
             onKeepAllWrites={onKeepAllWrites}

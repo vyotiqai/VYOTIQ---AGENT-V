@@ -32,7 +32,7 @@ vi.mock('@main/settings/settings', () => ({
     model: 'qwen2.5',
     ollamaBaseUrl: 'http://127.0.0.1:11434',
     theme: 'system',
-    telemetryEnabled: false
+    telemetryEnabled: false,
   }),
   readLegacyWorkspacePath: () => null
 }))
@@ -90,7 +90,17 @@ vi.mock('@main/agent/providers', () => ({
 
 import { runAgent } from '@main/agent/loop'
 import { isActive, registerRunAbort, resetActiveRunsForTests } from '@main/agent/runRegistry'
-import { appendMessage, createRun, flushMessageAppends, loadCompaction, loadMessages, saveCompaction } from '@main/agent/state'
+import {
+  appendMessage,
+  createRun,
+  flushMessageAppends,
+  flushStatusWrites,
+  loadCompaction,
+  loadMessages,
+  loadStatus,
+  saveCompaction,
+  updateStatus
+} from '@main/agent/state'
 import { resolveRunDir } from '@main/storage/paths'
 
 describe('runAgent session continuation', () => {
@@ -142,6 +152,10 @@ describe('runAgent session continuation', () => {
     }
 
     expect(isActive(runId)).toBe(false)
+    const runDir = resolveRunDir(workspace, runId)
+    const priorStep = loadStatus(runDir)?.step ?? 0
+    await flushStatusWrites(runDir)
+    await updateStatus(runDir, { status: 'error', error: 'stale failure' }, { sync: true })
 
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
       yield { type: 'text', text: 'file list' }
@@ -169,6 +183,11 @@ describe('runAgent session continuation', () => {
     expect(messages).toHaveLength(4)
     expect(messages[2]).toMatchObject({ role: 'user', content: 'list all the files' })
     expect(messages[3]).toMatchObject({ role: 'assistant', content: 'file list' })
+    expect(loadStatus(runDir)).toMatchObject({
+      status: 'done',
+      step: priorStep + 1
+    })
+    expect(loadStatus(runDir)?.error).toBeUndefined()
   })
 
   it('loads persisted compaction when resuming a run', async () => {
@@ -280,6 +299,39 @@ describe('runAgent session continuation', () => {
     expect(messages.at(-1)).toMatchObject({ role: 'assistant', content: 'listed' })
   })
 
+  it('dedupes the full persisted prefix of newMessages', async () => {
+    const runId = 'dedupe-prefix-resume'
+    const runDir = createRun(workspace, runId, 'goal')
+    appendMessage(runDir, { role: 'user', content: 'first replayed turn' })
+    appendMessage(runDir, { role: 'user', content: 'second replayed turn' })
+    await flushMessageAppends(runDir)
+
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'continued once' }
+    })
+    registerRunAbort(runId, workspace)
+
+    for await (const _ev of runAgent({
+      runId,
+      incremental: true,
+      newMessages: [
+        { role: 'user', content: 'first replayed turn' },
+        { role: 'user', content: 'second replayed turn' },
+        { role: 'user', content: 'new turn' }
+      ],
+      workspacePath: workspace,
+      resume: true
+    })) {
+      // drain
+    }
+
+    const messages = loadMessages(workspace, runId)
+    expect(messages.filter((m) => m.content === 'first replayed turn')).toHaveLength(1)
+    expect(messages.filter((m) => m.content === 'second replayed turn')).toHaveLength(1)
+    expect(messages.filter((m) => m.content === 'new turn')).toHaveLength(1)
+    expect(messages.at(-1)).toMatchObject({ role: 'assistant', content: 'continued once' })
+  })
+
   it('clamps a corrupt foldedMessages watermark so the latest turn stays visible', async () => {
     const runId = 'watermark-clamp'
     const runDir = createRun(workspace, runId, 'goal')
@@ -314,6 +366,34 @@ describe('runAgent session continuation', () => {
     }
     expect(input.messages.some((m) => m.content === 'keep me')).toBe(true)
     expect(input.messages).not.toHaveLength(0)
+
+    const clamped = loadCompaction(runDir)
+    expect(clamped?.foldedMessages).toBe(2)
+    expect(clamped?.summary).toBe('prior summary')
+  })
+
+  it('persists server-side compaction from a stream done chunk', async () => {
+    const runId = 'server-compact'
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'folding' }
+      yield { type: 'done', compaction: '## Server compaction\nNew intent' }
+    })
+
+    for await (const _ev of runAgent({
+      runId,
+      messages: [
+        { role: 'user', content: 'one' },
+        { role: 'assistant', content: 'two' },
+        { role: 'user', content: 'three' }
+      ],
+      workspacePath: workspace
+    })) {
+      // drain
+    }
+
+    const record = loadCompaction(resolveRunDir(workspace, runId))
+    expect(record).not.toBeNull()
+    expect(record?.summary).toContain('Server compaction')
   })
 
   it('persists foldedMessages on compaction emit when context shrinks', async () => {

@@ -4,6 +4,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { useChatStream } from '@renderer/lib/hooks/useChatStream'
+import { createChatStreamController } from '@renderer/lib/hooks/createChatStreamController'
 import { buildTranscriptRows } from '@renderer/features/chat/utils/transcriptRows'
 import type { AgentEvent } from '@shared/ipc'
 
@@ -13,18 +14,29 @@ describe('useChatStream', () => {
   let handler: Handler | null = null
   const chatStart = vi.fn()
   const chatCancel = vi.fn()
+  const chatFollowUp = vi.fn()
+  const chatFollowUpRemove = vi.fn()
 
   beforeEach(() => {
     handler = null
     chatStart.mockReset()
     chatCancel.mockReset()
+    chatFollowUp.mockReset()
+    chatFollowUpRemove.mockReset()
     chatStart.mockResolvedValue({ ok: true, data: { runId: 'run-1', invokeId: 1 } })
     chatCancel.mockResolvedValue({ ok: true, data: true })
+    chatFollowUp.mockResolvedValue({
+      ok: true,
+      data: { id: 'fu-1', position: 1, queueLength: 1 }
+    })
+    chatFollowUpRemove.mockResolvedValue({ ok: true, data: { removed: true, queueLength: 0 } })
 
     // @ts-expect-error test bridge
     window.vyotiq = {
       chatStart,
       chatCancel,
+      chatFollowUp,
+      chatFollowUpRemove,
       onChatEvent: (h: Handler) => {
         handler = h
         return () => {
@@ -99,6 +111,104 @@ describe('useChatStream', () => {
         (m) => m.role === 'assistant' && Array.isArray(m.toolCalls) && m.toolCalls.length > 0
       )
     ).toBe(true)
+  })
+
+  it('routes send to chatFollowUp while a run is active', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('start')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running', invokeId: 1 })
+    })
+    expect(result.current.running).toBe(true)
+
+    chatStart.mockClear()
+    await act(async () => {
+      await result.current.send('steer now')
+    })
+
+    expect(chatStart).not.toHaveBeenCalled()
+    expect(chatFollowUp).toHaveBeenCalledWith({
+      runId: 'run-1',
+      message: { role: 'user', content: 'steer now' }
+    })
+    expect(result.current.pendingFollowUps.some((e) => e.preview === 'steer now')).toBe(true)
+    expect(result.current.running).toBe(true)
+  })
+
+  it('places tools after a mid-run continue bubble, not above it', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('first')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running', invokeId: 1 })
+      handler?.({
+        type: 'assistant_message',
+        runId: 'run-1',
+        invokeId: 1,
+        content: '',
+        toolCalls: [{ id: 't-old', name: 'read', arguments: '{"path":"a.ts"}' }]
+      })
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        invokeId: 1,
+        toolCallId: 't-old',
+        name: 'read',
+        summary: 'a.ts'
+      })
+      handler?.({
+        type: 'tool_result',
+        runId: 'run-1',
+        invokeId: 1,
+        toolCallId: 't-old',
+        name: 'read',
+        summary: 'a.ts',
+        ok: true,
+        content: 'ok'
+      })
+    })
+
+    await act(async () => {
+      await result.current.send('continue')
+    })
+
+    const continueIdx = result.current.items.findIndex(
+      (item) => item.kind === 'message' && item.role === 'user' && item.content === 'continue'
+    )
+    expect(continueIdx).toBeGreaterThanOrEqual(0)
+
+    await act(async () => {
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        invokeId: 1,
+        toolCallId: 't-new',
+        name: 'read',
+        summary: 'b.ts'
+      })
+    })
+
+    const newToolIdx = result.current.items.findIndex(
+      (item) => item.kind === 'tool' && (item.id === 't-new' || item.tool.id === 't-new')
+    )
+    expect(newToolIdx).toBeGreaterThan(continueIdx)
+
+    const rows = buildTranscriptRows(result.current.items, { running: true })
+    const continueTurn = rows.find(
+      (row) => row.kind === 'user' && row.item.content === 'continue'
+    )?.turnIndex
+    const newActivity = rows.find(
+      (row) =>
+        row.kind === 'activity' &&
+        row.tools.some((t) => t.id === 't-new' || t.tool.id === 't-new')
+    )
+    expect(continueTurn).toBeDefined()
+    expect(newActivity?.turnIndex).toBe(continueTurn)
   })
 
   it('queues cancel when stop races chatStart', async () => {
@@ -350,6 +460,47 @@ describe('useChatStream', () => {
     })
 
     expect(result.current.error).toBe('Provider exploded')
+  })
+
+  it('does not restore a dismissed error banner on rehydrate', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      result.current.hydrateTranscript([{ role: 'user', content: 'x' }], [
+        {
+          at: '2026-07-24T12:00:00.000Z',
+          event: {
+            type: 'error',
+            runId: 'run-1',
+            message: 'Provider exploded',
+            code: 'PROVIDER_STREAM'
+          }
+        }
+      ])
+    })
+
+    expect(result.current.error).toBe('Provider exploded')
+
+    await act(async () => {
+      result.current.clearError()
+    })
+    expect(result.current.error).toBeNull()
+
+    await act(async () => {
+      result.current.hydrateTranscript([{ role: 'user', content: 'x' }], [
+        {
+          at: '2026-07-24T12:00:00.000Z',
+          event: {
+            type: 'error',
+            runId: 'run-1',
+            message: 'Provider exploded',
+            code: 'PROVIDER_STREAM'
+          }
+        }
+      ])
+    })
+
+    expect(result.current.error).toBeNull()
   })
 
   it('sets a fallback error when status is error without an error event', async () => {
@@ -731,6 +882,36 @@ describe('useChatStream', () => {
       (i) => i.kind === 'message' && i.role === 'assistant'
     )
     expect(assistant?.kind === 'message' ? assistant.content : null).toBe('Checking routes.')
+  })
+
+  it('prunes real-id orphan tools when assistant_message has no toolCalls', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('audit')
+    })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({
+        type: 'tool_call_delta',
+        runId: 'run-1',
+        toolCallId: 'orphan-real',
+        name: 'read',
+        argumentsDelta: '{"path":"ghost.ts"}'
+      })
+      handler?.({
+        type: 'assistant_message',
+        runId: 'run-1',
+        content: 'No tools this step.'
+      })
+    })
+
+    expect(result.current.items.some((i) => i.kind === 'tool')).toBe(false)
+    const assistant = result.current.items.find(
+      (i) => i.kind === 'message' && i.role === 'assistant'
+    )
+    expect(assistant?.kind === 'message' ? assistant.content : null).toBe('No tools this step.')
   })
 
   it('does not render in-progress leaked tool JSON as streaming assistant text', async () => {
@@ -1131,7 +1312,7 @@ describe('useChatStream', () => {
     ])
   })
 
-  it('renders narration, reasoning and a command card while the run is still live', async () => {
+  it('renders narration, reasoning and a command while the run is still live', async () => {
     const { result } = renderHook(() => useChatStream('/ws'))
 
     await act(async () => {
@@ -1187,8 +1368,8 @@ describe('useChatStream', () => {
     expect(narration?.kind === 'text' && narration.item.content).toBe(
       'The table is built up front.'
     )
-    const card = rows.find((row) => row.kind === 'card')
-    expect(card?.kind === 'card' && card.item.tool.status).toBe('running')
+    const command = rows.find((row) => row.kind === 'card' && row.item.tool.name === 'terminal')
+    expect(command?.kind === 'card' && command.item.tool.status).toBe('running')
   })
 
   it('completes the live row when a tool_result id drifts from its tool_start', async () => {
@@ -1313,6 +1494,13 @@ describe('useChatStream', () => {
       id: 'unknown-id',
       tool: { name: 'read', summary: 'b.ts', status: 'done', content: 'b-body' }
     })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'done' })
+    })
+    expect(
+      result.current.items.filter((i) => i.kind === 'tool' && i.tool.status === 'running')
+    ).toHaveLength(0)
   })
 
   it('FIFO-completes the oldest same-name row when tool_result id and summary are ambiguous', async () => {
@@ -1359,6 +1547,13 @@ describe('useChatStream', () => {
       id: 'r2',
       tool: { name: 'read', summary: 'file.ts', status: 'running' }
     })
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'done' })
+    })
+    expect(
+      result.current.items.filter((i) => i.kind === 'tool' && i.tool.status === 'running')
+    ).toHaveLength(0)
   })
 
   it('exposes pendingRun while chatStart is in flight', async () => {
@@ -1587,6 +1782,8 @@ describe('useChatStream', () => {
     window.vyotiq = {
       chatStart,
       chatCancel,
+      chatFollowUp,
+      chatFollowUpRemove,
       listActiveRuns,
       loadRun,
       loadRunEvents,
@@ -1768,7 +1965,7 @@ describe('useChatStream', () => {
       await result.current.respondToApproval('req-1', 'once')
     })
 
-    expect(respondToolApproval).toHaveBeenCalledWith('req-1', 'once')
+    expect(respondToolApproval).toHaveBeenCalledWith('req-1', 'once', 'run-1')
     expect(result.current.items.some((i) => i.kind === 'tool' && i.approval)).toBe(false)
   })
 
@@ -1813,6 +2010,235 @@ describe('useChatStream', () => {
       result.current.items.some((i) => i.kind === 'tool' && i.approval?.requestId === 'req-fail')
     ).toBe(true)
     expect(result.current.error).toBe('approval expired')
+  })
+
+  it('keeps approval visible when respondToolApproval returns data false', async () => {
+    const respondToolApproval = vi.fn().mockResolvedValue({ ok: true, data: false })
+    // @ts-expect-error test bridge
+    window.vyotiq.respondToolApproval = respondToolApproval
+
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('edit')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        toolCallId: 'c1',
+        name: 'edit',
+        summary: 'a.ts'
+      })
+      result.current.handleApprovalRequest({
+        requestId: 'req-stale',
+        runId: 'run-1',
+        toolCallId: 'c1',
+        name: 'edit',
+        summary: 'a.ts',
+        mutating: true
+      })
+    })
+
+    await act(async () => {
+      await expect(result.current.respondToApproval('req-stale', 'once')).rejects.toThrow(
+        /not accepted/
+      )
+    })
+
+    expect(
+      result.current.items.some((i) => i.kind === 'tool' && i.approval?.requestId === 'req-stale')
+    ).toBe(true)
+  })
+
+  it('clears pending question cards when a run is cancelled', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('ask')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      result.current.handleQuestionRequest({
+        requestId: 'q-cancel',
+        runId: 'run-1',
+        toolCallId: 'tq1',
+        questions: [{ id: 'q1', prompt: 'Still waiting?', type: 'text' }]
+      })
+      handler?.({ type: 'status', runId: 'run-1', status: 'cancelled' })
+    })
+
+    expect(result.current.items.some((i) => i.kind === 'question')).toBe(false)
+  })
+
+  it('clears pending question when ask_question tool_result settles', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('ask')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      handler?.({
+        type: 'tool_start',
+        runId: 'run-1',
+        toolCallId: 'tq-settle',
+        name: 'ask_question',
+        summary: 'Pick?'
+      })
+      result.current.handleQuestionRequest({
+        requestId: 'q-settle',
+        runId: 'run-1',
+        toolCallId: 'tq-settle',
+        questions: [{ id: 'q1', prompt: 'Pick?', type: 'boolean' }]
+      })
+    })
+
+    expect(result.current.items.some((i) => i.kind === 'question')).toBe(true)
+
+    await act(async () => {
+      handler?.({
+        type: 'tool_result',
+        runId: 'run-1',
+        toolCallId: 'tq-settle',
+        name: 'ask_question',
+        summary: 'Pick?',
+        ok: false,
+        content: 'Interrupted'
+      })
+    })
+
+    expect(result.current.items.some((i) => i.kind === 'question')).toBe(false)
+  })
+
+  it('shows a question card without a prior ask_question tool row', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('ask')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      result.current.handleQuestionRequest({
+        requestId: 'q-orphan',
+        runId: 'run-1',
+        toolCallId: 'tq-missing',
+        questions: [{ id: 'q1', prompt: 'No tool row yet?', type: 'text' }]
+      })
+    })
+
+    expect(
+      result.current.items.some(
+        (i) => i.kind === 'question' && i.question.requestId === 'q-orphan'
+      )
+    ).toBe(true)
+    expect(result.current.items.some((i) => i.kind === 'tool')).toBe(false)
+  })
+
+  it('clears question only after respondAgentQuestion succeeds with data true', async () => {
+    const respondAgentQuestion = vi.fn().mockResolvedValue({ ok: true, data: true })
+    // @ts-expect-error test bridge
+    window.vyotiq.respondAgentQuestion = respondAgentQuestion
+
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('ask')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      result.current.handleQuestionRequest({
+        requestId: 'q-1',
+        runId: 'run-1',
+        toolCallId: 'tq1',
+        questions: [
+          { id: 'q1', prompt: 'Pick one?', type: 'single', options: ['A', 'B'] }
+        ]
+      })
+    })
+
+    expect(result.current.items.some((i) => i.kind === 'question')).toBe(true)
+
+    await act(async () => {
+      await result.current.respondToQuestion('q-1', [{ questionId: 'q1', values: ['A'] }])
+    })
+
+    expect(respondAgentQuestion).toHaveBeenCalledWith(
+      'q-1',
+      [{ questionId: 'q1', values: ['A'] }],
+      'run-1'
+    )
+    expect(result.current.items.some((i) => i.kind === 'question')).toBe(false)
+  })
+
+  it('keeps question visible when respondAgentQuestion returns data false', async () => {
+    const respondAgentQuestion = vi.fn().mockResolvedValue({ ok: true, data: false })
+    // @ts-expect-error test bridge
+    window.vyotiq.respondAgentQuestion = respondAgentQuestion
+
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('ask')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      result.current.handleQuestionRequest({
+        requestId: 'q-stale',
+        runId: 'run-1',
+        toolCallId: 'tq1',
+        questions: [{ id: 'q1', prompt: 'Still there?', type: 'text' }]
+      })
+    })
+
+    await act(async () => {
+      await expect(
+        result.current.respondToQuestion('q-stale', [{ questionId: 'q1', values: ['yes'] }])
+      ).rejects.toThrow(/not accepted/)
+    })
+
+    expect(
+      result.current.items.some(
+        (i) => i.kind === 'question' && i.question.requestId === 'q-stale'
+      )
+    ).toBe(true)
+  })
+
+  it('keeps pending question cards across stream_reset', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('ask')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running' })
+      result.current.handleQuestionRequest({
+        requestId: 'q-keep',
+        runId: 'run-1',
+        toolCallId: 'tq1',
+        questions: [{ id: 'q1', prompt: 'Survive retry?', type: 'text' }]
+      })
+      handler?.({ type: 'stream_reset', runId: 'run-1', step: 1 })
+    })
+
+    expect(
+      result.current.items.some(
+        (i) => i.kind === 'question' && i.question.requestId === 'q-keep'
+      )
+    ).toBe(true)
+  })
+
+  it('forwards mode_changed to onAgentModeChange', () => {
+    const onAgentModeChange = vi.fn()
+    const controller = createChatStreamController({
+      workspacePath: '/ws',
+      runId: 'run-1',
+      onAgentModeChange
+    })
+    controller.handleEvent({ type: 'mode_changed', runId: 'run-1', mode: 'plan' })
+    expect(onAgentModeChange).toHaveBeenCalledWith('plan')
+    controller.dispose()
   })
 
   it('uses contentRunId for lazy tool loads after syncFromDisk clears runId', async () => {

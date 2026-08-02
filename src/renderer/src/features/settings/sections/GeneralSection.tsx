@@ -111,41 +111,6 @@ export function GeneralSection({
       ) : null}
 
       <SettingsRow
-        title="Show thinking in chat"
-        description={
-          form.workspaceOverrideActive
-            ? 'Collapsed thinking blocks above assistant replies. With workspace override on, this applies to the active workspace only.'
-            : 'Collapsed thinking blocks above assistant replies when the model returns reasoning.'
-        }
-      >
-        <label className="inline-flex items-center gap-2 text-xs text-secondary">
-          <input
-            type="checkbox"
-            className="size-3.5 accent-fg"
-            aria-label={
-              form.workspaceOverrideActive
-                ? 'Show thinking in chat for this workspace'
-                : 'Show thinking in chat'
-            }
-            disabled={form.formLocked}
-            checked={
-              form.effectiveChatSettings?.showThinking ?? settings.showThinking
-            }
-            onChange={(e) => {
-              void form.runAgentUpdate({ showThinking: e.target.checked })
-            }}
-          />
-          {(form.effectiveChatSettings?.showThinking ?? settings.showThinking)
-            ? form.workspaceOverrideActive
-              ? 'On (this workspace)'
-              : 'On'
-            : form.workspaceOverrideActive
-              ? 'Off (this workspace)'
-              : 'Off'}
-        </label>
-      </SettingsRow>
-
-      <SettingsRow
         title="Share crash & error reports"
         description={
           form.dsnConfigured

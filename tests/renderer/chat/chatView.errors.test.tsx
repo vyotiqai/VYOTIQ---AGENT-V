@@ -7,6 +7,18 @@ import { ChatView } from '@renderer/features/chat/ChatView'
 
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
+  Object.defineProperty(window, 'vyotiq', {
+    configurable: true,
+    writable: true,
+    value: {
+      gitStatus: vi.fn().mockResolvedValue({ ok: true, data: { kind: 'not_repo' } }),
+      browserGetState: vi.fn().mockResolvedValue({
+        ok: true,
+        data: { open: false, url: '', title: '' }
+      }),
+      onBrowserState: vi.fn().mockReturnValue(() => undefined)
+    }
+  })
 })
 
 afterEach(() => {
@@ -15,8 +27,6 @@ afterEach(() => {
 })
 
 const baseProps = {
-  hasOpenWorkspaces: true,
-  recentPaths: [],
   items: [],
   running: false,
   error: null,
@@ -30,14 +40,11 @@ const baseProps = {
     model: 'qwen2.5',
     compactionTriggerRatio: 0.7,
     keepRecentTurns: 12,
-    memoryAutoPromote: true,
     thinkingEnabled: true,
     thinkingEffort: 'medium' as const,
     showThinking: true
   },
   onChatSettingsChange: vi.fn(),
-  onOpenRecent: vi.fn(),
-  onAddWorkspace: vi.fn(),
   onProviderModel: vi.fn(),
   onSend: vi.fn(),
   onStop: vi.fn()
@@ -69,11 +76,10 @@ describe('ChatView operational errors', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
-  it('shows operational errors on the empty-workspace recents view', () => {
+  it('shows operational errors on the hero composer when workspace is unset', () => {
     render(
       <ChatView
         {...baseProps}
-        hasOpenWorkspaces={false}
         hasWorkspace={false}
         workspacePath={null}
         operationalError="Pick workspace failed"
@@ -81,6 +87,7 @@ describe('ChatView operational errors', () => {
     )
 
     expect(screen.getByRole('alert').textContent).toContain('Pick workspace failed')
-    expect(screen.getByText(/No recent workspaces yet/i)).toBeTruthy()
+    expect(document.querySelector('[data-composer-hero]')).toBeTruthy()
+    expect(screen.queryByText(/No recent workspaces yet/i)).toBeNull()
   })
 })

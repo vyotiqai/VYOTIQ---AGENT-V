@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SlashCommandDescriptor } from '@shared/ipc'
 import { fuzzyMatchCommands, findActiveSlashToken } from '@shared/slashCommands'
+import { findSlashChipSubmit } from './mentionModel'
+import {
+  SLASH_GROUP_ORDER,
+  clusterMcpByServer,
+  partitionSlashGroupByAvailability
+} from './slashCommandPresentation'
 
-const GROUP_ORDER = ['App', 'Commands', 'Skills', 'Rules', 'MCP']
-
-/** Fuzzy-filter then flatten in GROUP_ORDER so highlight index matches accept. */
+/** Fuzzy-filter then flatten in SLASH_GROUP_ORDER so highlight index matches accept. */
 export function buildSlashDisplayList(
   query: string,
   commands: SlashCommandDescriptor[]
@@ -17,13 +21,17 @@ export function buildSlashDisplayList(
     byGroup.set(cmd.group, list)
   }
   const out: SlashCommandDescriptor[] = []
-  for (const g of GROUP_ORDER) {
+  for (const g of SLASH_GROUP_ORDER) {
     const items = byGroup.get(g)
-    if (items?.length) out.push(...items)
+    if (items?.length) {
+      const partitioned = partitionSlashGroupByAvailability(items)
+      out.push(...(g === 'MCP' ? clusterMcpByServer(partitioned) : partitioned))
+    }
     byGroup.delete(g)
   }
-  for (const items of byGroup.values()) {
-    out.push(...items)
+  for (const [g, items] of byGroup) {
+    const partitioned = partitionSlashGroupByAvailability(items)
+    out.push(...(g === 'MCP' ? clusterMcpByServer(partitioned) : partitioned))
   }
   return out
 }
@@ -50,10 +58,10 @@ export function useSlashCommands({
   const onListErrorRef = useRef(onListError)
   onListErrorRef.current = onListError
 
-  const reload = useCallback(async (): Promise<void> => {
+  const reload = useCallback(async (): Promise<SlashCommandDescriptor[]> => {
     if (!window.vyotiq?.slashCommandsList) {
       setCommands([])
-      return
+      return []
     }
     const reqId = ++reqIdRef.current
     setLoading(true)
@@ -61,15 +69,16 @@ export function useSlashCommands({
       const res = await window.vyotiq.slashCommandsList({
         workspacePath: workspacePath ?? null
       })
-      if (reqId !== reqIdRef.current) return
+      if (reqId !== reqIdRef.current) return []
       if (res.ok) {
         setCommands(res.data.commands)
         setListError(null)
-      } else {
-        setCommands([])
-        setListError(res.error)
-        onListErrorRef.current?.(res.error)
+        return res.data.commands
       }
+      setCommands([])
+      setListError(res.error)
+      onListErrorRef.current?.(res.error)
+      return []
     } catch (err) {
       if (reqId === reqIdRef.current) {
         setCommands([])
@@ -77,19 +86,34 @@ export function useSlashCommands({
         setListError(message)
         onListErrorRef.current?.(message)
       }
+      return []
     } finally {
       if (reqId === reqIdRef.current) setLoading(false)
     }
   }, [workspacePath])
 
-  useEffect(() => {
-    void reload()
-  }, [reload])
+  /** Prefer in-memory catalog; load once when empty (chip submit / edit remount). */
+  const ensureCommands = useCallback(async (): Promise<SlashCommandDescriptor[]> => {
+    if (commands.length > 0) return commands
+    return reload()
+  }, [commands, reload])
 
   const token = useMemo(() => {
     if (!enabled) return null
     return findActiveSlashToken(text, cursor)
   }, [enabled, text, cursor])
+
+  // Defer list IPC until the user types `/` — cold list was ~720ms on every Composer mount.
+  // Also prefetch once when a slash chip is already in the draft (inline edit remount).
+  useEffect(() => {
+    if (!enabled) return
+    if (token) {
+      void reload()
+      return
+    }
+    if (commands.length > 0) return
+    if (findSlashChipSubmit(text)) void reload()
+  }, [enabled, token?.start, text, commands.length, reload])
 
   useEffect(() => {
     setDismissed(false)
@@ -100,9 +124,7 @@ export function useSlashCommands({
     return buildSlashDisplayList(token.query, commands)
   }, [token, commands])
 
-  const open = Boolean(
-    enabled && token && !dismissed && (filtered.length > 0 || loading || Boolean(listError))
-  )
+  const open = Boolean(enabled && token && !dismissed)
 
   useEffect(() => {
     setActiveIndex(0)
@@ -119,7 +141,7 @@ export function useSlashCommands({
   const moveActive = useCallback(
     (delta: number) => {
       if (filtered.length === 0) return
-      setActiveIndex((i) => (i + delta + filtered.length) % filtered.length)
+      setActiveIndex((i) => Math.max(0, Math.min(filtered.length - 1, i + delta)))
     },
     [filtered.length]
   )
@@ -140,6 +162,7 @@ export function useSlashCommands({
     token,
     loading,
     listError,
-    reload
+    reload,
+    ensureCommands
   }
 }

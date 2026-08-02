@@ -1,7 +1,7 @@
 import type { ChatMessage, MessageContent, ModelInfo } from '../../../shared/ipc'
 import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
-import { baseModelInfo, looksLikeChatModel, parseDataUrl } from './normalize'
+import { baseModelInfo, looksLikeChatModel, parseDataUrl, thinkingPartialFromCatalogRow } from './normalize'
 import type {
   LlmProvider,
   ListModelsRequest,
@@ -17,6 +17,7 @@ import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
 import { formatProviderHttpError } from './httpErrors'
 import { streamGeminiInteractions } from './geminiInteractions'
+import { resolveSystemZones, volatileSessionMessage } from './systemZones'
 
 /** Exported for tests — parse Gemini usage metadata including implicit cache hits. */
 export function parseGeminiUsage(usageMetadata: Record<string, unknown>): TokenUsage {
@@ -58,9 +59,26 @@ export function parseGeminiUsage(usageMetadata: Record<string, unknown>): TokenU
 function toGeminiParts(content: MessageContent): Array<Record<string, unknown>> {
   if (typeof content === 'string') return [{ text: content }]
   const parts: Array<Record<string, unknown>> = []
-  for (const p of providerContentParts(content)) {
+  for (const p of providerContentParts(content, { image: true, audio: true, fileNative: true })) {
     if (p.type === 'text') {
       parts.push({ text: p.text })
+      continue
+    }
+    if (p.type === 'file_native') {
+      parts.push({
+        inlineData: { mimeType: p.mime || 'application/pdf', data: p.data }
+      })
+      continue
+    }
+    if (p.type === 'audio') {
+      const data = parseDataUrl(p.url)
+      if (data) {
+        parts.push({
+          inlineData: { mimeType: data.mediaType || p.mime || 'audio/mpeg', data: data.data }
+        })
+      } else {
+        parts.push({ text: '[audio omitted: Gemini requires a base64 data URL]' })
+      }
       continue
     }
     const data = parseDataUrl(p.url)
@@ -155,8 +173,13 @@ export function geminiFunctionCallingMode(
 
 /** Exported for tests — build Gemini generateContent request body. */
 export function buildGeminiBody(req: ProviderChatRequest): Record<string, unknown> {
+  const zones = resolveSystemZones({
+    system: req.system,
+    systemStable: req.systemStable,
+    systemVolatile: req.systemVolatile
+  })
   const systemParts = [
-    ...(req.system ? [req.system] : []),
+    ...(zones.stable ? [zones.stable] : []),
     ...req.messages
       .filter((m) => m.role === 'system')
       .map((m) => (typeof m.content === 'string' ? m.content : contentToText(m.content)))
@@ -181,8 +204,13 @@ export function buildGeminiBody(req: ProviderChatRequest): Record<string, unknow
     generationConfig.responseMimeType = 'application/json'
     generationConfig.responseSchema = req.responseFormat.schema
   }
+  const contents = toGeminiContents(req.messages)
+  if (zones.volatile) {
+    const vol = volatileSessionMessage(zones.volatile)
+    contents.push({ role: 'user', parts: [{ text: vol.content }] })
+  }
   return {
-    contents: toGeminiContents(req.messages),
+    contents,
     systemInstruction: systemParts.length
       ? { parts: systemParts.map((t) => ({ text: t })) }
       : undefined,
@@ -230,23 +258,29 @@ export const geminiProvider: LlmProvider = {
       const id = name.replace(/^models\//, '')
       if (!looksLikeChatModel(id)) continue
       out.push(
-        baseModelInfo(id, {
-          displayName: typeof row.displayName === 'string' ? row.displayName : id,
-          contextWindow:
-            typeof row.inputTokenLimit === 'number' ? row.inputTokenLimit : undefined,
-          maxOutputTokens:
-            typeof row.outputTokenLimit === 'number' ? row.outputTokenLimit : undefined,
-          supportsTools: true,
-          supportsVision: /gemini|vision|flash|pro/i.test(id)
-        })
+        baseModelInfo(
+          id,
+          {
+            displayName: typeof row.displayName === 'string' ? row.displayName : id,
+            contextWindow:
+              typeof row.inputTokenLimit === 'number' ? row.inputTokenLimit : undefined,
+            maxOutputTokens:
+              typeof row.outputTokenLimit === 'number' ? row.outputTokenLimit : undefined,
+            supportsTools: true,
+            supportsVision: /gemini|vision|flash|pro/i.test(id),
+            ...thinkingPartialFromCatalogRow(row, 'gemini')
+          },
+          'gemini'
+        )
       )
     }
     return out
   },
   async *streamChat(req: ProviderChatRequest): AsyncGenerator<StreamChunk> {
     const useInteractions =
-      req.modelInfo?.thinkingApi === 'interactions' ||
-      (req.thinking?.enabled && /gemini-(2\.5|3)/i.test(req.model))
+      req.thinking?.enabled === true &&
+      (req.modelInfo?.thinkingApi === 'interactions' ||
+        /(?:^|\/)gemini-(2\.5|3(?:\.\d+)?)(?:-|$)/i.test(req.model))
     if (useInteractions) {
       yield* streamGeminiInteractions(req)
       return
@@ -362,7 +396,7 @@ export const geminiProvider: LlmProvider = {
         const fc = part.functionCall as { name?: string; args?: unknown; id?: string } | undefined
         if (fc?.name) {
           const id =
-            typeof fc.id === 'string' && fc.id ? fc.id : `gemini_${fc.name}_${toolIndex}`
+            typeof fc.id === 'string' && fc.id ? fc.id : `gemini_${toolIndex++}`
           const argsJson = JSON.stringify(fc.args ?? {})
           const existing = pendingCalls.get(id)
           if (existing) {
@@ -370,11 +404,7 @@ export const geminiProvider: LlmProvider = {
             // Mid-stream update: live-forward so chrome/args appear before stream end.
             yield { type: 'tool_call', toolCall: { ...existing } }
           } else {
-            const call = {
-              id: typeof fc.id === 'string' && fc.id ? fc.id : `gemini_${toolIndex++}`,
-              name: fc.name,
-              arguments: argsJson
-            }
+            const call = { id, name: fc.name, arguments: argsJson }
             pendingCalls.set(id, call)
             yield { type: 'tool_call', toolCall: { ...call } }
           }

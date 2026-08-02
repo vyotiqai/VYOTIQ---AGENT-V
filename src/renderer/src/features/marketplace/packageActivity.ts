@@ -3,6 +3,7 @@ import type {
   MarketplaceInstalledItem,
   McpServerStatus
 } from '@shared/ipc'
+import { kindLabel } from './marketplaceLabels'
 
 export type PackageActivityKind =
   | 'coming-soon'
@@ -37,7 +38,7 @@ export function packageActivity(
     return { kind: 'coming-soon', label: 'Coming soon' }
   }
   if (!installed) {
-    return { kind: 'available', label: kindFallback(entry) }
+    return { kind: 'available', label: kindLabel(entry.kind) }
   }
   if (options?.workspaceEnabled === false) {
     return { kind: 'disabled', label: 'Force off here' }
@@ -55,7 +56,15 @@ export function packageActivity(
       }
     }
     if (mcpStatus?.error) {
-      return { kind: 'enabled', label: 'Enabled · not connected', className: 'text-danger' }
+      const short =
+        mcpStatus.error.length > 72
+          ? `${mcpStatus.error.slice(0, 69)}…`
+          : mcpStatus.error
+      return {
+        kind: 'enabled',
+        label: `Connect failed · ${short}`,
+        className: 'text-danger'
+      }
     }
     return { kind: 'enabled', label: 'Enabled' }
   }
@@ -83,21 +92,6 @@ export function packageActivity(
     }
   }
   return { kind: 'enabled', label: 'Enabled' }
-}
-
-function kindFallback(entry: MarketplaceCatalogEntry): string {
-  switch (entry.kind) {
-    case 'mcp':
-      return 'MCP'
-    case 'skill':
-      return 'Skill'
-    case 'plugin':
-      return 'Plugin'
-    default: {
-      const _exhaustive: never = entry.kind
-      return _exhaustive
-    }
-  }
 }
 
 /** Featured / detail trailing button label when installed. */

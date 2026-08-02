@@ -1,5 +1,12 @@
 import type { AgentEvent, ChatMessage, MessageContent, PersistedEvent } from '../ipc'
-import { contentDisplayText, contentFiles, contentImages, contentToText } from '../ipc'
+import {
+  contentAudios,
+  contentDisplayText,
+  contentFiles,
+  contentImages,
+  contentNativeFiles,
+  contentToText
+} from '../ipc'
 import { isAgentEvent } from '../utils/eventUtils'
 import { subagentContextUsageFromEvent } from '../utils/contextUsage'
 import { summarizeToolArgs } from '../utils/toolSummary'
@@ -16,7 +23,7 @@ export type UiToolRow = {
   /** Live IPC shipped a preview only; expand to lazy-load from disk. */
   contentTruncated?: boolean
   argsPreview?: string
-  /** Locked at first render so args streaming cannot flip card ↔ activity. */
+  /** Locked at first render; terminal may recompute when args arrive for read-only demotion. */
   presentation?: ToolPresentation
 }
 
@@ -40,6 +47,27 @@ export type UiSubagentContextUsage = {
   updatedAt: string
 }
 
+/** Rich nested-agent panel leaf (mirrors main chat leaves under a subagent tool). */
+export type UiNestedAgentLeaf =
+  | { kind: 'text'; id: string; text: string; streaming?: boolean }
+  | { kind: 'thinking'; id: string; text: string; streaming?: boolean }
+  | {
+      kind: 'tool'
+      id: string
+      tool: UiToolRow
+      approval?: UiToolApproval
+      terminalOutput?: string
+    }
+
+/** Live nested-agent panel state under a parent `subagent` tool row. */
+export type UiNestedAgentState = {
+  subagentId: string
+  leaves: UiNestedAgentLeaf[]
+  contextUsage?: UiSubagentContextUsage
+  /** Monotonic id counter so stream_reset cannot reuse leaf React keys. */
+  leafSeq?: number
+}
+
 /** A document the user attached, shown as a chip instead of its extracted text. */
 export type UiAttachment = {
   name: string
@@ -54,6 +82,29 @@ export type UiToolApproval = {
   summary: string
   argsPreview: string
   mutating: boolean
+}
+
+/** One field in a pending ask_question form. */
+export type UiAgentQuestionItem = {
+  id: string
+  prompt: string
+  type: 'single' | 'multi' | 'boolean' | 'text'
+  options?: string[]
+  allowCustom?: boolean
+}
+
+/** A structured question form the agent is waiting on in the transcript. */
+export type UiAgentQuestion = {
+  requestId: string
+  toolCallId: string
+  title?: string
+  questions: UiAgentQuestionItem[]
+}
+
+/** Structured answer payload submitted for a pending question form. */
+export type UiAgentQuestionAnswer = {
+  questionId: string
+  values: string[]
 }
 
 export type UiItem =
@@ -89,15 +140,38 @@ export type UiItem =
       subagent?: UiSubagentEntry[]
       /** Latest context fill for this nested sub-agent run. */
       subagentContextUsage?: UiSubagentContextUsage
+      /** Rich nested-agent panel (from `subagent_event` envelopes). */
+      nestedAgent?: UiNestedAgentState
+    }
+  | {
+      kind: 'question'
+      id: string
+      question: UiAgentQuestion
+      at?: string
     }
 
 /** Attachment chips for a message: names and sizes only, never the quoted text. */
 export function uiAttachments(content: MessageContent): UiAttachment[] {
-  return contentFiles(content).map((file) => ({
+  const out: UiAttachment[] = contentFiles(content).map((file) => ({
     name: file.name,
     mime: file.mime,
     chars: file.text.length
   }))
+  for (const file of contentNativeFiles(content)) {
+    out.push({
+      name: file.name,
+      mime: file.mime,
+      chars: Math.ceil((file.data.length * 3) / 4)
+    })
+  }
+  for (const audio of contentAudios(content)) {
+    out.push({
+      name: 'audio',
+      mime: audio.mime || 'audio/*',
+      chars: Math.ceil((audio.url.length * 3) / 4)
+    })
+  }
+  return out
 }
 
 /** Stable ids so reload/sync does not remount every transcript row. */
@@ -484,6 +558,7 @@ export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
           summary,
           status: inferToolStatus(m.content, m.ok),
           content,
+          contentTruncated: m.contentTruncated,
           argsPreview: pending?.arguments || undefined
         }
       }
@@ -509,48 +584,52 @@ export function applyPersistedLiveTools(items: UiItem[], events: PersistedEvent[
   const existing = new Set(
     items.filter((item): item is Extract<UiItem, { kind: 'tool' }> => item.kind === 'tool').map((item) => item.id)
   )
-  const extras: UiItem[] = []
+  const live = new Map<
+    string,
+    { at: string; name: string; arguments: string; startSummary?: string }
+  >()
 
   for (const row of events) {
     if (!isAgentEvent(row.event)) continue
     const event = row.event
     if (event.type === 'tool_call_delta') {
       if (existing.has(event.toolCallId)) continue
-      const name = event.name && event.name !== 'tool' ? event.name : ''
-      if (!name) continue
-      existing.add(event.toolCallId)
-      const args = event.argumentsDelta || undefined
-      extras.push({
-        kind: 'tool',
-        id: event.toolCallId,
-        at: row.at,
-        tool: {
-          id: event.toolCallId,
-          name,
-          summary: summarizeToolArgs(name, args ?? ''),
-          status: 'running',
-          argsPreview: args
-        }
+      const current = live.get(event.toolCallId)
+      const name =
+        event.name && event.name !== 'tool' ? event.name : current?.name ?? ''
+      live.set(event.toolCallId, {
+        at: current?.at ?? row.at,
+        name,
+        arguments: `${current?.arguments ?? ''}${event.argumentsDelta}`
       })
       continue
     }
     if (event.type === 'tool_start') {
       if (existing.has(event.toolCallId)) continue
-      existing.add(event.toolCallId)
-      extras.push({
-        kind: 'tool',
-        id: event.toolCallId,
-        at: row.at,
-        tool: {
-          id: event.toolCallId,
-          name: event.name,
-          summary: event.summary,
-          status: 'running'
-        }
+      const current = live.get(event.toolCallId)
+      live.set(event.toolCallId, {
+        at: current?.at ?? row.at,
+        name: event.name,
+        arguments: current?.arguments ?? '',
+        startSummary: event.summary
       })
     }
   }
 
+  const extras: UiItem[] = [...live.entries()]
+    .filter(([, value]) => Boolean(value.name))
+    .map(([id, value]) => ({
+      kind: 'tool',
+      id,
+      at: value.at,
+      tool: {
+        id,
+        name: value.name,
+        summary: value.startSummary ?? summarizeToolArgs(value.name, value.arguments),
+        status: 'running',
+        argsPreview: value.arguments || undefined
+      }
+    }))
   return extras.length ? [...items, ...extras] : items
 }
 
@@ -655,6 +734,185 @@ function applySubagentContextUsage(items: UiItem[], events: PersistedEvent[]): U
   return out
 }
 
+/** Apply one nested AgentEvent into a UiNestedAgentState panel. */
+export function reduceNestedAgentEvent(
+  prev: UiNestedAgentState | undefined,
+  subagentId: string,
+  event: AgentEvent
+): UiNestedAgentState {
+  const state: UiNestedAgentState = prev?.subagentId === subagentId
+    ? { ...prev, leaves: [...prev.leaves] }
+    : { subagentId, leaves: [], leafSeq: 0 }
+
+  const leaves = state.leaves
+  const nextLeafId = (prefix: string): string => {
+    const seq = (state.leafSeq ?? leaves.length) + 1
+    state.leafSeq = seq
+    return `${prefix}-${seq}`
+  }
+
+  if (event.type === 'text_delta' && event.text) {
+    const last = leaves[leaves.length - 1]
+    if (last?.kind === 'text' && last.streaming) {
+      leaves[leaves.length - 1] = { ...last, text: last.text + event.text }
+    } else {
+      leaves.push({ kind: 'text', id: nextLeafId('text'), text: event.text, streaming: true })
+    }
+  } else if (event.type === 'thinking_delta' && event.text) {
+    const last = leaves[leaves.length - 1]
+    if (last?.kind === 'thinking' && last.streaming) {
+      leaves[leaves.length - 1] = { ...last, text: last.text + event.text }
+    } else {
+      leaves.push({
+        kind: 'thinking',
+        id: nextLeafId('think'),
+        text: event.text,
+        streaming: true
+      })
+    }
+  } else if (event.type === 'thinking_done') {
+    const last = leaves[leaves.length - 1]
+    if (last?.kind === 'thinking') {
+      leaves[leaves.length - 1] = {
+        ...last,
+        text: event.text || last.text,
+        streaming: false
+      }
+    } else if (event.text) {
+      leaves.push({ kind: 'thinking', id: nextLeafId('think'), text: event.text })
+    }
+  } else if (event.type === 'assistant_message') {
+    // Finalize streaming text; replace with complete assistant content.
+    for (let i = leaves.length - 1; i >= 0; i--) {
+      const leaf = leaves[i]
+      if (leaf?.kind === 'text' && leaf.streaming) {
+        leaves[i] = { ...leaf, text: event.content || leaf.text, streaming: false }
+        break
+      }
+    }
+    if (event.content && !leaves.some((l) => l.kind === 'text' && l.text === event.content)) {
+      leaves.push({ kind: 'text', id: nextLeafId('msg'), text: event.content })
+    }
+    if (event.thinking) {
+      leaves.push({ kind: 'thinking', id: nextLeafId('think'), text: event.thinking })
+    }
+  } else if (event.type === 'tool_call_delta' || event.type === 'tool_start') {
+    const toolCallId =
+      event.type === 'tool_call_delta' ? event.toolCallId : event.toolCallId
+    const name =
+      event.type === 'tool_call_delta'
+        ? event.name || 'tool'
+        : event.name
+    const summary =
+      event.type === 'tool_start' ? event.summary : summarizeToolArgs(name, event.argumentsDelta ?? '')
+    const existing = leaves.findIndex((l) => l.kind === 'tool' && l.id === toolCallId)
+    if (existing >= 0) {
+      const leaf = leaves[existing]
+      if (leaf?.kind === 'tool') {
+        leaves[existing] = {
+          ...leaf,
+          tool: {
+            ...leaf.tool,
+            name: name !== 'tool' ? name : leaf.tool.name,
+            summary: summary || leaf.tool.summary,
+            argsPreview:
+              event.type === 'tool_call_delta' && event.argumentsDelta
+                ? (leaf.tool.argsPreview ?? '') + event.argumentsDelta
+                : leaf.tool.argsPreview
+          }
+        }
+      }
+    } else {
+      leaves.push({
+        kind: 'tool',
+        id: toolCallId,
+        tool: {
+          id: toolCallId,
+          name,
+          summary: summary || name,
+          status: 'running',
+          ...(event.type === 'tool_call_delta' && event.argumentsDelta
+            ? { argsPreview: event.argumentsDelta }
+            : {})
+        }
+      })
+    }
+  } else if (event.type === 'tool_result') {
+    const existing = leaves.findIndex((l) => l.kind === 'tool' && l.id === event.toolCallId)
+    const tool: UiToolRow = {
+      id: event.toolCallId,
+      name: event.name,
+      summary: event.summary,
+      status: event.ok ? 'done' : 'fail',
+      content: event.content,
+      contentTruncated: event.contentTruncated
+    }
+    if (existing >= 0) {
+      const leaf = leaves[existing]
+      if (leaf?.kind === 'tool') {
+        leaves[existing] = { ...leaf, tool: { ...leaf.tool, ...tool }, approval: undefined }
+      }
+    } else {
+      leaves.push({ kind: 'tool', id: event.toolCallId, tool })
+    }
+  } else if (event.type === 'terminal_output_delta') {
+    const existing = leaves.findIndex((l) => l.kind === 'tool' && l.id === event.toolCallId)
+    if (existing >= 0) {
+      const leaf = leaves[existing]
+      if (leaf?.kind === 'tool') {
+        leaves[existing] = {
+          ...leaf,
+          terminalOutput: (leaf.terminalOutput ?? '') + event.text
+        }
+      }
+    }
+  } else if (event.type === 'context_usage') {
+    state.contextUsage = {
+      step: event.step,
+      used: event.inputTokens ?? event.estimatedTokens,
+      window: event.contextWindow,
+      contentWindow: event.contentWindow ?? event.contextWindow,
+      model: '',
+      updatedAt: new Date().toISOString()
+    }
+  } else if (event.type === 'stream_reset') {
+    // Drop trailing streaming leaves from this attempt.
+    while (leaves.length > 0) {
+      const last = leaves[leaves.length - 1]
+      if (last && (last.kind === 'text' || last.kind === 'thinking') && last.streaming) {
+        leaves.pop()
+      } else break
+    }
+  }
+
+  // Cap leaf count for memory.
+  if (leaves.length > 120) {
+    state.leaves = leaves.slice(-120)
+  } else {
+    state.leaves = leaves
+  }
+  return state
+}
+
+function applySubagentEvents(items: UiItem[], events: PersistedEvent[]): UiItem[] {
+  const out = [...items]
+  for (const row of events) {
+    if (!isAgentEvent(row.event)) continue
+    if (row.event.type !== 'subagent_event') continue
+    const parentToolCallId = row.event.parentToolCallId
+    const idx = out.findIndex((item) => item.kind === 'tool' && item.id === parentToolCallId)
+    if (idx < 0) continue
+    const item = out[idx]
+    if (item.kind !== 'tool') continue
+    const nested = row.event.event as AgentEvent
+    out[idx] = {
+      ...item,
+      nestedAgent: reduceNestedAgentEvent(item.nestedAgent, row.event.subagentId, nested)
+    }
+  }
+  return out
+}
+
 /** Attach ISO timestamps from persisted events.jsonl rows where available. */
 export function applyEventTimestamps(items: UiItem[], events: PersistedEvent[]): UiItem[] {
   if (!events.length) return items
@@ -720,7 +978,10 @@ export function applyEventTimestamps(items: UiItem[], events: PersistedEvent[]):
     const at = messageAtById.get(item.id)
     return at ? { ...item, at } : item
   })
-  return applySubagentContextUsage(applySubagentUpdates(withMessages, events), events)
+  return applySubagentEvents(
+    applySubagentContextUsage(applySubagentUpdates(withMessages, events), events),
+    events
+  )
 }
 
 function messageTimestampsFromEvents(
@@ -907,8 +1168,36 @@ export function finalizeHydratedTranscript(items: UiItem[], events: PersistedEve
       const content = finalizeInterruptedTodoContent(tool.content)
       if (content !== tool.content) tool = { ...tool, content }
     }
-    if (tool === item.tool) return item
-    return { ...item, tool }
+
+    let nestedAgent = item.nestedAgent
+    if (nestedAgent?.leaves.length) {
+      const leaves = nestedAgent.leaves.map((leaf) => {
+        if (leaf.kind === 'text' || leaf.kind === 'thinking') {
+          if (!leaf.streaming) return leaf
+          return { ...leaf, streaming: false }
+        }
+        if (leaf.kind === 'tool' && leaf.tool.status === 'running') {
+          return {
+            ...leaf,
+            approval: undefined,
+            tool: {
+              ...leaf.tool,
+              status: 'fail' as const,
+              content: leaf.tool.content ?? stub
+            }
+          }
+        }
+        return leaf
+      })
+      nestedAgent = { ...nestedAgent, leaves }
+    }
+
+    if (tool === item.tool && nestedAgent === item.nestedAgent) return item
+    return {
+      ...item,
+      tool,
+      ...(nestedAgent !== item.nestedAgent ? { nestedAgent } : {})
+    }
   })
 
   return closeOpenGroupTimingsOnHydrate(finalized, endedAt)

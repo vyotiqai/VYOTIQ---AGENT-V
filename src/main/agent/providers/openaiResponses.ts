@@ -1,18 +1,27 @@
 import type { ChatMessage, MessageContent } from '../../../shared/ipc'
-import { contentHasImage, contentToText, providerContentParts } from '../../../shared/ipc'
+import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
 import {
   normalizeEffortForOpenAiResponses,
   trailingToolMessages,
   type ProviderReasoningState
 } from '../../../shared/reasoning'
-import { serviceTierForApiBody } from '../../../shared/domain/serviceTier'
+import { parseServiceTier, serviceTierForApiBody } from '../../../shared/domain/serviceTier'
 import type { ProviderChatRequest, StopReason, StreamChunk, ToolCall, TokenUsage } from './types'
 import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
 import { formatProviderHttpError } from './httpErrors'
+import {
+  resolveSystemZones,
+  supportsExplicitPromptCache,
+  volatileSessionMessage,
+  markResponsesCacheBreakpoint,
+  attachTrailingHistoryCacheBreakpoint
+} from './systemZones'
+
+export { supportsExplicitPromptCache } from './systemZones'
 
 function toolOutputsFromMessages(messages: ChatMessage[]): Array<Record<string, unknown>> {
   return messages
@@ -27,15 +36,40 @@ function toolOutputsFromMessages(messages: ChatMessage[]): Array<Record<string, 
 export function toResponsesInput(
   messages: ChatMessage[],
   system: string | undefined,
-  priorState?: ProviderReasoningState
+  priorState?: ProviderReasoningState,
+  opts?: {
+    explicitPromptCache?: boolean
+    systemStable?: string
+    systemVolatile?: string
+  }
 ): Array<Record<string, unknown>> {
   // Stateful continuation: server retains prior turn via previous_response_id.
   if (priorState?.kind === 'openai_responses' && priorState.responseId) {
     return toolOutputsFromMessages(trailingToolMessages(messages))
   }
 
+  const zones = resolveSystemZones({
+    system,
+    systemStable: opts?.systemStable,
+    systemVolatile: opts?.systemVolatile
+  })
   const out: Array<Record<string, unknown>> = []
-  if (system) out.push({ role: 'developer', content: system })
+  if (zones.stable) {
+    if (opts?.explicitPromptCache) {
+      out.push({
+        role: 'developer',
+        content: [
+          {
+            type: 'input_text',
+            text: zones.stable,
+            prompt_cache_breakpoint: { mode: 'explicit' }
+          }
+        ]
+      })
+    } else {
+      out.push({ role: 'developer', content: zones.stable })
+    }
+  }
 
   for (const m of messages) {
     if (m.role === 'tool') {
@@ -73,24 +107,51 @@ export function toResponsesInput(
       out.push({ role: 'user', content: toResponsesUserContent(m.content) })
     }
   }
+  if (opts?.explicitPromptCache) {
+    // Second breakpoint after history so volatile session context stays outside the cache prefix.
+    // Avoid function_call_output breakpoints (accepted but do not write cache).
+    attachTrailingHistoryCacheBreakpoint(out, markResponsesCacheBreakpoint)
+  }
+  if (zones.volatile) {
+    const vol = volatileSessionMessage(zones.volatile)
+    out.push({ role: 'user', content: vol.content })
+  }
   return out
 }
 
 /**
- * Responses uses `input_text` / `input_image` parts rather than the chat
- * completions shape. Flattening to text here would silently drop the image the
- * user attached, so build the parts array whenever one is present.
+ * Responses uses `input_text` / `input_image` / `input_file` parts rather than the chat
+ * completions shape. Flattening to text here would silently drop rich attachments.
  */
 export function toResponsesUserContent(
   content: MessageContent
 ): string | Array<Record<string, unknown>> {
   if (typeof content === 'string') return content
-  if (!contentHasImage(content)) return contentToText(content)
-  return providerContentParts(content).map((part) =>
-    part.type === 'image_url'
-      ? { type: 'input_image', image_url: part.url }
-      : { type: 'input_text', text: part.text }
-  )
+  const parts = providerContentParts(content, {
+    image: true,
+    fileNative: true,
+    audio: false
+  })
+  const rich = parts.some((p) => p.type !== 'text')
+  if (!rich) return contentToText(content)
+  return parts.map((part) => {
+    if (part.type === 'image_url') return { type: 'input_image', image_url: part.url }
+    if (part.type === 'file_native') {
+      const mime = part.mime || 'application/pdf'
+      return {
+        type: 'input_file',
+        filename: part.name,
+        file_data: `data:${mime};base64,${part.data}`
+      }
+    }
+    if (part.type === 'audio') {
+      return {
+        type: 'input_text',
+        text: '[audio omitted: OpenAI Responses does not accept input_audio]'
+      }
+    }
+    return { type: 'input_text', text: part.text }
+  })
 }
 
 function toResponsesTools(
@@ -117,11 +178,18 @@ export async function* streamOpenAiResponses(
 
   const priorState =
     req.reasoningState?.kind === 'openai_responses' ? req.reasoningState : undefined
-  const thinkingEnabled = req.thinking?.enabled !== false
+  const thinkingOn = req.thinking?.enabled !== false
+  const thinkingOff = req.thinking?.enabled === false
+  const supportsThinking = req.modelInfo?.supportsThinking !== false
+  const explicitCache = supportsExplicitPromptCache(req.model)
 
   const body: Record<string, unknown> = {
     model: req.model,
-    input: toResponsesInput(req.messages, req.system, priorState),
+    input: toResponsesInput(req.messages, req.system, priorState, {
+      explicitPromptCache: explicitCache,
+      systemStable: req.systemStable,
+      systemVolatile: req.systemVolatile
+    }),
     stream: true,
     store: true,
     ...(req.tools.length
@@ -131,7 +199,7 @@ export async function* streamOpenAiResponses(
           parallel_tool_calls: req.parallelToolCalls ?? true
         }
       : {}),
-    ...(thinkingEnabled
+    ...(thinkingOn
       ? {
           reasoning: {
             effort: normalizeEffortForOpenAiResponses(req.thinking?.effort, true),
@@ -139,12 +207,29 @@ export async function* streamOpenAiResponses(
             context: 'all_turns'
           }
         }
-      : {}),
-    ...(priorState?.responseId ? { previous_response_id: priorState.responseId } : {})
+      : thinkingOff && supportsThinking
+        ? {
+            reasoning: {
+              effort: 'none',
+              summary: 'auto',
+              context: 'all_turns'
+            }
+          }
+        : {}),
+    ...(priorState?.responseId ? { previous_response_id: priorState.responseId } : {}),
+    ...(req.promptCacheKey ? { prompt_cache_key: req.promptCacheKey } : {}),
+    ...(explicitCache
+      ? { prompt_cache_options: { mode: 'explicit', ttl: '30m' } }
+      : {})
   }
 
-  const tier = serviceTierForApiBody(req.serviceTier)
-  if (tier) body.service_tier = tier
+  const tier = serviceTierForApiBody(parseServiceTier(req.serviceTier))
+  if (tier) {
+    const supported = req.modelInfo?.supportedServiceTiers
+    if (!Array.isArray(supported) || supported.includes(tier)) {
+      body.service_tier = tier
+    }
+  }
 
   let res: Response
   try {
@@ -316,16 +401,23 @@ export async function* streamOpenAiResponses(
       if (usage) {
         const outputDetails = usage.output_tokens_details as Record<string, unknown> | undefined
         const inputDetails = usage.input_tokens_details as Record<string, unknown> | undefined
+        const cachedInputTokens =
+          inputDetails && typeof inputDetails.cached_tokens === 'number'
+            ? inputDetails.cached_tokens
+            : typeof usage.prompt_cache_hit_tokens === 'number'
+              ? usage.prompt_cache_hit_tokens
+              : typeof usage.cached_tokens === 'number'
+                ? usage.cached_tokens
+                : inputDetails && typeof inputDetails.prompt_cache_hit_tokens === 'number'
+                  ? inputDetails.prompt_cache_hit_tokens
+                  : undefined
         lastUsage = {
           inputTokens:
             typeof usage.input_tokens === 'number' ? usage.input_tokens : undefined,
           outputTokens:
             typeof usage.output_tokens === 'number' ? usage.output_tokens : undefined,
           totalTokens: typeof usage.total_tokens === 'number' ? usage.total_tokens : undefined,
-          cachedInputTokens:
-            inputDetails && typeof inputDetails.cached_tokens === 'number'
-              ? inputDetails.cached_tokens
-              : undefined,
+          cachedInputTokens,
           reasoningTokens:
             outputDetails && typeof outputDetails.reasoning_tokens === 'number'
               ? outputDetails.reasoning_tokens

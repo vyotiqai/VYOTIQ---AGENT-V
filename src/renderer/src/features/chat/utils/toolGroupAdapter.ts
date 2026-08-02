@@ -10,6 +10,7 @@ import {
 import { formatElapsed } from '@shared/utils/timeFormat'
 import {
   categoryLabels,
+  isInterruptedToolContent,
   mixedGroupLabels,
   toolCategory,
   toolLabel,
@@ -42,14 +43,13 @@ export type ToolGroupProps = {
   singleTool: boolean
 }
 
-const INTERRUPTED_CONTENT = new Set(['Cancelled', 'Interrupted', 'Stopped'])
-
 const CATEGORY_COUNT_LABELS: Record<ToolGroupCategory, [singular: string, plural: string]> = {
   file: ['file', 'files'],
   edit: ['edit', 'edits'],
   search: ['lookup', 'lookups'],
   command: ['command', 'commands'],
-  browse: ['directory', 'directories']
+  browse: ['directory', 'directories'],
+  browser: ['page', 'pages']
 }
 
 const CATEGORY_MIXED_VERBS: Record<ToolGroupCategory, { running: string; done: string }> = {
@@ -57,7 +57,8 @@ const CATEGORY_MIXED_VERBS: Record<ToolGroupCategory, { running: string; done: s
   edit: { running: 'editing', done: 'edited' },
   search: { running: 'searching', done: 'searched' },
   command: { running: 'running commands', done: 'ran commands' },
-  browse: { running: 'listing directories', done: 'listed directories' }
+  browse: { running: 'listing directories', done: 'listed directories' },
+  browser: { running: 'browsing', done: 'browsed' }
 }
 
 function capitalize(text: string): string {
@@ -78,11 +79,12 @@ function compositeMixedLabels(tools: ToolGroupNestedTool[]): { running: string; 
     edit: 0,
     search: 0,
     command: 0,
-    browse: 0
+    browse: 0,
+    browser: 0
   }
   for (const tool of tools) counts[tool.category] += 1
 
-  const order: ToolGroupCategory[] = ['file', 'browse', 'search', 'command', 'edit']
+  const order: ToolGroupCategory[] = ['file', 'browse', 'browser', 'search', 'command', 'edit']
   const active = order.filter((category) => counts[category] > 0)
   if (active.length === 0) return mixedGroupLabels()
   if (active.length === 1) return categoryLabels(active[0]!)
@@ -155,7 +157,7 @@ function nestedRowTitle(tool: UiToolRow, subtitle: string, inGroup: boolean): st
   if (tool.status === 'running' && isUnresolvedToolName(tool.name)) {
     return 'Preparing…'
   }
-  return toolLabel(tool.name, tool.status)
+  return toolLabel(tool.name, tool.status, tool.content)
 }
 
 function formatCount(value: number, label: string, plural: string): string {
@@ -168,7 +170,8 @@ function summarizeCounts(tools: ToolGroupNestedTool[]): string {
     edit: 0,
     search: 0,
     command: 0,
-    browse: 0
+    browse: 0,
+    browser: 0
   }
   for (const tool of tools) counts[tool.category] += 1
 
@@ -193,6 +196,10 @@ function summarizeCounts(tools: ToolGroupNestedTool[]): string {
     const [s, p] = CATEGORY_COUNT_LABELS.browse
     parts.push(formatCount(counts.browse, s, p))
   }
+  if (counts.browser > 0) {
+    const [s, p] = CATEGORY_COUNT_LABELS.browser
+    parts.push(formatCount(counts.browser, s, p))
+  }
 
   if (parts.length === 0) return ''
   if (parts.length === 1) return parts[0]!
@@ -201,7 +208,7 @@ function summarizeCounts(tools: ToolGroupNestedTool[]): string {
 }
 
 function isInterrupted(tools: UiToolRow[]): boolean {
-  return tools.some((tool) => INTERRUPTED_CONTENT.has(tool.content ?? ''))
+  return tools.some((tool) => isInterruptedToolContent(tool.content))
 }
 
 function deriveState(tools: UiToolRow[], groupTiming: UiGroupTiming | undefined): ToolGroupState {
@@ -243,6 +250,8 @@ export function mapToolGroupProps(
     nestedTools,
     tools.map((tool) => tool.name)
   )
+  // Interrupted groups never completed — header uses the in-progress verb.
+  const settledLabel = state === 'interrupted' ? labels.running : labels.done
 
   const allSubagents = tools.length > 0 && tools.every((tool) => tool.name === 'subagent')
   const summary = allSubagents
@@ -254,7 +263,7 @@ export function mapToolGroupProps(
     nestedTools,
     summary,
     runningLabel: labels.running,
-    doneLabel: labels.done,
+    doneLabel: settledLabel,
     elapsedMs,
     elapsedDisplay: elapsedMs != null && elapsedMs >= 1000 ? formatElapsed(elapsedMs) : '',
     singleTool: tools.length === 1

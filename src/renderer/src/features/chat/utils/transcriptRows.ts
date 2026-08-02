@@ -1,4 +1,4 @@
-import type { UiItem, UiToolApproval } from '@shared/transcript'
+import type { UiAgentQuestion, UiItem, UiToolApproval } from '@shared/transcript'
 import {
   duplicatesReasoning,
   mergeThinkingContent,
@@ -7,11 +7,12 @@ import {
   stripToolShapedAssistantText,
   stripToolShapedAssistantTextForStream
 } from '@shared/transcript'
-import { isProminentTool } from '../toolUi'
+import { isProminentPresentation } from '../toolUi'
 import { collectWritingChanges } from '../toolUi/parsers/edit'
 import { parseDeleteData } from '../toolUi/parsers/delete'
 import { deriveRunActivity, type RunActivityPhase } from './runActivity'
 import { mapToolGroupProps } from './toolGroupAdapter'
+import { normalizeRelPath, WRITING_TOOLS } from './turnFileDiffs'
 
 export type { RunActivityPhase } from './runActivity'
 
@@ -30,6 +31,7 @@ export type TranscriptRow =
   | { kind: 'card'; id: string; item: ToolItem; turnIndex: number }
   | { kind: 'changes'; id: string; turnIndex: number; files: ChangedFile[] }
   | { kind: 'approval'; id: string; approval: UiToolApproval; turnIndex: number }
+  | { kind: 'question'; id: string; question: UiAgentQuestion; turnIndex: number }
 
 export type ChangedFile = {
   path: string
@@ -44,6 +46,12 @@ export type TurnSpan = {
   active: boolean
   /** What the agent is doing while the turn is active. */
   activity?: RunActivityPhase | null
+  /**
+   * When activity is a tool phase, start of that tool/group; otherwise equals
+   * turn `startedAt`. Used so collapsed labels don't attribute whole-turn time
+   * to the current phase.
+   */
+  phaseStartedAt?: number | null
 }
 
 /**
@@ -53,27 +61,22 @@ export type TurnSpan = {
  * (composer locked, no Allow/Deny).
  */
 export function isTurnWorkRow(row: TranscriptRow): boolean {
-  if (row.kind === 'approval') return false
+  if (row.kind === 'approval' || row.kind === 'question') return false
   // Collapsed turns rely on TurnSummary for live phase; hide cards/activity so
   // running tools are not duplicated beside the timeline label.
-  if (
-    row.kind === 'thinking' ||
-    row.kind === 'activity' ||
-    row.kind === 'card'
-  ) {
+  if (row.kind === 'thinking' || row.kind === 'activity' || row.kind === 'card') {
     return true
   }
   return row.kind === 'text' && !row.final
 }
 
-/** Tools whose output is worth a dedicated card instead of a group line. */
-function isCardTool(item: ToolItem): boolean {
-  if (item.tool.presentation) return item.tool.presentation === 'prominent'
-  return isProminentTool(item.tool.name, item.tool.argsPreview)
-}
-
 /** Extra lead-in above a user prompt that opens a new turn (matches TRANSCRIPT_TURN_GAP). */
 export const TURN_GAP_PX = 24
+
+/** Tools whose output is worth a dedicated card instead of a group line. */
+function isCardTool(item: ToolItem): boolean {
+  return isProminentPresentation(item.tool)
+}
 
 /**
  * Build turn-aware transcript rows.
@@ -117,6 +120,21 @@ export function buildTranscriptRows(
         })
         return
       }
+      // Nested-agent gated tools live on leaves inside the activity row. Promote
+      // those approvals to standalone rows so turn collapse cannot hide Allow/Deny.
+      const nestedApprovals =
+        item.nestedAgent?.leaves.flatMap((leaf) =>
+          leaf.kind === 'tool' && leaf.approval ? [leaf.approval] : []
+        ) ?? []
+      for (const approval of nestedApprovals) {
+        closeGroup()
+        rows.push({
+          kind: 'approval',
+          id: `approval:${approval.requestId}`,
+          approval,
+          turnIndex: Math.max(turnIndex, 0)
+        })
+      }
       if (isCardTool(item)) {
         closeGroup()
         rows.push({ kind: 'card', id: item.id, item, turnIndex })
@@ -132,12 +150,25 @@ export function buildTranscriptRows(
   }
 
   for (const item of items) {
+    if (item.kind === 'question') {
+      flush()
+      rows.push({
+        kind: 'question',
+        id: item.id,
+        question: item.question,
+        turnIndex: Math.max(turnIndex, 0)
+      })
+      continue
+    }
     if (item.kind === 'tool') {
-      pending.push(item)
+      const gatedByQuestion = items.some(
+        (entry) => entry.kind === 'question' && entry.question.toolCallId === item.id
+      )
+      if (!gatedByQuestion) pending.push(item)
       continue
     }
 
-    if (item.role === 'user') {
+    if (item.kind === 'message' && item.role === 'user') {
       flush()
       turnIndex += 1
       rows.push({ kind: 'user', id: item.id, item: item as UserItem, turnIndex })
@@ -152,9 +183,12 @@ export function buildTranscriptRows(
       ? stripToolShapedAssistantTextForStream(assistant.content)
       : stripToolShapedAssistantText(assistant.content)
     const showContent = Boolean(
-      cleanedContent && !duplicatesReasoning({ ...assistant, content: cleanedContent })
+      cleanedContent?.trim() &&
+        !duplicatesReasoning({ ...assistant, content: cleanedContent })
     )
-    if (!includeThinking && assistant.thinkingStreaming) {
+    if (assistant.thinkingStreaming && !showThinking) {
+      // Timeline/aria still show Thinking while the block is hidden (setting off
+      // or streaming before meaningful text arrives).
       hiddenThinkingStreamingTurns.add(Math.max(turnIndex, 0))
     }
     // A row with nothing to show must not split the stretch around it, or the
@@ -202,34 +236,71 @@ export function buildTranscriptRows(
   return coalesceTurnWork(
     withChangeSummaries(
       withTurnSummaries(
-        coalesceProminentCards(markFinalText(rows)),
+        coalesceTodoWrites(markFinalText(rows)),
         {
           pendingRun: options?.pendingRun,
           running: options?.running,
           hiddenThinkingStreamingTurns
         }
-      )
+      ),
+      {
+        pendingRun: options?.pendingRun,
+        running: options?.running
+      }
     )
   )
+}
+
+function activityFingerprint(activity: RunActivityPhase | null | undefined): string {
+  if (!activity) return ''
+  if (activity.kind === 'tool') {
+    return `tool:${activity.label}:${activity.detail ?? ''}`
+  }
+  return activity.kind
+}
+
+/** Cheap content identity for React.memo reuse — length alone hides same-length replacements. */
+function contentFingerprint(content: string): string {
+  const len = content.length
+  if (len <= 48) return content
+  return `${len}:${content.slice(0, 16)}:${content.slice(-16)}`
 }
 
 /** Fingerprint of a row's visible content for React.memo identity reuse. */
 export function transcriptRowFingerprint(row: TranscriptRow): string {
   switch (row.kind) {
     case 'user':
-      return `user:${row.id}:${row.item.content.length}:${row.item.at ?? ''}`
+      return `user:${row.id}:${contentFingerprint(row.item.content)}:${row.item.at ?? ''}`
     case 'turn':
-      return `turn:${row.id}:${row.span.startedAt}:${row.span.endedAt}:${row.span.active}:${row.span.activity ?? ''}`
+      return `turn:${row.id}:${row.span.startedAt}:${row.span.endedAt}:${row.span.active}:${row.span.phaseStartedAt ?? ''}:${activityFingerprint(row.span.activity)}`
     case 'thinking':
-      return `thinking:${row.id}:${row.item.thinking?.length ?? 0}:${row.item.thinkingStreaming ? 1 : 0}:${row.item.thinkingExpanded ?? ''}`
+      return `thinking:${row.id}:${contentFingerprint(row.item.thinking ?? '')}:${row.item.thinkingStreaming ? 1 : 0}:${row.item.thinkingExpanded ?? ''}`
     case 'text':
-      return `text:${row.id}:${row.item.content.length}:${row.item.streaming ? 1 : 0}:${row.final ? 1 : 0}`
+      return `text:${row.id}:${contentFingerprint(row.item.content)}:${row.item.streaming ? 1 : 0}:${row.final ? 1 : 0}`
     case 'activity':
       return `activity:${row.id}:${row.tools
         .map((t) => {
           const sub = t.subagent?.length ?? 0
           const subLast = t.subagent?.[t.subagent.length - 1]
           const usage = t.subagentContextUsage
+          const nested = t.nestedAgent
+          const nestedSig = nested
+            ? [
+                nested.subagentId,
+                nested.leaves.length,
+                nested.leaves
+                  .map((leaf) => {
+                    if (leaf.kind === 'text' || leaf.kind === 'thinking') {
+                      return `${leaf.kind}:${leaf.id}:${leaf.text.length}:${leaf.streaming ? 1 : 0}`
+                    }
+                    return `tool:${leaf.id}:${leaf.tool.status}:${leaf.tool.content?.length ?? 0}:${leaf.approval?.requestId ?? ''}`
+                  })
+                  .join(','),
+                nested.contextUsage
+                  ? `${nested.contextUsage.step}:${nested.contextUsage.used}:${nested.contextUsage.updatedAt}`
+                  : ''
+              ].join(';')
+            : ''
           return [
             t.id,
             t.tool.status,
@@ -241,7 +312,8 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
             t.toolExpanded ?? '',
             sub,
             subLast ? `${subLast.kind}:${subLast.text.length}` : '',
-            usage ? `${usage.step}:${usage.used}:${usage.updatedAt}` : ''
+            usage ? `${usage.step}:${usage.used}:${usage.updatedAt}` : '',
+            nestedSig
           ].join(':')
         })
         .join('|')}`
@@ -250,6 +322,24 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
       const sub = t.subagent?.length ?? 0
       const subLast = t.subagent?.[t.subagent.length - 1]
       const usage = t.subagentContextUsage
+      const nested = t.nestedAgent
+      const nestedSig = nested
+        ? [
+            nested.subagentId,
+            nested.leaves.length,
+            nested.leaves
+              .map((leaf) => {
+                if (leaf.kind === 'text' || leaf.kind === 'thinking') {
+                  return `${leaf.kind}:${leaf.id}:${leaf.text.length}:${leaf.streaming ? 1 : 0}`
+                }
+                return `tool:${leaf.id}:${leaf.tool.status}:${leaf.tool.content?.length ?? 0}:${leaf.approval?.requestId ?? ''}`
+              })
+              .join(','),
+            nested.contextUsage
+              ? `${nested.contextUsage.step}:${nested.contextUsage.used}:${nested.contextUsage.updatedAt}`
+              : ''
+          ].join(';')
+        : ''
       return [
         'card',
         row.id,
@@ -259,16 +349,27 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
         t.tool.contentTruncated ? 1 : 0,
         t.tool.summary,
         t.toolExpanded ?? '',
-        t.groupExpanded ?? '',
         sub,
         subLast ? `${subLast.kind}:${subLast.text.length}` : '',
-        usage ? `${usage.step}:${usage.used}:${usage.updatedAt}` : ''
+        usage ? `${usage.step}:${usage.used}:${usage.updatedAt}` : '',
+        nestedSig
       ].join(':')
     }
     case 'changes':
       return `changes:${row.id}:${row.files.map((f) => `${f.path}:${f.added}:${f.removed}`).join('|')}`
     case 'approval':
       return `approval:${row.id}:${row.approval.requestId}`
+    case 'question': {
+      const q = row.question
+      const shape = [
+        q.title ?? '',
+        ...q.questions.map(
+          (item) =>
+            `${item.id}\0${item.prompt}\0${item.type}\0${item.allowCustom ? 1 : 0}\0${(item.options ?? []).join('\u001f')}`
+        )
+      ].join('\n')
+      return `question:${row.id}:${q.requestId}:${shape}`
+    }
     default: {
       const _exhaustive: never = row
       return _exhaustive
@@ -299,7 +400,6 @@ export function stabilizeTranscriptRows(
 }
 
 /** Tools that write files, and so contribute to a turn's change summary. */
-const WRITING_TOOLS = new Set(['edit', 'multi_edit', 'str_replace', 'delete'])
 
 function writingToolChanges(item: ToolItem): ChangedFile[] {
   if (!WRITING_TOOLS.has(item.tool.name) || item.tool.status !== 'done') return []
@@ -320,21 +420,35 @@ function turnToolItems(row: TranscriptRow): ToolItem[] {
 /**
  * Close a turn that touched files with a rollup of what changed.
  * Always emit when writes occurred so Keep/Discard has a home (single-file too).
+ * Defer the live turn's card until the run settles — mid-run it reads as
+ * "work is done" while Investigating / more tools are still going.
  */
-function withChangeSummaries(rows: TranscriptRow[]): TranscriptRow[] {
+function withChangeSummaries(
+  rows: TranscriptRow[],
+  options?: { pendingRun?: boolean; running?: boolean }
+): TranscriptRow[] {
+  const live = options?.pendingRun === true || options?.running === true
+  let lastTurnIndex = -1
+  for (const row of rows) {
+    if (row.turnIndex > lastTurnIndex) lastTurnIndex = row.turnIndex
+  }
+
   const out: TranscriptRow[] = []
   let turnIndex: number | null = null
   let totals = new Map<string, ChangedFile>()
 
   const closeTurn = (): void => {
-    // Roll up whenever the turn wrote files so Undo has a home (single-file too).
     if (turnIndex != null && totals.size >= 1) {
-      out.push({
-        kind: 'changes',
-        id: `changes:${turnIndex}`,
-        turnIndex,
-        files: [...totals.values()]
-      })
+      // Prior turns in a multi-turn run still get their receipt; only the
+      // active last turn waits until the agent stops.
+      if (!(live && turnIndex === lastTurnIndex)) {
+        out.push({
+          kind: 'changes',
+          id: `changes:${turnIndex}`,
+          turnIndex,
+          files: [...totals.values()]
+        })
+      }
     }
     totals = new Map()
   }
@@ -348,12 +462,13 @@ function withChangeSummaries(rows: TranscriptRow[]): TranscriptRow[] {
 
     for (const item of turnToolItems(row)) {
       for (const change of writingToolChanges(item)) {
-        const existing = totals.get(change.path)
+        const key = normalizeRelPath(change.path)
+        const existing = totals.get(key)
         if (existing) {
           existing.added += change.added
           existing.removed += change.removed
         } else {
-          totals.set(change.path, { ...change })
+          totals.set(key, { ...change, path: key })
         }
       }
     }
@@ -364,21 +479,30 @@ function withChangeSummaries(rows: TranscriptRow[]): TranscriptRow[] {
 }
 
 /**
- * Fold duplicate prominent cards that represent the same surface in one turn.
- * - todo_write: keep only the latest checklist snapshot for the turn.
+ * Fold duplicate todo_write snapshots in one turn — keep only the latest checklist.
  */
-function coalesceProminentCards(rows: TranscriptRow[]): TranscriptRow[] {
+function coalesceTodoWrites(rows: TranscriptRow[]): TranscriptRow[] {
   const lastTodoByTurn = new Map<number, string>()
   for (const row of rows) {
-    if (row.kind === 'card' && row.item.tool.name === 'todo_write') {
-      lastTodoByTurn.set(row.turnIndex, row.item.id)
+    if (row.kind === 'activity') {
+      for (const item of row.tools) {
+        if (item.tool.name === 'todo_write') {
+          lastTodoByTurn.set(row.turnIndex, item.id)
+        }
+      }
     }
   }
 
   const out: TranscriptRow[] = []
   for (const row of rows) {
-    if (row.kind === 'card' && row.item.tool.name === 'todo_write') {
-      if (lastTodoByTurn.get(row.turnIndex) !== row.item.id) continue
+    if (row.kind === 'activity') {
+      const tools = row.tools.filter(
+        (item) =>
+          item.tool.name !== 'todo_write' || lastTodoByTurn.get(row.turnIndex) === item.id
+      )
+      if (tools.length === 0) continue
+      out.push(tools.length === row.tools.length ? row : { ...row, tools })
+      continue
     }
     out.push(row)
   }
@@ -449,6 +573,7 @@ function rowTimestamps(row: TranscriptRow): { at: number | null; endedAt: number
     case 'turn':
     case 'changes':
     case 'approval':
+    case 'question':
       return { at: null, endedAt: null }
   }
 }
@@ -463,6 +588,7 @@ function isRowActive(row: TranscriptRow): boolean {
     case 'activity':
       return row.tools.some((tool) => tool.tool.status === 'running')
     case 'approval':
+    case 'question':
       return true
     case 'user':
     case 'turn':
@@ -473,6 +599,39 @@ function isRowActive(row: TranscriptRow): boolean {
       return _exhaustive
     }
   }
+}
+
+/** Earliest start timestamp for the currently running tool phase, if any. */
+function phaseStartedAtFromRows(turnRows: TranscriptRow[]): number | null {
+  const runningCard = [...turnRows]
+    .reverse()
+    .find((row) => row.kind === 'card' && row.item.tool.status === 'running')
+  if (runningCard?.kind === 'card') {
+    return (
+      toMs(runningCard.item.at) ??
+      runningCard.item.groupTiming?.startedAt ??
+      null
+    )
+  }
+
+  const runningActivity = [...turnRows]
+    .reverse()
+    .find(
+      (row) =>
+        row.kind === 'activity' && row.tools.some((item) => item.tool.status === 'running')
+    )
+  if (runningActivity?.kind === 'activity') {
+    let started: number | null = null
+    for (const tool of runningActivity.tools) {
+      if (tool.tool.status !== 'running') continue
+      const t = toMs(tool.at) ?? tool.groupTiming?.startedAt ?? null
+      if (t != null) started = started == null ? t : Math.min(started, t)
+    }
+    if (started != null) return started
+    return rowTimestamps(runningActivity).at
+  }
+
+  return null
 }
 
 /**
@@ -548,11 +707,16 @@ function withTurnSummaries(
           })
         : null
 
+      const phaseStartedAt =
+        active && activity?.kind === 'tool'
+          ? (phaseStartedAtFromRows(turnRows) ?? startedAt)
+          : startedAt
+
       out.push({
         kind: 'turn',
         id: `turn:${userRow.id}`,
         turnIndex,
-        span: { startedAt, endedAt, active, activity }
+        span: { startedAt, endedAt, active, activity, phaseStartedAt }
       })
     }
 

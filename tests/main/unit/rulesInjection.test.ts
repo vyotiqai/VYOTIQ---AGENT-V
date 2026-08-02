@@ -6,7 +6,10 @@ import {
   buildWorkspaceRulesSection,
   clearRulesCache,
   formatWorkspaceRules,
-  readWorkspaceRules
+  listWorkspaceRulesForMention,
+  parseRuleFrontmatter,
+  readWorkspaceRules,
+  shouldAutoInjectRule
 } from '@main/agent/context/rules'
 
 describe('workspace rules', () => {
@@ -55,6 +58,78 @@ describe('workspace rules', () => {
     expect(paths).toContain('.cursor/rules/style.mdc')
     expect(paths).toContain('.cursor/rules/frontend/react.md')
     expect(paths).toContain('.vyotiq/rules/ops.md')
+  })
+
+  it('reads .cursorrules alongside AGENTS.md', async () => {
+    writeFileSync(join(workspace, '.cursorrules'), 'cursor root rules')
+    writeFileSync(join(workspace, 'AGENTS.md'), 'agent rules')
+
+    const files = await readWorkspaceRules(workspace)
+    expect(files.map((f) => f.path)).toEqual(['AGENTS.md', '.cursorrules'])
+  })
+
+  it('treats empty alwaysApply as absent (auto-inject)', () => {
+    const empty = parseRuleFrontmatter(
+      ['---', 'alwaysApply:', 'description: rebuild after edits', '---', '', 'body'].join('\n')
+    )
+    expect(empty.meta.alwaysApply).toBeUndefined()
+    expect(shouldAutoInjectRule(empty.meta)).toBe(true)
+    expect(empty.body).toBe('body')
+
+    const absent = parseRuleFrontmatter(['---', 'description: no flag', '---', '', 'x'].join('\n'))
+    expect(absent.meta.alwaysApply).toBeUndefined()
+    expect(shouldAutoInjectRule(absent.meta)).toBe(true)
+
+    expect(shouldAutoInjectRule({ alwaysApply: false })).toBe(false)
+    expect(shouldAutoInjectRule({ alwaysApply: true })).toBe(true)
+  })
+
+  it('skips alwaysApply:false cursor rules from auto-injection', async () => {
+    mkdirSync(join(workspace, '.cursor', 'rules'), { recursive: true })
+    writeFileSync(
+      join(workspace, '.cursor', 'rules', 'requestable.mdc'),
+      ['---', 'alwaysApply: false', 'description: only on request', '---', '', 'secret rule'].join(
+        '\n'
+      )
+    )
+    writeFileSync(
+      join(workspace, '.cursor', 'rules', 'always.mdc'),
+      ['---', 'alwaysApply: true', '---', '', 'always on'].join('\n')
+    )
+    writeFileSync(
+      join(workspace, '.cursor', 'rules', 'blank-flag.mdc'),
+      ['---', 'alwaysApply:', '---', '', 'blank means inject'].join('\n')
+    )
+
+    const files = await readWorkspaceRules(workspace)
+    const paths = files.map((f) => f.path)
+    expect(paths).toContain('.cursor/rules/always.mdc')
+    expect(paths).toContain('.cursor/rules/blank-flag.mdc')
+    expect(paths).not.toContain('.cursor/rules/requestable.mdc')
+    expect(files.find((f) => f.path.endsWith('always.mdc'))?.content).toBe('always on')
+    expect(files.find((f) => f.path.endsWith('blank-flag.mdc'))?.content).toBe('blank means inject')
+  })
+
+  it('lists alwaysApply:false rules for @-mentions but not auto-inject', async () => {
+    mkdirSync(join(workspace, '.cursor', 'rules'), { recursive: true })
+    writeFileSync(
+      join(workspace, '.cursor', 'rules', 'requestable.mdc'),
+      ['---', 'alwaysApply: false', 'description: only on request', '---', '', 'secret rule'].join(
+        '\n'
+      )
+    )
+    writeFileSync(join(workspace, 'AGENTS.md'), 'agent rules')
+
+    const injected = (await readWorkspaceRules(workspace)).map((f) => f.path)
+    expect(injected).toContain('AGENTS.md')
+    expect(injected).not.toContain('.cursor/rules/requestable.mdc')
+
+    const mentioned = await listWorkspaceRulesForMention(workspace)
+    const req = mentioned.find((r) => r.path === '.cursor/rules/requestable.mdc')
+    expect(req).toBeDefined()
+    expect(req!.alwaysApply).toBe(false)
+    expect(req!.description).toBe('only on request')
+    expect(mentioned.some((r) => r.path === 'AGENTS.md' && r.alwaysApply)).toBe(true)
   })
 
   it('ignores files with unrelated extensions', async () => {

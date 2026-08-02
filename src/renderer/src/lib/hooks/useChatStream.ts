@@ -46,6 +46,13 @@ export function useChatStream(workspacePath: string | null) {
   }, [controller])
 
   useEffect(() => {
+    if (!window.vyotiq?.onAgentQuestionRequest) return
+    return window.vyotiq.onAgentQuestionRequest((request) => {
+      controllerRef.current?.handleQuestionRequest(request)
+    })
+  }, [controller])
+
+  useEffect(() => {
     return () => controllerRef.current?.dispose()
   }, [])
 
@@ -63,8 +70,10 @@ export function useChatStream(workspacePath: string | null) {
     pendingRun: controller.pendingRun,
     transcriptLoading: controller.transcriptLoading,
     collapsedTurnIndices: controller.collapsedTurnIndices,
+    pendingFollowUps: controller.pendingFollowUps,
     clearError: controller.clearError.bind(controller),
     send: controller.send.bind(controller),
+    removeFollowUp: controller.removeFollowUp.bind(controller),
     stop: controller.stop.bind(controller),
     reset: controller.reset.bind(controller),
     loadTranscript: controller.loadTranscript.bind(controller),
@@ -73,6 +82,8 @@ export function useChatStream(workspacePath: string | null) {
     loadToolContent: controller.loadToolContent.bind(controller),
     toggleTurnCollapsed: controller.toggleTurnCollapsed.bind(controller),
     handleApprovalRequest: controller.handleApprovalRequest.bind(controller),
-    respondToApproval: controller.respondToApproval.bind(controller)
+    respondToApproval: controller.respondToApproval.bind(controller),
+    handleQuestionRequest: controller.handleQuestionRequest.bind(controller),
+    respondToQuestion: controller.respondToQuestion.bind(controller)
   }
 }

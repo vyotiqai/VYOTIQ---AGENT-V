@@ -95,17 +95,24 @@ describe('mapToolGroupProps', () => {
 
 
   it('maps interrupted state from cancelled tool content', () => {
-
     const result = mapToolGroupProps(
-
       [tool('t1', 'read', 'src/a.ts', 'fail', 'Cancelled')],
-
       { groupTiming: { startedAt: 1_000, endedAt: 2_000 } }
-
     )
-
     expect(result.state).toBe('interrupted')
+    expect(result.doneLabel).toBe('Reading')
+    expect(result.nestedTools[0]?.title).toBe('Reading')
+    expect(result.nestedTools[0]?.subtitle).toMatch(/a\.ts/)
+  })
 
+  it('uses Asking not Asked for interrupted ask_question', () => {
+    const result = mapToolGroupProps(
+      [tool('t1', 'ask_question', 'Should I continue?', 'fail', 'Cancelled')],
+      { groupTiming: { startedAt: 1_000, endedAt: 2_000 } }
+    )
+    expect(result.state).toBe('interrupted')
+    expect(result.doneLabel).toBe('Asking')
+    expect(result.nestedTools[0]?.title).toBe('Asking')
   })
 
 

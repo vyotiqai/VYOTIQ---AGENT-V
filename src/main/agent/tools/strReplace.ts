@@ -1,5 +1,6 @@
-import { existsSync, readFileSync } from 'fs'
-import { resolveInsideWorkspace } from '../../workspace/safePath'
+import { existsSync, mkdirSync, readFileSync } from 'fs'
+import { dirname } from 'path'
+import { resolveInsideWorkspace, assertResolvedInsideWorkspace } from '../../workspace/safePath'
 import { atomicWriteFile } from '@main/storage/atomicWrite'
 
 /** Count non-overlapping occurrences of `needle` in `haystack`. */
@@ -16,9 +17,30 @@ export function countOccurrences(haystack: string, needle: string): number {
   return count
 }
 
+function normalizeNewlines(text: string): string {
+  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+}
+
+/** Best-effort line hint when old_string is missing (first line of needle). */
+function closestLineHint(normalizedFile: string, oldString: string): string {
+  const needleLine = normalizeNewlines(oldString).split('\n').find((l) => l.trim().length > 0)
+  if (!needleLine || needleLine.length < 4) {
+    return 'Re-read the file with read (startLine/endLine) and retry with an exact snippet.'
+  }
+  const lines = normalizedFile.split('\n')
+  const sample = needleLine.slice(0, Math.min(80, needleLine.length))
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].includes(sample) || sample.includes(lines[i].trim())) {
+      return `Closest match near line ${i + 1}: ${JSON.stringify(lines[i].slice(0, 120))}. Re-read with startLine/endLine and retry.`
+    }
+  }
+  return 'Re-read the file with read (startLine/endLine) and retry with an exact snippet (match indentation and newlines).'
+}
+
 /**
  * Replace exact text in a workspace file.
  * Fails when old_string is missing, or (unless replace_all) matches more than once.
+ * Newlines are normalized (CRLF/LF) before matching so cross-platform reads succeed.
  */
 export function toolStrReplace(
   workspaceRoot: string,
@@ -37,9 +59,16 @@ export function toolStrReplace(
   }
 
   const original = readFileSync(resolved, 'utf8')
-  const matches = countOccurrences(original, oldString)
+  const useCrlf = original.includes('\r\n')
+  const normalizedOriginal = normalizeNewlines(original)
+  const normalizedOld = normalizeNewlines(oldString)
+  const normalizedNew = normalizeNewlines(newString)
+
+  const matches = countOccurrences(normalizedOriginal, normalizedOld)
   if (matches === 0) {
-    throw new Error(`old_string not found in ${path}`)
+    throw new Error(
+      `old_string not found in ${path}. ${closestLineHint(normalizedOriginal, normalizedOld)}`
+    )
   }
   if (!replaceAll && matches > 1) {
     throw new Error(
@@ -47,14 +76,18 @@ export function toolStrReplace(
     )
   }
 
-  const next = replaceAll
-    ? original.split(oldString).join(newString)
-    : original.replace(oldString, newString)
+  const nextNormalized = replaceAll
+    ? normalizedOriginal.split(normalizedOld).join(normalizedNew)
+    : normalizedOriginal.replace(normalizedOld, normalizedNew)
 
-  if (next === original) {
+  if (nextNormalized === normalizedOriginal) {
     throw new Error(`str_replace left ${path} unchanged`)
   }
 
+  const next = useCrlf ? nextNormalized.replace(/\n/g, '\r\n') : nextNormalized
+  assertResolvedInsideWorkspace(workspaceRoot, dirname(resolved))
+  mkdirSync(dirname(resolved), { recursive: true })
+  assertResolvedInsideWorkspace(workspaceRoot, resolved)
   atomicWriteFile(resolved, next)
   const label = replaceAll && matches > 1 ? `${matches} occurrences` : '1 occurrence'
   return `Replaced ${label} in ${path}`

@@ -7,6 +7,7 @@ import {
   MarkdownContent,
   balanceIncompleteMarkdown,
   prepareStreamingMarkdown,
+  splitMarkdownBlocks,
   trailingOpenFenceBody,
   HIGHLIGHT_CACHE_MAX_ENTRIES,
   setHighlightCacheEntry,
@@ -37,7 +38,7 @@ describe('prepareStreamingMarkdown', () => {
   })
 
   it('does not balance bold while streaming', () => {
-    expect(prepareStreamingMarkdown('Partial **bold')).toBe('Partial **bold')
+    expect(prepareStreamingMarkdown('Partial **bold')).toBe('Partial **bold**')
   })
 })
 
@@ -62,6 +63,23 @@ describe('prepareStreamingMarkdown fence nesting', () => {
     expect(prepareStreamingMarkdown('```js\nconst x = 1\n```ts\nlet y = 2\n```')).toBe(
       '```js\nconst x = 1\n```ts\nlet y = 2\n```'
     )
+  })
+})
+
+describe('splitMarkdownBlocks fences', () => {
+  it('keeps nested triple backticks inside a four-backtick fence as one block', () => {
+    const source = '````md\n```js\nconst x = 1\n```\n````\n\nAfter'
+    const blocks = splitMarkdownBlocks(source)
+    expect(blocks[0]?.source).toContain('````md')
+    expect(blocks[0]?.source).toContain('```js')
+    expect(blocks[0]?.source).toContain('````')
+    expect(blocks.some((b) => b.source.includes('After'))).toBe(true)
+  })
+
+  it('treats indented fences as a single block', () => {
+    const blocks = splitMarkdownBlocks('  ```js\n  const x = 1\n  ```\n\nNext')
+    expect(blocks[0]?.source.startsWith('  ```js')).toBe(true)
+    expect(blocks[0]?.source).toContain('  ```')
   })
 })
 
@@ -110,17 +128,17 @@ describe('MarkdownContent streaming', () => {
     expect(screen.getByText('Hello')).toBeTruthy()
   })
 
-  it('keeps partial bold as plain text while streaming', () => {
+  it('balances partial bold while streaming', () => {
     render(<MarkdownContent content="Partial **bold" streaming />)
 
-    expect(screen.getByText('Partial **bold')).toBeTruthy()
-    expect(screen.queryByText('bold')?.tagName).not.toBe('STRONG')
+    expect(screen.getByText('bold').tagName).toBe('STRONG')
+    expect(screen.queryByText('Partial **bold')).toBeNull()
   })
 
-  it('renders bold after streaming completes', () => {
+  it('keeps bold after streaming completes', () => {
     const { rerender } = render(<MarkdownContent content="Partial **bold" streaming />)
 
-    expect(screen.getByText('Partial **bold')).toBeTruthy()
+    expect(screen.getByText('bold').tagName).toBe('STRONG')
 
     rerender(<MarkdownContent content="Partial **bold" streaming={false} />)
 
@@ -189,6 +207,27 @@ describe('MarkdownContent streaming', () => {
     expect(screen.getByRole('table')).toBeTruthy()
     expect(screen.getByText('A')).toBeTruthy()
     expect(screen.getByText('2')).toBeTruthy()
+    expect(document.querySelector('[data-markdown-table-scroll]')).toBeTruthy()
+  })
+
+  it('keeps wide GFM tables scrollable in a narrow container', () => {
+    const wide =
+      '| Risk | Likelihood | Impact | Mitigation |\n' +
+      '| --- | --- | --- | --- |\n' +
+      '| PowerShell execution policy blocks scripts | Medium | High | Set Bypass for the session |\n' +
+      '| Permission issues accessing process data | Low | Medium | Run elevated when required |\n'
+    const { container } = render(
+      <div style={{ width: 360 }}>
+        <MarkdownContent content={wide} streaming={false} />
+      </div>
+    )
+    const scroll = container.querySelector('[data-markdown-table-scroll]')
+    expect(scroll).toBeTruthy()
+    expect(scroll?.className).toMatch(/overflow-x-auto/)
+    expect(container.querySelector('table')).toBeTruthy()
+    expect(container.querySelector('.markdown-body')?.className).toMatch(
+      /\[&_td\]:\[overflow-wrap:normal\]/
+    )
   })
 
   it('copies fenced code from the code block button', async () => {
@@ -287,6 +326,24 @@ describe('MarkdownContent streaming', () => {
     const code = container.querySelector('code')
     expect(code).toBeTruthy()
     expect(code?.getAttribute('node')).toBeNull()
+  })
+
+  it('renders no caret or markdown body when streaming with empty content', () => {
+    const { container } = render(<MarkdownContent content="" streaming />)
+    expect(container.querySelector('.markdown-body')).toBeNull()
+    expect(container.querySelector('.streaming-caret-inline')).toBeNull()
+  })
+
+  it('renders no caret or markdown body when streaming with whitespace-only content', () => {
+    const { container } = render(<MarkdownContent content={' \n'} streaming />)
+    expect(container.querySelector('.markdown-body')).toBeNull()
+    expect(container.querySelector('.streaming-caret-inline')).toBeNull()
+  })
+
+  it('never renders a streaming caret while text is streaming', () => {
+    const { container } = render(<MarkdownContent content="After an" streaming />)
+    expect(screen.getByText('After an')).toBeTruthy()
+    expect(container.querySelector('.streaming-caret-inline')).toBeNull()
   })
 })
 

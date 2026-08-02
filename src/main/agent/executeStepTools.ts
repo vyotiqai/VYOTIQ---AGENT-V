@@ -1,5 +1,5 @@
 import type { AgentEvent, AgentInteractionMode, ChatMessage } from '../../shared/ipc'
-import { isAbortError, isExpectedToolError } from '../../shared/errors'
+import { isAbortError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
 import { summarizeToolArgs } from '../../shared/toolSummary'
 import { toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
@@ -8,22 +8,49 @@ import { executeTool } from '@main/agent/tools'
 import { isParallelSafeTool, MAX_PARALLEL_READ_TOOLS, MAX_PARALLEL_SUBAGENTS } from './tools/classify'
 import { repairToolArgs } from './toolArgsRepair'
 import type { ToolApprovalGate } from './toolApproval'
+import type { TerminalShell } from '../../shared/ipc'
+import { existsSync } from 'fs'
+import { resolveInsideWorkspace } from '../workspace/safePath'
+import {
+  applyToolCallToKnownPaths,
+  isFileMutationToolName,
+  toolArgsFromCall,
+  unreadExistingEditPaths
+} from './loopPolicy'
+import { hasJavaScriptProject, hasTypeScriptProject } from './tools/diagnostics'
+
+/** Soft ADW nudge: mutations without diagnostics in the same step are not a hard gate. */
+export const SOFT_WARN_MUTATION_WITHOUT_DIAGNOSTICS =
+  '[Soft warning: this step mutated file(s) without calling diagnostics. Run diagnostics (typecheck/lint) before treating the change as done.]'
 
 export type ToolStepContext = {
   runId: string
   runDir: string
   workspace: string
+  /** Combined run cancel + soft stream / follow-up interrupt. */
   signal: AbortSignal
-  appendMessage: (msg: ChatMessage) => void
+  /** Run-level cancel only — distinguishes Interrupted vs Cancelled. */
+  runSignal?: AbortSignal
+  appendMessage: (msg: ChatMessage) => Promise<void>
   appendEvent: (ev: AgentEvent) => void
-  /** Per-run failed tool keys (`tool:summary`) for repeat-failure hints. */
-  failedToolKeys?: Map<string, number>
+  /** Session-scoped paths already inspected or edited (read-before-edit soft warn). */
+  knownPaths?: Set<string>
   /** Override parallel read batch size (e.g. 1 after consecutive failure steps). */
   maxParallelReadTools?: number
   /** Present only when the workspace opted into tool approval. */
   approval?: ToolApprovalGate
-  /** Ask / Plan / Agent for this invoke. */
+  /** ChatStart invoke that owns this step; scopes interactive cancel. */
+  invokeId?: number
+  /** Ask / Plan / Agent for this invoke (mutable via switch_mode). */
   agentMode?: AgentInteractionMode
+  getAgentMode?: () => AgentInteractionMode
+  setAgentMode?: (mode: AgentInteractionMode) => void | Promise<void>
+  /** Snapshot of settings.autoModeSwitch for this invoke. */
+  autoModeSwitch?: boolean
+  /** Snapshot of settings.terminalShell for this invoke. */
+  terminalShell?: TerminalShell
+  /** Snapshot of settings.diagnosticsCommand for this invoke. */
+  diagnosticsCommand?: string
   /** Streams events while a tool is still running (sub-agent progress). */
   emitLiveEvent?: (ev: AgentEvent) => void
   /**
@@ -33,40 +60,25 @@ export type ToolStepContext = {
   runEnabledMcpIds?: ReadonlySet<string>
   /** Per-server allow/deny for bare MCP tool names. */
   mcpToolPolicies?: ReadonlyMap<string, { allowedTools?: string[]; deniedTools?: string[] }>
-}
-
-/**
- * Applied in call order after a batch settles, not inside the parallel workers:
- * whichever call happens to finish first should not decide who gets the hint.
- */
-function applyRepeatFailureHint(
-  ctx: ToolStepContext,
-  outcome: ToolOutcome
-): ToolOutcome {
-  const key = outcome.failureKey
-  if (!key || !ctx.failedToolKeys) return outcome
-  const count = (ctx.failedToolKeys.get(key) ?? 0) + 1
-  ctx.failedToolKeys.set(key, count)
-  if (count < 2) return outcome
-
-  const summary = key.slice(key.indexOf(':') + 1)
-  const prefix = `[Repeated failure #${count} for ${summary} — stop guessing paths; read README/manifests, then use search or dir.]`
-  const withHint = (text: string): string => [prefix, text].join('\n')
-
-  return {
-    ...outcome,
-    message: {
-      ...outcome.message,
-      content: withHint(
-        typeof outcome.message.content === 'string' ? outcome.message.content : ''
-      )
-    },
-    events: outcome.events.map((ev) =>
-      ev.type === 'tool_result' && ev.content !== undefined
-        ? { ...ev, content: withHint(ev.content) }
-        : ev
-    )
-  }
+  /**
+   * MCP tool full names in this step's provider catalog (post budget trim).
+   * When set, MCP invokes outside this set are rejected.
+   */
+  stepMcpToolNames?: ReadonlySet<string>
+  /** Run-scoped MCP tools pinned via request_mcp_tools. */
+  runPinnedMcpToolNames?: Set<string>
+  /** Last step each MCP tool was pinned or invoked. */
+  mcpLastUsedByName?: Map<string, number>
+  /** Current agent step for last-used stamps. */
+  currentStep?: number
+  invalidateMcpToolCatalogCache?: () => void
+  /** Run-scoped MCP not-in-catalog rejection counts (per full tool name). */
+  mcpNotInCatalogCounts?: Map<string, number>
+  /** Nesting level: 0 for top-level run, 1 inside a nested agent. */
+  depth?: number
+  /** Nested attribution for approvals / ask_question UI routing. */
+  parentToolCallId?: string
+  subagentId?: string
 }
 
 function isMalformedToolCall(call: ToolCall): string | null {
@@ -107,8 +119,17 @@ type ToolOutcome = {
   ok: boolean
   events: AgentEvent[]
   message: ChatMessage
-  /** `name:summary` when this was an expected failure eligible for a repeat hint. */
-  failureKey?: string
+}
+
+function abortToolContent(ctx: ToolStepContext): string {
+  const runAborted = ctx.runSignal?.aborted ?? ctx.signal.aborted
+  if (runAborted) return 'Cancelled'
+  if (ctx.signal.aborted) return 'Interrupted'
+  return 'Cancelled'
+}
+
+function abortToolSummary(ctx: ToolStepContext): string {
+  return abortToolContent(ctx).toLowerCase()
 }
 
 function emitToolStart(ctx: ToolStepContext, event: AgentEvent): void {
@@ -121,7 +142,11 @@ function emitToolResult(ctx: ToolStepContext, event: AgentEvent): void {
   ctx.emitLiveEvent?.(event)
 }
 
-async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<ToolOutcome> {
+async function runSingleTool(
+  rawCall: ToolCall,
+  ctx: ToolStepContext,
+  stepFlags?: { softDiagnosticsNudge: boolean }
+): Promise<ToolOutcome> {
   const events: AgentEvent[] = []
   const call = withRepairedArguments(rawCall, ctx)
   const malformed = isMalformedToolCall(call)
@@ -158,7 +183,6 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
       }
     )
     emitToolStart(ctx, events[0]!)
-    emitToolResult(ctx, events[1]!)
     return { ok: false, events, message: toolMsg }
   }
 
@@ -176,35 +200,76 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
     // Ask before doing anything: the tool_start event is already out, so the
     // renderer can show the approval card in the row the user is looking at.
     if (ctx.approval) {
-      const verdict = await ctx.approval.authorize(call)
-      if (!verdict.allowed) {
-        const toolMsg: ChatMessage = {
-          role: 'tool',
-          toolCallId: call.id,
-          toolName: call.name,
-          content: verdict.reason,
-          ok: false
-        }
-        events.push({
-          type: 'tool_result',
-          runId: ctx.runId,
-          toolCallId: call.id,
-          name: call.name,
-          summary: 'denied',
-          ok: false,
-          content: verdict.reason
+      const agentMode = ctx.getAgentMode?.() ?? ctx.agentMode
+      // Ask/Plan generate_image is describe-only (no network/write) — skip approval.
+      const dryRunImage =
+        (call.name === 'generate_image' || call.name === 'edit_image') &&
+        (agentMode === 'ask' || agentMode === 'plan')
+      if (!dryRunImage) {
+        const verdict = await ctx.approval.authorize(call, {
+          ...(ctx.parentToolCallId ? { parentToolCallId: ctx.parentToolCallId } : {}),
+          ...(ctx.subagentId ? { subagentId: ctx.subagentId } : {})
         })
-        emitToolResult(ctx, events[events.length - 1]!)
-        return { ok: false, events, message: toolMsg }
+        if (!verdict.allowed) {
+          const toolMsg: ChatMessage = {
+            role: 'tool',
+            toolCallId: call.id,
+            toolName: call.name,
+            content: verdict.reason,
+            ok: false
+          }
+          events.push({
+            type: 'tool_result',
+            runId: ctx.runId,
+            toolCallId: call.id,
+            name: call.name,
+            summary: 'denied',
+            ok: false,
+            content: verdict.reason
+          })
+          return { ok: false, events, message: toolMsg }
+        }
       }
     }
 
+    const toolArgs = toolArgsFromCall(call.arguments)
+    const unreadPaths =
+      ctx.knownPaths != null
+        ? unreadExistingEditPaths(ctx.knownPaths, call.name, toolArgs, (rel) => {
+            try {
+              return existsSync(resolveInsideWorkspace(ctx.workspace, rel))
+            } catch {
+              return false
+            }
+          })
+        : []
+
     const result = await executeTool(call.name, call.arguments, ctx.workspace, ctx.signal, {
       runDir: ctx.runDir,
-      depth: 0,
-      agentMode: ctx.agentMode,
+      runId: ctx.runId,
+      toolCallId: call.id,
+      invokeId: ctx.invokeId,
+      depth: ctx.depth ?? 0,
+      /** Hard run cancel only — soft stream interrupt stays on `signal`. */
+      runSignal: ctx.runSignal,
+      agentMode: ctx.getAgentMode?.() ?? ctx.agentMode,
+      getAgentMode: ctx.getAgentMode,
+      setAgentMode: ctx.setAgentMode,
+      autoModeSwitch: ctx.autoModeSwitch,
+      terminalShell: ctx.terminalShell,
+      diagnosticsCommand: ctx.diagnosticsCommand,
+      emitAgentEvent: ctx.emitLiveEvent,
       runEnabledMcpIds: ctx.runEnabledMcpIds,
       mcpToolPolicies: ctx.mcpToolPolicies,
+      stepMcpToolNames: ctx.stepMcpToolNames,
+      runPinnedMcpToolNames: ctx.runPinnedMcpToolNames,
+      mcpLastUsedByName: ctx.mcpLastUsedByName,
+      currentStep: ctx.currentStep,
+      invalidateMcpToolCatalogCache: ctx.invalidateMcpToolCatalogCache,
+      mcpNotInCatalogCounts: ctx.mcpNotInCatalogCounts,
+      parentToolCallId: ctx.parentToolCallId,
+      subagentId: ctx.subagentId,
+      approval: ctx.approval,
       onProgress: ctx.emitLiveEvent
         ? (update) =>
             ctx.emitLiveEvent?.({
@@ -239,7 +304,20 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
             })
         : undefined
     })
-    const content = result.content
+    let content = result.content
+    if (result.ok && unreadPaths.length > 0) {
+      content = `${content}\n\n[Soft warning: edited existing file(s) without a prior read/grep/glob inspect: ${unreadPaths.join(', ')}]`
+    }
+    if (
+      result.ok &&
+      stepFlags?.softDiagnosticsNudge &&
+      isFileMutationToolName(call.name)
+    ) {
+      content = `${content}\n\n${SOFT_WARN_MUTATION_WITHOUT_DIAGNOSTICS}`
+    }
+    if (ctx.knownPaths) {
+      applyToolCallToKnownPaths(ctx.knownPaths, call.name, toolArgs, result.ok)
+    }
     const resultSummary = result.summary || summary
     const toolMsg: ChatMessage = {
       role: 'tool',
@@ -257,29 +335,39 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
       ok: result.ok,
       content
     })
-    emitToolResult(ctx, events[events.length - 1]!)
     if (!result.ok && !result.failureLogged) {
       logger.warn('Tool returned failure', {
         scope: 'agent',
         code: 'TOOL_EXEC',
         correlationId: ctx.runId,
-        tool: call.name
+        tool: call.name,
+        reason: result.summary === 'error' ? undefined : result.summary,
+        // Safe provider taxonomy only — never log full tool content (may include prompts).
+        ...(call.name === 'generate_image' || call.name === 'edit_image'
+          ? {
+              kind: /401|auth|API key/i.test(result.content)
+                ? 'auth'
+                : /moderation/i.test(result.content)
+                  ? 'moderation'
+                  : 'image'
+            }
+          : {})
       })
     }
     return {
       ok: result.ok,
       events,
-      message: toolMsg,
-      failureKey:
-        !result.ok && isExpectedToolError(content) ? `${call.name}:${resultSummary}` : undefined
+      message: toolMsg
     }
   } catch (err) {
     if (isAbortError(err)) {
+      const content = abortToolContent(ctx)
+      const summary = abortToolSummary(ctx)
       const toolMsg: ChatMessage = {
         role: 'tool',
         toolCallId: call.id,
         toolName: call.name,
-        content: 'Cancelled',
+        content,
         ok: false
       }
       events.push({
@@ -287,11 +375,10 @@ async function runSingleTool(rawCall: ToolCall, ctx: ToolStepContext): Promise<T
         runId: ctx.runId,
         toolCallId: call.id,
         name: call.name,
-        summary: 'cancelled',
+        summary,
         ok: false,
-        content: 'Cancelled'
+        content
       })
-      emitToolResult(ctx, events[events.length - 1]!)
       return { ok: false, events, message: toolMsg }
     }
     throw err
@@ -305,12 +392,18 @@ function persistToolResult(ctx: ToolStepContext, outcome: ToolOutcome): void {
   }
 }
 
-function cancelledToolResult(call: ToolCall, ctx: ToolStepContext): ToolOutcome {
+function abortedToolResult(
+  call: ToolCall,
+  ctx: ToolStepContext,
+  options?: { emitStart?: boolean }
+): ToolOutcome {
+  const content = abortToolContent(ctx)
+  const summary = abortToolSummary(ctx)
   const toolMsg: ChatMessage = {
     role: 'tool',
     toolCallId: call.id,
     toolName: call.name,
-    content: 'Cancelled',
+    content,
     ok: false
   }
   const startEv: AgentEvent = {
@@ -325,21 +418,26 @@ function cancelledToolResult(call: ToolCall, ctx: ToolStepContext): ToolOutcome 
     runId: ctx.runId,
     toolCallId: call.id,
     name: call.name,
-    summary: 'cancelled',
+    summary,
     ok: false,
-    content: 'Cancelled'
+    content
   }
-  emitToolStart(ctx, startEv)
-  emitToolResult(ctx, ev)
-  return { ok: false, events: [startEv, ev], message: toolMsg }
+  const emitStart = options?.emitStart !== false
+  if (emitStart) {
+    emitToolStart(ctx, startEv)
+    return { ok: false, events: [startEv, ev], message: toolMsg }
+  }
+  return { ok: false, events: [ev], message: toolMsg }
 }
 
 async function runParallelBatch(
   calls: ToolCall[],
   ctx: ToolStepContext,
-  parallelLimit: number
+  parallelLimit: number,
+  stepFlags?: { softDiagnosticsNudge: boolean }
 ): Promise<Map<string, ToolOutcome>> {
   const results = new Map<string, ToolOutcome>()
+  const startedIds = new Set<string>()
   let index = 0
   const workers = Array.from({ length: Math.min(parallelLimit, calls.length) }, async () => {
     while (index < calls.length) {
@@ -347,14 +445,22 @@ async function runParallelBatch(
       const i = index++
       const call = calls[i]
       if (!call) break
-      const result = await runSingleTool(call, ctx)
+      startedIds.add(call.id)
+      const result = await runSingleTool(call, ctx, stepFlags)
       results.set(call.id, result)
     }
   })
   await Promise.all(workers)
-  for (const call of calls) {
-    if (!results.has(call.id) && ctx.signal.aborted) {
-      results.set(call.id, cancelledToolResult(call, ctx))
+  // After abort, keep settled outcomes; only synthesize abort results for tools
+  // that never produced a ToolOutcome. Never re-emit tool_start for started ids.
+  if (ctx.signal.aborted) {
+    for (const call of calls) {
+      const existing = results.get(call.id)
+      if (existing) continue
+      results.set(
+        call.id,
+        abortedToolResult(call, ctx, { emitStart: !startedIds.has(call.id) })
+      )
     }
   }
   return results
@@ -368,12 +474,28 @@ export async function executeStepToolCalls(
   const messages: ChatMessage[] = []
   const events: AgentEvent[] = []
   let stepToolsOk = true
-  const parallelLimit = ctx.approval
-    ? 1
-    : (ctx.maxParallelReadTools ?? MAX_PARALLEL_READ_TOOLS)
+  // Approval gates individual tools; do not force all reads serial.
+  const parallelLimit = ctx.maxParallelReadTools ?? MAX_PARALLEL_READ_TOOLS
+  const hasDiagnosticsSurface =
+    Boolean(ctx.diagnosticsCommand?.trim()) ||
+    hasJavaScriptProject(ctx.workspace) ||
+    hasTypeScriptProject(ctx.workspace)
+  const softDiagnosticsNudge =
+    hasDiagnosticsSurface &&
+    calls.some((c) => isFileMutationToolName(c.name)) &&
+    !calls.some((c) => c.name === 'diagnostics')
+  const stepFlags = softDiagnosticsNudge ? { softDiagnosticsNudge: true } : undefined
 
   const groups: ToolCall[][] = []
   let batch: ToolCall[] = []
+  // Approval gate can park network tools; never open multiple cards in parallel.
+  const hasApprovalGate = Boolean(ctx.approval)
+
+  const canParallelBatch = (name: string): boolean => {
+    if (!isParallelSafeTool(name)) return false
+    if (hasApprovalGate && (name === 'web_fetch' || name === 'web_search')) return false
+    return true
+  }
 
   const batchLimitFor = (name: string): number =>
     name === 'subagent' ? MAX_PARALLEL_SUBAGENTS : parallelLimit
@@ -387,7 +509,7 @@ export async function executeStepToolCalls(
   }
 
   for (const call of calls) {
-    if (isParallelSafeTool(call.name)) {
+    if (canParallelBatch(call.name)) {
       if (batch.length > 0 && batch[0]!.name !== call.name) {
         flushBatch()
       }
@@ -400,37 +522,37 @@ export async function executeStepToolCalls(
   }
   flushBatch()
 
-  const collect = (outcome: ToolOutcome): void => {
-    const final = applyRepeatFailureHint(ctx, outcome)
-    persistToolResult(ctx, final)
-    messages.push(final.message)
-    events.push(...final.events)
-    if (!final.ok) stepToolsOk = false
+  const collect = async (outcome: ToolOutcome): Promise<void> => {
+    // Full output must be durable before the truncated live event can be expanded.
+    await ctx.appendMessage(outcome.message)
+    persistToolResult(ctx, outcome)
+    for (const ev of outcome.events) emitToolResult(ctx, ev)
+    messages.push(outcome.message)
+    events.push(...outcome.events)
+    if (!outcome.ok) stepToolsOk = false
   }
 
   for (const group of groups) {
     if (ctx.signal.aborted) {
-      for (const call of group) collect(cancelledToolResult(call, ctx))
+      for (const call of group) await collect(abortedToolResult(call, ctx))
       continue
     }
 
     const parallel =
-      !ctx.approval &&
-      group.length > 1 &&
-      group.every((c) => isParallelSafeTool(c.name))
+      group.length > 1 && group.every((c) => canParallelBatch(c.name))
     if (parallel) {
       const batchLimit = batchLimitFor(group[0]!.name)
-      const batch = await runParallelBatch(group, ctx, batchLimit)
+      const batch = await runParallelBatch(group, ctx, batchLimit, stepFlags)
       for (const call of group) {
-        collect(batch.get(call.id) ?? cancelledToolResult(call, ctx))
+        await collect(batch.get(call.id) ?? abortedToolResult(call, ctx))
       }
     } else {
       for (const call of group) {
         if (ctx.signal.aborted) {
-          collect(cancelledToolResult(call, ctx))
+          await collect(abortedToolResult(call, ctx))
           continue
         }
-        collect(await runSingleTool(call, ctx))
+        await collect(await runSingleTool(call, ctx, stepFlags))
       }
     }
   }

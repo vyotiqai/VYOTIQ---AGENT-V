@@ -24,9 +24,28 @@ const markRunTurnCompleteMock = vi.hoisted(() => vi.fn())
 const registerRunAbortMock = vi.hoisted(() =>
   vi.fn(() => ({ controller: new AbortController(), invokeId: 42 }))
 )
+const tryRegisterRunAbortMock = vi.hoisted(() =>
+  vi.fn(() => ({ ok: true as const, controller: new AbortController(), invokeId: 42 }))
+)
+const isRunTurnCompleteMock = vi.hoisted(() => vi.fn(() => false))
+const waitUntilRunInactiveMock = vi.hoisted(() => vi.fn(async () => true))
 const runAgentMock = vi.hoisted(() => vi.fn())
 const runExistsMock = vi.hoisted(() => vi.fn())
 const isActiveMock = vi.hoisted(() => vi.fn(() => false))
+const resolveWritesMock = vi.hoisted(() => vi.fn())
+const undoWritesMock = vi.hoisted(() => vi.fn())
+const renameRunMock = vi.hoisted(() => vi.fn())
+const previewHarnessApplyMock = vi.hoisted(() =>
+  vi.fn(() => {
+    throw new Error('No harness proposal found. Run `/harness-review` first.')
+  })
+)
+const prepareRewindMock = vi.hoisted(() =>
+  vi.fn(async () => ({
+    messages: [{ role: 'user' as const, content: 'edited' }],
+    writes: { restored: [] as string[], checkpointIds: [] as string[] }
+  }))
+)
 const fromWebContents = vi.hoisted(() => vi.fn(() => mockWin))
 
 vi.mock('electron', () => ({
@@ -46,6 +65,12 @@ vi.mock('electron', () => ({
   },
   shell: {
     openPath: vi.fn(async () => '')
+  },
+  app: {
+    getPath: vi.fn(() => '/tmp/vyotiq-userdata')
+  },
+  dialog: {
+    showOpenDialog: vi.fn()
   }
 }))
 
@@ -77,6 +102,26 @@ vi.mock('@main/agent/loop', () => ({
   registerRunAbort: vi.fn()
 }))
 
+vi.mock('@main/agent/rewindRun', () => ({
+  prepareRewindAndReplaceUserMessage: prepareRewindMock
+}))
+
+vi.mock('@main/agent/checkpoints', () => ({
+  undoWrites: (...args: unknown[]) => undoWritesMock(...args),
+  resolveWrites: (...args: unknown[]) => resolveWritesMock(...args),
+  getWriteCheckpointMeta: vi.fn(() => null)
+}))
+
+vi.mock('@main/agent/harnessApply', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@main/agent/harnessApply')>()
+  return {
+    ...actual,
+    workspaceHasEditableHarness: (path: string) =>
+      !String(path).replace(/\\/g, '/').includes('plain-ws'),
+    previewHarnessApply: (...args: unknown[]) => previewHarnessApplyMock(...args)
+  }
+})
+
 vi.mock('@main/agent/providers', () => ({
   listProviderModels: vi.fn()
 }))
@@ -89,9 +134,17 @@ vi.mock('@main/agent/runRegistry', () => ({
   chatCancelResult: vi.fn(),
   listActiveRuns: vi.fn(() => []),
   registerRunAbort: registerRunAbortMock,
+  tryRegisterRunAbort: tryRegisterRunAbortMock,
   clearRunAbort: clearRunAbortMock,
   markRunTurnComplete: markRunTurnCompleteMock,
-  isActive: isActiveMock
+  isActive: isActiveMock,
+  isRunTurnComplete: isRunTurnCompleteMock,
+  waitUntilRunInactive: waitUntilRunInactiveMock,
+  enqueueFollowUp: vi.fn(),
+  removeFollowUp: vi.fn(),
+  getRunInvokeId: vi.fn(() => 1),
+  followUpPreview: vi.fn(() => 'preview'),
+  getRunWorkspace: vi.fn(() => '/ws')
 }))
 
 vi.mock('@main/agent/state', () => ({
@@ -103,7 +156,7 @@ vi.mock('@main/agent/state', () => ({
   LOAD_EVENTS_UI_LIMIT: 500,
   loadToolResultContent: vi.fn(),
   deleteRun: vi.fn(),
-  renameRun: vi.fn(),
+  renameRun: (...args: unknown[]) => renameRunMock(...args),
   runExists: runExistsMock
 }))
 
@@ -112,7 +165,7 @@ vi.mock('@main/workspace/workspaces', () => ({
     version: 2,
     workspaceIdsByPath: {},
     legacySessionsMigrated: true,
-    openPaths: ['/ws'],
+    openPaths: ['/ws', '/plain-ws'],
     activePath: '/ws',
     recentPaths: [],
     uiStateByPath: {},
@@ -130,14 +183,19 @@ vi.mock('fs', async (importOriginal) => {
   return {
     ...actual,
     existsSync: (path: import('fs').PathLike) => {
-      if (String(path) === '/ws') return true
+      const p = String(path).replace(/\\/g, '/')
+      if (p === '/ws' || p === '/plain-ws') return true
+      if (p.endsWith('/resources/harness/default.md')) {
+        return p.startsWith('/ws/')
+      }
       return actual.existsSync(path)
     }
   }
 })
 
 vi.mock('@main/app/window', () => ({
-  applyTitleBarTheme: vi.fn()
+  applyTitleBarTheme: vi.fn(),
+  getMainWindow: () => null
 }))
 
 vi.mock('@main/logging/init', () => ({
@@ -174,7 +232,29 @@ describe('registerIpc', () => {
     markRunTurnCompleteMock.mockReset()
     registerRunAbortMock.mockReset()
     registerRunAbortMock.mockReturnValue({ controller: new AbortController(), invokeId: 42 })
+    tryRegisterRunAbortMock.mockReset()
+    tryRegisterRunAbortMock.mockReturnValue({
+      ok: true as const,
+      controller: new AbortController(),
+      invokeId: 42
+    })
+    isRunTurnCompleteMock.mockReset()
+    isRunTurnCompleteMock.mockReturnValue(false)
+    waitUntilRunInactiveMock.mockReset()
+    waitUntilRunInactiveMock.mockResolvedValue(true)
     isActiveMock.mockReturnValue(false)
+    resolveWritesMock.mockReset()
+    undoWritesMock.mockReset()
+    renameRunMock.mockReset()
+    previewHarnessApplyMock.mockReset()
+    previewHarnessApplyMock.mockImplementation(() => {
+      throw new Error('No harness proposal found. Run `/harness-review` first.')
+    })
+    prepareRewindMock.mockReset()
+    prepareRewindMock.mockResolvedValue({
+      messages: [{ role: 'user' as const, content: 'edited' }],
+      writes: { restored: [], checkpointIds: [] }
+    })
     registerIpc()
   })
 
@@ -258,6 +338,11 @@ describe('registerIpc', () => {
       if (errors[0]?.type === 'error') {
         expect(errors[0].message).toBe('boom')
       }
+      expect(chatEvents().map((event) => event.type)).toEqual([
+        'text_delta',
+        'error',
+        'status'
+      ])
     })
 
     it('stamps the invoke on streamed and catch-path events', async () => {
@@ -321,7 +406,7 @@ describe('registerIpc', () => {
       expect(runAgentMock).not.toHaveBeenCalled()
     })
 
-    it('marks turn complete on terminal status without clearing the invoke early', async () => {
+    it('marks turn complete on terminal status; clearRunAbort owned by runAgent', async () => {
       runAgentMock.mockImplementation(async function* () {
         yield { type: 'status', runId: 'run-test', status: 'done' } satisfies AgentEvent
       })
@@ -331,7 +416,262 @@ describe('registerIpc', () => {
       await flushAsync()
 
       expect(markRunTurnCompleteMock).toHaveBeenCalledWith('run-test', 42)
-      expect(clearRunAbortMock).toHaveBeenCalledWith('run-test', 42)
+      // clearRunAbort is owned by runAgent's finally (mocked here).
+      expect(clearRunAbortMock).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('chatRewindAndStart', () => {
+    const rewindPayload = {
+      workspacePath: '/ws',
+      runId: 'run-edit',
+      editMessageIndex: 0,
+      editedUserMessage: { role: 'user' as const, content: 'edited' }
+    }
+
+    it('registers the run before preparing rewind on disk', async () => {
+      const order: string[] = []
+      tryRegisterRunAbortMock.mockImplementation(() => {
+        order.push('register')
+        return { ok: true as const, controller: new AbortController(), invokeId: 7 }
+      })
+      prepareRewindMock.mockImplementation(async () => {
+        order.push('prepare')
+        return {
+          messages: [{ role: 'user' as const, content: 'edited' }],
+          writes: { restored: [], checkpointIds: [] }
+        }
+      })
+      runExistsMock.mockReturnValue(true)
+      runAgentMock.mockImplementation(async function* () {
+        yield { type: 'status', runId: 'run-edit', status: 'done' } satisfies AgentEvent
+      })
+
+      const handler = handlers.get(IPC.chatRewindAndStart)
+      const result = await handler!({ sender: mockWc }, rewindPayload)
+
+      expect(result).toEqual({ ok: true, data: { runId: 'run-edit', invokeId: 7 } })
+      expect(order).toEqual(['register', 'prepare'])
+    })
+
+    it('clears the run slot when rewind prepare fails after register', async () => {
+      runExistsMock.mockReturnValue(true)
+      prepareRewindMock.mockRejectedValue(new Error('editMessageIndex out of range'))
+
+      const handler = handlers.get(IPC.chatRewindAndStart)
+      const result = await handler!({ sender: mockWc }, rewindPayload)
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.error).toMatch(/editMessageIndex out of range/i)
+        expect(result.code).not.toBe('IPC_HANDLER')
+      }
+      expect(tryRegisterRunAbortMock).toHaveBeenCalledWith('run-edit', '/ws')
+      expect(clearRunAbortMock).toHaveBeenCalledWith('run-edit', 42)
+      expect(runAgentMock).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('runsRename', () => {
+    it('maps Cancel run first to user-facing fail', async () => {
+      renameRunMock.mockImplementation(() => {
+        throw new Error('Cancel run first')
+      })
+      const handler = handlers.get(IPC.runsRename)
+      const result = await handler!(
+        { sender: mockWc },
+        { workspacePath: '/ws', runId: 'run-1', goal: 'new title' }
+      )
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.error).toMatch(/cancel run first/i)
+        expect(result.code).not.toBe('IPC_HANDLER')
+      }
+    })
+
+    it('maps Run not found to user-facing fail', async () => {
+      renameRunMock.mockImplementation(() => {
+        throw new Error('Run not found')
+      })
+      const handler = handlers.get(IPC.runsRename)
+      const result = await handler!(
+        { sender: mockWc },
+        { workspacePath: '/ws', runId: 'missing', goal: 'new title' }
+      )
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.error).toMatch(/run not found/i)
+        expect(result.code).not.toBe('IPC_HANDLER')
+      }
+    })
+  })
+
+  describe('harness preview/apply', () => {
+    it('returns user-facing fail for preview when workspace has no editable harness', async () => {
+      const handler = handlers.get(IPC.harnessPreviewApply)
+      const result = await handler!(
+        { sender: mockWc },
+        {
+          workspacePath: '/plain-ws',
+          proposalPath: '.vyotiq/harness/proposals/test.md'
+        }
+      )
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.error).toMatch(/no editable harness/i)
+        expect(result.code).not.toBe('IPC_HANDLER')
+      }
+    })
+
+    it('returns user-facing fail for apply when workspace has no editable harness', async () => {
+      const handler = handlers.get(IPC.harnessApply)
+      const result = await handler!(
+        { sender: mockWc },
+        {
+          workspacePath: '/plain-ws',
+          proposalPath: '.vyotiq/harness/proposals/test.md',
+          confirm: true
+        }
+      )
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.error).toMatch(/no editable harness/i)
+        expect(result.code).not.toBe('IPC_HANDLER')
+      }
+    })
+
+    it('returns user-facing fail for preview when harness proposal is missing', async () => {
+      const handler = handlers.get(IPC.harnessPreviewApply)
+      const result = await handler!({ sender: mockWc }, { workspacePath: '/ws' })
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.error).toMatch(/no harness proposal/i)
+        expect(result.code).not.toBe('IPC_HANDLER')
+      }
+    })
+  })
+
+  describe('runsResolveWrites', () => {
+    it('maps already-resolved checkpoint errors to user-facing fail', async () => {
+      resolveWritesMock.mockImplementation(() => {
+        throw new Error('That checkpoint was already resolved')
+      })
+      const handler = handlers.get(IPC.runsResolveWrites)
+      const result = await handler!(
+        { sender: mockWc },
+        {
+          workspacePath: '/ws',
+          runId: 'run-1',
+          checkpointId: 'cp-1',
+          action: 'keep'
+        }
+      )
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.error).toMatch(/already resolved/i)
+        expect(result.code).not.toBe('IPC_HANDLER')
+      }
+    })
+
+    it('returns ok for soft no-op when checkpointId is empty', async () => {
+      resolveWritesMock.mockReturnValue({
+        checkpointId: '',
+        kept: [],
+        discarded: [],
+        skipped: [],
+        fullyResolved: true
+      })
+      const handler = handlers.get(IPC.runsResolveWrites)
+      const result = await handler!(
+        { sender: mockWc },
+        {
+          workspacePath: '/ws',
+          runId: 'run-1',
+          action: 'keep'
+        }
+      )
+
+      expect(result).toEqual({
+        ok: true,
+        data: {
+          checkpointId: '',
+          kept: [],
+          discarded: [],
+          skipped: [],
+          fullyResolved: true
+        }
+      })
+    })
+  })
+
+  describe('runsUndoWrites', () => {
+    it('maps already-undone checkpoint errors to user-facing fail', async () => {
+      undoWritesMock.mockImplementation(() => {
+        throw new Error('That checkpoint was already undone')
+      })
+      const handler = handlers.get(IPC.runsUndoWrites)
+      const result = await handler!(
+        { sender: mockWc },
+        {
+          workspacePath: '/ws',
+          runId: 'run-1',
+          checkpointId: 'cp-1'
+        }
+      )
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.error).toMatch(/already undone/i)
+        expect(result.code).not.toBe('IPC_HANDLER')
+      }
+    })
+
+    it('maps checkpoint-not-found errors to user-facing fail', async () => {
+      undoWritesMock.mockImplementation(() => {
+        throw new Error('Checkpoint not found: cp-missing')
+      })
+      const handler = handlers.get(IPC.runsUndoWrites)
+      const result = await handler!(
+        { sender: mockWc },
+        {
+          workspacePath: '/ws',
+          runId: 'run-1',
+          checkpointId: 'cp-missing'
+        }
+      )
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.error).toMatch(/checkpoint not found/i)
+        expect(result.code).not.toBe('IPC_HANDLER')
+      }
+    })
+
+    it('maps invalid checkpoint id errors to user-facing fail', async () => {
+      undoWritesMock.mockImplementation(() => {
+        throw new Error('Invalid checkpoint id: not-a-uuid')
+      })
+      const handler = handlers.get(IPC.runsUndoWrites)
+      const result = await handler!(
+        { sender: mockWc },
+        {
+          workspacePath: '/ws',
+          runId: 'run-1',
+          checkpointId: 'not-a-uuid'
+        }
+      )
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.error).toMatch(/invalid checkpoint/i)
+        expect(result.code).not.toBe('IPC_HANDLER')
+      }
     })
   })
 })

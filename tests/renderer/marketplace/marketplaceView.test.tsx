@@ -25,7 +25,7 @@ const catalogPackages = [
     description: 'MCP filesystem',
     kind: 'mcp' as const,
     source: 'bundled' as const,
-    sections: ['discover', 'featured'] as const,
+    sections: ['featured'] as const,
     category: 'infrastructure',
     featuredRank: 1,
     verified: true,
@@ -40,7 +40,7 @@ const catalogPackages = [
     description: 'MCP memory',
     kind: 'mcp' as const,
     source: 'bundled' as const,
-    sections: ['discover', 'featured'] as const,
+    sections: ['featured'] as const,
     category: 'infrastructure',
     featuredRank: 2,
     verified: true,
@@ -55,13 +55,37 @@ const catalogPackages = [
     description: 'Docs skill',
     kind: 'skill' as const,
     source: 'bundled' as const,
-    sections: ['featured'] as const,
     category: 'skills',
-    featuredRank: 3,
     verified: true,
     publisher: 'Vyotiq',
     installable: true,
     bundledPath: 'docs'
+  },
+  {
+    id: 'code-review-graph',
+    name: 'Code review graph',
+    version: '1.0.0',
+    description: 'Graph MCP',
+    kind: 'mcp' as const,
+    source: 'bundled' as const,
+    category: 'infrastructure',
+    verified: true,
+    publisher: 'tirth8205',
+    installable: true,
+    bundledPath: 'code-review-graph'
+  },
+  {
+    id: 'devtools',
+    name: 'Devtools',
+    version: '1.0.0',
+    description: 'Plugin',
+    kind: 'plugin' as const,
+    source: 'bundled' as const,
+    category: 'plugins',
+    verified: true,
+    publisher: 'Vyotiq',
+    installable: true,
+    bundledPath: 'devtools'
   }
 ]
 
@@ -202,14 +226,43 @@ describe('MarketplaceView', () => {
     }
   })
 
-  it('renders Discover and Featured without coming-soon stubs', async () => {
+  it('renders Featured without Discover and lists each package once', async () => {
     render(
       <MarketplaceView settings={baseSettings} onUpdate={vi.fn(async () => ({ ok: true as const }))} />
     )
-    expect(await screen.findByRole('heading', { name: /^Discover$/i })).toBeTruthy()
-    expect(screen.getByRole('heading', { name: /^Featured$/i })).toBeTruthy()
-    expect(screen.getAllByText('Filesystem').length).toBeGreaterThan(0)
+    expect(await screen.findByRole('heading', { name: /^Installed$/i })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: /^Featured$/i })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: /^Discover$/i })).toBeNull()
+    expect(screen.getAllByText('Filesystem').length).toBe(1)
+    expect(screen.getAllByText('Memory').length).toBe(1)
+    expect(screen.getAllByText('Docs').length).toBe(1)
+    expect(screen.getByRole('heading', { name: /^Skills$/i })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: /^Infrastructure$/i })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: /^Plugins$/i })).toBeTruthy()
+    expect(screen.getByText('Code review graph')).toBeTruthy()
+    expect(screen.getByText('Devtools')).toBeTruthy()
+    // Installed packages sit in Installed, not Featured / categories
+    const installedSection = screen.getByRole('heading', { name: /^Installed$/i }).closest('section')
+    expect(installedSection?.textContent).toContain('Memory')
+    const featured = screen.getByRole('heading', { name: /^Featured$/i }).closest('section')
+    expect(featured?.textContent).toContain('Filesystem')
+    expect(featured?.textContent).not.toContain('Memory')
+    const infra = screen.getByRole('heading', { name: /^Infrastructure$/i }).closest('section')
+    expect(infra?.textContent).toContain('Code review graph')
+    expect(infra?.textContent).not.toContain('Filesystem')
+    expect(infra?.textContent).not.toContain('Memory')
     expect(screen.queryByRole('button', { name: /^Coming soon$/i })).toBeNull()
+  })
+
+  it('Manage Installed lists installed packages and Add tab is reachable', async () => {
+    render(
+      <MarketplaceView settings={baseSettings} onUpdate={vi.fn(async () => ({ ok: true as const }))} />
+    )
+    fireEvent.click((await screen.findAllByRole('tab', { name: /^Manage$/i }))[0]!)
+    expect(await screen.findByRole('tab', { name: /^Installed$/i })).toBeTruthy()
+    expect(await screen.findByText('Memory')).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: /^Add$/i }))
+    expect(await screen.findByLabelText(/Paste MCP URL, command, or JSON/i)).toBeTruthy()
   })
 
   it('shows connected state for installed MCP packages', async () => {
@@ -224,11 +277,11 @@ describe('MarketplaceView', () => {
     render(
       <MarketplaceView settings={baseSettings} onUpdate={vi.fn(async () => ({ ok: true as const }))} />
     )
-    await screen.findByRole('heading', { name: /^Discover$/i })
-    fireEvent.click(screen.getAllByText('Filesystem')[0]!)
+    await screen.findByRole('heading', { name: /^Featured$/i })
+    fireEvent.click(screen.getByText('Filesystem'))
     expect(await screen.findByRole('button', { name: /^Add to Vyotiq$/i })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /^Marketplace$/i }))
-    await screen.findByRole('heading', { name: /^Discover$/i })
+    await screen.findByRole('heading', { name: /^Featured$/i })
     const selected = screen.getAllByRole('button', { current: true })
     expect(selected.some((el) => el.textContent?.includes('Filesystem'))).toBe(true)
   })
@@ -237,28 +290,30 @@ describe('MarketplaceView', () => {
     render(
       <MarketplaceView settings={baseSettings} onUpdate={vi.fn(async () => ({ ok: true as const }))} />
     )
-    await screen.findByRole('heading', { name: /^Discover$/i })
-    fireEvent.click(screen.getAllByText('Filesystem')[0]!)
+    await screen.findByRole('heading', { name: /^Featured$/i })
+    fireEvent.click(screen.getByText('Filesystem'))
     expect(await screen.findByRole('button', { name: /^Add to Vyotiq$/i })).toBeTruthy()
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: /^MCP$/i })).toBeTruthy()
     })
   })
 
-  it('opens Manage from home', async () => {
+  it('opens Manage from header Browse/Manage tabs', async () => {
     render(
       <MarketplaceView settings={baseSettings} onUpdate={vi.fn(async () => ({ ok: true as const }))} />
     )
-    await screen.findByRole('button', { name: /^Manage$/i })
-    fireEvent.click(screen.getByRole('button', { name: /^Manage$/i }))
+    const manageTabs = await screen.findAllByRole('tab', { name: /^Manage$/i })
+    fireEvent.click(manageTabs[0]!)
     expect(await screen.findByRole('tab', { name: /^Installed$/i })).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: /^Browse$/i }))
+    expect(await screen.findByRole('heading', { name: /^Featured$/i })).toBeTruthy()
   })
 
   it('empty search points to Manage → Add for external MCPs', async () => {
     render(
       <MarketplaceView settings={baseSettings} onUpdate={vi.fn(async () => ({ ok: true as const }))} />
     )
-    await screen.findByRole('heading', { name: /^Discover$/i })
+    await screen.findByRole('heading', { name: /^Featured$/i })
     fireEvent.change(screen.getByLabelText(/Search marketplace/i), {
       target: { value: 'not-in-catalog-xyz' }
     })
@@ -273,8 +328,8 @@ describe('MarketplaceView', () => {
     render(
       <MarketplaceView settings={baseSettings} onUpdate={vi.fn(async () => ({ ok: true as const }))} />
     )
-    await screen.findByRole('heading', { name: /^Discover$/i })
-    fireEvent.click(screen.getAllByText('Memory')[0]!)
+    await screen.findByRole('heading', { name: /^Featured$/i })
+    fireEvent.click(screen.getByText('Memory'))
     expect(await screen.findByRole('button', { name: /^Connected$/i })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /^Manage$/i }))
     expect(await screen.findByRole('tab', { name: /^Installed$/i })).toBeTruthy()
@@ -284,7 +339,7 @@ describe('MarketplaceView', () => {
     render(
       <MarketplaceView settings={baseSettings} onUpdate={vi.fn(async () => ({ ok: true as const }))} />
     )
-    fireEvent.click(await screen.findByRole('button', { name: /^Manage$/i }))
+    fireEvent.click((await screen.findAllByRole('tab', { name: /^Manage$/i }))[0]!)
     fireEvent.click(await screen.findByRole('tab', { name: /^Add$/i }))
     const paste = await screen.findByLabelText(/Paste MCP URL, command, or JSON/i)
     fireEvent.change(paste, { target: { value: 'uvx code-review-graph serve' } })

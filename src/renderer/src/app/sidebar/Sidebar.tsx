@@ -6,7 +6,7 @@ import {
   SIDEBAR_WIDTH,
   SIDEBAR_WIDTH_COLLAPSED,
   SIDEBAR_WIDTH_COLLAPSED_DARWIN,
-  SIDEBAR_WIDTH_DESKTOP
+  SIDEBAR_WIDTH_PX
 } from '@renderer/lib/utils/layout'
 import { ChatList } from './ChatList'
 import { SidebarCollapsedHeader, SidebarTopBar } from './SidebarTopBar'
@@ -41,6 +41,7 @@ export function Sidebar({
   onCloseDrawer,
   onToggleSidebar,
   collapsed = false,
+  widthPx,
   variant = 'desktop'
 }: SidebarProps) {
   const workspaceReady = Boolean(hasWorkspace)
@@ -99,7 +100,10 @@ export function Sidebar({
       ? isDarwin
         ? SIDEBAR_WIDTH_COLLAPSED_DARWIN
         : SIDEBAR_WIDTH_COLLAPSED
-      : SIDEBAR_WIDTH_DESKTOP
+      : undefined
+
+  const expandedWidthPx =
+    !isDrawer && !isCollapsed ? (widthPx ?? SIDEBAR_WIDTH_PX) : undefined
 
   const afterNav = (): void => {
     if (isDrawer) onCloseDrawer()
@@ -118,6 +122,7 @@ export function Sidebar({
         'flex h-full min-h-0 shrink-0 flex-col self-stretch overflow-hidden bg-bg',
         widthClass
       )}
+      style={expandedWidthPx != null ? { width: expandedWidthPx } : undefined}
       aria-label="Sidebar"
       data-collapsed={isCollapsed || undefined}
     >

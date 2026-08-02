@@ -16,7 +16,7 @@ vi.mock('electron', () => ({
   }
 }))
 
-import { loadToolResultContent } from '@main/agent/state'
+import { appendMessage, loadToolResultContent } from '@main/agent/state'
 import { resolveRunDir } from '@main/storage/paths'
 
 describe('loadToolResultContent', () => {
@@ -71,5 +71,20 @@ describe('loadToolResultContent', () => {
 
     const content = await loadToolResultContent(workspace, runId, 'missing')
     expect(content).toBeNull()
+  })
+
+  it('waits for a queued live result before reading it back', async () => {
+    const runDir = resolveRunDir(workspace, runId)
+    appendMessage(runDir, {
+      role: 'tool',
+      toolCallId: 'queued',
+      toolName: 'read',
+      ok: true,
+      content: 'full queued output'
+    })
+
+    await expect(loadToolResultContent(workspace, runId, 'queued')).resolves.toBe(
+      'full queued output'
+    )
   })
 })

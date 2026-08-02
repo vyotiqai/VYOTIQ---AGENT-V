@@ -5,11 +5,13 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 
 const userData = join(tmpdir(), `vyotiq-ws-${process.pid}-${Date.now()}`)
+const homeRoot = join(tmpdir(), `vyotiq-profile-${process.pid}-${Date.now()}`)
 
 vi.mock('electron', () => ({
   app: {
     getPath: (name: string) => {
       if (name === 'userData') return userData
+      if (name === 'home') return homeRoot
       throw new Error(`unexpected getPath(${name})`)
     },
     getAppPath: () => '/tmp/vyotiq-app',
@@ -20,10 +22,20 @@ vi.mock('electron', () => ({
   }
 }))
 
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>()
+  return {
+    ...actual,
+    homedir: () => homeRoot
+  }
+})
+
 import {
   addWorkspace,
   defaultWorkspacesState,
+  getHomeWorkspacePath,
   interruptOrphanRunsForWorkspaces,
+  isHomeWorkspacePath,
   readWorkspacesState,
   removeWorkspace,
   resetWorkspacesForTests,
@@ -37,25 +49,85 @@ import { resolveRunDir, workspaceSessionsRoot } from '@main/storage/paths'
 describe('workspaces registry', () => {
   let workspaceA: string
   let workspaceB: string
+  let homePath: string
 
   beforeEach(() => {
     workspaceA = join(tmpdir(), `vyotiq-wsa-${process.pid}-${Date.now()}`)
     workspaceB = join(tmpdir(), `vyotiq-wsb-${process.pid}-${Date.now()}`)
     mkdirSync(workspaceA, { recursive: true })
     mkdirSync(workspaceB, { recursive: true })
+    mkdirSync(homeRoot, { recursive: true })
     resetWorkspacesForTests()
+    homePath = getHomeWorkspacePath()
   })
 
   afterEach(() => {
     if (existsSync(userData)) rmSync(userData, { recursive: true, force: true })
+    if (existsSync(homeRoot)) rmSync(homeRoot, { recursive: true, force: true })
     resetWorkspacesForTests()
   })
 
-  it('writes workspaces.json atomically on first read', () => {
+  it('writes workspaces.json atomically and opens app userData home on first read', () => {
     const state = readWorkspacesState()
     expect(state.version).toBe(2)
     expect(existsSync(join(userData, 'workspaces.json'))).toBe(true)
     expect(readFileSync(join(userData, 'workspaces.json'), 'utf8')).not.toContain('.tmp')
+    expect(homePath).toBe(canonicalizeWorkspacePath(join(userData, 'home')))
+    expect(state.openPaths).toEqual([homePath])
+    expect(state.activePath).toBe(homePath)
+    expect(existsSync(homePath)).toBe(true)
+    expect(isHomeWorkspacePath(homePath)).toBe(true)
+    expect(state.activePath).not.toBe(canonicalizeWorkspacePath(homeRoot))
+  })
+
+  it('migrates bare OS profile root to the app home workspace', () => {
+    const profile = canonicalizeWorkspacePath(homeRoot)
+    mkdirSync(userData, { recursive: true })
+    writeFileSync(
+      join(userData, 'workspaces.json'),
+      JSON.stringify({
+        ...defaultWorkspacesState(),
+        openPaths: [profile],
+        activePath: profile,
+        recentPaths: [profile],
+        uiStateByPath: {
+          [profile]: {
+            activeRunId: null,
+            openRunIds: [],
+            scrollTop: 0,
+            composerDraft: 'keep'
+          }
+        }
+      }),
+      'utf8'
+    )
+
+    const state = readWorkspacesState()
+    expect(state.openPaths).toEqual([homePath])
+    expect(state.activePath).toBe(homePath)
+    expect(state.uiStateByPath[homePath]?.composerDraft).toBe('keep')
+    expect(existsSync(homePath)).toBe(true)
+  })
+
+  it('migrates legacy ~/Vyotiq profile home to app userData home', () => {
+    const legacy = canonicalizeWorkspacePath(join(homeRoot, 'Vyotiq'))
+    mkdirSync(legacy, { recursive: true })
+    mkdirSync(userData, { recursive: true })
+    writeFileSync(
+      join(userData, 'workspaces.json'),
+      JSON.stringify({
+        ...defaultWorkspacesState(),
+        openPaths: [legacy],
+        activePath: legacy,
+        recentPaths: [legacy]
+      }),
+      'utf8'
+    )
+
+    const state = readWorkspacesState()
+    expect(state.openPaths).toEqual([homePath])
+    expect(state.activePath).toBe(homePath)
+    expect(state.recentPaths[0]).toBe(homePath)
   })
 
   it('migrates legacy settings.workspacePath on first read', () => {
@@ -85,7 +157,7 @@ describe('workspaces registry', () => {
     expect(existsSync(workspaceSessionsRoot(workspaceA))).toBe(true)
 
     const second = await addWorkspace(null, workspaceB)
-    expect(second.openPaths).toEqual([workspaceA, workspaceB])
+    expect(second.openPaths).toEqual(expect.arrayContaining([workspaceA, workspaceB]))
     expect(second.activePath).toBe(workspaceB)
     expect(second.recentPaths[0]).toBe(workspaceB)
   })
@@ -107,6 +179,18 @@ describe('workspaces registry', () => {
     const next = removeWorkspace(workspaceA)
     expect(next.openPaths).toEqual([workspaceB])
     expect(next.uiStateByPath[workspaceA]?.composerDraft).toBe('draft')
+  })
+
+  it('reopens home when the last open workspace is closed', () => {
+    saveWorkspacesState({
+      ...defaultWorkspacesState(),
+      openPaths: [workspaceA],
+      activePath: workspaceA
+    })
+    const next = removeWorkspace(workspaceA)
+    expect(next.openPaths).toEqual([homePath])
+    expect(next.activePath).toBe(homePath)
+    expect(existsSync(homePath)).toBe(true)
   })
 
   it('sets active workspace and settings overrides', () => {
@@ -131,7 +215,7 @@ describe('workspaces registry', () => {
     })
   })
 
-  it('recovers partial workspaces.json instead of full reset', () => {
+  it('recovers partial workspaces.json and opens home when openPaths empty', () => {
     mkdirSync(userData, { recursive: true })
     writeFileSync(
       join(userData, 'workspaces.json'),
@@ -156,10 +240,10 @@ describe('workspaces registry', () => {
     )
 
     const state = readWorkspacesState()
-    expect(state.openPaths).toEqual([])
-    expect(state.recentPaths).toEqual([workspaceA])
-    // activePath must not point at a closed workspace after partial recovery.
-    expect(state.activePath).toBeNull()
+    expect(state.openPaths).toEqual([homePath])
+    expect(state.recentPaths[0]).toBe(homePath)
+    expect(state.recentPaths).toContain(workspaceA)
+    expect(state.activePath).toBe(homePath)
     expect(state.uiStateByPath[workspaceA]?.composerDraft).toBe('keep-me')
     expect(state.legacySessionsMigrated).toBe(true)
   })
@@ -171,7 +255,7 @@ describe('workspaces registry', () => {
     expect(added.activePath).toBe(canonicalizeWorkspacePath(workspaceA))
   })
 
-  it('interruptOrphanRunsForWorkspaces scans open and recent paths', () => {
+  it('interruptOrphanRunsForWorkspaces scans open and recent paths', async () => {
     const runId = 'recent-orphan'
     createRun(workspaceB, runId, 'orphan')
     const runsDir = join(resolveRunDir(workspaceB, runId), 'status.json')
@@ -193,7 +277,7 @@ describe('workspaces registry', () => {
       recentPaths: [workspaceB]
     })
 
-    const count = interruptOrphanRunsForWorkspaces(state)
+    const count = await interruptOrphanRunsForWorkspaces(state)
     expect(count).toBe(1)
 
     const status = JSON.parse(readFileSync(runsDir, 'utf8')) as { status: string }
@@ -214,6 +298,8 @@ describe('workspaces registry', () => {
     )
     saveWorkspacesState({
       ...defaultWorkspacesState(),
+      openPaths: [workspaceA],
+      activePath: workspaceA,
       legacySessionsMigrated: false,
       needsWorkspaceForMigration: true,
       pendingMigrationCount: 1

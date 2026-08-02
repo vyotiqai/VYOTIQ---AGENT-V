@@ -20,6 +20,7 @@ describe('tool classify', () => {
     expect(isParallelSafeTool('list_dir')).toBe(true)
     expect(isParallelSafeTool('web_fetch')).toBe(true)
     expect(isParallelSafeTool('memory_read')).toBe(true)
+    expect(isParallelSafeTool('Skill')).toBe(true)
     expect(isParallelSafeTool('subagent')).toBe(true)
     expect(isReadOnlyTool('read')).toBe(true)
   })
@@ -28,6 +29,8 @@ describe('tool classify', () => {
     expect(isParallelSafeTool('edit')).toBe(false)
     expect(isParallelSafeTool('terminal')).toBe(false)
     expect(isParallelSafeTool('memory_write')).toBe(false)
+    expect(isParallelSafeTool('generate_image')).toBe(false)
+    expect(isParallelSafeTool('edit_image')).toBe(false)
   })
 
   it('gates web_fetch for approval while keeping it parallel-safe', () => {
@@ -71,7 +74,26 @@ describe('tool classify', () => {
     expect(isApprovalExemptTool('mcp_list_tools')).toBe(true)
   })
 
-  it('treats MCP tools as untrusted regardless of readOnlyHint', () => {
+  it('treats request_mcp_tools and release_mcp_tools as parallel-safe and approval-exempt', () => {
+    expect(isParallelSafeTool('request_mcp_tools')).toBe(true)
+    expect(isApprovalExemptTool('request_mcp_tools')).toBe(true)
+    expect(isParallelSafeTool('release_mcp_tools')).toBe(true)
+    expect(isApprovalExemptTool('release_mcp_tools')).toBe(true)
+  })
+
+  it('treats MCP resource/prompt built-ins as serial and approval-exempt', () => {
+    for (const name of [
+      'mcp_list_resources',
+      'mcp_read_resource',
+      'mcp_list_prompts',
+      'mcp_get_prompt'
+    ]) {
+      expect(isParallelSafeTool(name)).toBe(false)
+      expect(isApprovalExemptTool(name)).toBe(true)
+    }
+  })
+
+  it('never treats MCP readOnlyHint as parallel-safe', () => {
     expect(isParallelSafeTool('mcp__fs__read_file')).toBe(false)
     expect(isApprovalExemptTool('mcp__fs__read_file')).toBe(false)
     expect(isParallelSafeTool('mcp__gh__create_issue')).toBe(false)

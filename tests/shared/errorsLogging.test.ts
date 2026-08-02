@@ -104,6 +104,17 @@ describe('scrubber', () => {
     expect(scrubString('X-Api-Key: super-secret-key-value')).toContain('[redacted]')
   })
 
+  it('redacts named tokens in text and URL query strings', () => {
+    const url = scrubString(
+      'GET https://api.example.com/v1?access_token=oauth-secret-value&x=1'
+    )
+    const bare = scrubString('token=plain-secret-value')
+    expect(url).toContain('[redacted]')
+    expect(url).not.toContain('oauth-secret-value')
+    expect(bare).toContain('[redacted]')
+    expect(bare).not.toContain('plain-secret-value')
+  })
+
   it('redacts JWTs and PEM blocks', () => {
     const jwt =
       'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturepad'
@@ -128,12 +139,16 @@ describe('scrubber', () => {
     const scrubbed = scrubValue({
       apiKey: 'sk-secret',
       accessToken: 'tok',
+      AccessToken: 'tok-legacy',
+      SESSION_TOKEN: 'session',
       dsn: 'https://key@o.ingest.sentry.io/1',
       path: '/Users/admin/ws/a.ts',
       ok: true
     }) as Record<string, unknown>
     expect(scrubbed.apiKey).toBe('[redacted]')
     expect(scrubbed.accessToken).toBe('[redacted]')
+    expect(scrubbed.AccessToken).toBe('[redacted]')
+    expect(scrubbed.SESSION_TOKEN).toBe('[redacted]')
     expect(scrubbed.dsn).toBe('[redacted]')
     expect(scrubbed.path).toBe('a.ts')
     expect(scrubbed.ok).toBe(true)
@@ -180,6 +195,22 @@ describe('log policy (no user workspace data)', () => {
     expect(out.correlationId).toBe('abc123')
   })
 
+  it('keeps scrubbed providerMessage for HTTP diagnostics', () => {
+    const out = sanitizeLogFields({
+      scope: 'provider',
+      code: 'PROVIDER_HTTP',
+      provider: 'openrouter',
+      status: 400,
+      kind: 'http',
+      model: 'openai/gpt-5.6-luna-pro',
+      providerMessage: 'Invalid model id',
+      message: 'should be stripped'
+    }) as Record<string, unknown>
+    expect(out.providerMessage).toBe('Invalid model id')
+    expect(out.model).toBe('openai/gpt-5.6-luna-pro')
+    expect(out.message).toBeUndefined()
+  })
+
   it('sanitizes error objects to taxonomy only', () => {
     const err = new AppError('File not found: C:\\Users\\me\\payroll.xlsx', {
       code: 'TOOL_EXEC',
@@ -189,6 +220,24 @@ describe('log policy (no user workspace data)', () => {
     expect(out.code).toBe('TOOL_EXEC')
     expect(out.message).toBeUndefined()
     expect(out.context).toBeUndefined()
+  })
+
+  it('preserves scrubbed message for string errors (not fake IPC_CLIENT)', () => {
+    const out = sanitizeErrorForLog('spawn uvx ENOENT') as Record<string, unknown>
+    expect(out.code).toBeUndefined()
+    expect(out.message).toContain('ENOENT')
+    expect(String(out.message)).not.toContain('IPC_CLIENT')
+  })
+
+  it('redacts OpenAI masked API key echoes in providerMessage', () => {
+    const out = sanitizeLogFields({
+      scope: 'provider',
+      providerMessage:
+        'Incorrect API key provided: 0e2be96e*********************************************ftCM.'
+    }) as Record<string, unknown>
+    expect(String(out.providerMessage)).toContain('[redacted]')
+    expect(String(out.providerMessage)).not.toContain('0e2be96e')
+    expect(String(out.providerMessage)).not.toContain('ftCM')
   })
 
   it('redacts user paths and file names from log messages', () => {
@@ -315,7 +364,7 @@ describe('logger facade', () => {
       captureException: capture
     })
     logger.fatal('disk full')
-    expect(capture).toHaveBeenCalledWith({ name: 'Error' }, undefined)
+    expect(capture).toHaveBeenCalledWith({ name: 'Error', message: 'disk full' }, undefined)
   })
 
   it('does not throw when the backend log throws', () => {

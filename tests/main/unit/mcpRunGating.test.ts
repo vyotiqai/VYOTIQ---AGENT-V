@@ -69,4 +69,34 @@ describe('executeTool MCP run gating', () => {
     )
     expect(invokeMcpTool).toHaveBeenCalled()
   })
+
+  it('rejects MCP tools omitted from this step catalog', async () => {
+    const result = await executeTool(
+      'mcp__fs__read_file',
+      '{}',
+      '/tmp/ws',
+      new AbortController().signal,
+      {
+        runEnabledMcpIds: new Set(['fs']),
+        stepMcpToolNames: new Set(['mcp__fs__other_tool'])
+      }
+    )
+    expect(result.ok).toBe(false)
+    expect(result.content).toMatch(/not in this step's tool catalog/)
+    expect(invokeMcpTool).not.toHaveBeenCalled()
+  })
+
+  it('invokes when tool is in the step catalog', async () => {
+    await executeTool(
+      'mcp__fs__read_file',
+      '{}',
+      '/tmp/ws',
+      new AbortController().signal,
+      {
+        runEnabledMcpIds: new Set(['fs']),
+        stepMcpToolNames: new Set(['mcp__fs__read_file'])
+      }
+    )
+    expect(invokeMcpTool).toHaveBeenCalled()
+  })
 })

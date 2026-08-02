@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ToolGroup } from '@renderer/features/chat/components/ToolGroup'
 import type { UiItem } from '@shared/transcript'
 
@@ -60,6 +60,9 @@ describe('ToolGroup', () => {
     expect(screen.getByText('a.ts')).toBeTruthy()
     expect(screen.getByText('b.ts')).toBeTruthy()
     expect(document.querySelectorAll('.vy-text-shimmer--active').length).toBeGreaterThan(1)
+    const list = screen.getByTestId('tool-group-list')
+    expect(list.className).toMatch(/max-h-/)
+    expect(list.className).toMatch(/overflow-y-auto/)
   })
 
   it('shows completed label and summary when group is closed', () => {
@@ -72,6 +75,111 @@ describe('ToolGroup', () => {
     expect(screen.getByText('1 file and 1 lookup')).toBeTruthy()
     expect(screen.getByText('6s')).toBeTruthy()
     expect(screen.queryByText('a.ts')).toBeNull()
+    expect(screen.queryByTestId('tool-group-list')).toBeNull()
+  })
+
+  it('stays open after tools finish while the chat run is still live', () => {
+    const tools = [
+      toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 }),
+      toolItem('t2', 'read', 'b.ts', 'done')
+    ]
+    tools[0]!.tool.content = 'alpha output'
+    tools[1]!.tool.content = 'beta output'
+    render(<ToolGroup tools={tools} live />)
+
+    expect(screen.getByRole('button', { name: /Read 2 files/i }).getAttribute('aria-expanded')).toBe(
+      'true'
+    )
+    expect(screen.getByTestId('tool-group-list')).toBeTruthy()
+    expect(screen.getByText('alpha output')).toBeTruthy()
+    expect(screen.getByText('beta output')).toBeTruthy()
+  })
+
+  it('folds automatically when the live run ends', async () => {
+    const tools = [
+      toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 }),
+      toolItem('t2', 'read', 'b.ts', 'done')
+    ]
+    const { rerender } = render(<ToolGroup tools={tools} live />)
+    expect(screen.getByTestId('tool-group-list')).toBeTruthy()
+
+    rerender(<ToolGroup tools={tools} live={false} />)
+    await waitFor(() => {
+      expect(screen.queryByTestId('tool-group-list')).toBeNull()
+    })
+  })
+
+  it('unmounts the nested list after collapse when motion is reduced', () => {
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: (query: string) => ({
+        matches: query.includes('prefers-reduced-motion'),
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {}
+      })
+    })
+    const tools = [
+      toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 }),
+      toolItem('t2', 'read', 'b.ts', 'done')
+    ]
+    const onGroupToggle = vi.fn()
+    const { rerender } = render(
+      <ToolGroup tools={tools} groupExpanded onGroupToggle={onGroupToggle} />
+    )
+    expect(screen.getByTestId('tool-group-list')).toBeTruthy()
+    expect(screen.getByText('a.ts')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /Read 2 files/i }))
+    expect(onGroupToggle).toHaveBeenCalledWith(false)
+
+    rerender(<ToolGroup tools={tools} groupExpanded={false} onGroupToggle={onGroupToggle} />)
+    expect(screen.queryByTestId('tool-group-list')).toBeNull()
+    expect(screen.queryByText('a.ts')).toBeNull()
+  })
+
+  it('unmounts the nested list after the close fallback when motion is on', async () => {
+    const tools = [
+      toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 }),
+      toolItem('t2', 'read', 'b.ts', 'done')
+    ]
+    const onGroupToggle = vi.fn()
+    const { rerender } = render(
+      <ToolGroup tools={tools} groupExpanded onGroupToggle={onGroupToggle} />
+    )
+    expect(screen.getByTestId('tool-group-list')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /Read 2 files/i }))
+    rerender(<ToolGroup tools={tools} groupExpanded={false} onGroupToggle={onGroupToggle} />)
+
+    const panel = document.querySelector('.tool-expand')
+    expect(panel?.getAttribute('data-open')).toBe('false')
+    expect(panel?.getAttribute('aria-hidden')).toBe('true')
+    expect(screen.getByTestId('tool-group-list')).toBeTruthy()
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('tool-group-list')).toBeNull()
+    })
+  })
+
+  it('unmounts on grid-template-rows transitionend before the fallback timer', async () => {
+    const tools = [
+      toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 }),
+      toolItem('t2', 'read', 'b.ts', 'done')
+    ]
+    const onGroupToggle = vi.fn()
+    const { rerender } = render(
+      <ToolGroup tools={tools} groupExpanded onGroupToggle={onGroupToggle} />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Read 2 files/i }))
+    rerender(<ToolGroup tools={tools} groupExpanded={false} onGroupToggle={onGroupToggle} />)
+
+    const panel = document.querySelector('.tool-expand')
+    expect(panel).toBeTruthy()
+    fireEvent.transitionEnd(panel!, { propertyName: 'grid-template-rows' })
+    await waitFor(() => {
+      expect(screen.queryByTestId('tool-group-list')).toBeNull()
+    })
   })
 
   it('marks an interrupted group without hiding what it did', () => {
@@ -81,8 +189,37 @@ describe('ToolGroup', () => {
     tools[0]!.tool.content = 'Cancelled'
     render(<ToolGroup tools={tools} />)
     expect(screen.getByText('interrupted')).toBeTruthy()
-    expect(screen.getByText('Read')).toBeTruthy()
+    // In-progress verb: work did not complete.
+    expect(screen.getByText('Reading')).toBeTruthy()
+    expect(screen.queryByText('Read')).toBeNull()
     expect(screen.getByText(/a\.ts/)).toBeTruthy()
+  })
+
+  it('shows Asking interrupted for cancelled ask_question, not Asked', () => {
+    const tools = [
+      toolItem('t1', 'ask_question', 'Pick one', 'fail', { startedAt: 1_000, endedAt: 2_000 })
+    ]
+    tools[0]!.tool.content = 'Cancelled'
+    render(<ToolGroup tools={tools} />)
+    expect(screen.getByText('interrupted')).toBeTruthy()
+    expect(screen.getByText('Asking')).toBeTruthy()
+    expect(screen.queryByText('Asked')).toBeNull()
+  })
+
+  it('marks only the cancelled nested tool as interrupted, not completed siblings', () => {
+    const tools = [
+      toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 1_500 }),
+      toolItem('t2', 'ask_question', 'Pick one', 'fail', { startedAt: 1_500, endedAt: 2_000 })
+    ]
+    tools[1]!.tool.content = 'Cancelled'
+    render(<ToolGroup tools={tools} groupExpanded />)
+    const interrupted = screen.getAllByText('interrupted')
+    // Group header + cancelled nested row only.
+    expect(interrupted).toHaveLength(2)
+    const doneRow = screen.getByLabelText('a.ts')
+    const cancelledRow = screen.getByLabelText(/Pick one/)
+    expect(doneRow.textContent).not.toContain('interrupted')
+    expect(cancelledRow.textContent).toContain('interrupted')
   })
 
   it('does not duplicate list_dir path in the expanded body when shown as activity', () => {
@@ -97,6 +234,42 @@ describe('ToolGroup', () => {
     render(<ToolGroup tools={tools} groupExpanded />)
     // Path appears in the compact subtitle; body must not repeat a path header.
     expect(screen.getAllByText(/src/).length).toBe(1)
+  })
+
+  it('does not duplicate grep pattern chip when shown in a multi-tool group', () => {
+    const tools = [
+      toolItem('g1', 'grep', 'TODO', 'done', { startedAt: 1_000, endedAt: 2_000 }),
+      toolItem('r1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 })
+    ]
+    tools[0]!.tool.argsPreview = '{"pattern":"TODO"}'
+    tools[0]!.tool.content = JSON.stringify({
+      pattern: 'TODO',
+      matchCount: 1,
+      groups: [{ file: 'a.ts', matches: [{ line: 1, text: 'TODO' }] }]
+    })
+    tools[0]!.toolExpanded = true
+    tools[1]!.tool.content = 'file'
+    render(<ToolGroup tools={tools} groupExpanded />)
+    // Pattern is the nested row title; body must not repeat /TODO/ chip.
+    expect(screen.getAllByText(/TODO/).length).toBe(1)
+  })
+
+  it('auto-expands a lone running tool even when groupExpanded is false', () => {
+    const tools = [toolItem('t1', 'terminal', 'npm test', 'running')]
+    tools[0]!.tool.content = 'live output'
+    tools[0]!.groupExpanded = false
+    render(<ToolGroup tools={tools} groupExpanded={false} />)
+    expect(screen.getByText('live output')).toBeTruthy()
+  })
+
+  it('honors persisted groupExpanded for a lone idle tool', () => {
+    const tools = [toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 })]
+    tools[0]!.tool.content = 'file contents'
+    const { rerender } = render(<ToolGroup tools={tools} groupExpanded={false} />)
+    expect(screen.queryByText('file contents')).toBeNull()
+
+    rerender(<ToolGroup tools={tools} groupExpanded />)
+    expect(screen.getByText('file contents')).toBeTruthy()
   })
 
   it('names the group after a single kind of work', () => {
@@ -134,18 +307,17 @@ describe('ToolGroup', () => {
   it('follows the host disclosure state instead of local state', () => {
     const tools = [toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 })]
     tools[0]!.tool.content = 'alpha output'
-    const onGroupToggle = vi.fn()
+    const onToolToggle = vi.fn()
 
-    const { rerender } = render(
-      <ToolGroup tools={tools} groupExpanded={false} onGroupToggle={onGroupToggle} />
-    )
+    const { rerender } = render(<ToolGroup tools={tools} onToolToggle={onToolToggle} />)
     fireEvent.click(screen.getByRole('button', { name: /Read/i }))
 
-    expect(onGroupToggle).toHaveBeenCalledWith(true)
-    // Still closed: the host owns the state and has not applied the change yet.
+    expect(onToolToggle).toHaveBeenCalledWith('t1', true)
+    // Still closed: the host owns toolExpanded and has not applied the change yet.
     expect(screen.queryByText('alpha output')).toBeNull()
 
-    rerender(<ToolGroup tools={tools} groupExpanded onGroupToggle={onGroupToggle} />)
+    tools[0]!.toolExpanded = true
+    rerender(<ToolGroup tools={[...tools]} onToolToggle={onToolToggle} />)
     expect(screen.getByText('alpha output')).toBeTruthy()
   })
 
@@ -204,5 +376,40 @@ describe('ToolGroup', () => {
     expect(api?.getAttribute('aria-expanded')).toBe('true')
     expect(screen.queryByText('core done')).toBeNull()
     expect(screen.getByText('api running')).toBeTruthy()
+  })
+
+  it('keeps auto-expand for running siblings when another tool has explicit toolExpanded', () => {
+    const tools = [
+      { ...toolItem('s1', 'read', 'a.ts', 'done'), toolExpanded: true },
+      toolItem('s2', 'read', 'b.ts', 'running')
+    ]
+    tools[0]!.tool.content = 'file body'
+    tools[1]!.tool.content = 'other body'
+
+    render(<ToolGroup tools={tools} />)
+
+    // Explicit expand on s1 must not suppress defaultExpanded for running s2.
+    expect(screen.getByText('file body')).toBeTruthy()
+    expect(screen.getByText('other body')).toBeTruthy()
+  })
+
+  it('still renders a single tool when item id and tool id diverge', () => {
+    const tools = [
+      {
+        kind: 'tool' as const,
+        id: 'ui-item-id',
+        tool: {
+          id: 'tool-row-id',
+          name: 'read',
+          summary: 'a.ts',
+          status: 'done' as const,
+          content: 'file body'
+        },
+        toolExpanded: true
+      }
+    ]
+    render(<ToolGroup tools={tools} />)
+    expect(screen.getByText('Read')).toBeTruthy()
+    expect(screen.getByText('file body')).toBeTruthy()
   })
 })

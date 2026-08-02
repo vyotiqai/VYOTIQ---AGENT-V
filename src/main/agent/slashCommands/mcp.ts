@@ -3,14 +3,18 @@ import type {
   SlashCommandDescriptor,
   SlashCommandResolveResult
 } from '../../../shared/ipc'
-import { formatMcpToolInvocation, normalizeTrigger } from '../../../shared/slashCommands'
+import {
+  formatMcpToolInvocation,
+  humanizeSlashToken,
+  normalizeTrigger
+} from '../../../shared/slashCommands'
 import {
   getMcpServerStatus,
   listMcpToolDefinitions,
   parseMcpToolName
 } from '../mcp'
 import { resolveEffectiveMcpServers } from '../../marketplace/resolve'
-import { hasMcpOAuthState, hasMcpAuthToken } from '../../settings/secrets'
+import { hasMcpAuthToken, hasMcpOAuthState } from '../../settings/secrets'
 
 function sanitizeTriggerPart(raw: string): string {
   return normalizeTrigger(raw.replace(/__/g, '-'))
@@ -36,6 +40,7 @@ export function listMcpCommands(
     let availability: SlashCommandDescriptor['availability'] = 'ready'
     if (!status?.connected) {
       const isRemote = (server.transport ?? 'stdio') !== 'stdio'
+      // Usable auth only (access token) — a mid-OAuth PKCE blob must stay needs_auth.
       const hasAuth = hasMcpAuthToken(parsed.serverId) || hasMcpOAuthState(parsed.serverId)
       availability = isRemote && !hasAuth ? 'needs_auth' : 'disconnected'
     }
@@ -44,11 +49,17 @@ export function listMcpCommands(
     if (!trigger || seenTriggers.has(trigger)) continue
     seenTriggers.add(trigger)
 
+    const errHint = status?.error?.trim()
+    const baseDesc = tool.description || `MCP tool ${parsed.toolName}`
     out.push({
       id: `mcp:${tool.name}`,
       trigger,
-      label: `${parsed.toolName} (${server.name || parsed.serverId})`,
-      description: tool.description || `MCP tool ${parsed.toolName}`,
+      // Server name belongs in a section header — keep the row label clean.
+      label: humanizeSlashToken(parsed.toolName),
+      description:
+        availability !== 'ready' && errHint
+          ? `${baseDesc} — ${errHint}`
+          : baseDesc,
       kind: 'mcp',
       group: 'MCP',
       availability,
@@ -71,11 +82,14 @@ export function listMcpCommands(
     const trigger = sanitizeTriggerPart(server.id)
     if (!trigger || seenTriggers.has(trigger)) continue
     seenTriggers.add(trigger)
+    const errHint = status?.error?.trim()
     out.push({
       id: `mcp-server:${server.id}`,
       trigger,
       label: server.name || server.id,
-      description: 'MCP server — connect in Marketplace to use tools',
+      description: errHint
+        ? `MCP server — ${errHint}`
+        : 'MCP server — connect in Marketplace to use tools',
       kind: 'mcp',
       group: 'MCP',
       availability,
@@ -83,7 +97,12 @@ export function listMcpCommands(
     })
   }
 
-  return out.sort((a, b) => a.trigger.localeCompare(b.trigger))
+  return out.sort((a, b) => {
+    const sa = a.mcpServerId ?? ''
+    const sb = b.mcpServerId ?? ''
+    if (sa !== sb) return sa.localeCompare(sb)
+    return a.trigger.localeCompare(b.trigger)
+  })
 }
 
 export function resolveMcpCommand(

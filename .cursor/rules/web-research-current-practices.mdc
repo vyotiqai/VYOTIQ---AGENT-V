@@ -1,0 +1,33 @@
+---
+description: Web-search current docs and best practices before non-trivial work
+alwaysApply: true
+---
+
+# Web research before non-trivial changes
+
+Before implementing or recommending non-trivial changes, search the web for **current-year** (and recent) official docs, release notes, and established best practices for the technologies involved. Do not rely only on training data or prior chat context.
+
+## When this applies
+
+- Architecture or concurrency decisions
+- Performance / IPC / Electron / Node / git / React patterns
+- New libraries, APIs, or config flags
+- Security-sensitive choices
+- Load-testing or tooling approaches
+
+## When it does not
+
+- Purely local renames, typos, or one-line fixes already constrained by this repo
+- Following an already-approved plan that cited sources
+- Reading/explaining code already in the workspace
+
+## How to research
+
+1. Prefer official docs and primary sources (Node, Electron, Git, MDN, project changelogs).
+2. Prefer material dated in the current year or last ~18 months when practices move quickly.
+3. Cross-check one claim against at least one solid source before changing behavior.
+4. Cite the source briefly when a recommendation differs from prior assumptions in the chat.
+
+## Ask before assuming
+
+If research surfaces multiple valid approaches with material trade-offs, ask the user before implementing.

@@ -54,7 +54,7 @@ describe('ToolRowOutput lazy load', () => {
       />
     )
 
-    await new Promise((r) => setTimeout(r, 30))
+    await new Promise((r) => setTimeout(r, 50))
     expect(load).not.toHaveBeenCalled()
   })
 
@@ -75,5 +75,31 @@ describe('ToolRowOutput lazy load', () => {
     )
 
     expect(load).not.toHaveBeenCalled()
+  })
+
+  it('fetches full content for truncated subagent results when expanded', async () => {
+    const preview = `${'x'.repeat(TOOL_RESULT_IPC_PREVIEW_CHARS)}\n…`
+    const load = vi.fn().mockResolvedValue('x'.repeat(TOOL_RESULT_IPC_PREVIEW_CHARS + 800))
+
+    render(
+      <ToolBodyView
+        context={{
+          tool: {
+            id: 'call-sub',
+            name: 'subagent',
+            summary: 'Audit',
+            status: 'done',
+            content: preview,
+            contentTruncated: true
+          },
+          expanded: true,
+          onLoadFullContent: load
+        }}
+      />
+    )
+
+    await waitFor(() => {
+      expect(load).toHaveBeenCalledWith('call-sub')
+    })
   })
 })

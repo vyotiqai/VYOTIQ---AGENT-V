@@ -16,8 +16,16 @@ vi.mock('electron', () => ({
   }
 }))
 
-import { flushEventAppends } from '@main/agent/eventAppendQueue'
-import { listRuns, interruptOrphanRuns, loadEvents, loadMessages, createRun, resumeRun, syncMessages } from '@main/agent/state'
+import {
+  appendMessage,
+  listRuns,
+  interruptOrphanRuns,
+  loadEvents,
+  loadMessages,
+  createRun,
+  resumeRun,
+  syncMessages
+} from '@main/agent/state'
 import { readTodos, toolTodoWrite } from '@main/agent/tools/todo'
 import { resolveRunDir } from '@main/storage/paths'
 import { registerRunAbort, clearRunAbort } from '@main/agent/runRegistry'
@@ -129,6 +137,7 @@ describe('listRuns / interruptOrphanRuns', () => {
     writeStatus(wsDir, {
       status: 'running',
       step: 1,
+      invokeId: 3,
       updatedAt: '2026-01-01T00:00:00.000Z',
       goal: 'also left',
       workspacePath: workspace
@@ -139,13 +148,13 @@ describe('listRuns / interruptOrphanRuns', () => {
       workspacePath: workspace
     })
 
-    const count = interruptOrphanRuns([workspace])
+    const count = await interruptOrphanRuns([workspace])
     expect(count).toBe(1)
-    await flushEventAppends(wsDir)
 
     const wsStatus = JSON.parse(readFileSync(join(wsDir, 'status.json'), 'utf8')) as {
       status: string
       error?: string
+      invokeId?: number
     }
     const finished = JSON.parse(
       readFileSync(join(resolveRunDir(workspace, 'finished'), 'status.json'), 'utf8')
@@ -153,6 +162,7 @@ describe('listRuns / interruptOrphanRuns', () => {
 
     expect(wsStatus.status).toBe('cancelled')
     expect(wsStatus.error).toMatch(/Interrupted/)
+    expect(wsStatus.invokeId).toBe(3)
     expect(finished.status).toBe('done')
 
     const wsEvents = loadEvents(wsDir, 'orphan-ws')
@@ -160,7 +170,8 @@ describe('listRuns / interruptOrphanRuns', () => {
     expect(wsEvents[0]?.event).toMatchObject({
       type: 'status',
       status: 'cancelled',
-      runId: 'orphan-ws'
+      runId: 'orphan-ws',
+      invokeId: 3
     })
   })
 
@@ -183,9 +194,8 @@ describe('listRuns / interruptOrphanRuns', () => {
       }
     ])
 
-    const count = interruptOrphanRuns([workspace])
+    const count = await interruptOrphanRuns([workspace])
     expect(count).toBe(1)
-    await flushEventAppends(dir)
 
     const messages = loadMessages(workspace, runId)
     expect(messages).toContainEqual({
@@ -229,9 +239,8 @@ describe('listRuns / interruptOrphanRuns', () => {
       { id: '2', content: 'Audit API routes', status: 'pending' }
     ])
 
-    const count = interruptOrphanRuns([workspace])
+    const count = await interruptOrphanRuns([workspace])
     expect(count).toBe(1)
-    await flushEventAppends(dir)
 
     const messages = loadMessages(workspace, runId)
     const todoMessage = messages.find((message) => message.role === 'tool' && message.toolName === 'todo_write')
@@ -240,7 +249,7 @@ describe('listRuns / interruptOrphanRuns', () => {
     expect(readTodos(dir).find((todo) => todo.id === '1')?.status).toBe('cancelled')
   })
 
-  it('does not interrupt runs that are still active in memory', () => {
+  it('does not interrupt runs that are still active in memory', async () => {
     const liveId = 'live-run'
     const liveDir = resolveRunDir(workspace, liveId)
     writeStatus(liveDir, {
@@ -252,7 +261,7 @@ describe('listRuns / interruptOrphanRuns', () => {
     })
     registerRunAbort(liveId, workspace)
     try {
-      const count = interruptOrphanRuns([workspace])
+      const count = await interruptOrphanRuns([workspace])
       expect(count).toBe(0)
       const status = JSON.parse(readFileSync(join(liveDir, 'status.json'), 'utf8')) as {
         status: string
@@ -263,7 +272,7 @@ describe('listRuns / interruptOrphanRuns', () => {
     }
   })
 
-  it('resumeRun updates status without wiping messages or events', () => {
+  it('resumeRun updates status without wiping messages or events', async () => {
     const runId = 'resume-run'
     const dir = createRun(workspace, runId, 'initial goal')
     const userMsg = { role: 'user' as const, content: 'hello' }
@@ -276,7 +285,7 @@ describe('listRuns / interruptOrphanRuns', () => {
     )
     writeFileSync(join(dir, 'contract.md'), '# Run contract\n\n## Goal\n\ninitial goal\n', 'utf8')
 
-    const resumedDir = resumeRun(workspace, runId)
+    const resumedDir = await resumeRun(workspace, runId)
     expect(resumedDir).toBe(dir)
 
     const status = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8')) as {
@@ -286,6 +295,47 @@ describe('listRuns / interruptOrphanRuns', () => {
     expect(loadMessages(workspace, runId)).toEqual([userMsg, assistantMsg])
     expect(readFileSync(join(dir, 'contract.md'), 'utf8')).toContain('initial goal')
     expect(loadEvents(dir, runId)).toHaveLength(1)
+  })
+
+  it('repairs orphan tool results before a queued follow-up and clears stale errors', async () => {
+    const runId = 'resume-orphan'
+    const dir = createRun(workspace, runId, 'repair')
+    syncMessages(dir, [
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'tool-1', name: 'read', arguments: '{"path":"a.ts"}' }]
+      }
+    ])
+    writeStatus(dir, {
+      status: 'error',
+      step: 7,
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      error: 'old failure',
+      workspacePath: workspace
+    })
+    appendMessage(dir, { role: 'user', content: 'continue' })
+
+    await resumeRun(workspace, runId)
+
+    expect(loadMessages(workspace, runId)).toEqual([
+      expect.objectContaining({ role: 'assistant' }),
+      {
+        role: 'tool',
+        toolCallId: 'tool-1',
+        toolName: 'read',
+        content: 'Cancelled',
+        ok: false
+      },
+      { role: 'user', content: 'continue' }
+    ])
+    const status = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8')) as {
+      status: string
+      step: number
+      error?: string
+    }
+    expect(status).toMatchObject({ status: 'running', step: 7 })
+    expect(status.error).toBeUndefined()
   })
 
   it('syncMessages rewrites messages.jsonl from client history', () => {

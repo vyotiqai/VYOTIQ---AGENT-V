@@ -1,13 +1,25 @@
-export { assembleContext, estimateToolsJson } from './assemble'
-export { allocateBudget, contextWindowFor, effectiveWindow, compactionTriggerTokens, contentWindow } from './budget'
-export { compactMessages, preserveRecentMessages } from './compact'
+export { assembleContext, clearSystemPromptCache, estimateToolsJson } from './assemble'
+export { allocateBudget, contextWindowFor, effectiveWindow, compactionTriggerTokens, contentWindow, toolsBudgetTokens } from './budget'
+export { compactMessages, preserveRecentMessages, preserveRecentMessagesAsync } from './compact'
 export {
   estimateContentTokens,
+  estimateContentTokensAsync,
   estimateMessagesTokens,
+  estimateMessagesTokensAsync,
   estimateTextTokens,
+  estimateTextTokensAsync,
   effectiveInputTokens
 } from './estimate'
-export { encodingForModel, resetTokenizerCache } from './tokenizer'
+export {
+  countTextTokens,
+  countTextTokensAsync,
+  countTextsTokensAsync,
+  encodingForModel,
+  getTokenizerPerfStats,
+  resetTokenizerCache,
+  resetTokenizerPerfStats
+} from './tokenizer'
+export { resetTokenizerPoolForTests } from './tokenizerPool'
 export { estimateImageTokens, imageDimensionsFromDataUrl, imageTokensForDimensions } from './imageTokens'
 export {
   ensureMemoryLayout,
@@ -20,10 +32,21 @@ export {
   writeMemoryFile,
   memoryRoot
 } from './memory'
-export { trimToolsToBudget } from './toolsBudget'
+export { trimToolsToBudget, toolCatalogFingerprint, selectMcpPinsToEvict } from './toolsBudget'
 export { trimToolResults } from './toolTrim'
-export { estimateSubagentOverheadTokens, prepareSubagentMessages } from './subagentContext'
-export { dropOldestTurn, trimHistoryToBudget } from './historyTrim'
+export {
+  COMPACTION_LLM_MIN_FOLD_TOKENS,
+  residualFloorAfterFold,
+  shouldInvokeCompactionLlm
+} from './compactionPayback'
+export { estimateSubagentOverheadTokens } from './subagentContext'
+export {
+  applyFoldedMessagesWatermark,
+  dropOldestTurn,
+  stripLeadingOrphanToolMessages,
+  trimHistoryToBudget,
+  trimHistoryToBudgetAsync
+} from './historyTrim'
 export { stripImagesFromMessages } from './stripImages'
 export { buildWorkspaceSnapshot, buildWorkspaceSnapshotAsync, clearWorkspaceSnapshotCache } from './workspaceSnapshot'
 export {
@@ -32,5 +55,5 @@ export {
   formatWorkspaceRules,
   readWorkspaceRules
 } from './rules'
-export { promoteCompactionToMemory } from './memoryPromote'
+export { buildSessionEnvSection } from './sessionEnv'
 export type { AssembleResult, CompactionRecord, AssembleInput } from './types'

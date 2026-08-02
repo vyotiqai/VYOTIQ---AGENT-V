@@ -11,6 +11,8 @@ import type { DiffLine } from '../toolUi'
 export type DiffTokens = ReadonlyMap<number, CodeToken[]>
 
 const EMPTY: DiffTokens = new Map()
+/** Shiki over large docs stalls the UI; later lines stay plain text. */
+const HIGHLIGHT_MAX_LINES = 64
 
 /**
  * The line indices making up one side of the change.
@@ -64,10 +66,12 @@ export function useDiffHighlight(lines: DiffLine[], path: string): DiffTokens {
       return undefined
     }
 
+    const source = lines.length > HIGHLIGHT_MAX_LINES ? lines.slice(0, HIGHLIGHT_MAX_LINES) : lines
+
     let cancelled = false
     void Promise.all([
-      tokensForSide(lines, false, language),
-      tokensForSide(lines, true, language)
+      tokensForSide(source, false, language),
+      tokensForSide(source, true, language)
     ]).then(([added, removed]) => {
       if (cancelled) return
       // Context lines appear on both sides with identical text; either wins.

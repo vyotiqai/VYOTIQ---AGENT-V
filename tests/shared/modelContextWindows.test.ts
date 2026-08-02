@@ -15,6 +15,13 @@ describe('knownContextWindow', () => {
     expect(knownContextWindow('deepseek/deepseek-v4-flash', 'openrouter')).toBe(1_000_000)
   })
 
+  it('returns 1.05M-class windows for GPT-5.6 and Gemini 3', () => {
+    expect(knownContextWindow('gpt-5.6', 'openai')).toBe(1_048_576)
+    expect(knownContextWindow('gpt-5.6-terra', 'openai')).toBe(1_048_576)
+    expect(knownContextWindow('gemini-3.6-flash', 'gemini')).toBe(1_048_576)
+    expect(knownContextWindow('grok-4-latest', 'xai')).toBe(1_000_000)
+  })
+
   it('backfills missing contextWindow without overriding larger API values', () => {
     const missing = withResolvedContextWindow(
       {
@@ -59,7 +66,7 @@ describe('knownContextWindow', () => {
 describe('DeepSeek seed + budget', () => {
   it('seeds V4 models with 1M windows', () => {
     const seeds = seedModelsFor('deepseek')
-    expect(seeds.some((m) => m.id === 'deepseek-v4-flash')).toBe(true)
+    expect(seeds.map((m) => m.id)).toEqual(['deepseek-v4-flash', 'deepseek-v4-pro'])
     expect(seeds.find((m) => m.id === 'deepseek-v4-flash')?.contextWindow).toBe(1_000_000)
   })
 

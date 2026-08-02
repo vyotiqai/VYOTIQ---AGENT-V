@@ -17,6 +17,19 @@ import { listSkillCommands, resolveSkillCommand } from './skills'
 import { listWorkspaceCommands, resolveWorkspaceCommand } from './workspaceCommands'
 import { listRuleCommands, resolveRuleCommand } from './ruleCommands'
 import { listMcpCommands, resolveMcpCommand } from './mcp'
+import { runHarnessReviewWithSettings } from '../harnessReviewRun'
+import {
+  LIST_TTL_MS,
+  clearSlashListInflight,
+  getSlashListCacheEntry,
+  getSlashListInflight,
+  invalidateSlashCommandsCache,
+  listCacheKey,
+  setSlashListCacheEntry,
+  setSlashListInflight
+} from './listCache'
+
+export { invalidateSlashCommandsCache } from './listCache'
 
 function marketplaceOverridesFor(
   workspacePath: string | null | undefined
@@ -99,14 +112,34 @@ function mergeByTrigger(groups: SlashCommandDescriptor[][]): SlashCommandDescrip
 export async function listSlashCommands(
   workspacePath?: string | null
 ): Promise<SlashCommandDescriptor[]> {
-  const overrides = marketplaceOverridesFor(workspacePath)
-  const [skills, workspace, rules] = await Promise.all([
-    listSkillCommands(overrides),
-    listWorkspaceCommands(workspacePath ?? null),
-    listRuleCommands(workspacePath ?? null)
-  ])
-  const mcp = listMcpCommands(overrides)
-  return mergeByTrigger([BUILTIN_COMMANDS, workspace, skills, rules, mcp])
+  const key = listCacheKey(workspacePath)
+  const hit = getSlashListCacheEntry(key)
+  if (hit && Date.now() <= hit.expiresAt) {
+    return hit.commands
+  }
+
+  const pending = getSlashListInflight(key)
+  if (pending) return pending
+
+  const run = (async () => {
+    const overrides = marketplaceOverridesFor(workspacePath)
+    const [skills, workspace, rules] = await Promise.all([
+      listSkillCommands(overrides),
+      listWorkspaceCommands(workspacePath ?? null),
+      listRuleCommands(workspacePath ?? null)
+    ])
+    const mcp = listMcpCommands(overrides)
+    const commands = mergeByTrigger([BUILTIN_COMMANDS, workspace, skills, rules, mcp])
+    setSlashListCacheEntry(key, { commands, expiresAt: Date.now() + LIST_TTL_MS })
+    return commands
+  })()
+
+  setSlashListInflight(key, run)
+  try {
+    return await run
+  } finally {
+    clearSlashListInflight(key, run)
+  }
 }
 
 export async function resolveSlashCommand(
@@ -126,6 +159,22 @@ export async function resolveSlashCommand(
     buildHelpMessage(await listSlashCommands(workspacePath))
   )
   if (builtin) return builtin
+
+  if (id === 'builtin:harness-review') {
+    if (!workspacePath) {
+      return {
+        action: 'send',
+        message: 'Open a workspace before running `/harness-review`.'
+      }
+    }
+    try {
+      const result = await runHarnessReviewWithSettings(workspacePath)
+      return { action: 'open_file', path: result.proposalPath }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { action: 'send', message: `Harness review failed: ${msg}` }
+    }
+  }
 
   if (id.startsWith('skill:')) {
     const result = resolveSkillCommand(id, trailingText, overrides)
@@ -191,6 +240,7 @@ export async function createWorkspaceRule(
     ''
   ].join('\n')
   writeFileSync(absolute, body, 'utf8')
+  invalidateSlashCommandsCache(workspacePath)
 
   try {
     await shell.openPath(absolute)

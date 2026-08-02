@@ -1,8 +1,11 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import {
   ChatEventBatcher,
+  ChatEventDispatcher,
   getChatEventBatchStats,
-  resetChatEventBatchStats
+  resetChatEventBatchStats,
+  resetChatEventDispatcher,
+  setChatEventActivePathResolver
 } from '@main/ipc/streamBatch'
 import type { AgentEvent } from '@shared/ipc'
 
@@ -12,10 +15,14 @@ describe('ChatEventBatcher', () => {
   beforeEach(() => {
     sent = []
     resetChatEventBatchStats()
+    resetChatEventDispatcher()
+    setChatEventActivePathResolver(() => null)
     vi.useFakeTimers()
   })
 
   afterEach(() => {
+    setChatEventActivePathResolver(null)
+    resetChatEventDispatcher()
     vi.useRealTimers()
   })
 
@@ -232,5 +239,73 @@ describe('ChatEventBatcher', () => {
     expect(stats.sent).toBe(2)
     expect(stats.byType['text_delta']).toBe(2)
     expect(stats.byType['tool_call_delta']).toBe(2)
+  })
+})
+
+describe('ChatEventDispatcher priority', () => {
+  beforeEach(() => {
+    resetChatEventBatchStats()
+    resetChatEventDispatcher()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    setChatEventActivePathResolver(null)
+    resetChatEventDispatcher()
+    vi.useRealTimers()
+  })
+
+  it('flushes active-workspace deltas before background on shared timer', () => {
+    const order: string[] = []
+    setChatEventActivePathResolver(() => '/ws-active')
+
+    const dispatcher = new ChatEventDispatcher()
+    dispatcher.attach('run-bg', '/ws-bg', (ev) => order.push(`bg:${ev.type}`))
+    dispatcher.attach('run-fg', '/ws-active', (ev) => order.push(`fg:${ev.type}`))
+
+    dispatcher.push('run-bg', { type: 'text_delta', runId: 'run-bg', text: 'b' })
+    dispatcher.push('run-fg', { type: 'text_delta', runId: 'run-fg', text: 'a' })
+
+    // Active path schedules 16ms; advancing 16 should flush both with fg first.
+    vi.advanceTimersByTime(16)
+
+    expect(order[0]).toBe('fg:text_delta')
+    expect(order[1]).toBe('bg:text_delta')
+  })
+
+  it('keeps latest background usage per step', () => {
+    const sent: AgentEvent[] = []
+    setChatEventActivePathResolver(() => '/ws-active')
+
+    const dispatcher = new ChatEventDispatcher()
+    dispatcher.attach('run-bg', '/ws-bg', (ev) => sent.push(ev))
+
+    dispatcher.push('run-bg', {
+      type: 'step_usage',
+      runId: 'run-bg',
+      step: 1,
+      inputTokens: 1,
+      outputTokens: 1
+    })
+    dispatcher.push('run-bg', {
+      type: 'step_usage',
+      runId: 'run-bg',
+      step: 1,
+      inputTokens: 3,
+      outputTokens: 3
+    })
+    dispatcher.push('run-bg', {
+      type: 'step_usage',
+      runId: 'run-bg',
+      step: 2,
+      inputTokens: 9,
+      outputTokens: 9
+    })
+
+    vi.advanceTimersByTime(80)
+
+    expect(sent).toHaveLength(2)
+    expect(sent[0]).toMatchObject({ type: 'step_usage', inputTokens: 3, step: 1 })
+    expect(sent[1]).toMatchObject({ type: 'step_usage', inputTokens: 9, step: 2 })
   })
 })

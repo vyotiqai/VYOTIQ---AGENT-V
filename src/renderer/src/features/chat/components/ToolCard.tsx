@@ -25,8 +25,9 @@ export const ToolCard = memo(function ToolCard({
   mcpServerNames?: ReadonlyMap<string, string>
 }) {
   const { tool } = item
-  const [localOpen, setLocalOpen] = useState(tool.name === 'todo_write')
-  const isOpen = expanded ?? localOpen
+  const [localOverride, setLocalOverride] = useState<boolean | null>(null)
+  // Open while running (parity with compact familyDefaultExpanded); fold to clamp when done.
+  const isOpen = expanded ?? localOverride ?? tool.status === 'running'
   const failed = tool.status === 'fail'
   const running = tool.status === 'running'
 
@@ -42,16 +43,23 @@ export const ToolCard = memo(function ToolCard({
     () =>
       toolHasBody(tool, {
         subagent: item.subagent,
-        subagentContextUsage: item.subagentContextUsage
+        subagentContextUsage: item.subagentContextUsage,
+        nestedAgent: item.nestedAgent
       }),
-    [tool, item.subagent, item.subagentContextUsage]
+    [tool, item.subagent, item.subagentContextUsage, item.nestedAgent]
   )
 
   const toggle = (): void => {
     const next = !isOpen
     if (onToggle) onToggle(next)
-    else setLocalOpen(next)
+    else setLocalOverride(next)
   }
+
+  const disclosureLabel = hasBody
+    ? `${isOpen ? 'Collapse' : 'Expand'} ${headerMeta.verb}${
+        headerMeta.target ? `: ${headerMeta.target}` : ''
+      }`
+    : `${headerMeta.verb}${headerMeta.target ? ` ${headerMeta.target}` : ''}`
 
   const header = (
     <>
@@ -67,13 +75,18 @@ export const ToolCard = memo(function ToolCard({
       {running ? (
         <TextShimmer className="shrink-0 font-medium text-fg">{headerMeta.verb}</TextShimmer>
       ) : (
-        <span className={cn('shrink-0 font-medium', failed ? 'text-danger' : 'text-fg')}>
+        <span
+          className={cn(
+            'shrink-0 font-medium tool-status-morph',
+            failed ? 'text-danger' : 'text-fg'
+          )}
+        >
           {headerMeta.verb}
         </span>
       )}
       <span
         className={cn(
-          'min-w-0 truncate text-tertiary',
+          'min-w-0 flex-1 truncate text-tertiary',
           headerMeta.icon === 'terminal' && 'font-mono'
         )}
         title={headerMeta.target}
@@ -81,6 +94,9 @@ export const ToolCard = memo(function ToolCard({
         {headerMeta.target}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-2 tabular-nums">
+        {failed && headerMeta.exitCode == null ? (
+          <Icon name="warning" size={14} className="shrink-0 text-danger tool-status-morph" />
+        ) : null}
         {headerMeta.exitCode != null ? (
           <span
             className={cn(
@@ -105,7 +121,8 @@ export const ToolCard = memo(function ToolCard({
   return (
     <ProminentChrome
       header={header}
-      clampWhenCollapsed={tool.name !== 'todo_write'}
+      clampWhenCollapsed
+      ariaLabel={disclosureLabel}
       body={
         <ToolBodyView
           context={{
@@ -113,6 +130,7 @@ export const ToolCard = memo(function ToolCard({
             expanded: isOpen,
             subagent: item.subagent,
             subagentContextUsage: item.subagentContextUsage,
+            nestedAgent: item.nestedAgent,
             onLoadFullContent,
             mcpServerNames
           }}

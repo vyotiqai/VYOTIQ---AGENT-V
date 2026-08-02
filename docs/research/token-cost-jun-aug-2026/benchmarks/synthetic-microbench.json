@@ -1,0 +1,118 @@
+{
+  "meta": {
+    "generatedAt": "2026-08-02T09:57:30.500Z",
+    "heuristic": "chars/4 for synthetic JSON; AppData numbers labeled separately",
+    "noLiveApi": true,
+    "appDataFreeze": {
+      "steps": 151,
+      "billedInput": 4721077,
+      "peak": 47049,
+      "cachePct": 74
+    }
+  },
+  "toolLayerScenarios": {
+    "builtinsOnly": {
+      "count": 45,
+      "estimateTokens": 6412,
+      "note": "Synthetic full builtin schemas (chars/4)"
+    },
+    "builtinsPlusMcpFull": {
+      "count": 75,
+      "estimateTokens": 14498,
+      "note": "All MCP full schemas every step (anti-pattern vs defer)"
+    },
+    "builtinsPlusMcpDeferredStubs": {
+      "count": 75,
+      "estimateTokens": 7586,
+      "note": "Claude Code defer_loading-style stubs (T13)"
+    },
+    "observedAppDataSteadyTools": {
+      "count": 45,
+      "estimateTokens": 6659,
+      "note": "AppData step_usage.layers.tools median/steady after sticky builtins-only"
+    },
+    "observedAppDataPeakTools": {
+      "count": 50,
+      "estimateTokens": 8147,
+      "note": "AppData max tools layer during brief MCP pin window"
+    }
+  },
+  "historyTrimScenarios": {
+    "raw40x12k": {
+      "toolResults": 40,
+      "bodyChars": 12000,
+      "estimateTokens": 122012,
+      "note": "No trim — hoarded tool bodies"
+    },
+    "trimKeepLast2": {
+      "toolResults": 40,
+      "bodyChars": 12000,
+      "estimateTokens": 8148,
+      "note": "VYOTIQ default KEEP_LAST_TOOL_RESULTS=2"
+    },
+    "trimKeepLast1": {
+      "toolResults": 40,
+      "bodyChars": 12000,
+      "estimateTokens": 5151,
+      "note": "Under-pressure keep 1"
+    }
+  },
+  "counterfactuals": {
+    "sameStepsAtHistoricalPeak": {
+      "label": "estimate",
+      "formula": "steps × historicalPeak",
+      "value": 19643288,
+      "vsActual": 14922211,
+      "note": "If soft-cap hold had not held (~130k peak) at same step count"
+    },
+    "sameStepsAtObservedPeak": {
+      "label": "AppData anchor",
+      "formula": "steps × peak",
+      "value": 7104399,
+      "note": "Upper bound if every step were peak-sized"
+    },
+    "removeWastedMcpRetrySteps": {
+      "label": "estimate",
+      "formula": "receiptFailed × avgLate",
+      "value": 1472000,
+      "note": "Gross input attributable to failed tool rounds if each failure ≈ one late-size step"
+    },
+    "notInCatalogOnly": {
+      "label": "estimate",
+      "formula": "notInCatalogFails × avgLate",
+      "value": 640000,
+      "note": "Parser-confirmed not-in-catalog failures × late avg input"
+    },
+    "cacheMissAllInput": {
+      "label": "estimate",
+      "uncachedActual": 1227480,
+      "ifZeroCacheUncached": 4721077,
+      "deltaUncachedVsActual": 3493597,
+      "note": "Tokens that would be fully uncached if hit rate were 0%"
+    },
+    "reasoningOffApprox": {
+      "label": "estimate",
+      "reasoningTokens": 130255,
+      "note": "Input Σ unchanged; output/reasoning bill shrinks if thinking off"
+    },
+    "historicalVsLive": {
+      "label": "AppData contrast",
+      "liveBilled": 4721077,
+      "historicalBilled": 6180389,
+      "livePeak": 47049,
+      "historicalPeak": 130088,
+      "liveCachePct": 0.74,
+      "historicalCachePct": 0.028
+    },
+    "freezeNote": {
+      "label": "AppData",
+      "note": "Freeze after re-parse 2026-08-02; session continued from earlier 4.19M/137-step snapshot during audit"
+    }
+  },
+  "deltas": {
+    "mcpFullMinusDeferred": 6912,
+    "mcpFullMinusBuiltins": 8086,
+    "rawMinusTrim2": 113864,
+    "rawMinusTrim1": 116861
+  }
+}

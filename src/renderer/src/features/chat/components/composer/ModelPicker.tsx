@@ -19,6 +19,7 @@ import {
   supportedTiersForModel,
   type ModelPickerOption
 } from './composerModelUtils'
+import { clampComposerDropdownPanel } from './composerDropdownLayout'
 
 const SESSION_TAB_KEY = 'vyotiq:model-picker-tab'
 
@@ -35,28 +36,39 @@ function readSessionTab(fallback: ProviderId, providers: ProviderId[]): Provider
 }
 
 const optionClass = cn(
-  'flex w-full cursor-pointer items-center gap-2 rounded-xl bg-transparent px-2.5 py-1.5 text-left text-sm text-fg',
+  'relative flex w-full cursor-pointer items-center gap-2 rounded-lg bg-transparent py-1.5 pl-2.5 pr-12 text-left text-sm text-fg',
   'hover:bg-surface active:bg-surface-2',
   'vy-transition'
 )
 
+const badgeChip =
+  'rounded px-1 py-0.5 text-[9px] uppercase tracking-wide text-muted ring-1 ring-border'
+
+const PANEL_MAX_PX = 512
+
+/** Fixed Think / Vision / Tools columns; missing slots stay invisible so tags align. */
 function CapabilityBadges({ meta }: { meta?: ModelPickerOption['meta'] }) {
   if (!meta) return null
-  const badges: string[] = []
-  if (meta.supportsThinking) badges.push('Think')
-  if (meta.supportsVision) badges.push('Vision')
-  if (meta.supportsTools) badges.push('Tools')
-  if (!badges.length) return null
+  const hasThink = Boolean(meta.supportsThinking)
+  const hasVision = Boolean(meta.supportsVision || meta.inputModalities.includes('image'))
+  const hasTools = Boolean(meta.supportsTools)
+  const hasAudio = meta.inputModalities.includes('audio')
+  if (!hasThink && !hasVision && !hasTools && !hasAudio) return null
+
+  const slots: { key: string; label: string; on: boolean }[] = [
+    { key: 'Think', label: 'Think', on: hasThink },
+    { key: 'Vision', label: 'Vision', on: hasVision },
+    { key: 'Tools', label: 'Tools', on: hasTools }
+  ]
+
   return (
-    <span className="flex shrink-0 gap-1">
-      {badges.map((b) => (
-        <span
-          key={b}
-          className="rounded px-1 py-0.5 text-[9px] uppercase tracking-wide text-muted ring-1 ring-border"
-        >
-          {b}
+    <span className="flex shrink-0 gap-0.5" data-capability-badges>
+      {slots.map((s) => (
+        <span key={s.key} className={cn(badgeChip, !s.on && 'invisible')} aria-hidden={!s.on}>
+          {s.label}
         </span>
       ))}
+      {hasAudio ? <span className={badgeChip}>Audio</span> : null}
     </span>
   )
 }
@@ -93,7 +105,7 @@ function ModelRow({
       tabIndex={-1}
       ref={optionRef}
       className={cn(
-        'group relative',
+        'group',
         optionClass,
         selected && 'bg-surface-2 text-fg-strong',
         active && !selected && 'bg-surface'
@@ -106,33 +118,39 @@ function ModelRow({
           id={parsed.provider}
           subProvider={opt.subProvider}
           size="sm"
-          className="text-muted"
+          className="shrink-0 text-muted"
         />
       ) : null}
-      <span className="min-w-0 flex-1 truncate">{opt.label}</span>
+      <span className="min-w-0 flex-1 truncate leading-tight" title={opt.label}>
+        {opt.label}
+      </span>
       <CapabilityBadges meta={opt.meta} />
       <button
         type="button"
         className={cn(
-          'shrink-0 rounded px-0.5 text-xs text-muted opacity-0 vy-transition group-hover:opacity-100',
-          favorite && 'opacity-100 text-fg'
+          'absolute top-1/2 right-7 z-[1] inline-grid size-5 -translate-y-1/2 place-items-center rounded text-muted vy-transition',
+          favorite
+            ? 'opacity-100 text-fg'
+            : 'opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100'
         )}
         aria-label={favorite ? 'Remove from favorites' : 'Add to favorites'}
+        tabIndex={favorite ? 0 : -1}
+        onMouseDown={(e) => e.preventDefault()}
         onClick={(e) => {
           e.stopPropagation()
           onToggleFavorite()
         }}
       >
-        <Icon
-          name="star"
-          size={16}
-          weight={favorite ? 'fill' : 'bold'}
-        />
+        <Icon name="star" size={14} weight={favorite ? 'fill' : 'bold'} />
       </button>
       {selected ? (
-        <Icon name="check" size={16} className="shrink-0 text-fg" />
+        <Icon
+          name="check"
+          size={16}
+          className="absolute top-1/2 right-2.5 shrink-0 -translate-y-1/2 text-fg"
+        />
       ) : (
-        <span className="inline-block size-4 shrink-0" aria-hidden />
+        <span className="absolute top-1/2 right-2.5 inline-block size-4 -translate-y-1/2" aria-hidden />
       )}
     </li>
   )
@@ -157,7 +175,8 @@ export function ModelPicker({
   catalogLoading,
   disabled,
   className,
-  triggerClassName
+  triggerClassName,
+  focusInput
 }: {
   providers: ProviderId[]
   optionsByProvider: Record<ProviderId, ModelPickerOption[]>
@@ -178,6 +197,7 @@ export function ModelPicker({
   disabled?: boolean
   className?: string
   triggerClassName?: string
+  focusInput?: () => void
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -202,9 +222,20 @@ export function ModelPicker({
     modelMetaByValue[modelValue]
   )
 
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      setOpen(next)
+      if (!next) {
+        setQuery('')
+        setActiveIndex(-1)
+      }
+    },
+    [setOpen]
+  )
+
   const { position, close } = useDropdownMenu({
     open,
-    onOpenChange: setOpen,
+    onOpenChange: handleOpenChange,
     triggerRef,
     panelRef,
     placement: 'up',
@@ -302,9 +333,10 @@ export function ModelPicker({
       const parsed = parseModelSelectionKey(value)
       if (!parsed) return
       onModelChange(parsed.provider, parsed.model)
-      close()
+      close(false)
+      window.setTimeout(() => focusInput?.(), 0)
     },
-    [onModelChange, close]
+    [onModelChange, close, focusInput]
   )
 
   const onListKeyDown = (e: React.KeyboardEvent): void => {
@@ -327,19 +359,28 @@ export function ModelPicker({
 
   const panel =
     open && position
-      ? createPortal(
+      ? (() => {
+          const pos = position
+          const { left: panelLeft, width: panelWidth, maxHeight } = clampComposerDropdownPanel({
+            position: pos,
+            maxWidthPx: PANEL_MAX_PX,
+            minHeightPx: 240
+          })
+          return createPortal(
           <div
             ref={panelRef}
             id={panelId}
             role="listbox"
             aria-label="Select model"
-            className="fixed z-dropdown flex max-h-[min(70vh,36rem)] w-[min(calc(100vw-1.5rem),24rem)] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-menu animate-fade-in"
+            className="fixed z-dropdown flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-menu animate-fade-in"
             style={{
-              top: position.placement === 'up' ? undefined : position.top,
+              top: pos.placement === 'up' ? undefined : pos.top,
               bottom:
-                position.placement === 'up' ? window.innerHeight - position.top : undefined,
-              left: position.left,
-              maxWidth: 384
+                pos.placement === 'up' ? window.innerHeight - pos.top : undefined,
+              left: panelLeft,
+              width: panelWidth,
+              maxWidth: panelWidth,
+              maxHeight
             }}
             onKeyDown={onListKeyDown}
           >
@@ -362,6 +403,7 @@ export function ModelPicker({
                 className="inline-grid size-7 shrink-0 place-items-center rounded-xl text-muted vy-transition hover:bg-surface hover:text-fg disabled:opacity-50"
                 aria-label="Refresh model catalog"
                 disabled={catalogLoading}
+                onMouseDown={(e) => e.preventDefault()}
                 onClick={() => onRefreshCatalog()}
               >
                 <span className={cn('text-sm', catalogLoading && 'animate-spin')}>↻</span>
@@ -374,7 +416,7 @@ export function ModelPicker({
               </p>
             ) : null}
 
-            <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-border px-2 py-1.5">
+            <div className="sidebar-scroll-x flex shrink-0 gap-1 border-b border-border px-2 py-1.5">
               {providers.map((p) => {
                 const meta = PROVIDER_DEFAULTS.find((d) => d.id === p)
                 const active = browsedProvider === p
@@ -383,12 +425,13 @@ export function ModelPicker({
                     key={p}
                     type="button"
                     className={cn(
-                      'inline-flex shrink-0 items-center gap-1 rounded-xl px-2 py-1 text-[10px] vy-transition',
+                      'inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] leading-tight vy-transition',
                       active
                         ? 'bg-surface-2 text-fg-strong'
-                        : 'text-muted hover:bg-surface hover:text-fg'
+                        : 'text-secondary hover:bg-surface hover:text-fg'
                     )}
                     aria-pressed={active}
+                    onMouseDown={(e) => e.preventDefault()}
                     onClick={() => selectBrowsedProvider(p)}
                   >
                     <ProviderLogo id={p} size="sm" />
@@ -400,7 +443,7 @@ export function ModelPicker({
 
             <ul
               id={listId}
-              className="m-0 min-h-0 flex-1 list-none overflow-auto p-1"
+              className="sidebar-scroll m-0 min-h-0 flex-1 list-none p-1"
               role="presentation"
             >
               {flatOptions.length === 0 ? (
@@ -429,7 +472,7 @@ export function ModelPicker({
               ) : (
                 visibleOptions.sections.map((section) => (
                   <li key={section.header} role="presentation">
-                    <div className="px-2 pt-1.5 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
+                    <div className="px-2.5 pt-2 pb-1 text-[10px] font-medium uppercase tracking-wide text-secondary">
                       {section.header}
                     </div>
                     <ul className="m-0 list-none p-0" role="group" aria-label={section.header}>
@@ -464,7 +507,7 @@ export function ModelPicker({
 
             {supportedTiers.length > 0 ? (
               <div className="shrink-0 border-t border-border px-3 py-2">
-                <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted">
+                <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-secondary">
                   Speed
                 </p>
                 <div className="flex flex-wrap gap-1">
@@ -473,13 +516,14 @@ export function ModelPicker({
                       key={tier}
                       type="button"
                       className={cn(
-                        'rounded-xl px-2 py-1 text-xs vy-transition',
+                        'rounded-lg px-2 py-1 text-xs vy-transition',
                         serviceTier === tier
                           ? 'bg-surface-2 text-fg-strong'
                           : 'text-muted hover:bg-surface hover:text-fg'
                       )}
                       title={SERVICE_TIER_DESCRIPTIONS[tier]}
                       aria-pressed={serviceTier === tier}
+                      onMouseDown={(e) => e.preventDefault()}
                       onClick={() => onServiceTierChange(tier)}
                     >
                       {SERVICE_TIER_LABELS[tier]}
@@ -491,6 +535,7 @@ export function ModelPicker({
           </div>,
           document.body
         )
+      })()
       : null
 
   return (
@@ -505,10 +550,11 @@ export function ModelPicker({
         aria-controls={open ? panelId : undefined}
         title={`${providerMeta?.label ?? provider} · ${displayName}`}
         disabled={disabled}
+        onMouseDown={(e) => e.preventDefault()}
         onClick={() => setOpen((v) => !v)}
       >
         <ProviderLogo id={provider} size="sm" className="shrink-0 text-muted" />
-        <span className="min-w-0 flex-1 truncate">{displayName}</span>
+        <span className="min-w-0 flex-1 truncate leading-tight text-fg">{displayName}</span>
         <Icon
           name="chevron"
           size={12}

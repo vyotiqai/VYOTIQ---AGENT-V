@@ -1,4 +1,5 @@
 import { Icon } from '@renderer/lib/icons'
+import { FileTypeIcon } from '@renderer/lib/fileIcons'
 
 function shortSize(chars: number): string {
   if (chars < 1000) return `${chars} chars`
@@ -24,7 +25,7 @@ export function FileChip({
       className="inline-flex max-w-56 items-center gap-1 rounded-xl border border-border bg-surface px-1.5 py-0.5 text-xs text-muted"
       title={title}
     >
-      <Icon name="file" size={14} />
+      <FileTypeIcon path={name} size={14} />
       <span className="truncate">{name}</span>
       {chars !== undefined ? (
         <span className="shrink-0 text-secondary">{shortSize(chars)}</span>

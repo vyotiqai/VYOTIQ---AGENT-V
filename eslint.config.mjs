@@ -46,6 +46,14 @@ export default [
     }
   },
   {
+    files: ['**/*.cjs'],
+    languageOptions: {
+      globals: { ...globals.node },
+      sourceType: 'script',
+      ecmaVersion: 'latest'
+    }
+  },
+  {
     files: ['**/*.{ts,tsx}'],
     languageOptions: sharedLanguageOptions,
     rules: sharedRules

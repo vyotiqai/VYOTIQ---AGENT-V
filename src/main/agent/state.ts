@@ -2,8 +2,13 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, rmSync, wri
 import { readFile, readdir } from 'fs/promises'
 import { join, basename } from 'path'
 import { atomicWriteFile, atomicWriteJson } from '../storage/atomicWrite'
-import { enqueueEventAppend, flushEventAppends } from './eventAppendQueue'
-import { enqueueMessageAppend, flushMessageAppends } from './messageAppendQueue'
+import {
+  blockUntilEventAppendsFlushed,
+  enqueueEventAppend,
+  flushEventAppends
+} from './eventAppendQueue'
+import { enqueueMessageAppend, flushMessageAppends, takeMessageAppendFailureNotice } from './messageAppendQueue'
+import { enqueueStatusPatch, writeStatusImmediate } from './statusWriteQueue'
 import { getCachedListRuns, invalidateListRunsCache } from './runListCache'
 import {
   ChatMessageSchema,
@@ -18,6 +23,7 @@ import {
   type RunSummary
 } from '../../shared/ipc'
 import { logger } from '../../shared/logger'
+import { workspaceIdFromPath } from '../../shared/utils/workspaceId'
 import { toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
 import { finalizeInterruptedTodoContent } from '../../shared/utils/todoContent'
 import { finalizeInterruptedTodos } from './tools/todo'
@@ -26,7 +32,8 @@ import { isActive } from './runRegistry'
 import { CompactionRecordSchema, type CompactionRecord } from './context/types'
 
 export { flushEventAppends } from './eventAppendQueue'
-export { flushMessageAppends } from './messageAppendQueue'
+export { flushMessageAppends, takeMessageAppendFailureNotice } from './messageAppendQueue'
+export { flushStatusWrites } from './statusWriteQueue'
 
 const CONTRACT_CAP = 4000
 
@@ -56,7 +63,51 @@ export async function readContractAsync(runDir: string): Promise<string> {
   }
 }
 
-export function saveCompaction(runDir: string, record: CompactionRecord): void {
+const PLAN_STUB_MARKER = '_Draft the plan here.'
+
+export const DEFAULT_PLAN_STUB = [
+  '# Plan',
+  '',
+  `${PLAN_STUB_MARKER} Update as you learn. Do not edit product source in Plan mode.`,
+  '',
+  '## Goal',
+  '',
+  '## Approach',
+  '',
+  '## Files',
+  '',
+  '## Risks',
+  '',
+  '## Test plan',
+  '',
+  '## Open questions',
+  ''
+].join('\n')
+
+/** Approved/draft plan artifact; empty when missing or still the Plan-mode stub. */
+export async function readPlanAsync(runDir: string): Promise<string> {
+  const p = join(runDir, 'plan.md')
+  if (!existsSync(p)) return ''
+  try {
+    const text = (await readFile(p, 'utf8')).trim()
+    if (!text) return ''
+    if (text.includes(PLAN_STUB_MARKER)) {
+      const withoutStub = text
+        .replace(PLAN_STUB_MARKER, '')
+        .replace(/^#\s*Plan\s*/i, '')
+        .replace(/^##\s+(Goal|Approach|Files|Risks|Test plan|Open questions)\s*/gim, '')
+        .trim()
+      // Still mostly empty aside from the stub boilerplate.
+      if (withoutStub.replace(/[_*.\s]/g, '').length < 20) return ''
+    }
+    if (text.length <= CONTRACT_CAP) return text
+    return text.slice(0, CONTRACT_CAP) + '\n…'
+  } catch {
+    return ''
+  }
+}
+
+export function saveCompaction(runDir: string, record: CompactionRecord): boolean {
   const parsed = CompactionRecordSchema.safeParse(record)
   if (!parsed.success) {
     logger.warn('Invalid compaction record; not saved', {
@@ -64,9 +115,19 @@ export function saveCompaction(runDir: string, record: CompactionRecord): void {
       correlationId: basename(runDir),
       err: parsed.error
     })
-    return
+    return false
   }
-  atomicWriteJson(join(runDir, 'compaction.json'), parsed.data)
+  try {
+    atomicWriteJson(join(runDir, 'compaction.json'), parsed.data)
+    return true
+  } catch (err) {
+    logger.warn('Failed to write compaction.json', {
+      scope: 'state',
+      correlationId: basename(runDir),
+      err
+    })
+    return false
+  }
 }
 
 export function loadCompaction(runDir: string): CompactionRecord | null {
@@ -93,18 +154,129 @@ export function loadCompaction(runDir: string): CompactionRecord | null {
   }
 }
 
+/** Persisted sticky tool catalog for prompt-cache continuity across resume. */
+export type ToolCatalogStickyRecord = {
+  version: 1
+  keptNames: string[]
+  fingerprint: string
+  updatedAt: string
+  /**
+   * MCP tool name → last agent step pinned or invoked.
+   * Optional for older toolCatalog.json files; when absent, resume seeds pins to the current step.
+   */
+  mcpLastUsedByName?: Record<string, number>
+}
+
+function normalizeMcpLastUsedByName(
+  raw: unknown
+): Record<string, number> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const out: Record<string, number> = {}
+  for (const [name, step] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof name !== 'string' || !name.startsWith('mcp__')) continue
+    if (typeof step !== 'number' || !Number.isFinite(step) || step < 1) continue
+    out[name] = Math.floor(step)
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+export function saveToolCatalogSticky(
+  runDir: string,
+  keptNames: readonly string[],
+  fingerprint: string,
+  mcpLastUsedByName?: ReadonlyMap<string, number> | Record<string, number>
+): boolean {
+  const lastUsedRaw =
+    mcpLastUsedByName instanceof Map
+      ? Object.fromEntries(mcpLastUsedByName.entries())
+      : mcpLastUsedByName
+  const mcpLastUsed = normalizeMcpLastUsedByName(lastUsedRaw)
+  const record: ToolCatalogStickyRecord = {
+    version: 1,
+    keptNames: [...keptNames],
+    fingerprint,
+    updatedAt: new Date().toISOString(),
+    ...(mcpLastUsed ? { mcpLastUsedByName: mcpLastUsed } : {})
+  }
+  try {
+    atomicWriteJson(join(runDir, 'toolCatalog.json'), record)
+    return true
+  } catch (err) {
+    logger.warn('Failed to write toolCatalog.json', {
+      scope: 'state',
+      correlationId: basename(runDir),
+      err
+    })
+    return false
+  }
+}
+
+export function loadToolCatalogSticky(runDir: string): ToolCatalogStickyRecord | null {
+  const p = join(runDir, 'toolCatalog.json')
+  if (!existsSync(p)) return null
+  try {
+    const raw = JSON.parse(readFileSync(p, 'utf8')) as Partial<ToolCatalogStickyRecord>
+    if (raw?.version !== 1 || !Array.isArray(raw.keptNames) || raw.keptNames.length === 0) {
+      return null
+    }
+    const keptNames = raw.keptNames.filter((n): n is string => typeof n === 'string' && n.length > 0)
+    if (keptNames.length === 0) return null
+    const mcpLastUsedByName = normalizeMcpLastUsedByName(raw.mcpLastUsedByName)
+    return {
+      version: 1,
+      keptNames,
+      fingerprint: typeof raw.fingerprint === 'string' ? raw.fingerprint : keptNames.join('|'),
+      updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : '',
+      ...(mcpLastUsedByName ? { mcpLastUsedByName } : {})
+    }
+  } catch (err) {
+    logger.warn('Failed to read toolCatalog.json', {
+      scope: 'state',
+      correlationId: basename(runDir),
+      err
+    })
+    return null
+  }
+}
+
 export function runExists(workspacePath: string, runId: string): boolean {
   const dir = resolveRunDir(workspacePath, runId)
   return existsSync(dir) && existsSync(join(dir, 'status.json'))
 }
 
-export function resumeRun(workspacePath: string, runId: string): string {
+export async function resumeRun(workspacePath: string, runId: string): Promise<string> {
   const dir = resolveRunDir(workspacePath, runId)
   if (!existsSync(dir)) {
     throw new Error('Run not found')
   }
-  updateStatus(dir, { status: 'running', step: 0 })
+  // chatStart may already have queued the follow-up user turn.
+  await flushMessageAppends(dir)
+  // Close any unfinished tool pairing from a previous crash before continuing.
+  appendOrphanToolStubs(dir, runId)
+  const prior = loadStatus(dir)
+  await updateStatus(
+    dir,
+    {
+      status: 'running',
+      // Keep prior step count across invokes (do not reset progress metadata).
+      step: prior?.step ?? 0,
+      error: undefined
+    },
+    { sync: true }
+  )
   return dir
+}
+
+export function loadStatus(dir: string): RunStatus | null {
+  const p = join(dir, 'status.json')
+  if (!existsSync(p)) return null
+  try {
+    const raw = JSON.parse(readFileSync(p, 'utf8')) as unknown
+    const parsed = RunStatusSchema.safeParse(raw)
+    return parsed.success ? parsed.data : null
+  } catch {
+    return null
+  }
 }
 
 export function syncMessages(dir: string, messages: ChatMessage[]): void {
@@ -118,9 +290,9 @@ export async function syncMessagesAsync(dir: string, messages: ChatMessage[]): P
   syncMessages(dir, messages)
 }
 
-export function appendMessage(dir: string, message: ChatMessage): void {
+export function appendMessage(dir: string, message: ChatMessage): Promise<void> {
   const line = `${JSON.stringify(message)}\n`
-  enqueueMessageAppend(dir, line)
+  return enqueueMessageAppend(dir, line)
 }
 
 export function createRun(workspacePath: string, runId: string, goal: string): string {
@@ -128,11 +300,9 @@ export function createRun(workspacePath: string, runId: string, goal: string): s
   ensureWorkspaceStorage(workspacePath)
   mkdirSync(dir, { recursive: true })
   const goalText = goal.trim() || 'chat'
-  writeFileSync(
+  atomicWriteFile(
     join(dir, 'contract.md'),
     [
-      '# Run contract',
-      '',
       '## Goal',
       '',
       goalText,
@@ -141,21 +311,22 @@ export function createRun(workspacePath: string, runId: string, goal: string): s
       '',
       '- The goal above is satisfied (check outcomes: read results, command output, or user-visible success).',
       '- Or blockers are explained clearly and no further narrow retry will help.',
-      '- Update this file if the goal narrows mid-run.',
+      '- Update this file if scope or done-when changes.',
       ''
-    ].join('\n'),
-    'utf8'
+    ].join('\n')
   )
   const status: RunStatus = {
     status: 'running',
     step: 0,
     updatedAt: new Date().toISOString(),
     goal: goalText.slice(0, 200),
-    workspacePath
+    workspacePath,
+    mode: 'agent',
+    consecutiveToolFailureSteps: 0
   }
-  writeFileSync(join(dir, 'status.json'), JSON.stringify(status, null, 2), 'utf8')
-  writeFileSync(join(dir, 'messages.jsonl'), '', 'utf8')
-  writeFileSync(join(dir, 'events.jsonl'), '', 'utf8')
+  atomicWriteJson(join(dir, 'status.json'), status)
+  atomicWriteFile(join(dir, 'messages.jsonl'), '')
+  atomicWriteFile(join(dir, 'events.jsonl'), '')
   invalidateListRunsCache(workspacePath)
   return dir
 }
@@ -165,28 +336,49 @@ export function appendEvent(dir: string, event: unknown): void {
   enqueueEventAppend(dir, event)
 }
 
-export function updateStatus(dir: string, patch: Partial<RunStatus>): void {
-  const p = join(dir, 'status.json')
-  let current: RunStatus = {
-    status: 'running',
-    step: 0,
-    updatedAt: new Date().toISOString()
+/** Await pending event appends, then rewrite events.jsonl (authoritative). */
+export async function syncEventsAsync(dir: string, events: unknown[]): Promise<void> {
+  await flushEventAppends(dir)
+  const body = events
+    .map((event) =>
+      JSON.stringify({
+        at: new Date().toISOString(),
+        event
+      })
+    )
+    .join('\n')
+  atomicWriteFile(join(dir, 'events.jsonl'), body ? `${body}\n` : '')
+}
+
+export async function updateStatus(
+  dir: string,
+  patch: Partial<RunStatus>,
+  options?: { sync?: boolean }
+): Promise<void> {
+  if (options?.sync) {
+    await writeStatusImmediate(
+      dir,
+      patch,
+      (path, next) => atomicWriteJson(path, next),
+      (path) => {
+        let current: RunStatus = {
+          status: 'running',
+          step: 0,
+          updatedAt: new Date().toISOString()
+        }
+        try {
+          const raw = JSON.parse(readFileSync(path, 'utf8')) as unknown
+          const parsed = RunStatusSchema.safeParse(raw)
+          if (parsed.success) current = parsed.data
+        } catch {
+          // keep default
+        }
+        return current
+      }
+    )
+    return
   }
-  try {
-    const raw = JSON.parse(readFileSync(p, 'utf8')) as unknown
-    const parsed = RunStatusSchema.safeParse(raw)
-    if (parsed.success) current = parsed.data
-  } catch {
-    // keep default
-  }
-  const next: RunStatus = {
-    ...current,
-    ...patch,
-    updatedAt: new Date().toISOString()
-  }
-  atomicWriteJson(p, next)
-  const workspacePath = next.workspacePath ?? current.workspacePath
-  if (workspacePath) invalidateListRunsCache(workspacePath)
+  enqueueStatusPatch(dir, patch)
 }
 
 function parseMessagesJsonl(content: string): ChatMessage[] {
@@ -249,6 +441,7 @@ export async function loadToolResultContent(
   toolCallId: string
 ): Promise<string | null> {
   const dir = resolveRunDir(workspacePath, runId)
+  await flushMessageAppends(dir)
   const p = join(dir, 'messages.jsonl')
   if (!existsSync(p)) return null
   let raw: string
@@ -354,6 +547,18 @@ export function loadEvents(
   runId?: string,
   options?: { limit?: number }
 ): PersistedEvent[] {
+  let flushed = blockUntilEventAppendsFlushed(dir)
+  if (!flushed) {
+    // One more wait — sync callers (receipts/trajectory) should prefer a late
+    // complete read over a partial tail after a busy append chain.
+    flushed = blockUntilEventAppendsFlushed(dir, 3000)
+    if (!flushed) {
+      logger.warn('Loading events.jsonl after flush timeout; recent events may be missing', {
+        scope: 'state',
+        correlationId: basename(dir)
+      })
+    }
+  }
   const p = join(dir, 'events.jsonl')
   if (!existsSync(p)) return []
   const inferredRunId = runId ?? basename(dir)
@@ -365,30 +570,116 @@ export function loadEvents(
   return parseEventsFromText(text, inferredRunId, options)
 }
 
-/** Non-blocking events load for IPC / UI restore (Electron: do not block main). */
 export async function loadEventsAsync(
   dir: string,
   runId?: string,
   options?: { limit?: number }
 ): Promise<PersistedEvent[]> {
+  await flushEventAppends(dir)
   const p = join(dir, 'events.jsonl')
   if (!existsSync(p)) return []
   const inferredRunId = runId ?? basename(dir)
-  try {
-    const limit = options?.limit
-    const text =
-      limit != null && limit > 0
-        ? readFileTailSync(p, eventsTailByteBudget(limit))
-        : await readFile(p, 'utf8')
-    return parseEventsFromText(text, inferredRunId, options)
-  } catch (err) {
-    logger.warn('Failed to read events.jsonl', { scope: 'state', runId: inferredRunId, err })
-    return []
-  }
+  const limit = options?.limit
+  const text =
+    limit != null && limit > 0
+      ? readFileTailSync(p, eventsTailByteBudget(limit))
+      : await readFile(p, 'utf8')
+  return parseEventsFromText(text, inferredRunId, options)
 }
 
 /** Default UI restore bound — full history stays on disk. */
 export const LOAD_EVENTS_UI_LIMIT = 500
+
+const CRITICAL_HYDRATION_TYPES = new Set([
+  'writes_checkpoint',
+  'incomplete',
+  'error',
+  'status',
+  'mode_changed'
+])
+
+/**
+ * Walk events.jsonl from the end and keep the latest row of each hydration-critical
+ * type. Avoids losing writes_checkpoint / terminal status / mode when the UI tail
+ * cap drops older lines.
+ */
+function collectLatestCriticalEvents(text: string, inferredRunId: string): PersistedEvent[] {
+  const found = new Map<string, PersistedEvent>()
+  const lines = text.split('\n')
+  for (let index = lines.length - 1; index >= 0; index--) {
+    if (found.size >= CRITICAL_HYDRATION_TYPES.size) break
+    const line = lines[index]
+    if (!line) continue
+    try {
+      const json: unknown = JSON.parse(line)
+      const parsed = PersistedEventSchema.safeParse(json)
+      if (!parsed.success) continue
+      const row = normalizePersistedEvent(parsed.data, inferredRunId)
+      const event = row.event
+      if (!event || typeof event !== 'object') continue
+      const type = (event as { type?: unknown }).type
+      if (typeof type !== 'string' || !CRITICAL_HYDRATION_TYPES.has(type)) continue
+      if (type === 'status') {
+        const status = (event as { status?: unknown }).status
+        if (status !== 'done' && status !== 'cancelled' && status !== 'error') continue
+      }
+      if (!found.has(type)) found.set(type, row)
+    } catch {
+      // skip bad line
+    }
+  }
+  return [...found.values()]
+}
+
+function mergeCriticalHydrationEvents(
+  uiEvents: PersistedEvent[],
+  critical: PersistedEvent[]
+): PersistedEvent[] {
+  if (critical.length === 0) return uiEvents
+  const out = [...uiEvents]
+  for (const crit of critical) {
+    const event = crit.event
+    if (!event || typeof event !== 'object') continue
+    const type = (event as { type?: unknown }).type
+    if (typeof type !== 'string') continue
+    const already = out.some((row) => {
+      const ev = row.event
+      if (!ev || typeof ev !== 'object') return false
+      if ((ev as { type?: unknown }).type !== type) return false
+      if (type === 'writes_checkpoint') {
+        return (
+          (ev as { checkpointId?: unknown }).checkpointId ===
+          (event as { checkpointId?: unknown }).checkpointId
+        )
+      }
+      return true
+    })
+    if (!already) out.push(crit)
+  }
+  return out
+}
+
+/**
+ * UI restore: last N events plus hydration-critical rows from a wider trailing
+ * window so writes_checkpoint / mode_changed / terminal status survive long runs.
+ */
+export async function loadEventsForHydrationAsync(
+  dir: string,
+  runId?: string,
+  options?: { limit?: number }
+): Promise<PersistedEvent[]> {
+  await flushEventAppends(dir)
+  const p = join(dir, 'events.jsonl')
+  if (!existsSync(p)) return []
+  const inferredRunId = runId ?? basename(dir)
+  const limit = options?.limit ?? LOAD_EVENTS_UI_LIMIT
+  const uiEvents = await loadEventsAsync(dir, inferredRunId, { limit })
+  // Wider than the UI line cap so a checkpoint just outside the 500-event window
+  // still hydrates Keep/Discard without loading the entire history.
+  const criticalText = readFileTailSync(p, eventsTailByteBudget(Math.max(limit * 10, 2000)))
+  const critical = collectLatestCriticalEvents(criticalText, inferredRunId)
+  return mergeCriticalHydrationEvents(uiEvents, critical)
+}
 
 export function loadEventsForRun(
   workspacePath: string,
@@ -407,7 +698,7 @@ export async function loadEventsForRunAsync(
 ): Promise<PersistedEvent[]> {
   const dir = resolveRunDir(workspacePath, runId)
   if (!existsSync(join(dir, 'events.jsonl'))) return []
-  return loadEventsAsync(dir, runId, options)
+  return loadEventsForHydrationAsync(dir, runId, options)
 }
 
 const RUN_LIST_CAP = 30
@@ -471,12 +762,16 @@ function appendOrphanToolStubs(dir: string, runId: string): void {
     if (message.role === 'tool' && message.toolCallId) completedIds.add(message.toolCallId)
   }
   const stub = 'Cancelled'
+  const repaired: ChatMessage[] = []
+  let changed = false
   for (const message of messages) {
+    repaired.push(message)
     if (message.role !== 'assistant' || !message.toolCalls?.length) continue
     for (const call of message.toolCalls) {
       if (completedIds.has(call.id)) continue
       completedIds.add(call.id)
-      appendMessage(dir, {
+      changed = true
+      repaired.push({
         role: 'tool',
         toolCallId: call.id,
         toolName: call.name,
@@ -497,6 +792,7 @@ function appendOrphanToolStubs(dir: string, runId: string): void {
       )
     }
   }
+  if (changed) syncMessages(dir, repaired)
 }
 
 /** Patch the latest todo_write tool message when interrupt leaves tasks in progress. */
@@ -520,8 +816,9 @@ function patchInterruptedTodoMessage(dir: string): void {
  * Mark runs left as `running` after a crash/restart as cancelled.
  * Scans workspace run directories under each provided path.
  */
-export function interruptOrphanRuns(workspacePaths: string[]): number {
+export async function interruptOrphanRuns(workspacePaths: string[]): Promise<number> {
   let count = 0
+  const eventFlushDirs: string[] = []
   for (const workspacePath of workspacePaths) {
     const runs = workspaceSessionsRoot(workspacePath)
     if (!existsSync(runs)) continue
@@ -541,16 +838,30 @@ export function interruptOrphanRuns(workspacePaths: string[]): number {
         appendOrphanToolStubs(dir, name)
         finalizeInterruptedTodos(dir)
         patchInterruptedTodoMessage(dir)
-        updateStatus(dir, {
+        await updateStatus(
+          dir,
+          {
+            status: 'cancelled',
+            error: 'Interrupted: app exited while run was active',
+            ...(parsed.data.invokeId != null ? { invokeId: parsed.data.invokeId } : {})
+          },
+          { sync: true }
+        )
+        appendEvent(dir, {
+          type: 'status',
           status: 'cancelled',
-          error: 'Interrupted: app exited while run was active'
+          runId: name,
+          ...(parsed.data.invokeId != null ? { invokeId: parsed.data.invokeId } : {})
         })
-        appendEvent(dir, { type: 'status', status: 'cancelled', runId: name })
+        eventFlushDirs.push(dir)
         count += 1
       } catch {
         // skip
       }
     }
+  }
+  if (eventFlushDirs.length > 0) {
+    await Promise.all(eventFlushDirs.map((dir) => flushEventAppends(dir)))
   }
   return count
 }
@@ -568,6 +879,12 @@ export function deleteRun(
   }
   rmSync(dir, { recursive: true, force: true })
   invalidateListRunsCache(workspacePath)
+  logger.info('Deleted run', {
+    scope: 'agent',
+    runId,
+    workspaceId: workspaceIdFromPath(workspacePath),
+    channel: 'runs:delete'
+  })
   return { ok: true }
 }
 

@@ -110,7 +110,7 @@ export async function fetchWithRetry(
       if (init.signal?.aborted) throw err
       if (!isRetriableNetworkError(err) || attempt >= maxAttempts) throw err
       await delay(backoffMs(attempt), init.signal)
-      if (init.signal?.aborted) throw err
+      if (init.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     }
   }
 

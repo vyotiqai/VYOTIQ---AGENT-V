@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   assertPublicUrl,
+  createPinnedLookup,
   isSyncBlockedUrl,
   resetDnsLookupForTests,
   setDnsLookupForTests,
@@ -9,11 +10,41 @@ import {
 } from '@main/agent/tools/webFetch'
 
 const PUBLIC_IP = '93.184.216.34'
+const PUBLIC_IPV6 = '2606:2800:220:1:248:1893:25c8:1946'
 
 afterEach(() => {
   resetDnsLookupForTests()
   setPublicFetchForTests(null)
   vi.restoreAllMocks()
+})
+
+describe('createPinnedLookup', () => {
+  it('returns a single address when options.all is false', () => {
+    const lookup = createPinnedLookup([PUBLIC_IP, PUBLIC_IPV6])
+    let result: unknown
+    lookup('example.com', { family: 0 }, ((err, address, family) => {
+      expect(err).toBeNull()
+      result = { address, family }
+    }) as never)
+    expect(result).toEqual({ address: PUBLIC_IP, family: 4 })
+  })
+
+  it('returns [{address,family}] when options.all is true (Node 20 Happy Eyeballs)', () => {
+    const lookup = createPinnedLookup([PUBLIC_IP, PUBLIC_IPV6])
+    let result: unknown
+    lookup('example.com', { all: true }, ((err, addresses) => {
+      expect(err).toBeNull()
+      result = addresses
+    }) as never)
+    expect(result).toEqual([
+      { address: PUBLIC_IP, family: 4 },
+      { address: PUBLIC_IPV6, family: 6 }
+    ])
+  })
+
+  it('rejects when no public addresses remain', () => {
+    expect(() => createPinnedLookup(['127.0.0.1'])).toThrow(/private or loopback/)
+  })
 })
 
 describe('assertPublicUrl', () => {

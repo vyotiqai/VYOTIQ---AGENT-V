@@ -1,19 +1,27 @@
 import { describe, expect, it } from 'vitest'
-import { isProminentTool, toolCategory, toolLabel } from '@renderer/features/chat/toolUi/meta'
+import {
+  toolCategory,
+  toolIconName,
+  toolLabel,
+  toolPresentation
+} from '@renderer/features/chat/toolUi/meta'
 import { toolHasBody } from '@renderer/features/chat/toolUi/registry'
 
 describe('toolUi meta', () => {
-  it('marks prominent tools for standalone cards', () => {
-    expect(isProminentTool('terminal')).toBe(true)
-    expect(isProminentTool('edit')).toBe(true)
-    expect(isProminentTool('read')).toBe(false)
-    expect(isProminentTool('grep')).toBe(false)
+  it('routes terminal and edit tools to prominent cards', () => {
+    expect(toolPresentation('terminal')).toBe('prominent')
+    expect(toolPresentation('edit')).toBe('prominent')
+    expect(toolPresentation('multi_edit')).toBe('prominent')
+    expect(toolPresentation('str_replace')).toBe('prominent')
+    expect(toolPresentation('todo_write')).toBe('compact')
+    expect(toolPresentation('delete')).toBe('compact')
+    expect(toolPresentation('read')).toBe('compact')
   })
 
-  it('demotes read-only terminal commands to compact groups', () => {
-    const args = JSON.stringify({ command: 'type C:\\foo\\bar.txt' })
-    expect(isProminentTool('terminal', args)).toBe(false)
-    expect(isProminentTool('terminal', JSON.stringify({ command: 'pnpm build' }))).toBe(true)
+  it('demotes read-only terminal commands to compact', () => {
+    expect(toolPresentation('terminal', '{"command":"cat README.md"}')).toBe('compact')
+    expect(toolPresentation('terminal', undefined, 'cat README.md')).toBe('compact')
+    expect(toolPresentation('terminal', '{"command":"pnpm test"}')).toBe('prominent')
   })
 
   it('categorizes tools for group headers', () => {
@@ -21,9 +29,17 @@ describe('toolUi meta', () => {
     expect(toolCategory('grep')).toBe('search')
     expect(toolCategory('list_dir')).toBe('browse')
     expect(toolCategory('memory_list')).toBe('browse')
+    expect(toolCategory('git_commit')).toBe('command')
+    expect(toolCategory('terminal')).toBe('command')
+    expect(toolCategory('Skill')).toBe('search')
     expect(toolCategory('mcp__srv__read_text_file')).toBe('file')
     expect(toolCategory('mcp__srv__list_allowed_directories')).toBe('browse')
     expect(toolCategory('mcp__srv__grep_search')).toBe('search')
+  })
+
+  it('icons Skill as sparkles not file', () => {
+    expect(toolIconName('Skill')).toBe('sparkles')
+    expect(toolIconName('Skill')).not.toBe('file')
   })
 
   it('labels MCP tools with readable verbs', () => {
@@ -32,9 +48,28 @@ describe('toolUi meta', () => {
     expect(toolLabel('mcp__github__list_allowed_directories', 'done')).toBe('Listed directories')
   })
 
+  it('labels ask_question from TOOL_LABELS', () => {
+    expect(toolLabel('ask_question', 'running')).toBe('Asking')
+    expect(toolLabel('ask_question', 'done')).toBe('Asked')
+  })
+
+  it('uses in-progress verb when tool content is interrupted', () => {
+    expect(toolLabel('ask_question', 'fail', 'Cancelled')).toBe('Asking')
+    expect(toolLabel('ask_question', 'fail', 'Interrupted')).toBe('Asking')
+    expect(toolLabel('ask_question', 'done', 'Stopped')).toBe('Asking')
+    expect(toolLabel('read', 'fail', 'Cancelled')).toBe('Reading')
+    // Non-interrupt fail still uses the done form.
+    expect(toolLabel('ask_question', 'fail', 'Error: boom')).toBe('Asked')
+  })
+
+  it('labels Skill from TOOL_LABELS', () => {
+    expect(toolLabel('Skill', 'running')).toBe('Loading skill')
+    expect(toolLabel('Skill', 'done')).toBe('Loaded skill')
+  })
+
   it('humanizes unknown built-in tool names', () => {
-    expect(toolLabel('ask_question', 'running')).toBe('Running Ask Question')
-    expect(toolLabel('ask_question', 'done')).toBe('Ask Question')
+    expect(toolLabel('future_unknown_tool', 'running')).toBe('Running Future Unknown Tool')
+    expect(toolLabel('future_unknown_tool', 'done')).toBe('Future Unknown Tool')
   })
 
   it('labels unresolved streaming tool names as Preparing', () => {
@@ -52,5 +87,51 @@ describe('toolUi meta', () => {
         argsPreview: '{"todos":[{"id":"1"}]}'
       })
     ).toBe(false)
+  })
+
+  it('claims a body for running subagent when nestedAgent leaves exist', () => {
+    expect(
+      toolHasBody(
+        {
+          id: 'sa-1',
+          name: 'subagent',
+          summary: '',
+          status: 'running'
+        },
+        {
+          nestedAgent: {
+            subagentId: 'ab12',
+            leaves: [{ kind: 'text', id: 't1', text: 'hello' }]
+          }
+        }
+      )
+    ).toBe(true)
+  })
+
+  it('claims a body for settled subagent with only nested contextUsage', () => {
+    expect(
+      toolHasBody(
+        {
+          id: 'sa-2',
+          name: 'subagent',
+          summary: 'done task',
+          status: 'done'
+        },
+        {
+          nestedAgent: {
+            subagentId: 'ab12',
+            leaves: [],
+            contextUsage: {
+              step: 1,
+              used: 1000,
+              window: 100_000,
+              contentWindow: 90_000,
+              model: 'm',
+              updatedAt: new Date().toISOString()
+            }
+          }
+        }
+      )
+    ).toBe(true)
   })
 })

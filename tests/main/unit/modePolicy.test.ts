@@ -5,6 +5,8 @@ import {
   filterToolDefsForMode,
   isBuiltinAllowedInMode,
   isPlanArtifactPath,
+  isRunContractPath,
+  isSubagentReportPath,
   modeSectionMarkdown
 } from '../../../src/main/agent/tools/modePolicy'
 import { setMcpReadOnlyHintsForTests } from '../../../src/main/agent/mcp'
@@ -18,6 +20,13 @@ describe('modePolicy', () => {
     expect(askSafeAlignsWithParallelSafe()).toBe(true)
   })
 
+  it('Ask mode allows generate_image and edit_image (dry-run in handler)', () => {
+    expect(isBuiltinAllowedInMode('ask', 'generate_image')).toBe(true)
+    expect(isBuiltinAllowedInMode('ask', 'edit_image')).toBe(true)
+    expect(isBuiltinAllowedInMode('plan', 'generate_image')).toBe(true)
+    expect(isBuiltinAllowedInMode('plan', 'edit_image')).toBe(true)
+  })
+
   it('Ask mode denies edit and terminal', () => {
     expect(isBuiltinAllowedInMode('ask', 'edit')).toBe(false)
     expect(isBuiltinAllowedInMode('ask', 'terminal')).toBe(false)
@@ -25,9 +34,11 @@ describe('modePolicy', () => {
     expect(assertToolAllowedInMode('ask', 'edit', { path: 'a.ts', contents: 'x' }).ok).toBe(false)
   })
 
-  it('Plan mode allows todo_write and plan.md edits only', () => {
+  it('Plan mode allows todo_write and plan-artifact edits only', () => {
     expect(isBuiltinAllowedInMode('plan', 'todo_write')).toBe(true)
     expect(isBuiltinAllowedInMode('plan', 'edit')).toBe(true)
+    expect(isBuiltinAllowedInMode('plan', 'multi_edit')).toBe(true)
+    expect(isBuiltinAllowedInMode('plan', 'subagent')).toBe(false)
     expect(assertToolAllowedInMode('plan', 'edit', { path: 'plan.md', contents: '# Plan' }).ok).toBe(
       true
     )
@@ -42,7 +53,16 @@ describe('modePolicy', () => {
       }).ok
     ).toBe(true)
     expect(assertToolAllowedInMode('plan', 'terminal', { command: 'echo' }).ok).toBe(false)
-    expect(assertToolAllowedInMode('plan', 'multi_edit', { edits: [] }).ok).toBe(false)
+    expect(
+      assertToolAllowedInMode('plan', 'multi_edit', {
+        edits: [{ path: 'plan.md', contents: '# Plan' }]
+      }).ok
+    ).toBe(true)
+    expect(
+      assertToolAllowedInMode('plan', 'multi_edit', {
+        edits: [{ path: 'src/app.ts', contents: 'x' }]
+      }).ok
+    ).toBe(false)
     expect(assertToolAllowedInMode('plan', 'delete', { path: 'x' }).ok).toBe(false)
   })
 
@@ -59,7 +79,22 @@ describe('modePolicy', () => {
     expect(isPlanArtifactPath('src/app.ts')).toBe(false)
   })
 
-  it('filterToolDefsForMode keeps readOnlyHint MCP in Ask and drops mutating tools', () => {
+  it('isRunContractPath matches only contract.md', () => {
+    expect(isRunContractPath('contract.md')).toBe(true)
+    expect(isRunContractPath('./contract.md')).toBe(true)
+    expect(isRunContractPath('plan.md')).toBe(false)
+    expect(isRunContractPath('src/app.ts')).toBe(false)
+  })
+
+  it('isSubagentReportPath matches run-relative subagent artifacts', () => {
+    expect(isSubagentReportPath('subagents/abc123/report.md')).toBe(true)
+    expect(isSubagentReportPath('subagents/abc123/status.json')).toBe(true)
+    expect(isSubagentReportPath('./subagents/abc123/report.md')).toBe(true)
+    expect(isSubagentReportPath('subagents/report.md')).toBe(false)
+    expect(isSubagentReportPath('contract.md')).toBe(false)
+  })
+
+  it('filterToolDefsForMode drops all MCP tools in Ask/Plan', () => {
     const defs = [
       { name: 'read' },
       { name: 'edit' },
@@ -70,9 +105,10 @@ describe('modePolicy', () => {
     ]
     setMcpReadOnlyHintsForTests({ 'mcp__srv__tool': true, 'mcp__srv__write': false })
     const ask = filterToolDefsForMode('ask', defs)
-    expect(ask.map((d) => d.name)).toEqual(['read', 'mcp__srv__tool', 'browser_navigate'])
-    expect(assertToolAllowedInMode('ask', 'mcp__srv__tool', {}).ok).toBe(true)
+    expect(ask.map((d) => d.name)).toEqual(['read', 'browser_navigate'])
+    expect(assertToolAllowedInMode('ask', 'mcp__srv__tool', {}).ok).toBe(false)
     expect(assertToolAllowedInMode('ask', 'mcp__srv__write', {}).ok).toBe(false)
+    expect(assertToolAllowedInMode('agent', 'mcp__srv__tool', {}).ok).toBe(true)
   })
 
   it('Ask mode denies browser_click and browser_type', () => {
@@ -82,6 +118,22 @@ describe('modePolicy', () => {
     expect(assertToolAllowedInMode('ask', 'browser_click', { selector: 'button' }).ok).toBe(false)
   })
 
+  it('Ask mode denies browser_fill', () => {
+    expect(isBuiltinAllowedInMode('ask', 'browser_fill')).toBe(false)
+    expect(assertToolAllowedInMode('ask', 'browser_fill', { selector: 'input', value: 'x' }).ok).toBe(
+      false
+    )
+  })
+
+  it('Ask mode denies diagnostics and terminal; Plan allows diagnostics', () => {
+    expect(isBuiltinAllowedInMode('ask', 'diagnostics')).toBe(false)
+    expect(isBuiltinAllowedInMode('plan', 'diagnostics')).toBe(true)
+    expect(assertToolAllowedInMode('ask', 'diagnostics', {}).ok).toBe(false)
+    expect(assertToolAllowedInMode('plan', 'diagnostics', {}).ok).toBe(true)
+    expect(isBuiltinAllowedInMode('ask', 'terminal')).toBe(false)
+    expect(isBuiltinAllowedInMode('plan', 'terminal')).toBe(false)
+  })
+
   it('Ask mode allows wait/history/tabs and denies press_key/select_option', () => {
     expect(isBuiltinAllowedInMode('ask', 'browser_tabs')).toBe(true)
     expect(isBuiltinAllowedInMode('ask', 'browser_back')).toBe(true)
@@ -89,13 +141,56 @@ describe('modePolicy', () => {
     expect(isBuiltinAllowedInMode('ask', 'browser_wait_for_selector')).toBe(true)
     expect(isBuiltinAllowedInMode('ask', 'browser_wait_for_url')).toBe(true)
     expect(isBuiltinAllowedInMode('ask', 'mcp_list_tools')).toBe(true)
+    expect(isBuiltinAllowedInMode('ask', 'mcp_list_resources')).toBe(true)
+    expect(isBuiltinAllowedInMode('ask', 'mcp_read_resource')).toBe(true)
     expect(isBuiltinAllowedInMode('ask', 'browser_press_key')).toBe(false)
     expect(isBuiltinAllowedInMode('ask', 'browser_select_option')).toBe(false)
   })
 
-  it('modeSectionMarkdown is null for agent', () => {
-    expect(modeSectionMarkdown('agent')).toBeNull()
+  it('modeSectionMarkdown covers all modes', () => {
+    expect(modeSectionMarkdown('agent')).toContain('Agent mode')
     expect(modeSectionMarkdown('ask')).toContain('Ask mode')
     expect(modeSectionMarkdown('plan')).toContain('Plan mode')
+    expect(modeSectionMarkdown('plan')).not.toMatch(/keep todos via/i)
+  })
+
+  it('modeSectionMarkdown has no switch_mode hints when autoModeSwitch is off', () => {
+    expect(modeSectionMarkdown('agent')).not.toMatch(/switch_mode/)
+    expect(modeSectionMarkdown('ask')).not.toMatch(/switch_mode/)
+    expect(modeSectionMarkdown('plan')).not.toMatch(/switch_mode/)
+    expect(modeSectionMarkdown('ask')).toMatch(/suggest switching to Agent mode/)
+    expect(modeSectionMarkdown('plan')).toMatch(/switching to Agent mode/)
+  })
+
+  it('modeSectionMarkdown includes proactive switch_mode rules when autoModeSwitch is on', () => {
+    const opts = { autoModeSwitch: true }
+    expect(modeSectionMarkdown('agent', opts)).toMatch(/switch_mode.*ask/i)
+    expect(modeSectionMarkdown('agent', opts)).toMatch(/switch_mode.*plan/i)
+    expect(modeSectionMarkdown('ask', opts)).toMatch(/switch_mode.*plan/)
+    expect(modeSectionMarkdown('ask', opts)).toMatch(/switch_mode.*agent/)
+    expect(modeSectionMarkdown('plan', opts)).toMatch(/switch_mode.*agent/)
+    expect(modeSectionMarkdown('plan', opts)).toMatch(/switch_mode.*ask/)
+  })
+
+  it('Ask forbids diagnostics and terminal; Plan allows diagnostics', () => {
+    const ask = modeSectionMarkdown('ask')!
+    const plan = modeSectionMarkdown('plan')!
+    expect(ask).toMatch(/Do not edit files|Only avoid mutating/)
+    expect(ask).toMatch(/`diagnostics`/)
+    expect(ask).toMatch(/`terminal`/)
+    expect(plan).toMatch(/`todo_write` and `diagnostics` are available/)
+    expect(plan).toMatch(/`terminal`/)
+  })
+
+  it('mode sections carry workflow moved out of the static harness', () => {
+    const agent = modeSectionMarkdown('agent')!
+    const ask = modeSectionMarkdown('ask')!
+    const plan = modeSectionMarkdown('plan')!
+    expect(agent).not.toMatch(/soft-nudge/i)
+    expect(agent).not.toMatch(/verify against the goal/i)
+    expect(agent).toMatch(/`terminal`/)
+    expect(agent).toMatch(/`subagent`/)
+    expect(ask).toMatch(/`subagent` is allowed/)
+    expect(plan).toMatch(/spawn `subagent` \(not Plan\)/)
   })
 })

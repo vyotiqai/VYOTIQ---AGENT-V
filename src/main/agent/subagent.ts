@@ -1,86 +1,76 @@
-import type { ChatMessage, ProviderId } from '../../shared/ipc'
-import { DEFAULT_SETTINGS } from '../../shared/ipc'
-import { defaultModelFor, ollamaOpenAiBaseUrl } from '../../shared/providers'
-import { resolveServiceTier } from '../../shared/domain/modelSelection'
-import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
-import { formatError, isAbortError } from '../../shared/errors'
-import { logger } from '../../shared/logger'
-import { summarizeToolArgs } from '../../shared/toolSummary'
-import { getSecret, hasStoredSecretBlob, secretStatus } from '@main/settings/secrets'
-import { getSettings } from '@main/settings/settings'
-import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/workspace/workspaces'
-import { getProvider } from './providers'
-import {
-  isRetriableNetworkError,
-  isRetriableProviderMessage,
-  RetriableStreamError
-} from './providers/fetchWithRetry'
-import { requestMaxOutputTokens } from './providers/requestLimits'
-import { resolveModelInfo } from './modelResolve'
-import { AGENT_TOOLS } from './types'
-import type { ToolCall } from './providers/types'
-import { executeTool } from './tools'
-import { repairToolArgs } from './toolArgsRepair'
-import {
-  contentWindow,
-  contextWindowFor,
-  estimateMessagesTokens,
-  estimateSubagentOverheadTokens,
-  estimateTextTokens,
-  prepareSubagentMessages
-} from './context'
-
 /**
- * Investigation is what a sub-agent is for; anything that changes the workspace
- * stays with the parent, where the user can see and approve it.
+ * Sub-agent entry — registry ownership + depth gate, then shared nested loop
+ * (`runNestedAgent`) that reuses main-agent harness / assembleContext / tools.
  */
+import type { AgentEvent, AgentInteractionMode } from '../../shared/ipc'
+import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { join } from 'path'
+import { randomBytes } from 'crypto'
+import { logger } from '../../shared/logger'
+import { registerSubagent, unregisterSubagent } from './subagentRegistry'
+import {
+  allocateNestedAgentId,
+  runNestedAgent,
+  type SubagentOutcome,
+  type SubagentUpdate
+} from './nestedAgent'
+
+export type { SubagentOutcome, SubagentUpdate }
+export { NESTED_EXCLUDED_TOOLS, NESTED_ROLE_SECTION } from './nestedAgent'
+
+/** @deprecated Nested agents use the full mode-filtered tool catalog minus exclusions. */
 export const SUBAGENT_TOOLS = [
   'read',
   'search',
   'glob',
   'grep',
   'list_dir',
-  'web_fetch',
   'git_status',
   'git_diff',
   'diagnostics',
   'memory_read'
 ] as const
 
-const SUBAGENT_TOOL_SET = new Set<string>(SUBAGENT_TOOLS)
+export type SubagentToolName = (typeof SUBAGENT_TOOLS)[number]
 
-function withRepairedArguments(call: ToolCall): ToolCall {
-  const raw = call.arguments || '{}'
-  try {
-    JSON.parse(raw)
-    return call
-  } catch {
-    const repaired = repairToolArgs(raw)
-    return repaired ? { ...call, arguments: repaired } : call
+/** @deprecated Prefer mode-filtered catalog via runNestedAgent. */
+export function subagentToolsForParentMode(
+  parentMode: AgentInteractionMode = 'agent'
+): readonly SubagentToolName[] {
+  if (parentMode === 'ask') {
+    return SUBAGENT_TOOLS.filter((name) => name !== 'diagnostics')
   }
-}
-
-function isAllowedSubagentTool(name: string): boolean {
-  return SUBAGENT_TOOL_SET.has(name)
+  return SUBAGENT_TOOLS
 }
 
 /** A sub-agent may not spawn another one — callers must pass depth 0 (ceiling is exclusive). */
 export const MAX_SUBAGENT_DEPTH = 1
 
-const SUBAGENT_SYSTEM = `You are a research sub-agent working inside a larger coding agent.
-
-You have read-only tools: read, search, glob, grep, list_dir. You cannot edit files or run commands.
-
-Investigate the task you are given and finish with a single self-contained report:
-- Answer the question directly in the first sentence.
-- Cite concrete file paths and line numbers for everything you claim.
-- Say plainly what you could not determine rather than guessing.
-
-The report is the only thing the parent agent sees, so it must stand on its own.`
-
-export type SubagentUpdate = {
-  kind: 'text' | 'thinking' | 'tool' | 'done'
-  text: string
+/**
+ * @deprecated Nested agents use loadHarness + assembleContext + NESTED_ROLE_SECTION.
+ * Kept for unit tests that still assert the old builder shape during migration.
+ */
+export function buildSubagentSystem(
+  workspaceRules: string,
+  tools: readonly string[],
+  sessionEnv?: string
+): string {
+  const list = tools.join(', ')
+  const parts = [
+    [
+      'You are a nested agent working inside a larger coding agent.',
+      '',
+      'Finish with a single self-contained report.',
+      `Available tools: ${list}.`
+    ].join('\n')
+  ]
+  if (sessionEnv?.trim()) parts.push(sessionEnv.trim())
+  const rules = workspaceRules.trim()
+  if (rules) {
+    const capped = rules.slice(0, 64 * 1024)
+    parts.push(`${capped}${rules.length > capped.length ? '\n… (truncated)' : ''}`)
+  }
+  return parts.join('\n\n')
 }
 
 export type SubagentContextUsage = {
@@ -96,16 +86,71 @@ export type SubagentOptions = {
   context?: string
   workspace: string
   signal: AbortSignal
+  /**
+   * Hard run-cancel only (parent `controller.signal`). Soft interrupts stay on `signal`.
+   * When omitted, nested tools cannot distinguish Interrupted vs Cancelled.
+   */
+  runSignal?: AbortSignal
   /** Nesting level of the caller: 0 for the top-level run. */
   depth: number
+  /** Parent Ask/Plan/Agent mode. */
+  parentMode?: AgentInteractionMode
+  /** Parent run directory; when set, the report is written under subagents/<id>/. */
+  runDir?: string
+  /** Parent run id — enables explicit registry dispose-for-invoke. */
+  runId?: string
+  /** Parent chat invoke id — scopes registry dispose. */
+  invokeId?: number
+  /** Parent tool-call id (for registry + UI routing). */
+  parentToolCallId?: string
   emit?: (update: SubagentUpdate) => void
+  /** Parent live-event sink — nested events are wrapped as `subagent_event`. */
+  emitAgentEvent?: (event: AgentEvent) => void
   onContextUsage?: (usage: SubagentContextUsage) => void
 }
 
-export type SubagentOutcome = {
-  ok: boolean
-  report: string
-  steps: number
+/** Persist a sub-agent report under `{runDir}/subagents/<id>/` for post-compaction re-read. */
+export function writeSubagentReportFiles(
+  runDir: string,
+  input: { ok: boolean; report: string; steps: number; task: string; id?: string }
+): { reportRel: string; id: string } {
+  const id = input.id ?? randomBytes(4).toString('hex')
+  const dir = join(runDir, 'subagents', id)
+  mkdirSync(dir, { recursive: true })
+  const reportRel = `subagents/${id}/report.md`
+  const reportBody = [
+    `# Sub-agent report`,
+    '',
+    `ok: ${input.ok}`,
+    `steps: ${input.steps}`,
+    '',
+    '## Task',
+    '',
+    input.task.trim() || '(empty)',
+    '',
+    '## Report',
+    '',
+    input.report.trim() || '(empty)',
+    ''
+  ].join('\n')
+  writeFileSync(join(runDir, reportRel), reportBody, 'utf8')
+  writeFileSync(
+    join(dir, 'status.json'),
+    JSON.stringify(
+      {
+        id,
+        ok: input.ok,
+        steps: input.steps,
+        reportRel,
+        taskPreview: input.task.slice(0, 200),
+        writtenAt: new Date().toISOString()
+      },
+      null,
+      2
+    ) + '\n',
+    'utf8'
+  )
+  return { reportRel, id }
 }
 
 export class SubagentDepthError extends Error {
@@ -115,268 +160,100 @@ export class SubagentDepthError extends Error {
   }
 }
 
-function subagentToolDefs() {
-  const allowed = new Set<string>(SUBAGENT_TOOLS)
-  return AGENT_TOOLS.filter((tool) => allowed.has(tool.name)).map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-    parameters: tool.parameters as Record<string, unknown>
-  }))
+/** Combine abort signals (AbortSignal.any with a mirror fallback). */
+function combineAbortSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
+  if (typeof AbortSignal.any === 'function') {
+    return AbortSignal.any([a, b])
+  }
+  if (a.aborted || b.aborted) {
+    const done = new AbortController()
+    done.abort()
+    return done.signal
+  }
+  const combined = new AbortController()
+  const onAbort = (): void => {
+    a.removeEventListener('abort', onAbort)
+    b.removeEventListener('abort', onAbort)
+    if (!combined.signal.aborted) combined.abort()
+  }
+  a.addEventListener('abort', onAbort, { once: true })
+  b.addEventListener('abort', onAbort, { once: true })
+  return combined.signal
 }
 
 /**
- * Run a read-only agent loop and return its report.
+ * Run a nested agent (shared main-agent loop) and return its report.
  *
  * Each instance manages its own isolated context window; the parent only sees
- * the final report string.
+ * the final report string (plus live `subagent_event` / progress mirrors).
  */
 export async function runSubagent(options: SubagentOptions): Promise<SubagentOutcome> {
   if (options.depth >= MAX_SUBAGENT_DEPTH) throw new SubagentDepthError()
 
-  const globalSettings = getSettings()
-  const override = findWorkspaceSettingsOverride(readWorkspacesState(), options.workspace)
-  const effective = resolveEffectiveSettings(globalSettings, override)
-  const settings = { ...DEFAULT_SETTINGS, ...globalSettings, ...effective }
-  const parentProvider = settings.provider
-  const parentModel = settings.model
-  const providerId: ProviderId = settings.subagentProvider ?? parentProvider
-  const modelId =
-    settings.subagentModel ??
-    (settings.subagentProvider && settings.subagentProvider !== parentProvider
-      ? defaultModelFor(providerId)
-      : parentModel)
-  const provider = getProvider(providerId)
-  const apiKey = providerId === 'ollama' ? null : getSecret(providerId)
-  if (providerId !== 'ollama' && !apiKey) {
-    const status = secretStatus()
-    const storedBlob = hasStoredSecretBlob(providerId)
-    const message = !status.encryptionAvailable
-      ? 'OS secure storage is unavailable. API keys cannot be decrypted on this system.'
-      : storedBlob
-        ? `API key for ${providerId} is stored but cannot be decrypted. Re-enter it in Settings or restore OS keychain access.`
-        : `API key for ${providerId} is not set. Add it in Settings.`
-    return {
-      ok: false,
-      steps: 0,
-      report: message
-    }
-  }
-  const baseUrl =
-    providerId === 'ollama' ? ollamaOpenAiBaseUrl(settings.ollamaBaseUrl) : undefined
-  const serviceTier = resolveServiceTier(settings, providerId, modelId)
-
-  const modelInfo = await resolveModelInfo(
-    providerId,
-    modelId,
-    apiKey,
-    baseUrl,
-    options.signal
-  )
-  const tools = modelInfo.supportsTools === false ? [] : subagentToolDefs()
-  const toolsJsonEstimate = tools.length ? estimateTextTokens(JSON.stringify(tools)) : 0
-  const overheadTokens = estimateSubagentOverheadTokens(SUBAGENT_SYSTEM, toolsJsonEstimate)
-
-  const messages: ChatMessage[] = [
-    {
-      role: 'user',
-      content: options.context
-        ? `${options.task}\n\nContext from the parent agent:\n${options.context}`
-        : options.task
-    }
-  ]
-
-  let steps = 0
-  let lastText = ''
-
-  while (true) {
-    if (options.signal.aborted) break
-    steps++
-
-    const preparedMessages = prepareSubagentMessages(messages, modelInfo, overheadTokens)
-    const estimatedTokens =
-      estimateMessagesTokens(preparedMessages, modelInfo) + overheadTokens
-    const window = contextWindowFor(modelInfo)
-    const contentWin = contentWindow(modelInfo)
-    options.onContextUsage?.({
-      step: steps,
-      estimatedTokens,
-      contextWindow: window,
-      contentWindow: contentWin,
-      model: modelId
+  let registryId: string | undefined
+  let signal = options.signal
+  /** Hard cancel: parent run cancel and/or registry dispose (not soft interrupt). */
+  let runSignal = options.runSignal
+  if (typeof options.runId === 'string' && typeof options.invokeId === 'number') {
+    const reg = registerSubagent({
+      runId: options.runId,
+      invokeId: options.invokeId,
+      parentSignal: options.signal,
+      parentToolCallId: options.parentToolCallId
     })
+    registryId = reg.id
+    signal = reg.signal
+    // Dispose must look like Cancelled for nested tools; soft parent abort must not.
+    runSignal = options.runSignal
+      ? combineAbortSignals(options.runSignal, reg.hardSignal)
+      : reg.hardSignal
+  }
 
-    let text = ''
-    const toolCalls: ToolCall[] = []
+  const subagentId = allocateNestedAgentId()
 
-    const STREAM_RETRY_BACKOFF_MS = 750
-    const MAX_STREAM_ATTEMPTS = 2
-    let streamAttempt = 0
-    let streamFinished = false
-
-    while (!streamFinished && streamAttempt < MAX_STREAM_ATTEMPTS) {
-      streamAttempt++
-      if (streamAttempt > 1) {
-        text = ''
-        toolCalls.length = 0
-      }
-
-      let retryStream = false
-      try {
-        for await (const chunk of provider.streamChat({
-          model: modelId,
-          messages: preparedMessages,
-          tools,
-          system: SUBAGENT_SYSTEM,
-          signal: options.signal,
-          apiKey,
-          baseUrl,
-          maxOutputTokens: requestMaxOutputTokens(providerId, modelInfo),
-          strictTools: tools.length > 0,
-          toolChoice: tools.length > 0 ? 'auto' : undefined,
-          modelInfo,
-          // Nested reasoning would double the transcript noise for a summary the
-          // parent never reads; the report is the deliverable.
-          thinking: { enabled: false },
-          serviceTier
-        })) {
-          if (options.signal.aborted) break
-          if (chunk.type === 'text' && chunk.text) {
-            text += chunk.text
-          } else if (chunk.type === 'tool_call' && chunk.toolCall) {
-            toolCalls.push(chunk.toolCall)
-          } else if (chunk.type === 'error') {
-            const message = chunk.error ?? 'Provider error'
-            if (
-              streamAttempt < MAX_STREAM_ATTEMPTS &&
-              isRetriableProviderMessage(message)
-            ) {
-              logger.warn('Sub-agent stream error (retrying)', {
-                scope: 'agent',
-                code: 'PROVIDER_STREAM',
-                provider: providerId,
-                step: steps,
-                attempt: streamAttempt
+  try {
+    return await runNestedAgent({
+      task: options.task,
+      context: options.context,
+      workspace: options.workspace,
+      signal,
+      runSignal,
+      depth: options.depth,
+      parentMode: options.parentMode,
+      runDir: options.runDir,
+      runId: options.runId,
+      invokeId: options.invokeId,
+      parentToolCallId: options.parentToolCallId,
+      subagentId,
+      emit: options.emit,
+      onContextUsage: options.onContextUsage,
+      ...(options.emitAgentEvent && options.runId && options.parentToolCallId
+        ? {
+            emitNestedEvent: (ev: AgentEvent) => {
+              options.emitAgentEvent!({
+                type: 'subagent_event',
+                runId: options.runId!,
+                parentToolCallId: options.parentToolCallId!,
+                subagentId,
+                event: ev
               })
-              retryStream = true
-              break
             }
-            logger.warn('Sub-agent stream error', {
-              scope: 'agent',
-              code: 'PROVIDER_STREAM',
-              provider: providerId,
-              step: steps
-            })
-            return { ok: false, report: `Sub-agent failed: ${message}`, steps }
           }
-        }
-      } catch (err) {
-        if (
-          !isAbortError(err) &&
-          streamAttempt < MAX_STREAM_ATTEMPTS &&
-          (isRetriableNetworkError(err) || err instanceof RetriableStreamError)
-        ) {
-          logger.warn('Sub-agent stream disconnected (retrying)', {
-            scope: 'agent',
-            code: 'PROVIDER_STREAM',
-            provider: providerId,
-            step: steps,
-            attempt: streamAttempt,
-            err
-          })
-          await new Promise((resolve) => setTimeout(resolve, STREAM_RETRY_BACKOFF_MS))
-          continue
-        }
-        if (isAbortError(err)) break
-        throw err
-      }
-
-      if (retryStream) {
-        await new Promise((resolve) => setTimeout(resolve, STREAM_RETRY_BACKOFF_MS))
-        continue
-      }
-      streamFinished = true
-    }
-
-    if (options.signal.aborted) break
-
-    if (text.trim()) {
-      lastText = text
-      options.emit?.({ kind: 'text', text: text.trim() })
-    }
-
-    if (!toolCalls.length) {
-      // Only the terminal no-tool step counts as the report — earlier narration
-      // before tool calls is not a finished answer.
-      const report = text.trim()
-      if (!report) {
-        return {
-          ok: false,
-          report: options.signal.aborted
-            ? 'Sub-agent was cancelled before it reported anything.'
-            : lastText.trim()
-              ? 'Sub-agent stopped without a final report after using tools.'
-              : 'Sub-agent finished without producing a report.',
-          steps
-        }
-      }
-      options.emit?.({
-        kind: 'done',
-        text: `Reported in ${steps} ${steps === 1 ? 'step' : 'steps'}`
-      })
-      return { ok: true, report, steps }
-    }
-
-    messages.push({ role: 'assistant', content: text, toolCalls })
-
-    for (const rawCall of toolCalls) {
-      if (options.signal.aborted) break
-      const call = withRepairedArguments(rawCall)
-      options.emit?.({
-        kind: 'tool',
-        text: `${call.name} ${summarizeToolArgs(call.name, call.arguments)}`.trim()
-      })
-
-      if (!isAllowedSubagentTool(call.name)) {
-        messages.push({
-          role: 'tool',
-          toolCallId: call.id,
-          toolName: call.name,
-          content: `Tool "${call.name}" is not available to sub-agents. Use only: ${SUBAGENT_TOOLS.join(', ')}.`,
-          ok: false
-        })
-        continue
-      }
-
-      let content: string
-      let ok = false
-      try {
-        const result = await executeTool(call.name, call.arguments, options.workspace, options.signal, {
-          depth: options.depth + 1,
-          // Sub-agents are investigation-only; keep the execute gate aligned.
-          agentMode: 'ask'
-        })
-        content = result.content
-        ok = result.ok
-      } catch (err) {
-        if (isAbortError(err)) throw err
-        content = `Tool failed: ${formatError(err)}`
-        ok = false
-      }
-      messages.push({
-        role: 'tool',
-        toolCallId: call.id,
-        toolName: call.name,
-        content,
-        ok
-      })
-    }
+        : {})
+    })
+  } catch (err) {
+    logger.warn('Nested agent failed', {
+      scope: 'agent',
+      code: 'SUBAGENT',
+      err
+    })
+    throw err
+  } finally {
+    if (registryId) unregisterSubagent(registryId)
   }
+}
 
-  return {
-    ok: false,
-    report: options.signal.aborted
-      ? 'Sub-agent was cancelled before it reported anything.'
-      : 'Sub-agent finished without producing a report.',
-    steps
-  }
+/** @deprecated Prefer writeSubagentReportFiles — kept for call sites that only need a path check. */
+export function nestedReportExists(runDir: string, id: string): boolean {
+  return existsSync(join(runDir, 'subagents', id, 'report.md'))
 }

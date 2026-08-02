@@ -4,6 +4,30 @@ import type { StreamChunk } from '@main/agent/providers/types'
 
 const streamChat = vi.hoisted(() => vi.fn())
 const executeTool = vi.hoisted(() => vi.fn())
+const assembleContext = vi.hoisted(() =>
+  vi.fn(async (input: {
+    messages: unknown[]
+    nestedRoleSection?: string
+    sessionEnv?: string
+    modeSection?: string
+  }) => ({
+    messages: input.messages,
+    system: [
+      'system harness',
+      input.nestedRoleSection,
+      input.modeSection,
+      input.sessionEnv
+    ]
+      .filter(Boolean)
+      .join('\n\n'),
+    estimatedTokens: 100,
+    layers: { system: 10, history: 50, tools: 20, buffer: 20 },
+    contextShrunk: false,
+    overflow: false,
+    anthropicNative: undefined,
+    compaction: null
+  }))
+)
 const getSettings = vi.hoisted(() =>
   vi.fn(() => ({ ...DEFAULT_SETTINGS, provider: 'openai' as const, model: 'test-model' }))
 )
@@ -18,6 +42,15 @@ const resolveModelInfo = vi.hoisted(() =>
     supportsTools: true
   }))
 )
+const buildWorkspaceRulesSection = vi.hoisted(() => vi.fn(async () => ''))
+
+vi.mock('electron', () => ({
+  app: {
+    getPath: () => '/tmp/vyotiq-test',
+    getAppPath: () => '/tmp/vyotiq-app',
+    isPackaged: false
+  }
+}))
 
 vi.mock('@main/agent/providers', () => ({
   getProvider: () => ({
@@ -34,6 +67,43 @@ vi.mock('@main/agent/modelResolve', () => ({
 
 vi.mock('@main/agent/tools', () => ({
   executeTool: (...args: unknown[]) => executeTool(...args)
+}))
+
+vi.mock('@main/agent/harness', () => ({
+  loadHarness: () => 'You are Agent V.'
+}))
+
+vi.mock('@main/agent/context', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@main/agent/context')>()
+  return {
+    ...actual,
+    assembleContext: (...args: unknown[]) => assembleContext(...(args as [never]))
+  }
+})
+
+vi.mock('@main/agent/mcp', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@main/agent/mcp')>()
+  return {
+    ...actual,
+    syncMcpServers: vi.fn(async () => {}),
+    listMcpToolDefinitions: () => []
+  }
+})
+
+vi.mock('@main/agent/skills', () => ({
+  loadEnabledSkills: () => [],
+  buildSkillsSection: () => '',
+  loadPluginRules: () => ''
+}))
+
+vi.mock('@main/marketplace/resolve', () => ({
+  resolveEffectiveMcpServers: () => [],
+  resolveMcpServersForSessionMap: () => ({}),
+  mcpSessionMapFingerprint: () => 'fp'
+}))
+
+vi.mock('@main/agent/context/rules', () => ({
+  buildWorkspaceRulesSection: (...args: unknown[]) => buildWorkspaceRulesSection(...args)
 }))
 
 vi.mock('@main/settings/settings', () => ({
@@ -55,9 +125,14 @@ import {
   MAX_SUBAGENT_DEPTH,
   runSubagent,
   SubagentDepthError,
-  SUBAGENT_TOOLS,
+  NESTED_EXCLUDED_TOOLS,
+  buildSubagentSystem,
+  writeSubagentReportFiles,
   type SubagentUpdate
 } from '@main/agent/subagent'
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
 
 function stream(chunks: StreamChunk[]) {
   return async function* () {
@@ -69,15 +144,42 @@ describe('runSubagent', () => {
   beforeEach(() => {
     streamChat.mockReset()
     executeTool.mockReset()
+    assembleContext.mockReset()
+    assembleContext.mockImplementation(async (input: {
+      messages: unknown[]
+      nestedRoleSection?: string
+      sessionEnv?: string
+      modeSection?: string
+    }) => ({
+      messages: input.messages,
+      system: [
+        'system harness',
+        input.nestedRoleSection,
+        input.modeSection,
+        input.sessionEnv
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
+      estimatedTokens: 100,
+      layers: { system: 10, history: 50, tools: 20, buffer: 20 },
+      contextShrunk: false,
+      overflow: false,
+      anthropicNative: undefined,
+      compaction: null
+    }))
     getSettings.mockReset()
     getSecret.mockReset()
     getSecret.mockReturnValue('key')
     getSettings.mockReturnValue({
       ...DEFAULT_SETTINGS,
       provider: 'openai',
-      model: 'test-model'
+      model: 'test-model',
+      thinkingEnabled: false,
+      toolApproval: { mode: 'off', allowlist: [] }
     })
     resolveModelInfo.mockClear()
+    buildWorkspaceRulesSection.mockReset()
+    buildWorkspaceRulesSection.mockResolvedValue('')
   })
 
   it('returns the final report as the tool result', async () => {
@@ -95,6 +197,77 @@ describe('runSubagent', () => {
     expect(outcome.ok).toBe(true)
     expect(outcome.report).toBe('Auth lives in src/auth.ts:12.')
     expect(outcome.steps).toBe(1)
+  })
+
+  it('registers with subagentRegistry and clears on finish when runId/invokeId set', async () => {
+    const {
+      countActiveSubagentsForInvoke,
+      resetSubagentRegistryForTests
+    } = await import('@main/agent/subagentRegistry')
+    resetSubagentRegistryForTests()
+    streamChat.mockImplementation(
+      stream([{ type: 'text', text: 'ok' }, { type: 'done' }])
+    )
+    await runSubagent({
+      task: 'look',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0,
+      runId: 'run-reg',
+      invokeId: 7
+    })
+    expect(countActiveSubagentsForInvoke('run-reg', 7)).toBe(0)
+  })
+
+  it('aborts via disposeSubagentsForInvoke while streaming', async () => {
+    const {
+      disposeSubagentsForInvoke,
+      countActiveSubagentsForInvoke,
+      resetSubagentRegistryForTests
+    } = await import('@main/agent/subagentRegistry')
+    resetSubagentRegistryForTests()
+
+    let resolveHang: (() => void) | undefined
+    const hang = new Promise<void>((r) => {
+      resolveHang = r
+    })
+    streamChat.mockImplementation(async function* (req: { signal?: AbortSignal }) {
+      yield { type: 'text' as const, text: 'partial' }
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = (): void => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+        if (req.signal?.aborted) {
+          onAbort()
+          return
+        }
+        req.signal?.addEventListener('abort', onAbort, { once: true })
+        void hang.then(() => {
+          req.signal?.removeEventListener('abort', onAbort)
+          resolve()
+        })
+      })
+      yield { type: 'done' as const }
+    })
+
+    const parent = new AbortController()
+    const running = runSubagent({
+      task: 'slow',
+      workspace: '/ws',
+      signal: parent.signal,
+      depth: 0,
+      runId: 'run-disp',
+      invokeId: 3
+    })
+
+    // Allow registration + stream start
+    await new Promise((r) => setTimeout(r, 20))
+    expect(countActiveSubagentsForInvoke('run-disp', 3)).toBe(1)
+    const disposed = await disposeSubagentsForInvoke('run-disp', 3)
+    expect(disposed).toBe(1)
+    const outcome = await running
+    expect(outcome.ok).toBe(false)
+    expect(outcome.report).toMatch(/cancelled|abort/i)
+    expect(countActiveSubagentsForInvoke('run-disp', 3)).toBe(0)
+    resolveHang?.()
   })
 
   it('fails fast when the sub-agent provider API key is missing', async () => {
@@ -119,6 +292,51 @@ describe('runSubagent', () => {
     expect(outcome.report).toMatch(/API key for openai is not set/i)
     expect(streamChat).not.toHaveBeenCalled()
     expect(resolveModelInfo).not.toHaveBeenCalled()
+  })
+
+  it('retries overflow with aggressive keepRecentTurns before failing', async () => {
+    let calls = 0
+    assembleContext.mockImplementation(async (input: {
+      messages: unknown[]
+      keepRecentTurns?: number
+      nestedRoleSection?: string
+      sessionEnv?: string
+      modeSection?: string
+    }) => {
+      calls++
+      const overflow = calls === 1
+      return {
+        messages: input.messages,
+        system: [
+          'system harness',
+          input.nestedRoleSection,
+          input.modeSection,
+          input.sessionEnv
+        ]
+          .filter(Boolean)
+          .join('\n\n'),
+        estimatedTokens: overflow ? 200_000 : 1000,
+        layers: { system: 10, history: 50, tools: 20, buffer: 20 },
+        contextShrunk: calls === 2,
+        overflow,
+        anthropicNative: undefined,
+        compaction: null
+      }
+    })
+    streamChat.mockImplementation(stream([{ type: 'text', text: 'recovered' }, { type: 'done' }]))
+
+    const outcome = await runSubagent({
+      task: 'look',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0
+    })
+
+    expect(outcome.ok).toBe(true)
+    expect(outcome.report).toContain('recovered')
+    expect(assembleContext.mock.calls.length).toBeGreaterThanOrEqual(2)
+    const retryInput = assembleContext.mock.calls[1]![0] as { keepRecentTurns?: number }
+    expect(retryInput.keepRecentTurns).toBe(2)
   })
 
   it('emits context usage each step', async () => {
@@ -228,11 +446,11 @@ describe('runSubagent', () => {
     expect(req.model).toBe('parent-model')
   })
 
-  it('passes prepared (trimmed) messages to streamChat on later steps', async () => {
+  it('accumulates tool results across nested steps', async () => {
     let call = 0
     streamChat.mockImplementation(() => {
       call += 1
-      if (call <= 4) {
+      if (call <= 2) {
         return stream([
           {
             type: 'tool_call',
@@ -246,7 +464,7 @@ describe('runSubagent', () => {
     executeTool.mockResolvedValue({
       ok: true,
       summary: 'file',
-      content: 'BODY'.repeat(4_000)
+      content: 'BODY'.repeat(100)
     })
 
     await runSubagent({
@@ -256,15 +474,37 @@ describe('runSubagent', () => {
       depth: 0
     })
 
-    expect(streamChat.mock.calls.length).toBeGreaterThanOrEqual(5)
+    expect(streamChat.mock.calls.length).toBeGreaterThanOrEqual(3)
     const lastReq = streamChat.mock.calls.at(-1)![0] as {
       messages: { role: string; content?: string }[]
     }
     const toolBodies = lastReq.messages.filter((m) => m.role === 'tool')
-    expect(toolBodies.some((m) => String(m.content).includes('cleared'))).toBe(true)
+    expect(toolBodies.length).toBeGreaterThanOrEqual(2)
   })
 
-  it('offers only read-only tools to the child model', async () => {
+  it('offers full agent tools minus nested exclusions', async () => {
+    streamChat.mockImplementation(stream([{ type: 'text', text: 'done' }, { type: 'done' }]))
+
+    await runSubagent({
+      task: 'look around',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0,
+      parentMode: 'agent'
+    })
+
+    const req = streamChat.mock.calls[0]![0] as { tools: { name: string }[]; system?: string }
+    const names = req.tools.map((t) => t.name)
+    expect(names).toContain('edit')
+    expect(names).toContain('terminal')
+    expect(names).toContain('read')
+    expect(names).toContain('ask_question')
+    for (const excluded of NESTED_EXCLUDED_TOOLS) {
+      expect(names).not.toContain(excluded)
+    }
+  })
+
+  it('injects nested role overlay via assembleContext', async () => {
     streamChat.mockImplementation(stream([{ type: 'text', text: 'done' }, { type: 'done' }]))
 
     await runSubagent({
@@ -274,8 +514,69 @@ describe('runSubagent', () => {
       depth: 0
     })
 
-    const req = streamChat.mock.calls[0]![0] as { tools: { name: string }[] }
-    expect(req.tools.map((t) => t.name).sort()).toEqual([...SUBAGENT_TOOLS].sort())
+    expect(assembleContext).toHaveBeenCalled()
+    const input = assembleContext.mock.calls[0]![0] as { nestedRoleSection?: string }
+    expect(input.nestedRoleSection).toMatch(/Nested agent/i)
+    expect(input.nestedRoleSection).toMatch(/cannot call `subagent`/i)
+
+    const req = streamChat.mock.calls[0]![0] as { system?: string }
+    expect(req.system).toMatch(/Nested agent/i)
+  })
+
+  it('includes workspace path in assembleContext', async () => {
+    streamChat.mockImplementation(stream([{ type: 'text', text: 'done' }, { type: 'done' }]))
+
+    await runSubagent({
+      task: 'look around',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0
+    })
+
+    const input = assembleContext.mock.calls[0]![0] as { workspacePath?: string; harness?: string }
+    expect(input.workspacePath).toBe('/ws')
+    expect(input.harness).toContain('Agent V')
+  })
+
+  it('injects Session env into assembleContext', async () => {
+    streamChat.mockImplementation(stream([{ type: 'text', text: 'done' }, { type: 'done' }]))
+
+    await runSubagent({
+      task: 'look around',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0,
+      parentMode: 'plan'
+    })
+
+    const input = assembleContext.mock.calls[0]![0] as { sessionEnv?: string }
+    expect(input.sessionEnv).toContain('## Session')
+    expect(input.sessionEnv).toContain('Date (UTC):')
+    expect(input.sessionEnv).toContain('Interaction mode: plan')
+  })
+
+  it('buildSubagentSystem appends session env before rules', () => {
+    const system = buildSubagentSystem(
+      '## Workspace rules\nBe careful.',
+      ['read', 'search'],
+      '## Session\nDate (UTC): 2026-01-01T00:00:00.000Z'
+    )
+    expect(system).toContain('## Session')
+    expect(system.indexOf('## Session')).toBeLessThan(system.indexOf('## Workspace rules'))
+  })
+
+  it('loads harness for nested agents', async () => {
+    streamChat.mockImplementation(stream([{ type: 'text', text: 'done' }, { type: 'done' }]))
+
+    await runSubagent({
+      task: 'look around',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0
+    })
+
+    const input = assembleContext.mock.calls[0]![0] as { harness?: string }
+    expect(input.harness).toBe('You are Agent V.')
   })
 
   it('runs tool calls and reports progress before the report', async () => {
@@ -354,8 +655,67 @@ describe('runSubagent', () => {
       depth: 0
     })
 
-    const context = executeTool.mock.calls[0]![4] as { depth: number }
+    const context = executeTool.mock.calls[0]![4] as { depth: number; agentMode?: string }
     expect(context.depth).toBe(MAX_SUBAGENT_DEPTH)
+    expect(context.agentMode).toBe('agent')
+  })
+
+  it('runs diagnostics under agent mode when parent is not Ask', async () => {
+    let call = 0
+    streamChat.mockImplementation(() => {
+      call += 1
+      if (call === 1) {
+        return stream([
+          {
+            type: 'tool_call',
+            toolCall: {
+              id: 't1',
+              name: 'diagnostics',
+              arguments: '{"kind":"typecheck"}'
+            }
+          },
+          { type: 'done' }
+        ])()
+      }
+      return stream([{ type: 'text', text: 'No type errors.' }, { type: 'done' }])()
+    })
+    executeTool.mockResolvedValue({
+      ok: true,
+      summary: 'typecheck',
+      content: 'No diagnostics.'
+    })
+
+    const outcome = await runSubagent({
+      task: 'run typecheck',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0,
+      parentMode: 'agent'
+    })
+
+    expect(executeTool).toHaveBeenCalledTimes(1)
+    expect(executeTool.mock.calls[0]![0]).toBe('diagnostics')
+    const context = executeTool.mock.calls[0]![4] as { agentMode?: string }
+    expect(context.agentMode).toBe('agent')
+    expect(outcome.ok).toBe(true)
+    expect(outcome.report).toBe('No type errors.')
+  })
+
+  it('does not offer diagnostics when parent mode is Ask', async () => {
+    streamChat.mockImplementation(stream([{ type: 'text', text: 'Ask mode answer.' }, { type: 'done' }]))
+
+    await runSubagent({
+      task: 'run typecheck',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0,
+      parentMode: 'ask'
+    })
+
+    const req = streamChat.mock.calls[0]![0] as { tools: { name: string }[] }
+    expect(req.tools.map((t) => t.name)).not.toContain('diagnostics')
+    expect(req.tools.map((t) => t.name)).not.toContain('edit')
+    expect(req.tools.map((t) => t.name)).toContain('read')
   })
 
   it('refuses to nest a second level', async () => {
@@ -370,7 +730,39 @@ describe('runSubagent', () => {
     expect(streamChat).not.toHaveBeenCalled()
   })
 
-  it('rejects mutating tools even if the model emits them', async () => {
+  it('rejects subagent and switch_mode even if the model emits them', async () => {
+    let call = 0
+    streamChat.mockImplementation(() => {
+      call += 1
+      if (call === 1) {
+        return stream([
+          {
+            type: 'tool_call',
+            toolCall: { id: 't1', name: 'subagent', arguments: '{"task":"nested"}' }
+          },
+          {
+            type: 'tool_call',
+            toolCall: { id: 't2', name: 'switch_mode', arguments: '{"mode":"ask"}' }
+          },
+          { type: 'done' }
+        ])()
+      }
+      return stream([{ type: 'text', text: 'Could not nest further.' }, { type: 'done' }])()
+    })
+
+    const outcome = await runSubagent({
+      task: 'try to nest',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0
+    })
+
+    expect(executeTool).not.toHaveBeenCalled()
+    expect(outcome.ok).toBe(true)
+    expect(outcome.report).toContain('Could not nest further')
+  })
+
+  it('allows edit tools when parent is agent', async () => {
     let call = 0
     streamChat.mockImplementation(() => {
       call += 1
@@ -383,19 +775,22 @@ describe('runSubagent', () => {
           { type: 'done' }
         ])()
       }
-      return stream([{ type: 'text', text: 'Could not edit; used read-only tools only.' }, { type: 'done' }])()
+      return stream([{ type: 'text', text: 'Edited a.ts.' }, { type: 'done' }])()
     })
+    executeTool.mockResolvedValue({ ok: true, summary: 'a.ts', content: 'wrote a.ts' })
 
     const outcome = await runSubagent({
-      task: 'try to edit',
+      task: 'edit a file',
       workspace: '/ws',
       signal: new AbortController().signal,
-      depth: 0
+      depth: 0,
+      parentMode: 'agent'
     })
 
-    expect(executeTool).not.toHaveBeenCalled()
+    expect(executeTool).toHaveBeenCalled()
+    expect(executeTool.mock.calls[0]![0]).toBe('edit')
     expect(outcome.ok).toBe(true)
-    expect(outcome.report).toContain('read-only')
+    expect(outcome.report).toBe('Edited a.ts.')
   })
 
   it('propagates ok: false from child tool results', async () => {
@@ -466,5 +861,84 @@ describe('runSubagent', () => {
     expect(result.ok).toBe(false)
     expect(result.report).toContain('invalid_api_key')
     expect(streamChat).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps sibling delta-assembled tools when one final tool_call arrives early', async () => {
+    executeTool.mockResolvedValue({ ok: true, summary: 'ok', content: 'ok' })
+    streamChat
+      .mockImplementationOnce(
+        stream([
+          {
+            type: 'tool_call_delta',
+            toolCallDelta: { index: 0, id: 'c0', name: 'read', arguments: '{"path":"a.ts"}' }
+          },
+          {
+            type: 'tool_call_delta',
+            toolCallDelta: { index: 1, id: 'c1', name: 'grep', arguments: '{"pattern":"foo"}' }
+          },
+          {
+            type: 'tool_call',
+            toolCall: { id: 'c0', name: 'read', arguments: '{"path":"a.ts"}' }
+          },
+          { type: 'done' }
+        ])
+      )
+      .mockImplementationOnce(stream([{ type: 'text', text: 'done' }, { type: 'done' }]))
+
+    const result = await runSubagent({
+      task: 'Find foo',
+      workspace: '/ws',
+      signal: new AbortController().signal,
+      depth: 0
+    })
+
+    expect(result.ok).toBe(true)
+    expect(executeTool).toHaveBeenCalledTimes(2)
+    const toolNames = executeTool.mock.calls.map((call) => call[0] as string)
+    expect(toolNames).toEqual(expect.arrayContaining(['read', 'grep']))
+  })
+
+  it('persists report under runDir/subagents when runDir is set', async () => {
+    const runDir = join(tmpdir(), `vyotiq-sub-report-${process.pid}-${Date.now()}`)
+    mkdirSync(runDir, { recursive: true })
+    try {
+      streamChat.mockImplementation(
+        stream([{ type: 'text', text: 'Found in a.ts:1.' }, { type: 'done' }])
+      )
+      const outcome = await runSubagent({
+        task: 'Where is foo?',
+        workspace: '/ws',
+        signal: new AbortController().signal,
+        depth: 0,
+        runDir
+      })
+      expect(outcome.ok).toBe(true)
+      expect(outcome.reportRel).toMatch(/^subagents\/[a-f0-9]+\/report\.md$/)
+      const abs = join(runDir, outcome.reportRel!)
+      expect(existsSync(abs)).toBe(true)
+      expect(readFileSync(abs, 'utf8')).toMatch(/Found in a\.ts:1/)
+      expect(existsSync(join(runDir, 'subagents', outcome.reportRel!.split('/')[1]!, 'status.json'))).toBe(
+        true
+      )
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+    }
+  })
+
+  it('writeSubagentReportFiles writes report.md and status.json', () => {
+    const runDir = join(tmpdir(), `vyotiq-sub-write-${process.pid}-${Date.now()}`)
+    mkdirSync(runDir, { recursive: true })
+    try {
+      const { reportRel, id } = writeSubagentReportFiles(runDir, {
+        ok: true,
+        report: 'hello',
+        steps: 2,
+        task: 'find x'
+      })
+      expect(reportRel).toBe(`subagents/${id}/report.md`)
+      expect(readFileSync(join(runDir, reportRel), 'utf8')).toMatch(/hello/)
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+    }
   })
 })

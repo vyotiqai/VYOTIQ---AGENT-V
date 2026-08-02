@@ -79,8 +79,7 @@ export function WorkspaceOverrideCard({
                   thinkingEffort: globalSettings.thinkingEffort,
                   showThinking: globalSettings.showThinking,
                   compactionTriggerRatio: globalSettings.compactionTriggerRatio,
-                  keepRecentTurns: globalSettings.keepRecentTurns,
-                  memoryAutoPromote: globalSettings.memoryAutoPromote
+                  keepRecentTurns: globalSettings.keepRecentTurns
                 }).then((res) => {
                   if (!res.ok) onOverrideError?.(res.error)
                 })

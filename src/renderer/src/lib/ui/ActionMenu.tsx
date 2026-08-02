@@ -71,7 +71,10 @@ export function ActionMenu({
   useEffect(() => {
     if (!open || activeIndex < 0) return
     const el = listRef.current?.children[activeIndex] as HTMLElement | undefined
-    el?.scrollIntoView({ block: 'nearest', behavior: prefersReducedMotion() ? 'auto' : 'smooth' })
+    el?.scrollIntoView?.({
+      block: 'nearest',
+      behavior: prefersReducedMotion() ? 'auto' : 'smooth'
+    })
   }, [activeIndex, open])
 
   const onListKeyDown = (e: ReactKeyboardEvent): void => {
@@ -106,7 +109,7 @@ export function ActionMenu({
         role="menu"
         aria-label={ariaLabel}
         tabIndex={-1}
-        className="fixed z-dropdown m-0 list-none overflow-hidden rounded-md border border-border bg-card p-1 shadow-menu animate-fade-in"
+        className="app-region-no-drag fixed z-dropdown m-0 list-none overflow-hidden rounded-md border border-border bg-card p-1 shadow-menu animate-fade-in"
         style={{
           top: position.placement === 'up' ? undefined : position.top,
           bottom:

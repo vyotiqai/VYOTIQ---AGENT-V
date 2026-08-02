@@ -1,0 +1,73 @@
+Token-cost pack — primary re-fetch snapshot
+Date: 2026-08-02 (refresh pass; practices Phase 1 only — no audit conclusions as fact)
+
+URLs attempted / status
+-----------------------
+T1  https://developers.openai.com/api/docs/guides/prompt-caching
+    OK — full page. Material updates vs prior freeze:
+    - GPT-5.6+ family: explicit prompt_cache_breakpoint; prompt_cache_key required for
+      reliable matching; cache writes billed 1.25× uncached input; ttl 30m only;
+      prompt_cache_options.mode implicit|explicit; cache_write_tokens in usage.
+    - Pre-GPT-5.6: cache writes still no extra fee; prompt_cache_retention still applies.
+    - Min prefix still ~1024 tokens (strict on GPT-5.6+).
+
+T2  https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+    OK — large page. Unchanged core contract: tools→system→messages prefix;
+    cache_control; ~5m default TTL (refresh on hit); optional 1h; meter
+    cache_read_input_tokens / cache_creation_input_tokens.
+
+T3  https://platform.claude.com/docs/en/build-with-claude/context-editing
+    OK. clear_tool_uses_20250919 (+ thinking clear_thinking_20251015);
+    trigger/keep knobs; clearing thinking can invalidate cache at clear point.
+
+T4  https://platform.claude.com/cookbook/tool-use-context-engineering-context-engineering-tools
+    OK — cookbook still covers compaction / tool clearing / memory patterns
+    (compact_20260112 referenced in prior freeze).
+
+T5  https://docs.anthropic.com/en/docs/claude-code/costs  (also code.claude.com/docs)
+    OK — refreshed. Emphasizes: Σ step cost; /clear vs /compact; MCP deferred by
+    default; thinking billed as output; cache miss after TTL break; compaction is a
+    large billable request; subagent/team multiplication.
+
+T6  https://ai.google.dev/gemini-api/docs/caching
+    TIMEOUT on direct fetch (WebFetch + curl). Re-checked via official-page snippets
+    from same URL family (ai.google.dev): implicit on 2.5+; Interactions API =
+    implicit only; generateContent still supports explicit cachedContents; min tokens
+    table (2.5 Flash/Pro 2048; newer 3.x preview 4096); usage.total_cached_tokens /
+    cached metadata. Label: Verified primary (snippet-confirmed 2026-08-02; full HTML
+    timeout noted).
+
+T7  https://api-docs.deepseek.com/news/news0802/
+    OK. Automatic disk cache; identical prefix from token 0; 64-token units;
+    prompt_cache_hit_tokens / miss; best-effort; prices in news are historical —
+    defer USD to Models & Pricing (do not freeze news USD into product math).
+
+T8  https://openai.com/index/unrolling-the-codex-agent-loop/
+    TIMEOUT / thin HTML (~9.8 KB) on 2026-08-02 live fetch. Contract retained from
+    prior Verified primary (2026-01-23) + in-repo ADW pack S20 cross-check: exact
+    prefix; static tools first; MCP tools/list_changed → miss; append-only history.
+    Snapshot notes flag re-fetch failure; do not invent new Codex claims.
+
+T13 NEW https://claude.com/blog/lessons-from-building-claude-code-prompt-caching-is-everything
+    OK — Anthropic product blog, 2026-04-30. Primary lessons: prefix match;
+    messages for updates (not system edits); no mid-session tool/model churn;
+    defer_loading stubs instead of remove; cache-safe compaction fork (same system+
+    tools as parent); treat cache hit rate as an uptime-class metric.
+
+Related (not new IDs): https://code.claude.com/docs/en/prompt-caching — Claude Code
+product caching UX (defer tools, model switch cost).
+
+What changed vs prior freeze (docs only)
+----------------------------------------
+- Added T13 (Claude Code prompt-caching lessons / defer_loading).
+- Expanded OpenAI GPT-5.6+ breakpoint / write-cost / key requirements in 01.
+- Strengthened do-not-adopt-blindly (60–90% blog claims, USD tables, Redis, step caps).
+- Practices docs remain free of Phase 2 AppData conclusions-as-fact.
+- Gemini/Codex live HTML incomplete; confidence retained with explicit caveats.
+
+Do-not-adopt-blindly (summary — see 03)
+---------------------------------------
+- Secondary blogs claiming 60–90% cost cuts without provider usage fields.
+- Invented USD from stale DeepSeek news or third-party tables.
+- Redis / semantic answer caches as “the” cost fix.
+- Hard agent/subagent step ceilings (project rule + not a caching practice).

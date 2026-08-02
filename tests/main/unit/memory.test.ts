@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'fs'
+import { existsSync, mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -6,6 +6,8 @@ import {
   ensureMemoryLayout,
   listMemoryNotes,
   readMemoryFile,
+  readMemoryIndex,
+  readMemoryState,
   writeMemoryFile,
   memoryRoot
 } from '@main/agent/context/memory'
@@ -58,5 +60,14 @@ describe('memory store', () => {
     )
     // Whitelist validation still wins over missing-file checks
     expect(() => toolMemoryRead(dir, 'other.md')).toThrow(/path must be/)
+  })
+
+  it('keeps reads side-effect-free when no memory exists', () => {
+    dir = mkdtempSync(join(tmpdir(), 'vyotiq-mem-'))
+    expect(readMemoryIndex(dir)).toBe('')
+    expect(readMemoryState(dir)).toBe('')
+    expect(listMemoryNotes(dir)).toEqual({ indexExcerpt: '', notes: [], hasState: false })
+    expect(readMemoryFile(dir, 'state.md')).toContain('not created yet')
+    expect(existsSync(memoryRoot(dir))).toBe(false)
   })
 })

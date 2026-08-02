@@ -29,10 +29,12 @@ export {
   scanExternalMcpConfigs,
   importExternalMcpServers,
   defaultExternalConfigPaths,
+  isAllowedExternalMcpConfigPath,
   synthesizeVyotiqMcpManifest
 } from './mcpImport'
 export { parseSkillFrontmatter } from '../agent/skills/parse'
 export { resolveEffectiveMcpServers, resolveMcpServersForSessionMap, listEffectivelyEnabledSkills, invalidateMcpResolveCache, mcpSessionMapFingerprint } from './resolve'
+export { purgeOrphanMarketplacePackageDirs } from './orphanCleanup'
 export {
   getInstalledPackageContents,
   getPackageContents,

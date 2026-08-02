@@ -45,6 +45,14 @@ describe('globToRegExp', () => {
     expect(re.test('notes.txt')).toBe(true)
     expect(re.test('src/README.md')).toBe(false)
   })
+
+  it('escapes * and ? inside brace alternatives without throwing', () => {
+    const re = globToRegExp('**/{AGENTS.md,package.json,README*,*.md}')
+    expect(re.test('README*')).toBe(true)
+    expect(re.test('*.md')).toBe(true)
+    expect(re.test('AGENTS.md')).toBe(true)
+    expect(re.test('README.md')).toBe(false)
+  })
 })
 
 describe('toolGlob', () => {
@@ -140,6 +148,95 @@ describe('multi_edit schema', () => {
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error).toMatch(/contents or diff/)
   })
+
+  it('rejects duplicate paths in edits', () => {
+    const result = validateToolArgs(
+      'multi_edit',
+      JSON.stringify({
+        edits: [
+          { path: 'a.ts', contents: 'one' },
+          { path: 'a.ts', contents: 'two' }
+        ]
+      })
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toMatch(/duplicate path/i)
+  })
+})
+
+describe('browser_select_option schema', () => {
+  it('requires value or label', () => {
+    const missing = validateToolArgs(
+      'browser_select_option',
+      JSON.stringify({ selector: '#sel' })
+    )
+    expect(missing.ok).toBe(false)
+    if (!missing.ok) expect(missing.error).toMatch(/value or label/i)
+
+    expect(
+      validateToolArgs(
+        'browser_select_option',
+        JSON.stringify({ selector: '#sel', value: 'a' })
+      ).ok
+    ).toBe(true)
+  })
+})
+
+describe('terminal / grep pattern bounds', () => {
+  it('rejects oversized terminal patterns', () => {
+    const result = validateToolArgs(
+      'terminal',
+      JSON.stringify({ command: 'echo hi', pattern: 'a'.repeat(201) })
+    )
+    expect(result.ok).toBe(false)
+  })
+
+  it('rejects invented terminal session_id labels', () => {
+    const result = validateToolArgs(
+      'terminal',
+      JSON.stringify({ session_id: 'inspect2', block_until_ms: 1000 })
+    )
+    expect(result.ok).toBe(false)
+  })
+
+  it('accepts a UUID session_id for polling', () => {
+    const result = validateToolArgs(
+      'terminal',
+      JSON.stringify({
+        session_id: '550e8400-e29b-41d4-a716-446655440000',
+        block_until_ms: 1000
+      })
+    )
+    expect(result.ok).toBe(true)
+  })
+
+  it('strips invented session_id when command is also present', () => {
+    const result = validateToolArgs(
+      'terminal',
+      JSON.stringify({ command: 'echo hi', session_id: 'run1' })
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.data.session_id).toBeUndefined()
+      expect(result.data.command).toBe('echo hi')
+    }
+  })
+
+  it('strips invented UUID session_id when command is also present', () => {
+    const result = validateToolArgs(
+      'terminal',
+      JSON.stringify({
+        command: 'echo hi',
+        session_id: '98d4409e-3951-4807-85b5-df6f57708d08',
+        block_until_ms: 10000
+      })
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.data.session_id).toBeUndefined()
+      expect(result.data.command).toBe('echo hi')
+    }
+  })
 })
 
 describe('tool arg bounds', () => {
@@ -191,6 +288,11 @@ describe('toolDelete', () => {
   it('refuses to escape the workspace or delete its root', () => {
     expect(() => toolDelete(root, '..')).toThrow()
     expect(() => toolDelete(root, '.')).toThrow(/workspace root/)
+  })
+
+  it('reports File not found with similar names when the path is missing', () => {
+    expect(() => toolDelete(root, 'src/missing.ts')).toThrow(/File not found: src\/missing\.ts/)
+    expect(() => toolDelete(root, 'src/missing.ts')).toThrow(/Similar names in parent directory/)
   })
 })
 

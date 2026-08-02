@@ -11,12 +11,16 @@ import {
   type ResolvedTerminalShell,
   TERMINAL_MAX_OUTPUT
 } from './terminal'
+import { compileUserRegex } from './safeUserRegex'
+import { workspacePathsEqual } from '../../../shared/workspacePath'
 import type { TerminalShell } from '../../../shared/ipc'
 
 export type TerminalSessionStatus = 'running' | 'done' | 'timeout' | 'pattern_matched' | 'aborted'
 
 type TerminalSession = {
   id: string
+  runId: string
+  invokeId: number
   workspaceRoot: string
   command: string
   shell: ResolvedTerminalShell
@@ -50,8 +54,32 @@ function matchesPattern(session: TerminalSession): boolean {
   return session.pattern.test(hay)
 }
 
-export function getTerminalSession(id: string): TerminalSession | undefined {
-  return sessions.get(id)
+function assertSessionOwnership(
+  session: TerminalSession | undefined,
+  sessionId: string,
+  runId: string,
+  invokeId: number
+): asserts session is TerminalSession {
+  if (!session) {
+    throw new Error(`Unknown terminal session_id: ${sessionId}`)
+  }
+  if (session.runId !== runId || session.invokeId !== invokeId) {
+    throw new Error(`Terminal session does not belong to run: ${sessionId}`)
+  }
+}
+
+export function getTerminalSession(
+  id: string,
+  runId: string,
+  invokeId: number
+): TerminalSession | undefined {
+  const session = sessions.get(id)
+  try {
+    assertSessionOwnership(session, id, runId, invokeId)
+  } catch {
+    return undefined
+  }
+  return session
 }
 
 export function disposeTerminalSession(id: string): void {
@@ -71,6 +99,40 @@ export function resetTerminalSessionsForTests(): void {
   for (const id of [...sessions.keys()]) disposeTerminalSession(id)
 }
 
+export function disposeTerminalSessionsForRun(runId: string): number {
+  let disposed = 0
+  for (const session of [...sessions.values()]) {
+    if (session.runId !== runId) continue
+    disposeTerminalSession(session.id)
+    disposed++
+  }
+  return disposed
+}
+
+export function disposeTerminalSessionsForInvoke(runId: string, invokeId: number): number {
+  let disposed = 0
+  for (const session of [...sessions.values()]) {
+    if (session.runId !== runId || session.invokeId !== invokeId) continue
+    disposeTerminalSession(session.id)
+    disposed++
+  }
+  return disposed
+}
+
+export function disposeTerminalSessionsForWorkspace(workspacePath: string): number {
+  let disposed = 0
+  for (const session of [...sessions.values()]) {
+    if (!workspacePathsEqual(session.workspaceRoot, workspacePath)) continue
+    disposeTerminalSession(session.id)
+    disposed++
+  }
+  return disposed
+}
+
+export function disposeAllTerminalSessions(): void {
+  for (const id of [...sessions.keys()]) disposeTerminalSession(id)
+}
+
 function formatSession(session: TerminalSession): string {
   return formatTerminalSessionOutput({
     workspaceRoot: session.workspaceRoot,
@@ -85,7 +147,11 @@ function formatSession(session: TerminalSession): string {
 }
 
 export type StartBackgroundTerminalOpts = {
+  runId: string
+  invokeId: number
   workspaceRoot: string
+  /** Absolute cwd inside workspace; defaults to workspaceRoot. */
+  cwd?: string
   command: string
   signal: AbortSignal
   shell?: TerminalShell
@@ -132,20 +198,25 @@ export async function startBackgroundTerminal(
   let pattern: RegExp | undefined
   if (opts.pattern?.trim()) {
     try {
-      pattern = new RegExp(opts.pattern)
-    } catch {
-      throw new Error(`Invalid terminal pattern regex: ${opts.pattern}`)
+      pattern = compileUserRegex(opts.pattern)
+    } catch (err) {
+      throw new Error(
+        err instanceof Error ? `Invalid terminal pattern regex: ${err.message}` : `Invalid terminal pattern regex: ${opts.pattern}`
+      )
     }
   }
 
+  const cwd = opts.cwd ?? opts.workspaceRoot
   const child = spawn(spec.bin, spec.args, {
-    cwd: opts.workspaceRoot,
+    cwd,
     env: sanitizedTerminalEnv(),
     windowsHide: true
   })
 
   const session: TerminalSession = {
     id,
+    runId: opts.runId,
+    invokeId: opts.invokeId,
     workspaceRoot: opts.workspaceRoot,
     command,
     shell: resolved,
@@ -200,6 +271,8 @@ export async function startBackgroundTerminal(
   })
 
   return await pollTerminalSession({
+    runId: opts.runId,
+    invokeId: opts.invokeId,
     sessionId: id,
     blockUntilMs: opts.blockUntilMs,
     pattern: opts.pattern,
@@ -208,6 +281,8 @@ export async function startBackgroundTerminal(
 }
 
 export type PollTerminalSessionOpts = {
+  runId: string
+  invokeId: number
   sessionId: string
   blockUntilMs: number
   pattern?: string
@@ -217,15 +292,17 @@ export type PollTerminalSessionOpts = {
 
 export async function pollTerminalSession(opts: PollTerminalSessionOpts): Promise<string> {
   const session = sessions.get(opts.sessionId)
-  if (!session) {
-    throw new Error(`Unknown terminal session_id: ${opts.sessionId}`)
-  }
+  assertSessionOwnership(session, opts.sessionId, opts.runId, opts.invokeId)
   if (opts.onOutput) session.onOutput = opts.onOutput
   if (opts.pattern?.trim()) {
     try {
-      session.pattern = new RegExp(opts.pattern)
-    } catch {
-      throw new Error(`Invalid terminal pattern regex: ${opts.pattern}`)
+      session.pattern = compileUserRegex(opts.pattern)
+    } catch (err) {
+      throw new Error(
+        err instanceof Error
+          ? `Invalid terminal pattern regex: ${err.message}`
+          : `Invalid terminal pattern regex: ${opts.pattern}`
+      )
     }
   }
 

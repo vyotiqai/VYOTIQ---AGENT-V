@@ -41,14 +41,26 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   browser_press_key: { running: 'Pressing', done: 'Pressed' },
   browser_select_option: { running: 'Selecting', done: 'Selected' },
   mcp_list_tools: { running: 'Listing MCP', done: 'MCP tools' },
+  request_mcp_tools: { running: 'Pinning MCP', done: 'Pinned MCP' },
+  release_mcp_tools: { running: 'Releasing MCP', done: 'Released MCP' },
+  mcp_list_resources: { running: 'Listing MCP resources', done: 'MCP resources' },
+  mcp_read_resource: { running: 'Reading MCP resource', done: 'MCP resource' },
+  mcp_list_prompts: { running: 'Listing MCP prompts', done: 'MCP prompts' },
+  mcp_get_prompt: { running: 'Fetching MCP prompt', done: 'MCP prompt' },
   subagent: { running: 'Investigating', done: 'Investigated' },
   terminal: { running: 'Running', done: 'Ran' },
   memory_list: { running: 'Listing memory', done: 'Listed memory' },
   memory_read: { running: 'Reading memory', done: 'Read memory' },
   memory_write: { running: 'Writing memory', done: 'Wrote memory' },
+  Skill: { running: 'Loading skill', done: 'Loaded skill' },
   git_status: { running: 'Checking git', done: 'Git status' },
   git_diff: { running: 'Diffing', done: 'Git diff' },
-  diagnostics: { running: 'Checking', done: 'Diagnostics' }
+  git_commit: { running: 'Committing', done: 'Git commit' },
+  diagnostics: { running: 'Checking', done: 'Diagnostics' },
+  generate_image: { running: 'Generating image', done: 'Generated image' },
+  edit_image: { running: 'Editing image', done: 'Edited image' },
+  ask_question: { running: 'Asking', done: 'Asked' },
+  switch_mode: { running: 'Switching mode', done: 'Switched mode' }
 }
 
 export function parseMcpToolDisplay(
@@ -96,6 +108,23 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
   if (name === 'read' || name === 'edit' || name === 'str_replace' || name === 'delete') {
     const path = args.path ?? args.file
     if (typeof path === 'string') return formatPathTarget(path)
+  }
+  if (name === 'generate_image') {
+    const path = args.path
+    if (typeof path === 'string' && path.trim()) return formatPathTarget(path)
+    const prompt = args.prompt
+    if (typeof prompt === 'string' && prompt.trim()) return truncate(prompt, 80)
+  }
+  if (name === 'edit_image') {
+    const path = args.path
+    if (typeof path === 'string' && path.trim()) return formatPathTarget(path)
+    const refs = args.reference_paths
+    if (Array.isArray(refs) && refs.length > 0) {
+      const first = refs.find((r) => typeof r === 'string' && r.trim())
+      if (typeof first === 'string') return formatPathTarget(first)
+    }
+    const prompt = args.prompt
+    if (typeof prompt === 'string' && prompt.trim()) return truncate(prompt, 80)
   }
   if (name === 'list_dir') {
     const path = args.path
@@ -162,13 +191,66 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
     if (typeof key === 'string') return key
   }
   if (name === 'mcp_list_tools') {
-    const serverId = args.server_id
+    const serverId =
+      typeof args.serverId === 'string' && args.serverId.trim()
+        ? args.serverId
+        : typeof args.server_id === 'string' && args.server_id.trim()
+          ? args.server_id
+          : null
+    if (serverId) return truncate(serverId)
+    return 'mcp'
+  }
+  if (name === 'request_mcp_tools' || name === 'release_mcp_tools') {
+    const serverId =
+      typeof args.serverId === 'string' && args.serverId.trim()
+        ? args.serverId
+        : typeof args.server_id === 'string' && args.server_id.trim()
+          ? args.server_id
+          : null
+    if (serverId) return truncate(serverId)
+    const tools = args.tools
+    if (Array.isArray(tools) && tools.length > 0) {
+      const first = tools.find((t): t is string => typeof t === 'string' && t.trim().length > 0)
+      if (first) {
+        return tools.length === 1 ? truncate(first) : truncate(`${first} +${tools.length - 1}`)
+      }
+    }
+    return 'mcp'
+  }
+  if (name === 'mcp_list_resources' || name === 'mcp_list_prompts') {
+    const serverId = args.serverId
     if (typeof serverId === 'string' && serverId.trim()) return truncate(serverId)
     return 'mcp'
+  }
+  if (name === 'mcp_read_resource') {
+    const uri = args.uri
+    if (typeof uri === 'string' && uri.trim()) return truncate(uri)
+  }
+  if (name === 'mcp_get_prompt') {
+    const promptName = args.name
+    if (typeof promptName === 'string' && promptName.trim()) return truncate(promptName)
   }
   if (name === 'subagent') {
     const task = args.task
     if (typeof task === 'string') return truncate(task)
+  }
+  if (name === 'ask_question') {
+    const title = args.title
+    if (typeof title === 'string' && title.trim()) return truncate(title)
+    const questions = args.questions
+    if (Array.isArray(questions) && questions.length > 0) {
+      if (questions.length === 1) {
+        const prompt = (questions[0] as { prompt?: unknown } | undefined)?.prompt
+        if (typeof prompt === 'string') return truncate(prompt)
+      }
+      return `${questions.length} questions`
+    }
+    const question = args.question
+    if (typeof question === 'string') return truncate(question)
+  }
+  if (name === 'switch_mode') {
+    const mode = args.mode
+    if (typeof mode === 'string') return mode
   }
   if (name === 'terminal') {
     const command = args.command ?? args.cmd
@@ -181,6 +263,12 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
   if (name === 'memory_read' || name === 'memory_write' || name === 'memory_list') {
     const path = args.path ?? args.note
     if (typeof path === 'string') return truncate(path)
+  }
+  if (name === 'Skill') {
+    const skillName = typeof args.name === 'string' ? args.name.trim() : ''
+    const path = typeof args.path === 'string' ? args.path.trim() : ''
+    if (skillName && path) return truncate(`${skillName}:${path}`)
+    if (skillName) return truncate(skillName)
   }
 
   const mcp = parseMcpToolDisplay(name)

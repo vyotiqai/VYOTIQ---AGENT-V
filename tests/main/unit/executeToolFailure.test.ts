@@ -35,5 +35,7 @@ describe('executeTool failure summary', () => {
     expect(result.summary).toBe('missing/file.kt')
     expect(warn).toHaveBeenCalled()
     expect(error).not.toHaveBeenCalled()
+    expect(warn.mock.calls[0]![0].message).toMatch(/\(not_found\)/)
+    expect(warn.mock.calls[0]![0].fields.kind).toBe('not_found')
   })
 })

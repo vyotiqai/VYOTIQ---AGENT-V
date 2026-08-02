@@ -1,4 +1,5 @@
 import {
+  cpSync,
   existsSync,
   readdirSync,
   renameSync,
@@ -44,7 +45,35 @@ function markRunsMigrated(meta: WorkspaceMeta): void {
   })
 }
 
-function migrateWorkspaceRunsAtPath(workspacePath: string): number {
+export function moveRunDirectory(
+  from: string,
+  to: string,
+  rename: typeof renameSync = renameSync
+): void {
+  try {
+    rename(from, to)
+    return
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err
+  }
+
+  try {
+    cpSync(from, to, { recursive: true, errorOnExist: true, force: false })
+    if (!existsSync(join(to, 'status.json'))) {
+      throw new Error('Copied run is missing status.json')
+    }
+    rmSync(from, { recursive: true, force: false })
+  } catch (err) {
+    try {
+      if (existsSync(to)) rmSync(to, { recursive: true, force: true })
+    } catch {
+      // Preserve the original error; a later migration can inspect/retry.
+    }
+    throw err
+  }
+}
+
+export function migrateWorkspaceRunsAtPath(workspacePath: string): number {
   if (!existsSync(workspacePath)) return 0
 
   const canonical = canonicalizeWorkspacePath(workspacePath)
@@ -67,6 +96,7 @@ function migrateWorkspaceRunsAtPath(workspacePath: string): number {
 
   const sessionsRoot = workspaceSessionsRoot(canonical)
   let migrated = 0
+  let hadFailure = false
 
   for (const runId of readdirSync(legacyRuns)) {
     const from = join(legacyRuns, runId)
@@ -75,6 +105,7 @@ function migrateWorkspaceRunsAtPath(workspacePath: string): number {
       if (!existsSync(join(from, 'status.json'))) continue
       const to = join(sessionsRoot, runId)
       if (existsSync(to)) {
+        hadFailure = true
         logger.warn('Skipping workspace runs migration — destination exists', {
           scope: 'migrateWorkspaceRuns',
           workspaceId: id,
@@ -82,9 +113,10 @@ function migrateWorkspaceRunsAtPath(workspacePath: string): number {
         })
         continue
       }
-      renameSync(from, to)
+      moveRunDirectory(from, to)
       migrated += 1
     } catch (err) {
+      hadFailure = true
       logger.warn('Failed to migrate workspace run', {
         scope: 'migrateWorkspaceRuns',
         workspaceId: id,
@@ -102,7 +134,7 @@ function migrateWorkspaceRunsAtPath(workspacePath: string): number {
     // best effort
   }
 
-  markRunsMigrated(meta)
+  if (!hadFailure) markRunsMigrated(meta)
   return migrated
 }
 

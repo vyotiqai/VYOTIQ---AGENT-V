@@ -9,6 +9,7 @@ import {
   transcriptRowsContentRevision
 } from '@renderer/features/chat/components/MessageList'
 import { buildTranscriptRows } from '@renderer/features/chat/utils/transcriptRows'
+import { TOOL_BODY_CLAMP_PX, TOOL_GROUP_LIST_MAX_PX } from '@renderer/lib/utils/layout'
 import type { UiItem } from '@shared/transcript'
 
 beforeEach(() => {
@@ -225,7 +226,8 @@ describe('MessageList', () => {
       expect(scrollTopSet).toHaveBeenCalled()
     })
     expect(scrollTopSet).toHaveBeenCalledWith(4000)
-    expect(scroll.style.paddingBottom).toBe('var(--vy-dock-h, 8rem)')
+    expect(scroll.style.paddingBottom).toBe('180px')
+    expect(scroll.style.scrollPaddingBottom).toBe('180px')
 
     vi.unstubAllGlobals()
   })
@@ -266,9 +268,8 @@ describe('MessageList', () => {
       get: () => scrollTop,
       set: scrollTopSet
     })
-    // Outside pin slack so content-revision follow must call followTail.
-    // nearBottom ≈ dockReserve (180); distance must exceed that.
-    scrollTop = 1000
+    // Within former dock slack — must still follow so tokens do not sit under the composer.
+    scrollTop = 2000 - 400 - 50
     scrollTopSet.mockClear()
 
     rerender(
@@ -528,6 +529,69 @@ describe('MessageList', () => {
     expect(estimateTranscriptRowSize(activity)).toBeLessThanOrEqual(56)
   })
 
+  it('estimates live multi-tool activity at the capped list viewport', () => {
+    const multi = buildTranscriptRows([
+      {
+        kind: 'tool',
+        id: 't1',
+        tool: { id: 't1', name: 'read', summary: 'a.ts', status: 'done' }
+      },
+      {
+        kind: 'tool',
+        id: 't2',
+        tool: { id: 't2', name: 'read', summary: 'b.ts', status: 'running' }
+      }
+    ])
+    const activity = multi.find((r) => r.kind === 'activity')
+    expect(estimateTranscriptRowSize(activity)).toBe(48 + TOOL_GROUP_LIST_MAX_PX)
+
+    const collapsedStale = buildTranscriptRows([
+      {
+        kind: 'tool',
+        id: 't1',
+        tool: { id: 't1', name: 'read', summary: 'a.ts', status: 'done' },
+        toolExpanded: true
+      },
+      {
+        kind: 'tool',
+        id: 't2',
+        tool: { id: 't2', name: 'read', summary: 'b.ts', status: 'done' }
+      }
+    ])
+    const stale = collapsedStale.find((r) => r.kind === 'activity')
+    expect(estimateTranscriptRowSize(stale)).toBe(48)
+
+    const loneLive = buildTranscriptRows([
+      {
+        kind: 'tool',
+        id: 't1',
+        tool: { id: 't1', name: 'read', summary: 'a.ts', status: 'running' }
+      }
+    ])
+    const single = loneLive.find((r) => r.kind === 'activity')
+    expect(estimateTranscriptRowSize(single)).toBe(56 + TOOL_BODY_CLAMP_PX)
+  })
+
+  it('estimates running terminal cards as expanded', () => {
+    const rows = buildTranscriptRows([
+      {
+        kind: 'tool',
+        id: 't1',
+        tool: {
+          id: 't1',
+          name: 'terminal',
+          summary: 'pnpm test',
+          status: 'running',
+          argsPreview: '{"command":"pnpm test"}',
+          presentation: 'prominent'
+        }
+      }
+    ])
+    const card = rows.find((r) => r.kind === 'card')
+    expect(card?.kind).toBe('card')
+    expect(estimateTranscriptRowSize(card)).toBe(56 + TOOL_BODY_CLAMP_PX + 80)
+  })
+
   it('estimates long assistant text tall enough to avoid virtual overlap', () => {
     const rows = buildTranscriptRows([
       {
@@ -661,5 +725,53 @@ describe('MessageList', () => {
     process.env.VITEST = prevVitest
     Element.prototype.getBoundingClientRect = originalGbc
     vi.unstubAllGlobals()
+  })
+
+  it('clicking a user prompt calls onBeginEditUserMessage with its message index', () => {
+    const onBegin = vi.fn()
+    const items: UiItem[] = [
+      { kind: 'message', id: 'user-0', role: 'user', content: 'first prompt' },
+      { kind: 'message', id: 'a1', role: 'assistant', content: 'ok' },
+      { kind: 'message', id: 'user-2', role: 'user', content: 'second prompt' }
+    ]
+
+    render(<MessageList items={items} onBeginEditUserMessage={onBegin} />)
+
+    const editable = screen.getAllByLabelText('Edit message')
+    expect(editable).toHaveLength(2)
+    fireEvent.click(editable[1]!)
+    expect(onBegin).toHaveBeenCalledWith(2)
+  })
+
+  it('replaces the user bubble with editComposer while editing', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'user-0', role: 'user', content: 'original prompt' }
+    ]
+
+    render(
+      <MessageList
+        items={items}
+        editingUserMessageIndex={0}
+        editComposer={<div data-testid="inline-composer">editing…</div>}
+        onBeginEditUserMessage={() => {}}
+      />
+    )
+
+    expect(screen.getByTestId('inline-composer')).toBeTruthy()
+    expect(screen.queryByText('original prompt')).toBeNull()
+    expect(screen.queryByLabelText('Edit message')).toBeNull()
+  })
+
+  it('marks editable user prompts with a click-to-edit title', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'user-0', role: 'user', content: 'hover me' }
+    ]
+
+    render(<MessageList items={items} onBeginEditUserMessage={() => {}} />)
+
+    const editBtn = screen.getByLabelText('Edit message')
+    const bubble = editBtn.parentElement
+    expect(bubble?.getAttribute('title')).toBe('Click to edit')
+    expect(bubble?.className).toContain('group/prompt')
   })
 })

@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { TERMINAL_MAX_TIMEOUT_MS } from '../tools/terminal'
+import { USER_REGEX_MAX_LENGTH } from '../tools/safeUserRegex'
 import type { ToolDefinition } from '../providers/types'
 import { zodToJsonSchema } from './zodToJsonSchema'
 
@@ -36,11 +37,11 @@ const editArgs = z
     path: z.string().describe('File path inside the workspace'),
     contents: z
       .string()
-      .describe('Full file contents to write (prefer for new/small files)')
+      .describe('Full file contents to write (prefer for new/small files). Mutually exclusive with diff.')
       .optional(),
     diff: z
       .string()
-      .describe('Unified diff with @@ hunks to apply instead of full contents')
+      .describe('Unified diff with @@ hunks (use when editing an existing file without rewriting it). Mutually exclusive with contents.')
       .optional()
   })
   .refine(
@@ -48,6 +49,10 @@ const editArgs = z
       typeof args.contents === 'string' ||
       (typeof args.diff === 'string' && args.diff.trim().length > 0),
     { message: 'edit requires contents or diff' }
+  )
+  .refine(
+    (args) => !(typeof args.contents === 'string' && typeof args.diff === 'string' && args.diff.trim()),
+    { message: 'edit accepts contents or diff, not both', path: ['diff'] }
   )
 
 const searchArgs = z.object({
@@ -66,45 +71,80 @@ const searchArgs = z.object({
     .optional()
 })
 
-const terminalArgs = z
-  .object({
-    command: z
-      .string()
-      .describe(
-        'Shell command to run at workspace root. Required to start; omit when polling an existing session_id. Shell comes from Settings → Agent → Terminal shell.'
-      )
-      .optional(),
-    session_id: z
-      .string()
-      .min(1)
-      .describe('Poll/await an existing background terminal session')
-      .optional(),
-    block_until_ms: z
-      .number()
-      .int()
-      .min(0)
-      .max(TERMINAL_MAX_TIMEOUT_MS)
-      .describe(
-        'How long to wait before returning (default: full timeout for foreground; use 0 to start background immediately). When polling, wait up to this many ms for exit or pattern.'
-      )
-      .optional(),
-    pattern: z
-      .string()
-      .describe('Optional regex matched against combined stdout+stderr; return early when matched')
-      .optional(),
-    timeoutMs: z
-      .number()
-      .int()
-      .min(1)
-      .max(TERMINAL_MAX_TIMEOUT_MS)
-      .describe(
-        `Foreground timeout in ms when block_until_ms is omitted (default 60000, max ${TERMINAL_MAX_TIMEOUT_MS})`
-      )
-      .optional()
-  })
-  .refine((v) => Boolean(v.command?.trim()) || Boolean(v.session_id?.trim()), {
-    message: 'Provide command to start a shell, or session_id to poll one'
-  })
+/** Drop session_id when a command is also present (poll footgun; includes invented UUIDs). */
+function coerceTerminalSessionId(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
+  const v = raw as Record<string, unknown>
+  const sid = typeof v.session_id === 'string' ? v.session_id.trim() : ''
+  const cmd = typeof v.command === 'string' ? v.command.trim() : ''
+  if (sid && cmd) {
+    const { session_id: _drop, ...rest } = v
+    return rest
+  }
+  return raw
+}
+
+const terminalArgs = z.preprocess(
+  coerceTerminalSessionId,
+  z
+    .object({
+      command: z
+        .string()
+        .describe(
+          'Shell command to run at workspace root. Required to start; omit when polling an existing session_id. Shell comes from Settings → Agent → Terminal shell.'
+        )
+        .optional(),
+      working_directory: z
+        .string()
+        .describe(
+          'Optional subdirectory inside the workspace for cwd (default: workspace root). Must resolve inside the workspace.'
+        )
+        .optional(),
+      session_id: z
+        .string()
+        .uuid()
+        .describe(
+          'Only the session_id UUID from a prior terminal tool result (background start). Never invent labels; omit session_id and pass command for a new shell.'
+        )
+        .optional(),
+      block_until_ms: z
+        .number()
+        .int()
+        .min(0)
+        .max(TERMINAL_MAX_TIMEOUT_MS)
+        .describe(
+          'How long to wait before returning (default: full timeout for foreground; use 0 to start background immediately). When polling, wait up to this many ms for exit or pattern.'
+        )
+        .optional(),
+      pattern: z
+        .string()
+        .max(USER_REGEX_MAX_LENGTH)
+        .describe(
+          `Optional regex matched against combined stdout+stderr; return early when matched (max ${USER_REGEX_MAX_LENGTH} chars)`
+        )
+        .optional(),
+      timeoutMs: z
+        .number()
+        .int()
+        .min(1)
+        .max(TERMINAL_MAX_TIMEOUT_MS)
+        .describe(
+          `Foreground timeout in ms when block_until_ms is omitted (default 60000, max ${TERMINAL_MAX_TIMEOUT_MS})`
+        )
+        .optional()
+    })
+    .refine((v) => Boolean(v.command?.trim()) || Boolean(v.session_id?.trim()), {
+      message: 'Provide command to start a shell, or session_id to poll one'
+    })
+)
+
+const gitCommitArgs = z.object({
+  message: z.string().min(1).describe('Commit message'),
+  push: z
+    .boolean()
+    .describe('Also push to origin after commit (default false)')
+    .optional()
+})
 
 const globArgs = z.object({
   pattern: z
@@ -119,7 +159,10 @@ const globArgs = z.object({
 })
 
 const grepArgs = z.object({
-  pattern: z.string().describe('Regular expression matched against each line'),
+  pattern: z
+    .string()
+    .max(USER_REGEX_MAX_LENGTH)
+    .describe(`Regular expression matched against each line (max ${USER_REGEX_MAX_LENGTH} chars)`),
   include: z
     .string()
     .describe('Glob limiting which files are searched, e.g. src/**/*.ts')
@@ -170,6 +213,22 @@ const multiEditArgs = z.object({
         )
     )
     .min(1)
+    .superRefine((edits, ctx) => {
+      const seen = new Set<string>()
+      for (let i = 0; i < edits.length; i++) {
+        const path = edits[i]?.path?.trim()
+        if (!path) continue
+        const key = path.replace(/\\/g, '/').toLowerCase()
+        if (seen.has(key)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `duplicate path "${edits[i]!.path}" — combine into one edit`,
+            path: [i, 'path']
+          })
+        }
+        seen.add(key)
+      }
+    })
     .describe(
       'Edits applied together atomically; if any fails, none are written. Do not list the same path twice.'
     )
@@ -191,9 +250,7 @@ const todoWriteArgs = z.object({
         content: z.string().min(1).describe('What the task is'),
         status: z
           .enum(['pending', 'in_progress', 'completed', 'cancelled'])
-          .describe(
-            'Task status. Keep at most one task in_progress; update as work progresses.'
-          )
+          .describe('Task status: pending, in_progress, completed, or cancelled.')
       })
     )
     .describe('The full task list, or the subset to update when merge=true'),
@@ -360,19 +417,85 @@ const browserPressKeyArgs = z.object({
   settleMs: browserSettleMsArg
 })
 
-const browserSelectOptionArgs = z.object({
-  selector: z.string().min(1).describe('CSS selector or @eN ref of a <select>'),
-  value: z.string().describe('Option value to select').optional(),
-  label: z.string().describe('Option visible label to select').optional(),
-  pressEnter: z.boolean().describe('Press Enter after selecting (default false)').optional(),
-  tab_id: browserTabIdArg,
-  settleMs: browserSettleMsArg
-})
+const browserSelectOptionArgs = z
+  .object({
+    selector: z.string().min(1).describe('CSS selector or @eN ref of a <select>'),
+    value: z.string().describe('Option value to select').optional(),
+    label: z.string().describe('Option visible label to select').optional(),
+    pressEnter: z.boolean().describe('Press Enter after selecting (default false)').optional(),
+    tab_id: browserTabIdArg,
+    settleMs: browserSettleMsArg
+  })
+  .refine((v) => Boolean(v.value?.trim()) || Boolean(v.label?.trim()), {
+    message: 'Provide value or label for browser_select_option'
+  })
 
 const mcpListToolsArgs = z.object({
+  serverId: z
+    .string()
+    .describe('Optional MCP server id filter (exact match on server id)')
+    .optional(),
   server_id: z
     .string()
-    .describe('Optional MCP server id filter (substring match on tool name prefix)')
+    .describe('Deprecated alias for serverId')
+    .optional()
+})
+
+const requestMcpToolsArgs = z.object({
+  tools: z
+    .array(z.string().min(1).max(200))
+    .max(32)
+    .describe(
+      'Full MCP tool names (mcp__server__tool) and/or bare tool names to pin for the next step'
+    )
+    .optional(),
+  serverId: z
+    .string()
+    .describe('Pin every connected tool from this MCP server id for the next step')
+    .optional(),
+  server_id: z.string().describe('Deprecated alias for serverId').optional()
+})
+
+const releaseMcpToolsArgs = z.object({
+  tools: z
+    .array(z.string().min(1).max(200))
+    .max(32)
+    .describe(
+      'Full MCP tool names (mcp__server__tool) and/or bare tool names to release from the sticky catalog'
+    )
+    .optional(),
+  serverId: z
+    .string()
+    .describe('Release every pinned tool from this MCP server id')
+    .optional(),
+  server_id: z.string().describe('Deprecated alias for serverId').optional()
+})
+
+const mcpListResourcesArgs = z.object({
+  serverId: z
+    .string()
+    .describe('Optional MCP server id (omit to list all connected enabled servers)')
+    .optional()
+})
+
+const mcpReadResourceArgs = z.object({
+  serverId: z.string().min(1).describe('MCP server id'),
+  uri: z.string().min(1).describe('Resource URI to read')
+})
+
+const mcpListPromptsArgs = z.object({
+  serverId: z
+    .string()
+    .describe('Optional MCP server id (omit to list all connected enabled servers)')
+    .optional()
+})
+
+const mcpGetPromptArgs = z.object({
+  serverId: z.string().min(1).describe('MCP server id'),
+  name: z.string().min(1).describe('Prompt name'),
+  arguments: z
+    .record(z.string(), z.string())
+    .describe('Prompt argument values')
     .optional()
 })
 
@@ -393,12 +516,75 @@ const subagentArgs = z.object({
   task: z
     .string()
     .describe(
-      'Self-contained investigation for the sub-agent, including what to report back. Nested agent is read-only.'
+      'Self-contained task for a nested agent (same runtime as the main agent). Returns one report under subagents/<id>/report.md.'
     ),
   context: z
     .string()
-    .describe('Findings so far that save the sub-agent re-deriving them')
+    .describe('Findings so far that save the nested agent re-deriving them')
     .optional()
+})
+
+const askQuestionItemArgs = z.object({
+  id: z.string().min(1).describe('Stable id used to match the answer'),
+  prompt: z.string().min(1).describe('Question text shown to the user'),
+  type: z
+    .enum(['single', 'multi', 'boolean', 'text'])
+    .describe('single=one option; multi=many; boolean=yes/no; text=freeform'),
+  options: z
+    .array(z.string().min(1))
+    .min(2)
+    .describe('Required for single/multi (at least 2 choices)')
+    .optional(),
+  allowCustom: z
+    .boolean()
+    .describe('For single/multi, allow an Other… text answer (default false)')
+    .optional()
+})
+
+const askQuestionArgs = z
+  .object({
+    title: z
+      .string()
+      .min(1)
+      .describe('Optional form title when asking multiple questions')
+      .optional(),
+    questions: z
+      .array(askQuestionItemArgs)
+      .min(1)
+      .max(8)
+      .describe('Typed question form (1–8 items). Prefer this over legacy fields.')
+      .optional(),
+    question: z
+      .string()
+      .min(1)
+      .describe('Legacy single-question text when questions[] is omitted')
+      .optional(),
+    options: z
+      .array(z.string().min(1))
+      .describe('Legacy fixed choices for a single question')
+      .optional(),
+    allowMultiple: z
+      .boolean()
+      .describe('Legacy: allow selecting more than one option (default false)')
+      .optional(),
+    allowCustom: z
+      .boolean()
+      .describe('Legacy: allow a custom text answer with options (default true)')
+      .optional()
+  })
+  .superRefine((val, ctx) => {
+    if ((!val.questions || val.questions.length === 0) && !val.question?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Provide questions[] or question'
+      })
+    }
+  })
+
+const switchModeArgs = z.object({
+  mode: z
+    .enum(['ask', 'plan', 'agent'])
+    .describe('Target interaction mode for the rest of this run')
 })
 
 const memoryListArgs = z.object({})
@@ -442,6 +628,139 @@ const diagnosticsArgs = z.object({
     .optional()
 })
 
+const generateImageArgs = z.object({
+  prompt: z
+    .string()
+    .min(1)
+    .describe('Image generation instruction (scene, subject, style, constraints)'),
+  path: z
+    .string()
+    .describe(
+      'Workspace-relative output path (png/jpg/webp/svg). Omit to write under .vyotiq/generated/.'
+    )
+    .optional(),
+  provider: z
+    .enum(['openai', 'gemini', 'xai', 'openrouter', 'custom'])
+    .describe('Image API provider override (default: Settings → Image provider, then auto by key)')
+    .optional(),
+  model: z
+    .string()
+    .describe(
+      'Provider image model override (e.g. gpt-image-2, gemini-3.1-flash-image, grok-imagine-image, bytedance-seed/seedream-4.5, dall-e-3 on custom)'
+    )
+    .optional(),
+  preset: z
+    .enum(['draft', 'final'])
+    .describe(
+      'draft = low/1K/speed defaults; final = high/2K/quality. Explicit quality/size/resolution/model win.'
+    )
+    .optional(),
+  size: z
+    .string()
+    .describe(
+      'OpenAI/OpenRouter size WxH or auto (e.g. 1024x1024). OpenAI: edges multiples of 16. Prefer aspect_ratio+resolution for Gemini/xAI/OpenRouter.'
+    )
+    .optional(),
+  quality: z
+    .enum(['low', 'medium', 'high', 'auto'])
+    .describe('OpenAI/OpenRouter quality; prefer low / preset=draft for drafts')
+    .optional(),
+  aspect_ratio: z
+    .string()
+    .describe('Gemini/xAI/OpenRouter aspect ratio (e.g. 1:1, 16:9, 9:16). Prefer over size for those providers.')
+    .optional(),
+  resolution: z
+    .string()
+    .describe(
+      'Gemini/OpenRouter imageSize (0.5K/1K/2K/4K) or xAI resolution (1k/2k; 4k clamps to 2k)'
+    )
+    .optional(),
+  n: z
+    .number()
+    .int()
+    .min(1)
+    .max(4)
+    .describe(
+      'How many images to generate (OpenAI/xAI/OpenRouter; Gemini returns one). Extra files get -2, -3 suffixes.'
+    )
+    .optional(),
+  output_format: z
+    .enum(['png', 'jpeg', 'webp', 'svg'])
+    .describe('Output format (default png). svg is OpenRouter vector models only.')
+    .optional(),
+  output_compression: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .describe('jpeg/webp compression 0–100 (OpenAI/OpenRouter)')
+    .optional(),
+  background: z
+    .enum(['opaque', 'transparent', 'auto'])
+    .describe('Background. transparent is not supported on gpt-image-2.')
+    .optional()
+})
+
+const editImageArgs = z.object({
+  prompt: z
+    .string()
+    .min(1)
+    .describe(
+      'Edit instruction. Prefer “change only X; keep everything else the same.” Reference Image 1…N when multiple.'
+    ),
+  reference_paths: z
+    .array(z.string().min(1))
+    .min(1)
+    .max(16)
+    .describe(
+      'Workspace-relative source/reference images (1–16; xAI max 3). First image is the primary canvas.'
+    ),
+  path: z
+    .string()
+    .describe(
+      'Output path. Omit to overwrite the first reference (iterate in place). Pass a new path to keep the original.'
+    )
+    .optional(),
+  mask_path: z
+    .string()
+    .describe(
+      'Optional OpenAI mask PNG (transparent = editable). Not supported on Gemini/xAI/OpenRouter.'
+    )
+    .optional(),
+  provider: z
+    .enum(['openai', 'gemini', 'xai', 'openrouter', 'custom'])
+    .describe('Image API provider override')
+    .optional(),
+  model: z.string().describe('Provider image model override').optional(),
+  preset: z.enum(['draft', 'final']).describe('draft | final quality defaults').optional(),
+  size: z.string().describe('OpenAI/OpenRouter size WxH or auto').optional(),
+  quality: z.enum(['low', 'medium', 'high', 'auto']).describe('OpenAI/OpenRouter quality').optional(),
+  aspect_ratio: z.string().describe('Gemini/xAI/OpenRouter aspect ratio').optional(),
+  resolution: z.string().describe('Gemini/OpenRouter imageSize or xAI resolution').optional(),
+  n: z.number().int().min(1).max(4).describe('OpenAI/xAI/OpenRouter image count').optional(),
+  output_format: z
+    .enum(['png', 'jpeg', 'webp', 'svg'])
+    .describe('Output format (svg = OpenRouter vector models)')
+    .optional(),
+  output_compression: z.number().int().min(0).max(100).optional(),
+  background: z.enum(['opaque', 'transparent', 'auto']).optional()
+})
+
+const skillArgs = z.object({
+  name: z
+    .string()
+    .min(1)
+    .describe(
+      'Skill name from Available skills, or plugin-rule id from Plugin rules (e.g. plugin-rule:quality/rules/quality.md)'
+    ),
+  path: z
+    .string()
+    .describe(
+      'Optional relative path under the skill root (default: SKILL.md). Use for references/, scripts/, or assets/. Ignored for plugin-rule ids.'
+    )
+    .optional()
+})
+
 const TOOL_REGISTRY = {
   read: {
     description:
@@ -450,22 +769,22 @@ const TOOL_REGISTRY = {
   },
   edit: {
     description:
-      'Create or overwrite a workspace file with full contents, or apply a unified diff.',
+      'Create/overwrite with contents (new or small files), or apply a unified diff. For one exact string change use str_replace; for several files use multi_edit.',
     schema: editArgs
   },
   search: {
     description:
-      'Quick combined filename-or-content lookup. Default: case-insensitive substring; set regex=true for case-insensitive regex. First hit per file.',
+      'Quick filename-or-content substring lookup (first hit per file). Prefer glob for path patterns and grep for every matching line.',
     schema: searchArgs
   },
   glob: {
     description:
-      'List workspace-relative paths matching a glob (**, *, ?, {a,b}). Gitignore-aware.',
+      'List workspace-relative paths matching a glob (**, *, ?, {a,b}). Prefer over search when you need paths only. Gitignore-aware.',
     schema: globArgs
   },
   grep: {
     description:
-      'Regex search across text file contents; every matching line with optional context. Default: case-insensitive.',
+      'Regex search across file contents with every matching line and optional context. Prefer over search when you need all hits or line numbers.',
     schema: grepArgs
   },
   list_dir: {
@@ -474,12 +793,12 @@ const TOOL_REGISTRY = {
   },
   multi_edit: {
     description:
-      'Apply several file edits atomically: if any edit fails to validate or match, no file is written.',
+      'Apply several file edits atomically (one entry per path). Prefer when changing multiple files; use str_replace for a single surgical change.',
     schema: multiEditArgs
   },
   str_replace: {
     description:
-      'Replace exact text in a workspace file. Prefer for surgical edits; use edit for new files or unified diffs.',
+      'Replace exact text in a file (unique old_string, or replace_all). Prefer for one surgical edit; use edit for new files or multi_edit for many files.',
     schema: strReplaceArgs
   },
   delete: {
@@ -562,17 +881,55 @@ const TOOL_REGISTRY = {
   },
   mcp_list_tools: {
     description:
-      'List connected MCP tools (name, description, readOnlyHint). Use when MCP defs were trimmed from context.',
+      'List connected MCP tools (name, description, readOnlyHint). Marks tools omitted from this step catalog. Use request_mcp_tools to pin omitted tools for the next step.',
     schema: mcpListToolsArgs
+  },
+  request_mcp_tools: {
+    description:
+      'Pin MCP tool definitions into the next step provider catalog (budget-permitting). Effect applies on the following step, not mid-stream. Pass full mcp__server__tool names and/or a serverId.',
+    schema: requestMcpToolsArgs
+  },
+  release_mcp_tools: {
+    description:
+      'Unpin MCP tool definitions so they drop from the sticky step catalog on the next model step (frees schema tokens). Re-pin with request_mcp_tools if needed. Pass full mcp__server__tool names and/or a serverId.',
+    schema: releaseMcpToolsArgs
+  },
+  mcp_list_resources: {
+    description:
+      'List MCP resources (uri, name, description) from one server or all connected enabled servers.',
+    schema: mcpListResourcesArgs
+  },
+  mcp_read_resource: {
+    description: 'Read an MCP resource by server id and URI.',
+    schema: mcpReadResourceArgs
+  },
+  mcp_list_prompts: {
+    description:
+      'List MCP prompts (name, description, arguments) from one server or all connected enabled servers.',
+    schema: mcpListPromptsArgs
+  },
+  mcp_get_prompt: {
+    description: 'Fetch a rendered MCP prompt by server id and name (optional arguments).',
+    schema: mcpGetPromptArgs
   },
   subagent: {
     description:
-      'Delegate a read-only investigation to a nested agent that returns one written report.',
+      'Delegate a task to a nested agent (same harness, tools, and approvals as the main agent; isolated context). Returns one report under subagents/<id>/report.md for re-read after compaction.',
     schema: subagentArgs
+  },
+  ask_question: {
+    description:
+      'Pause and ask the user a typed question form in the transcript (single, multi, boolean, text; up to 8 questions). Blocks until they answer.',
+    schema: askQuestionArgs
+  },
+  switch_mode: {
+    description:
+      'Switch this run between Ask (read-only), Plan (plan artifacts only), and Agent (full tools).',
+    schema: switchModeArgs
   },
   terminal: {
     description:
-      'Run a shell command with cwd at the workspace root. Output is capped. Use block_until_ms: 0 to start in the background (returns session_id); poll with session_id + block_until_ms / pattern.',
+      'Run a shell command with cwd at the workspace root (or working_directory under it). Output is capped. Use block_until_ms: 0 to start in the background (returns session_id: <uuid>); poll only with that UUID plus block_until_ms / pattern. Never invent session_id labels — omit session_id and pass command for a new shell.',
     schema: terminalArgs
   },
   memory_list: {
@@ -590,6 +947,11 @@ const TOOL_REGISTRY = {
       'Create or update a memory file (index.md, state.md, or notes/<name>.md).',
     schema: memoryWriteArgs
   },
+  Skill: {
+    description:
+      'Load an enabled Marketplace skill (SKILL.md) or plugin rule (`plugin-rule:…` id), or a relative file under a skill. Call when an Available skills or Plugin rules entry matches the task.',
+    schema: skillArgs
+  },
   git_status: {
     description: 'Structured git status for the workspace (branch, changed files, +/- counts).',
     schema: gitStatusArgs
@@ -598,10 +960,25 @@ const TOOL_REGISTRY = {
     description: 'Unified git diff for the workspace (optional path; optional staged).',
     schema: gitDiffArgs
   },
+  git_commit: {
+    description:
+      'Stage all changes and create a git commit (optional push). Agent-only; requires approval when enabled.',
+    schema: gitCommitArgs
+  },
   diagnostics: {
     description:
       'Run project typecheck or lint and return structured diagnostics when parseable.',
     schema: diagnosticsArgs
+  },
+  generate_image: {
+    description:
+      'Generate an image via OpenAI, Gemini, xAI, OpenRouter, or an enabled custom OpenAI-compatible host and save it under the workspace. Chat provider can differ. Use preset=draft|final for quality defaults; set size/quality/resolution/output_format/n explicitly when needed. Ask/Plan: dry-run only. For edits use edit_image.',
+    schema: generateImageArgs
+  },
+  edit_image: {
+    description:
+      'Edit or compose from workspace reference images (OpenAI / Gemini / xAI / OpenRouter / custom). Pass reference_paths (first = canvas). Omit path to overwrite the first reference; set path to write a new file. Optional mask_path (OpenAI / custom hosts that support edits). Ask/Plan: dry-run only.',
+    schema: editImageArgs
   }
 } as const
 

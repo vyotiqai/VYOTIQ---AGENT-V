@@ -151,6 +151,17 @@ describe('AppShell', () => {
     expect(screen.queryByRole('button', { name: /open menu/i })).toBeNull()
   })
 
+  it('shows a sidebar resize handle on desktop when expanded', () => {
+    render(
+      <AppShell {...baseProps}>
+        <p>Main content</p>
+      </AppShell>
+    )
+    expect(screen.getByRole('separator', { name: /Resize sidebar/i })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }))
+    expect(screen.queryByRole('separator', { name: /Resize sidebar/i })).toBeNull()
+  })
+
   it('collapses the desktop sidebar to a top corner icon', () => {
     render(
       <AppShell {...baseProps}>

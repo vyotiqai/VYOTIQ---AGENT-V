@@ -1,9 +1,8 @@
 import { z } from 'zod'
-import { ProviderIdSchema } from './providers'
+import { ProviderIdSchema, ThinkingEffortSchema } from './providers'
 import { MarketplaceOverridesSchema } from './marketplace'
 import {
   AgentInteractionModeSchema,
-  ThinkingEffortSchema,
   ToolApprovalSettingsSchema
 } from './settings'
 
@@ -14,16 +13,22 @@ export const WorkspaceUiStateSchema = z.object({
   scrollTopByRunId: z.record(z.string(), z.number()).default({}),
   composerDraft: z.string(),
   /** Per-workspace composer Ask / Plan / Agent mode. */
-  agentMode: AgentInteractionModeSchema.default('agent')
+  agentMode: AgentInteractionModeSchema.default('agent'),
+  /**
+   * Monotonic client write generation. Main ignores updates with a lower
+   * generation than the last accepted write for that path (out-of-order IPC).
+   */
+  writeGeneration: z.number().int().nonnegative().optional()
 })
 export type WorkspaceUiState = z.infer<typeof WorkspaceUiStateSchema>
 
 export const WorkspaceSettingsOverrideSchema = z.object({
   provider: ProviderIdSchema.optional(),
   model: z.string().min(1).optional(),
+  ollamaBaseUrl: z.string().min(1).optional(),
+  customOpenAiBaseUrl: z.string().min(1).optional(),
   compactionTriggerRatio: z.number().min(0.5).max(0.95).optional(),
   keepRecentTurns: z.number().int().min(4).max(50).optional(),
-  memoryAutoPromote: z.boolean().optional(),
   thinkingEnabled: z.boolean().optional(),
   thinkingEffort: ThinkingEffortSchema.optional(),
   showThinking: z.boolean().optional(),
@@ -56,7 +61,8 @@ export const WorkspacesAddRequestSchema = z.object({
 export type WorkspacesAddRequest = z.infer<typeof WorkspacesAddRequestSchema>
 
 export const WorkspacesRemoveRequestSchema = z.object({
-  path: z.string().min(1)
+  path: z.string().min(1),
+  stopActiveRuns: z.boolean().optional().default(false)
 })
 export type WorkspacesRemoveRequest = z.infer<typeof WorkspacesRemoveRequestSchema>
 

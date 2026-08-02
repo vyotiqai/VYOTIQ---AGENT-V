@@ -1,7 +1,7 @@
 import { BrowserWindow, session } from 'electron'
 import { shell } from 'electron'
 
-const ALLOWED_EXTERNAL = [/^https?:\/\//i]
+const ALLOWED_EXTERNAL = [/^https:\/\//i]
 
 export function attachSecurity(win: BrowserWindow): void {
   win.webContents.setWindowOpenHandler(({ url }) => {

@@ -2,17 +2,89 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { ChatView } from '@renderer/features/chat/ChatView'
-import { COMPOSER_DOCK_FADE_PX } from '@renderer/lib/utils/layout'
+import { TitleBar } from '@renderer/app/TitleBar'
+import { BreakpointProvider } from '@renderer/lib/context/BreakpointProvider'
+import { TitleBarAccessoryProvider } from '@renderer/lib/context/TitleBarAccessory'
+import { COMPOSER_DOCK_CLEARANCE_PX, COMPOSER_DOCK_FADE_PX, COMPOSER_DOCK_LIVE_CLEARANCE_PX } from '@renderer/lib/utils/layout'
 
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
+  try {
+    localStorage.removeItem('vyotiq.browserPanelOpen')
+    localStorage.removeItem('vyotiq.rightPanel')
+    localStorage.removeItem('vyotiq.browserRecents')
+    localStorage.removeItem('vyotiq.dockExpanded')
+    localStorage.removeItem('vyotiq.immersiveTab')
+    localStorage.removeItem('vyotiq.dockWidth')
+    localStorage.removeItem('vyotiq.sidebarWidth')
+  } catch {
+    /* ignore */
+  }
   // The docked composer asks the main process about git as soon as it mounts.
   Object.defineProperty(window, 'vyotiq', {
     configurable: true,
     writable: true,
-    value: { gitStatus: vi.fn().mockResolvedValue({ ok: true, data: null }) }
+    value: {
+      gitStatus: vi.fn().mockResolvedValue({ ok: true, data: { kind: 'not_repo' } }),
+      gitDiff: vi.fn().mockResolvedValue({ ok: true, data: { path: '', hunks: [] } }),
+      gitCommit: vi.fn().mockResolvedValue({ ok: true, data: { pushed: false, detail: 'ok' } }),
+      gitLog: vi.fn().mockResolvedValue({ ok: true, data: [] }),
+      gitCommitFiles: vi.fn().mockResolvedValue({ ok: true, data: { files: [] } }),
+      prView: vi.fn().mockResolvedValue({ ok: true, data: null }),
+      prMerge: vi.fn().mockResolvedValue({ ok: true, data: { detail: 'merged' } }),
+      prDiff: vi.fn().mockResolvedValue({ ok: true, data: { content: '' } }),
+      prClose: vi.fn().mockResolvedValue({ ok: true, data: { detail: 'closed' } }),
+      prEditTitle: vi.fn().mockResolvedValue({ ok: true, data: { title: 't' } }),
+      githubAuthStatus: vi.fn().mockResolvedValue({
+        ok: true,
+        data: {
+          ghAvailable: true,
+          clientIdConfigured: false,
+          hasAppToken: false,
+          pending: false,
+          userCode: null,
+          verificationUri: null,
+          error: null
+        }
+      }),
+      shellOpenExternal: vi.fn().mockResolvedValue({ ok: true, data: true }),
+      gitStageAll: vi.fn().mockResolvedValue({ ok: true, data: { staged: true, detail: 'ok' } }),
+      gitStagePaths: vi.fn().mockResolvedValue({ ok: true, data: { staged: true, detail: 'ok' } }),
+      gitUnstagePaths: vi.fn().mockResolvedValue({
+        ok: true,
+        data: { unstaged: true, detail: 'ok' }
+      }),
+      gitBranches: vi.fn().mockResolvedValue({ ok: true, data: [] }),
+      gitCheckout: vi.fn().mockResolvedValue({ ok: true, data: { detail: 'ok' } }),
+      ptyList: vi.fn().mockImplementation((_workspacePath?: string) =>
+        Promise.resolve({ ok: true, data: [] })
+      ),
+      ptyCreate: vi.fn().mockResolvedValue({ ok: false, error: 'pty unavailable in tests' }),
+      ptyKill: vi.fn().mockResolvedValue({ ok: true, data: true }),
+      ptyWrite: vi.fn().mockResolvedValue({ ok: true, data: true }),
+      ptyResize: vi.fn().mockResolvedValue({ ok: true, data: true }),
+      onPtyData: vi.fn().mockReturnValue(() => undefined),
+      onPtyExit: vi.fn().mockReturnValue(() => undefined),
+      readRunArtifact: vi.fn().mockResolvedValue({ ok: false, error: 'none' }),
+      browserGetState: vi.fn().mockResolvedValue({
+        ok: true,
+        data: { open: false, url: '', title: '' }
+      }),
+      onBrowserState: vi.fn().mockReturnValue(() => undefined),
+      browserSetBounds: vi.fn().mockResolvedValue({ ok: true, data: true }),
+      browserNavigate: vi.fn().mockResolvedValue({ ok: true, data: true }),
+      browserReload: vi.fn().mockResolvedValue({ ok: true, data: true }),
+      browserTakeScreenshot: vi.fn().mockResolvedValue({
+        ok: true,
+        data: { path: '/tmp/snapshot.jpg' }
+      }),
+      browserClearBrowsingData: vi.fn().mockResolvedValue({
+        ok: true,
+        data: { cleared: 'history' }
+      })
+    }
   })
   class ResizeObserverStub {
     private readonly cb: ResizeObserverCallback
@@ -35,8 +107,6 @@ afterEach(() => {
 })
 
 const baseProps = {
-  hasOpenWorkspaces: true,
-  recentPaths: [],
   items: [],
   running: false,
   error: null,
@@ -50,20 +120,185 @@ const baseProps = {
     model: 'qwen2.5',
     compactionTriggerRatio: 0.7,
     keepRecentTurns: 12,
-    memoryAutoPromote: true,
     thinkingEnabled: true,
     thinkingEffort: 'medium' as const,
     showThinking: true
   },
   onChatSettingsChange: vi.fn(),
-  onOpenRecent: vi.fn(),
-  onAddWorkspace: vi.fn(),
   onProviderModel: vi.fn(),
   onSend: vi.fn(),
   onStop: vi.fn()
 }
 
 describe('ChatView composer placement', () => {
+  it('shows a side rail that opens the browser panel', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+
+    expect(document.querySelector('[data-chat-side-rail]')).toBeTruthy()
+    expect(document.querySelector('[data-agent-browser-panel]')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /Show browser panel/i }))
+    expect(document.querySelector('[data-agent-browser-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-agent-browser-viewport]')).toBeTruthy()
+    // Dock open ? side rail hidden; dock tabs own navigation.
+    expect(document.querySelector('[data-chat-side-rail]')).toBeNull()
+    expect(screen.getByText('No page loaded')).toBeTruthy()
+    expect(
+      screen.getByText(/Enter a URL above, or ask the agent to open a page/i)
+    ).toBeTruthy()
+    const browserPanel = document.querySelector('[data-agent-browser-panel]')
+    expect(
+      browserPanel?.querySelector('[aria-label="Hide browser panel"]')
+    ).toBeNull()
+    expect(screen.getByRole('button', { name: /Close Browser/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Close panel/i })).toBeNull()
+    expect(screen.getByPlaceholderText('Search or enter URL')).toBeTruthy()
+  })
+
+  it('closes one dock tab without clearing the remaining tabs', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Open panel/i }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Changes/i }))
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Terminal$/i })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Changes$/i })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /Close Changes/i }))
+    expect(document.querySelector('[data-right-dock]')).toBeTruthy()
+    expect(document.querySelector('[data-changes-panel]')).toBeNull()
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Terminal$/i })).toBeTruthy()
+  })
+
+  it('switches docked panels from the side rail', async () => {
+    render(<ChatView {...baseProps} items={[]} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-chat-side-rail]')).toBeNull()
+    expect(screen.getByText('No terminal')).toBeTruthy()
+    // Session strip: New terminal only until a session exists; expand lives on DockTabBar.
+    expect(screen.getByRole('button', { name: /New terminal/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /terminal list/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Maximize terminal/i })).toBeNull()
+    expect(screen.queryByText(/Agent commands/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /Split terminal/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /Expand panel/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Open panel/i })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /Open panel/i }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Changes/i }))
+    expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
+    // Keep-alive: prior panels stay mounted but hidden.
+    expect(
+      document.querySelector('[data-terminal-panel]')?.parentElement?.className
+    ).toMatch(/\bhidden\b/)
+    expect(
+      document.querySelector('[data-changes-panel]')?.parentElement?.className
+    ).toMatch(/\bflex\b/)
+    expect(await screen.findByText('Not a git repository', {}, { timeout: 5000 })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /files panel/i })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /Close Changes/i }))
+    // Closing Changes via the tab leaves Terminal mounted.
+    expect(document.querySelector('[data-changes-panel]')).toBeNull()
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-right-dock]')).toBeTruthy()
+  })
+
+  it('does not steal Terminal when browser state keeps reporting open', () => {
+    let browserHandler: ((state: { open: boolean; url: string; title: string }) => void) | null =
+      null
+    Object.defineProperty(window, 'vyotiq', {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(window.vyotiq as object),
+        browserGetState: vi.fn().mockResolvedValue({
+          ok: true,
+          data: { open: true, url: 'https://example.com', title: 'Example' }
+        }),
+        onBrowserState: vi.fn((handler: typeof browserHandler) => {
+          browserHandler = handler
+          return () => {
+            browserHandler = null
+          }
+        })
+      }
+    })
+
+    localStorage.setItem('vyotiq.rightPanel', 'terminal')
+    render(<ChatView {...baseProps} items={[]} />)
+
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-agent-browser-panel]')).toBeNull()
+
+    browserHandler?.({ open: true, url: 'https://example.com/x', title: 'Example' })
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-agent-browser-panel]')).toBeNull()
+  })
+
+  it('restores the Plan panel from localStorage on mount', () => {
+    localStorage.setItem('vyotiq.rightPanel', 'plan')
+    render(<ChatView {...baseProps} items={[]} />)
+
+    expect(document.querySelector('[data-plan-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-chat-side-rail]')).toBeNull()
+    expect(screen.getByRole('tab', { name: /^Plan$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Close Plan/i })).toBeTruthy()
+  })
+
+  it('does not steal Plan when browser opens on a rising edge', () => {
+    let browserHandler: ((state: { open: boolean; url: string; title: string }) => void) | null =
+      null
+    Object.defineProperty(window, 'vyotiq', {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(window.vyotiq as object),
+        browserGetState: vi.fn().mockResolvedValue({
+          ok: true,
+          data: { open: false, url: '', title: '' }
+        }),
+        onBrowserState: vi.fn((handler: typeof browserHandler) => {
+          browserHandler = handler
+          return () => {
+            browserHandler = null
+          }
+        })
+      }
+    })
+
+    localStorage.setItem('vyotiq.rightPanel', 'plan')
+    render(<ChatView {...baseProps} items={[]} />)
+
+    expect(document.querySelector('[data-plan-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-agent-browser-panel]')).toBeNull()
+
+    browserHandler?.({ open: true, url: 'https://example.com', title: 'Example' })
+    expect(document.querySelector('[data-plan-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-agent-browser-panel]')).toBeNull()
+  })
+
+  it('shows Recents in the empty browser panel when history exists', () => {
+    localStorage.setItem(
+      'vyotiq.browserRecents',
+      JSON.stringify([
+        {
+          url: 'https://example.com',
+          title: 'Example Domain',
+          visitedAt: Date.now()
+        }
+      ])
+    )
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Show browser panel/i }))
+    expect(screen.getByText('Recents')).toBeTruthy()
+    expect(screen.getByText('Example Domain')).toBeTruthy()
+  })
+
   it('renders a single hero composer in empty state without dock gutter', () => {
     render(<ChatView {...baseProps} items={[]} />)
 
@@ -71,12 +306,211 @@ describe('ChatView composer placement', () => {
     expect(composers).toHaveLength(1)
 
     expect(document.querySelector('[data-composer-hero]')).toBeTruthy()
-    expect(screen.getByText(/Type \/ for commands/i)).toBeTruthy()
-    expect(screen.getByText(/\/create-rule/)).toBeTruthy()
+    expect(screen.queryByText(/Type \/ for commands/i)).toBeNull()
 
     const composerRoot = composers[0].closest('.shrink-0')
     expect(composerRoot?.className).not.toMatch(/px-4/)
     expect(composerRoot?.className).not.toMatch(/sticky/)
+  })
+
+  it('renders a floating edge rail over the chat stage', () => {
+    render(
+      <ChatView
+        {...baseProps}
+        items={[
+          {
+            kind: 'message',
+            id: 'm1',
+            role: 'user',
+            content: 'hello',
+            at: '2024-01-01T00:00:00.000Z'
+          }
+        ]}
+      />
+    )
+
+    const rail = document.querySelector('[data-chat-side-rail]')
+    expect(rail?.className).toMatch(/absolute/)
+    expect(rail?.className).toMatch(/right-0/)
+    expect(document.querySelector('[data-composer-dock]')?.className).toMatch(/pr-10/)
+    expect(document.querySelector('[data-transcript-scroll]')?.className).toMatch(/pr-10/)
+  })
+
+  it('keeps open right panels without reserving side-rail padding', () => {
+    render(
+      <ChatView
+        {...baseProps}
+        items={[
+          {
+            kind: 'message',
+            id: 'm1',
+            role: 'user',
+            content: 'hello',
+            at: '2024-01-01T00:00:00.000Z'
+          }
+        ]}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Show plan panel/i }))
+    const dock = document.querySelector('[data-right-dock]')
+    expect(dock?.className).not.toMatch(/pr-10/)
+    expect(dock?.className).toMatch(/min-w-0/)
+    expect(document.querySelector('[data-chat-side-rail]')).toBeNull()
+    expect(document.querySelector('[data-dock-tab-bar]')).toBeTruthy()
+    expect(document.querySelector('[data-plan-panel]')).toBeTruthy()
+    // Agent column must drop rail inset once the floating rail is hidden.
+    expect(document.querySelector('[data-composer-dock]')?.className).not.toMatch(/pr-10/)
+    expect(document.querySelector('[data-transcript-scroll]')?.className).not.toMatch(/pr-10/)
+  })
+
+  it('pads the empty hero shell for the floating side rail', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+    const hero = document.querySelector('[role="status"]')
+    expect(hero?.className).toMatch(/pr-10/)
+    expect(document.querySelector('[data-chat-side-rail]')).toBeTruthy()
+  })
+
+  it('switches panels via dock tabs while keeping prior panels mounted', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Open panel/i }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Changes/i }))
+    expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
+    expect(document.querySelector('[data-dock-tab-bar]')).toBeTruthy()
+    // Multi-tab strip keeps both Terminal and Changes.
+    expect(screen.getByRole('tab', { name: /^Terminal$/i })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Changes$/i })).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: /^Terminal$/i }))
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    expect(
+      document.querySelector('[data-terminal-panel]')?.parentElement?.className
+    ).toMatch(/\bflex\b/)
+    expect(
+      document.querySelector('[data-changes-panel]')?.parentElement?.className
+    ).toMatch(/\bhidden\b/)
+  })
+
+  it('opens a missing panel from the dock Open panel menu', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Open panel/i }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Browser/i }))
+    expect(document.querySelector('[data-agent-browser-panel]')).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Terminal$/i })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Browser$/i })).toBeTruthy()
+  })
+
+  it('enters immersive unified tabs from Expand panel (not a wider side dock)', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    const dock = document.querySelector('[data-right-dock]') as HTMLElement | null
+    expect(dock?.getAttribute('data-dock-expanded')).toBe('0')
+    expect(dock?.style.width).toBe('480px')
+    expect(document.querySelector('[data-dock-immersive]')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^Expand panel$/i }))
+    expect(document.querySelector('[data-right-dock]')).toBeNull()
+    const immersive = document.querySelector('[data-dock-immersive]')
+    expect(immersive).toBeTruthy()
+    expect(immersive?.getAttribute('data-dock-expanded')).toBe('1')
+    expect(screen.getByRole('tab', { name: /^Agent$/i })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Terminal$/i })).toBeTruthy()
+    expect(document.querySelector('[data-dock-tab-variant="immersive"]')).toBeTruthy()
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    // Collapse control must not reuse the window-minimize (minus) icon.
+    expect(screen.getByRole('button', { name: /^Collapse panel$/i })).toBeTruthy()
+    const tablist = document.querySelector('[data-dock-tab-bar] [role="tablist"]')
+    expect(tablist?.className).toMatch(/\bflex-row\b/)
+    fireEvent.click(screen.getByRole('button', { name: /^Collapse panel$/i }))
+    expect(document.querySelector('[data-dock-immersive]')).toBeNull()
+    const restored = document.querySelector('[data-right-dock]') as HTMLElement | null
+    expect(restored).toBeTruthy()
+    expect(restored?.getAttribute('data-dock-expanded')).toBe('0')
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+    // Re-expand and switch to Agent
+    fireEvent.click(screen.getByRole('button', { name: /^Expand panel$/i }))
+    fireEvent.click(screen.getByRole('tab', { name: /^Agent$/i }))
+    expect(document.querySelector('[data-immersive-agent]')?.className).toMatch(/\bflex\b/)
+    expect(
+      document.querySelector('[data-terminal-panel]')?.parentElement?.className
+    ).toMatch(/\bhidden\b/)
+  })
+
+  it('portals immersive dock tabs into the titlebar when the shell host is present', () => {
+    render(
+      <BreakpointProvider>
+        <TitleBarAccessoryProvider>
+          <TitleBar drawerOpen={false} onToggleSidebar={() => {}} />
+          <ChatView {...baseProps} items={[]} />
+        </TitleBarAccessoryProvider>
+      </BreakpointProvider>
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Expand panel$/i }))
+
+    const titlebar = document.querySelector('[data-titlebar]')
+    const accessory = document.querySelector('[data-titlebar-accessory]')
+    const immersiveBar = document.querySelector('[data-dock-tab-variant="immersive"]')
+    expect(titlebar).toBeTruthy()
+    expect(accessory).toBeTruthy()
+    expect(immersiveBar).toBeTruthy()
+    expect(accessory?.contains(immersiveBar)).toBe(true)
+    expect(document.querySelector('[data-dock-immersive] [data-dock-tab-bar]')).toBeNull()
+    expect(screen.getByRole('tab', { name: /^Agent$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Collapse panel$/i })).toBeTruthy()
+
+    // Accessory host stays draggable; only tab/action clusters are no-drag.
+    expect(accessory?.className).not.toMatch(/app-region-no-drag/)
+    const tablist = immersiveBar?.querySelector('[role="tablist"]')
+    expect(tablist?.className).toMatch(/app-region-no-drag/)
+    expect(tablist?.className).not.toMatch(/\bflex-1\b/)
+    expect(immersiveBar?.querySelector('[data-titlebar-drag-spacer]')).toBeTruthy()
+
+    // Agent tab matches other tabs: icon then label.
+    const agentTab = screen.getByRole('tab', { name: /^Agent$/i })
+    const agentChildren = Array.from(agentTab.childNodes).filter(
+      (n) => n.nodeType === Node.ELEMENT_NODE
+    ) as Element[]
+    expect(agentChildren[0]?.tagName.toLowerCase()).toBe('svg')
+    expect(agentChildren[1]?.textContent).toMatch(/^Agent$/i)
+
+    expect(screen.getByRole('button', { name: /^Add panel$/i })).toBeTruthy()
+    const collapse = screen.getByRole('button', { name: /^Collapse panel$/i })
+    expect(collapse.parentElement?.className).toMatch(/\bpr-2\b/)
+  })
+
+  it('collapsing immersive from Agent restores full chat without a side dock', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Expand panel$/i }))
+    fireEvent.click(screen.getByRole('tab', { name: /^Agent$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Collapse panel$/i }))
+    expect(document.querySelector('[data-dock-immersive]')).toBeNull()
+    expect(document.querySelector('[data-right-dock]')).toBeNull()
+    expect(document.querySelector('[data-chat-side-rail]')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Expand panel$/i })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^Expand panel$/i }))
+    expect(document.querySelector('[data-dock-immersive]')).toBeTruthy()
+    expect(document.querySelector('[data-immersive-agent]')?.className).toMatch(/\bflex\b/)
+  })
+
+  it('exposes a drag handle to resize the dock', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    expect(screen.getByRole('separator', { name: /Resize panel/i })).toBeTruthy()
+  })
+
+  it('opens the pull request panel from the side rail', () => {
+    Object.defineProperty(window, 'vyotiq', {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(window.vyotiq as object),
+        prView: vi.fn().mockResolvedValue({ ok: true, data: null })
+      }
+    })
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Show pull request panel/i }))
+    expect(document.querySelector('[data-pr-panel]')).toBeTruthy()
   })
 
   it('renders docked composer with gutter when transcript has messages', () => {
@@ -96,7 +530,8 @@ describe('ChatView composer placement', () => {
     )
 
     const composerRoot = document.querySelector('[data-composer-dock]')
-    expect(composerRoot?.className).toMatch(/px-4/)
+    expect(composerRoot?.className).toMatch(/pl-4/)
+    expect(composerRoot?.className).toMatch(/pr-10/)
     expect(composerRoot?.className).toMatch(/absolute/)
   })
 
@@ -111,7 +546,8 @@ describe('ChatView composer placement', () => {
     )
 
     expect(document.querySelector('[data-composer-hero]')).toBeNull()
-    expect(screen.getByPlaceholderText(/loading chat/i)).toBeTruthy()
+    expect(document.querySelector('[data-composer-dock]')).toBeTruthy()
+    expect(screen.getAllByText(/loading chat/i).length).toBeGreaterThan(0)
   })
 
   it('uses dock layout for an active run tab with no messages', () => {
@@ -141,9 +577,15 @@ describe('ChatView composer placement', () => {
     const composerColumn = document.querySelector('[data-composer-column]')
     for (const el of [transcriptColumn, composerColumn]) {
       expect(el?.className).toMatch(/mx-auto/)
-      expect(el?.className).toMatch(/max-w-\[720px\]/)
+      expect(el?.className).toMatch(/max-w-\[840px\]/)
       expect(el?.className).toMatch(/w-full/)
     }
+
+    const composerRoot = document.querySelector('[data-composer-dock]')
+    expect(composerRoot?.className).toMatch(/pl-4/)
+    expect(composerRoot?.className).toMatch(/pr-10/)
+    expect(composerRoot?.className).toMatch(/absolute/)
+    expect(composerRoot?.className).not.toMatch(/\bbg-bg\b/)
   })
 
   it('reserves dock height plus fade so the transcript clears the composer', () => {
@@ -173,10 +615,43 @@ describe('ChatView composer placement', () => {
     const transcript = document.querySelector('[data-transcript-scroll]') as HTMLElement | null
     expect(stage).toBeTruthy()
     expect(transcript).toBeTruthy()
-    expect(stage!.style.getPropertyValue('--vy-dock-h')).toBe(
-      `${120 + COMPOSER_DOCK_FADE_PX}px`
+    const expected = 120 + COMPOSER_DOCK_FADE_PX + COMPOSER_DOCK_CLEARANCE_PX
+    expect(stage!.style.getPropertyValue('--vy-dock-h')).toBe(`${expected}px`)
+    expect(transcript!.style.paddingBottom).toBe(`${expected}px`)
+    expect(transcript!.style.scrollPaddingBottom).toBe(`${expected}px`)
+  })
+
+  it('adds live clearance while the agent is running', () => {
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (
+      this: HTMLElement
+    ) {
+      if (this.hasAttribute('data-composer-dock')) return 120
+      return 0
+    })
+
+    render(
+      <ChatView
+        {...baseProps}
+        running
+        pendingRun={false}
+        items={[
+          {
+            kind: 'message',
+            id: 'm1',
+            role: 'user',
+            content: 'hello',
+            at: '2024-01-01T00:00:00.000Z'
+          }
+        ]}
+      />
     )
-    expect(transcript!.style.paddingBottom).toBe('var(--vy-dock-h, 8rem)')
+
+    const stage = document.querySelector('[data-chat-stage]') as HTMLElement | null
+    const transcript = document.querySelector('[data-transcript-scroll]') as HTMLElement | null
+    const expected =
+      120 + COMPOSER_DOCK_FADE_PX + COMPOSER_DOCK_CLEARANCE_PX + COMPOSER_DOCK_LIVE_CLEARANCE_PX
+    expect(stage!.style.getPropertyValue('--vy-dock-h')).toBe(`${expected}px`)
+    expect(transcript!.style.paddingBottom).toBe(`${expected}px`)
   })
 
   it('remounts the transcript when chatSurfaceEpoch changes but not for draft alone', () => {

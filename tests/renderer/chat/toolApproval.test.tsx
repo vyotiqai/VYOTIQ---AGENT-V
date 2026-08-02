@@ -45,7 +45,8 @@ describe('tool approval card', () => {
   it('shows the gated call and what it would run', () => {
     render(<MessageList items={gatedItems()} />)
 
-    expect(screen.getByText('edit')).toBeTruthy()
+    expect(screen.getByText('Editing')).toBeTruthy()
+    expect(screen.getByTitle('edit')).toBeTruthy()
     expect(screen.getByText('mutating / network')).toBeTruthy()
     expect(screen.getByText('{"path":"a.ts"}')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Allow once' })).toBeTruthy()

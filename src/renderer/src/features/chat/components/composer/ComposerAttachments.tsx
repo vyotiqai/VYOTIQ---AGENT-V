@@ -1,31 +1,42 @@
-import type { AttachedFile } from '@shared/ipc'
+import type { AttachedAudio, AttachedFile, AttachedNativeFile } from '@shared/ipc'
 import { FileChip, ImageChip } from '@renderer/lib/ui'
 
 export function ComposerAttachments({
   images,
   imageError,
   files = [],
+  nativeFiles = [],
+  audio = [],
   fileError = null,
+  audioError = null,
   extracting = false,
-  running,
+  attachLocked,
   onRemove,
-  onRemoveFile
+  onRemoveFile,
+  onRemoveNativeFile,
+  onRemoveAudio
 }: {
   images: string[]
   imageError: string | null
   files?: AttachedFile[]
+  nativeFiles?: AttachedNativeFile[]
+  audio?: AttachedAudio[]
   fileError?: string | null
+  audioError?: string | null
   extracting?: boolean
-  running: boolean
+  attachLocked: boolean
   onRemove: (index: number) => void
   onRemoveFile?: (index: number) => void
+  onRemoveNativeFile?: (index: number) => void
+  onRemoveAudio?: (index: number) => void
 }) {
-  const notice = [imageError, fileError].filter(Boolean).join(' · ')
-  if (!images.length && !files.length && !notice && !extracting) return null
+  const notice = [imageError, fileError, audioError].filter(Boolean).join(' · ')
+  const hasChips = images.length || files.length || nativeFiles.length || audio.length
+  if (!hasChips && !notice && !extracting) return null
 
   return (
     <div className="col-span-full flex flex-col gap-1.5">
-      {images.length || files.length ? (
+      {hasChips ? (
         <div className="flex flex-wrap items-center gap-1.5">
           {images.map((url, i) => (
             <ImageChip
@@ -33,7 +44,7 @@ export function ComposerAttachments({
               url={url}
               label={`Image ${i + 1}`}
               variant="compact"
-              disabled={running}
+              disabled={attachLocked}
               onRemove={() => onRemove(i)}
             />
           ))}
@@ -42,8 +53,26 @@ export function ComposerAttachments({
               key={`${i}-${file.name}`}
               name={file.name}
               chars={file.text.length}
-              disabled={running}
+              disabled={attachLocked}
               onRemove={onRemoveFile ? () => onRemoveFile(i) : undefined}
+            />
+          ))}
+          {nativeFiles.map((file, i) => (
+            <FileChip
+              key={`native-${i}-${file.name}`}
+              name={file.name}
+              chars={Math.ceil((file.data.length * 3) / 4)}
+              disabled={attachLocked}
+              onRemove={onRemoveNativeFile ? () => onRemoveNativeFile(i) : undefined}
+            />
+          ))}
+          {audio.map((clip, i) => (
+            <FileChip
+              key={`audio-${i}`}
+              name={clip.mime || 'audio'}
+              chars={Math.ceil((clip.url.length * 3) / 4)}
+              disabled={attachLocked}
+              onRemove={onRemoveAudio ? () => onRemoveAudio(i) : undefined}
             />
           ))}
         </div>

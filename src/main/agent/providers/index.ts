@@ -5,12 +5,18 @@ import { providerLabel, providerNeedsKey, seedModelsFor } from '../../../shared/
 import { anthropicProvider } from './anthropic'
 import { geminiProvider } from './gemini'
 import {
+  beginModelListFetch,
   clearModelCacheKey,
+  clearModelListInflight,
   getCachedModels,
+  getModelListInflight,
   modelCacheKey,
-  setCachedModels
+  setCachedModels,
+  setModelListInflight
 } from './modelCache'
 import {
+  assertValidProviderBaseUrl,
+  customProvider,
   deepseekProvider,
   groqProvider,
   mistralProvider,
@@ -30,7 +36,8 @@ const providers: Record<ProviderId, LlmProvider> = {
   groq: groqProvider,
   openrouter: openrouterProvider,
   xai: xaiProvider,
-  mistral: mistralProvider
+  mistral: mistralProvider,
+  custom: customProvider
 }
 
 export function getProvider(id: ProviderId): LlmProvider {
@@ -69,6 +76,26 @@ function enrichCatalogModels(provider: ProviderId, models: ModelInfo[]): ModelIn
   return models.map((m) => withResolvedContextWindow(m, provider))
 }
 
+/** Combine a user abort signal with a timeout, even when AbortSignal.any is unavailable. */
+function combinedListSignal(userSignal: AbortSignal | undefined, timeout: AbortSignal): AbortSignal {
+  if (!userSignal) return timeout
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any([userSignal, timeout])
+  if (userSignal.aborted || timeout.aborted) {
+    const done = new AbortController()
+    done.abort()
+    return done.signal
+  }
+  const combined = new AbortController()
+  const onAbort = (): void => {
+    userSignal.removeEventListener('abort', onAbort)
+    timeout.removeEventListener('abort', onAbort)
+    if (!combined.signal.aborted) combined.abort()
+  }
+  userSignal.addEventListener('abort', onAbort, { once: true })
+  timeout.addEventListener('abort', onAbort, { once: true })
+  return combined.signal
+}
+
 export async function listProviderModels(input: {
   provider: ProviderId
   apiKey?: string | null
@@ -80,9 +107,35 @@ export async function listProviderModels(input: {
   if (!input.forceRefresh) {
     const cached = getCachedModels(key)
     if (cached) return { models: enrichCatalogModels(input.provider, cached) }
+    const pending = getModelListInflight(key)
+    if (pending) return pending
+  } else {
+    // Drop memory/inflight so Refresh cannot join a stale in-flight catalog fetch.
+    clearModelCacheKey(key)
   }
 
-  if (providerNeedsKey(input.provider) && !input.apiKey?.trim()) {
+  const generation = beginModelListFetch(key)
+  const run = listProviderModelsUncached(input, key, generation)
+  setModelListInflight(key, run)
+  try {
+    return await run
+  } finally {
+    clearModelListInflight(key, run)
+  }
+}
+
+async function listProviderModelsUncached(
+  input: {
+    provider: ProviderId
+    apiKey?: string | null
+    baseUrl?: string
+    signal?: AbortSignal
+    forceRefresh?: boolean
+  },
+  key: string,
+  generation: number
+): Promise<{ models: ModelInfo[]; warning?: string }> {
+  if (providerNeedsKey(input.provider, input.baseUrl) && !input.apiKey?.trim()) {
     const seeds = seedModelsFor(input.provider)
     return {
       models: enrichCatalogModels(input.provider, seeds),
@@ -95,10 +148,7 @@ export async function listProviderModels(input: {
 
   const provider = getProvider(input.provider)
   const timeout = AbortSignal.timeout(10_000)
-  const signal =
-    input.signal && typeof AbortSignal.any === 'function'
-      ? AbortSignal.any([input.signal, timeout])
-      : input.signal ?? timeout
+  const signal = combinedListSignal(input.signal, timeout)
   const req: ListModelsRequest = {
     apiKey: input.apiKey,
     baseUrl: input.baseUrl,
@@ -106,6 +156,9 @@ export async function listProviderModels(input: {
   }
 
   try {
+    if (input.baseUrl) {
+      assertValidProviderBaseUrl(input.baseUrl)
+    }
     const models = await provider.listModels(req)
     if (!models.length) {
       if (input.forceRefresh) clearModelCacheKey(key)
@@ -116,7 +169,7 @@ export async function listProviderModels(input: {
       }
     }
     const enriched = enrichCatalogModels(input.provider, models)
-    setCachedModels(key, enriched)
+    setCachedModels(key, enriched, generation)
     return { models: enriched }
   } catch (err) {
     if (input.forceRefresh) clearModelCacheKey(key)

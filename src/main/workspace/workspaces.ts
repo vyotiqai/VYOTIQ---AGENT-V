@@ -1,9 +1,13 @@
 import { app, dialog, BrowserWindow } from 'electron'
 import {
   existsSync,
+  mkdirSync,
   readFileSync,
+  realpathSync,
+  statSync,
   unlinkSync
 } from 'fs'
+import { homedir } from 'os'
 import { join } from 'path'
 import {
   WorkspacesStateSchema,
@@ -14,7 +18,6 @@ import {
 } from '../../shared/ipc'
 import { logger } from '../../shared/logger'
 import { canonicalizeWorkspacePath, workspacePathsEqual } from '../../shared/workspacePath'
-import { cleanupLegacyHarnessArtifacts } from '../agent/harness'
 import { interruptOrphanRuns } from '../agent/state'
 import { clearSettingsCacheForTests, readLegacyWorkspacePath } from '@main/settings/settings'
 import { atomicWriteJson } from '../storage/atomicWrite'
@@ -22,9 +25,131 @@ import { ensureWorkspaceStorage, workspaceId } from '../storage/paths'
 import { migrateLegacySessions } from '@main/storage/migrations/migrateSessions'
 
 const RECENT_MAX = 20
+/** App-owned home workspace dir under Electron userData (never the OS profile root). */
+const HOME_WORKSPACE_DIRNAME = 'home'
 
 function workspacesPath(): string {
   return join(app.getPath('userData'), 'workspaces.json')
+}
+
+function userProfileRootPath(): string {
+  try {
+    return canonicalizeWorkspacePath(app.getPath('home'))
+  } catch {
+    return canonicalizeWorkspacePath(homedir())
+  }
+}
+
+/** Previous auto-home location (`~/Vyotiq`) before it moved under userData. */
+function legacyProfileHomeWorkspacePath(): string {
+  return canonicalizeWorkspacePath(join(homedir(), 'Vyotiq'))
+}
+
+/**
+ * Always-on home workspace — under app userData so it is never `C:\\Users\\…`
+ * (the OS profile root).
+ */
+export function getHomeWorkspacePath(): string {
+  return canonicalizeWorkspacePath(join(app.getPath('userData'), HOME_WORKSPACE_DIRNAME))
+}
+
+export function isHomeWorkspacePath(path: string): boolean {
+  return workspacePathsEqual(path, getHomeWorkspacePath())
+}
+
+function remapPathIfPresent(state: WorkspacesState, from: string, to: string): WorkspacesState {
+  if (workspacePathsEqual(from, to)) return state
+  const present =
+    state.openPaths.some((p) => workspacePathsEqual(p, from)) ||
+    state.recentPaths.some((p) => workspacePathsEqual(p, from)) ||
+    (state.activePath != null && workspacePathsEqual(state.activePath, from)) ||
+    Object.keys(state.uiStateByPath).some((p) => workspacePathsEqual(p, from)) ||
+    Object.keys(state.workspaceIdsByPath ?? {}).some((p) => workspacePathsEqual(p, from)) ||
+    Object.keys(state.settingsOverridesByPath).some((p) => workspacePathsEqual(p, from))
+  if (!present) return state
+  return remapWorkspacePath(state, from, to)
+}
+
+/**
+ * Move misplaced home roots (OS profile / legacy ~/Vyotiq) onto the app home path.
+ */
+function repairHomeWorkspacePaths(state: WorkspacesState): WorkspacesState {
+  const home = getHomeWorkspacePath()
+  if (!existsSync(home)) {
+    mkdirSync(home, { recursive: true })
+  }
+
+  let next = state
+  const before = next
+
+  const legacy = legacyProfileHomeWorkspacePath()
+  next = remapPathIfPresent(next, legacy, home)
+
+  const profileRoot = userProfileRootPath()
+  // Auto-home must never be the bare user profile (e.g. C:\Users\admin).
+  if (
+    next.openPaths.length === 1 &&
+    workspacePathsEqual(next.openPaths[0]!, profileRoot)
+  ) {
+    next = remapPathIfPresent(next, profileRoot, home)
+  }
+
+  if (next !== before && next.openPaths.some((p) => workspacePathsEqual(p, home))) {
+    next = registerWorkspaceId(next, home)
+  }
+
+  return next
+}
+
+/**
+ * When no project tabs are open, create and open the home workspace so the
+ * composer is always backed by a real path (send + tools).
+ */
+export function ensureHomeWorkspace(state: WorkspacesState): WorkspacesState {
+  const repaired = repairHomeWorkspacePaths(state)
+  if (repaired.openPaths.length > 0) return repaired
+
+  const root = getHomeWorkspacePath()
+  if (workspacePathsEqual(root, userProfileRootPath())) {
+    throw new Error('Home workspace path must not be the user profile root')
+  }
+  if (!existsSync(root)) {
+    mkdirSync(root, { recursive: true })
+  }
+
+  let next = registerWorkspaceId(repaired, root)
+  const alreadyOpen = Boolean(findOpenPath(next, root))
+  if (!alreadyOpen) {
+    void interruptOrphanRuns([root]).catch((err) => {
+      logger.warn('Failed to interrupt orphan runs for home workspace', { scope: 'workspace', err })
+    })
+  }
+  next = {
+    ...touchRecent(next, root),
+    openPaths: [root],
+    activePath: root
+  }
+  return ensureUiState(next, root)
+}
+
+function cacheOrPersistHome(state: WorkspacesState, forcePersist: boolean): WorkspacesState {
+  const repaired = repairHomeWorkspacePaths(normalizeActivePath(state))
+  if (repaired.openPaths.length === 0) {
+    const withHome = ensureHomeWorkspace(repaired)
+    writeWorkspacesAtomic(withHome)
+    if (withHome.needsWorkspaceForMigration) {
+      migrateLegacySessions()
+      workspacesCache = null
+      return readWorkspacesState()
+    }
+    return workspacesCache!
+  }
+  if (forcePersist || repaired !== state) {
+    writeWorkspacesAtomic(repaired)
+    return workspacesCache!
+  }
+  workspacesCache = WorkspacesStateSchema.parse(repaired)
+  return workspacesCache
 }
 
 function defaultUiState(): WorkspaceUiState {
@@ -58,10 +183,24 @@ function writeWorkspacesAtomic(state: WorkspacesState): void {
 }
 
 let workspacesCache: WorkspacesState | null = null
+/** Last accepted UI writeGeneration per workspace path (stale IPC guard). */
+const lastUiWriteGenerationByPath = new Map<string, number>()
+/** Serializes async workspace mutations that may await between read and write. */
+let workspacesMutationChain: Promise<unknown> = Promise.resolve()
+
+export function enqueueWorkspaceMutation<T>(fn: () => T | Promise<T>): Promise<T> {
+  const run = workspacesMutationChain.then(() => fn())
+  workspacesMutationChain = run.then(
+    () => undefined,
+    () => undefined
+  )
+  return run
+}
 
 /** Drop in-memory workspaces cache (tests / external file edits). */
 export function clearWorkspacesCacheForTests(): void {
   workspacesCache = null
+  lastUiWriteGenerationByPath.clear()
 }
 
 function registerWorkspaceId(
@@ -97,7 +236,6 @@ function migrateLegacyWorkspacePath(state: WorkspacesState): WorkspacesState {
   if (state.openPaths.length > 0) return state
   const legacy = readLegacyWorkspacePath()
   if (!legacy || !existsSync(legacy)) return state
-  cleanupLegacyHarnessArtifacts(legacy)
   const next: WorkspacesState = {
     ...state,
     openPaths: [legacy],
@@ -240,43 +378,45 @@ export function readWorkspacesState(): WorkspacesState {
   if (workspacesCache) return workspacesCache
   const p = workspacesPath()
   if (!existsSync(p)) {
-    const initial = migrateLegacyWorkspacePath(defaultWorkspacesState())
-    writeWorkspacesAtomic(initial)
-    return workspacesCache!
+    return cacheOrPersistHome(migrateLegacyWorkspacePath(defaultWorkspacesState()), true)
   }
   try {
     const raw = JSON.parse(readFileSync(p, 'utf8')) as unknown
     if (typeof raw === 'object' && raw !== null && (raw as { version?: number }).version === 1) {
-      const upgraded = normalizeActivePath(
-        migrateLegacyWorkspacePath(upgradeWorkspacesStateV1(raw as Record<string, unknown>))
+      return cacheOrPersistHome(
+        normalizeActivePath(
+          migrateLegacyWorkspacePath(upgradeWorkspacesStateV1(raw as Record<string, unknown>))
+        ),
+        true
       )
-      writeWorkspacesAtomic(upgraded)
-      return workspacesCache!
     }
     const parsed = WorkspacesStateSchema.safeParse(raw)
     if (!parsed.success) {
       logger.warn('workspaces.json schema mismatch; merging known fields', { scope: 'workspaces' })
-      const recovered = migrateLegacyWorkspacePath(
-        mergePartialWorkspacesState(
-          typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {}
-        )
+      return cacheOrPersistHome(
+        migrateLegacyWorkspacePath(
+          mergePartialWorkspacesState(
+            typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {}
+          )
+        ),
+        true
       )
-      writeWorkspacesAtomic(recovered)
-      return workspacesCache!
     }
-    const next = normalizeActivePath(migrateLegacyWorkspacePath(parsed.data))
-    workspacesCache = next
-    return next
+    return cacheOrPersistHome(
+      normalizeActivePath(migrateLegacyWorkspacePath(parsed.data)),
+      false
+    )
   } catch (err) {
     logger.warn('Failed to read workspaces.json; resetting', { scope: 'workspaces', err })
-    const reset = migrateLegacyWorkspacePath(defaultWorkspacesState())
-    writeWorkspacesAtomic(reset)
-    return workspacesCache!
+    return cacheOrPersistHome(migrateLegacyWorkspacePath(defaultWorkspacesState()), true)
   }
 }
 
 export function saveWorkspacesState(state: WorkspacesState): WorkspacesState {
-  const next = WorkspacesStateSchema.parse(normalizeActivePath(state))
+  let next = WorkspacesStateSchema.parse(normalizeActivePath(repairHomeWorkspacePaths(state)))
+  if (next.openPaths.length === 0) {
+    next = WorkspacesStateSchema.parse(normalizeActivePath(ensureHomeWorkspace(next)))
+  }
   writeWorkspacesAtomic(next)
   return next
 }
@@ -285,7 +425,7 @@ export function getWorkspaces(): WorkspacesState {
   return readWorkspacesState()
 }
 
-export function interruptOrphanRunsForWorkspaces(state: WorkspacesState): number {
+export async function interruptOrphanRunsForWorkspaces(state: WorkspacesState): Promise<number> {
   const paths = dedupeRecent([...state.openPaths, ...state.recentPaths])
   return interruptOrphanRuns(paths)
 }
@@ -310,8 +450,12 @@ export async function addWorkspace(
   if (!existsSync(root)) {
     throw new Error(`Workspace not found: ${root}`)
   }
+  const st = statSync(root)
+  if (!st.isDirectory()) {
+    throw new Error(`Workspace is not a directory: ${root}`)
+  }
+  root = realpathSync(root)
   root = canonicalizeWorkspacePath(root)
-  cleanupLegacyHarnessArtifacts(root)
 
   let state = readWorkspacesState()
   state = registerWorkspaceId(state, root)
@@ -319,7 +463,7 @@ export async function addWorkspace(
   // Only sweep crash orphans when first opening a workspace — re-activating an
   // already-open tab must not cancel in-flight runs (also guarded by isActive).
   if (!alreadyOpen) {
-    interruptOrphanRuns([root])
+    await interruptOrphanRuns([root])
   }
 
   const existingOpen = findOpenPath(state, root)
@@ -354,11 +498,18 @@ export function removeWorkspace(path: string): WorkspacesState {
   if (activePath != null && workspacePathsEqual(activePath, open)) {
     activePath = openPaths[0] ?? null
   }
-  return saveWorkspacesState({
+  let next = saveWorkspacesState({
     ...state,
     openPaths,
     activePath
   })
+  // Closing the last tab reopens home via saveWorkspacesState; migrate legacy if needed.
+  if (openPaths.length === 0 && next.needsWorkspaceForMigration) {
+    migrateLegacySessions()
+    workspacesCache = null
+    next = readWorkspacesState()
+  }
+  return next
 }
 
 export function setActiveWorkspace(path: string): WorkspacesState {
@@ -375,6 +526,14 @@ export function updateWorkspaceUiState(path: string, ui: WorkspaceUiState): true
   const parsed = WorkspaceUiStateSchema.parse(ui)
   const state = readWorkspacesState()
   const key = findOpenPath(state, path) ?? canonicalizeWorkspacePath(path)
+  const incomingGen = parsed.writeGeneration
+  if (incomingGen !== undefined) {
+    const last = lastUiWriteGenerationByPath.get(key) ?? -1
+    if (incomingGen < last) {
+      return true
+    }
+    lastUiWriteGenerationByPath.set(key, incomingGen)
+  }
   saveWorkspacesState({
     ...state,
     uiStateByPath: {

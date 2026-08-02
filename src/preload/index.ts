@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import { IPC } from '../shared/channels'
-import { AgentEventSchema, ToolApprovalRequestSchema, AgentBrowserStateSchema } from '../shared/ipc'
+import { AgentEventSchema, ToolApprovalRequestSchema, AgentQuestionRequestSchema, AgentBrowserStateSchema } from '../shared/ipc'
 import type { VyotiqApi } from '../shared/vyotiqApi'
 
 export type { HostPlatform, VyotiqApi } from '../shared/vyotiqApi'
@@ -12,7 +12,8 @@ const api: VyotiqApi = {
   pickWorkspace: () => ipcRenderer.invoke(IPC.pickWorkspace),
   getWorkspaces: () => ipcRenderer.invoke(IPC.workspacesGet),
   addWorkspace: (path) => ipcRenderer.invoke(IPC.workspacesAdd, path ? { path } : {}),
-  removeWorkspace: (path) => ipcRenderer.invoke(IPC.workspacesRemove, { path }),
+  removeWorkspace: (path, stopActiveRuns) =>
+    ipcRenderer.invoke(IPC.workspacesRemove, { path, stopActiveRuns }),
   setActiveWorkspace: (path) => ipcRenderer.invoke(IPC.workspacesSetActive, { path }),
   updateWorkspaceUiState: (path, ui) =>
     ipcRenderer.invoke(IPC.workspacesUpdateUiState, { path, ui }),
@@ -27,7 +28,10 @@ const api: VyotiqApi = {
   secretStatus: () => ipcRenderer.invoke(IPC.secretStatus),
   listModels: (payload) => ipcRenderer.invoke(IPC.listModels, payload),
   chatStart: (payload) => ipcRenderer.invoke(IPC.chatStart, payload),
+  chatRewindAndStart: (payload) => ipcRenderer.invoke(IPC.chatRewindAndStart, payload),
   chatCancel: (runId) => ipcRenderer.invoke(IPC.chatCancel, { runId }),
+  chatFollowUp: (payload) => ipcRenderer.invoke(IPC.chatFollowUp, payload),
+  chatFollowUpRemove: (payload) => ipcRenderer.invoke(IPC.chatFollowUpRemove, payload),
   chatCompact: (workspacePath, runId) =>
     ipcRenderer.invoke(IPC.chatCompact, { workspacePath, runId }),
   undoWrites: (workspacePath, runId, checkpointId) =>
@@ -38,6 +42,9 @@ const api: VyotiqApi = {
     }),
   resolveWrites: (payload) => ipcRenderer.invoke(IPC.runsResolveWrites, payload),
   readRunArtifact: (payload) => ipcRenderer.invoke(IPC.runsReadArtifact, payload),
+  harnessReview: (payload) => ipcRenderer.invoke(IPC.harnessReview, payload),
+  harnessPreviewApply: (payload) => ipcRenderer.invoke(IPC.harnessPreviewApply, payload),
+  harnessApply: (payload) => ipcRenderer.invoke(IPC.harnessApply, payload),
   onChatEvent: (handler) => {
     const listener = (_: IpcRendererEvent, raw: unknown): void => {
       const parsed = AgentEventSchema.safeParse(raw)
@@ -66,8 +73,28 @@ const api: VyotiqApi = {
       ipcRenderer.removeListener(IPC.toolApprovalRequest, listener)
     }
   },
-  respondToolApproval: (requestId, decision) =>
-    ipcRenderer.invoke(IPC.toolApprovalResponse, { requestId, decision }),
+  respondToolApproval: (requestId, decision, runId) =>
+    ipcRenderer.invoke(IPC.toolApprovalResponse, { requestId, decision, runId }),
+  listPendingToolApprovals: (runId) =>
+    ipcRenderer.invoke(IPC.toolApprovalListPending, { runId }),
+  onAgentQuestionRequest: (handler) => {
+    const listener = (_: IpcRendererEvent, raw: unknown): void => {
+      const parsed = AgentQuestionRequestSchema.safeParse(raw)
+      if (!parsed.success) {
+        console.warn('[vyotiq] Invalid question request dropped', parsed.error.issues[0]?.message)
+        return
+      }
+      handler(parsed.data)
+    }
+    ipcRenderer.on(IPC.agentQuestionRequest, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.agentQuestionRequest, listener)
+    }
+  },
+  respondAgentQuestion: (requestId, answers, runId) =>
+    ipcRenderer.invoke(IPC.agentQuestionResponse, { requestId, answers, runId }),
+  listPendingAgentQuestions: (runId) =>
+    ipcRenderer.invoke(IPC.agentQuestionListPending, { runId }),
   extractAttachment: (payload) => ipcRenderer.invoke(IPC.attachmentExtract, payload),
   listRuns: (workspacePath) => {
     const path = workspacePath?.trim() ?? ''
@@ -87,8 +114,64 @@ const api: VyotiqApi = {
     ipcRenderer.invoke(IPC.runsRename, { workspacePath, runId, goal }),
   listActiveRuns: () => ipcRenderer.invoke(IPC.runsActive),
   gitStatus: (workspacePath) => ipcRenderer.invoke(IPC.gitStatus, { workspacePath }),
-  gitCommit: (workspacePath, message, push) =>
-    ipcRenderer.invoke(IPC.gitCommit, { workspacePath, message, push }),
+  gitCommit: (workspacePath, message, push, mode) =>
+    ipcRenderer.invoke(IPC.gitCommit, { workspacePath, message, push, mode }),
+  gitStageAll: (workspacePath) => ipcRenderer.invoke(IPC.gitStageAll, { workspacePath }),
+  gitStagePaths: (payload) => ipcRenderer.invoke(IPC.gitStagePaths, payload),
+  gitUnstagePaths: (payload) => ipcRenderer.invoke(IPC.gitUnstagePaths, payload),
+  gitBranches: (workspacePath) => ipcRenderer.invoke(IPC.gitBranches, { workspacePath }),
+  gitCheckout: (workspacePath, branch) =>
+    ipcRenderer.invoke(IPC.gitCheckout, { workspacePath, branch }),
+  gitLog: (payload) => ipcRenderer.invoke(IPC.gitLog, payload),
+  gitCommitFiles: (payload) => ipcRenderer.invoke(IPC.gitCommitFiles, payload),
+  gitDiff: (payload) => ipcRenderer.invoke(IPC.gitDiff, payload),
+  prView: (workspacePath) => ipcRenderer.invoke(IPC.prView, { workspacePath }),
+  prMerge: (workspacePath, method) =>
+    ipcRenderer.invoke(IPC.prMerge, { workspacePath, method }),
+  prDiff: (payload) => ipcRenderer.invoke(IPC.prDiff, payload),
+  prClose: (workspacePath) => ipcRenderer.invoke(IPC.prClose, { workspacePath }),
+  prEditTitle: (workspacePath, title) =>
+    ipcRenderer.invoke(IPC.prEditTitle, { workspacePath, title }),
+  githubAuthStatus: () => ipcRenderer.invoke(IPC.githubAuthStatus),
+  githubAuthStart: () => ipcRenderer.invoke(IPC.githubAuthStart),
+  githubAuthCancel: () => ipcRenderer.invoke(IPC.githubAuthCancel),
+  githubAuthLogout: () => ipcRenderer.invoke(IPC.githubAuthLogout),
+  shellOpenExternal: (url) => ipcRenderer.invoke(IPC.shellOpenExternal, { url }),
+  ptyCreate: (payload) => ipcRenderer.invoke(IPC.ptyCreate, payload),
+  ptyList: (workspacePath) =>
+    ipcRenderer.invoke(IPC.ptyList, workspacePath ? { workspacePath } : {}),
+  ptyWrite: (id, data, workspacePath) =>
+    ipcRenderer.invoke(IPC.ptyWrite, { id, data, workspacePath }),
+  ptyResize: (id, cols, rows, workspacePath) =>
+    ipcRenderer.invoke(IPC.ptyResize, { id, cols, rows, workspacePath }),
+  ptyKill: (id, workspacePath) => ipcRenderer.invoke(IPC.ptyKill, { id, workspacePath }),
+  onPtyData: (handler) => {
+    const listener = (_: IpcRendererEvent, raw: unknown): void => {
+      if (!raw || typeof raw !== 'object') return
+      const rec = raw as { id?: unknown; data?: unknown }
+      if (typeof rec.id !== 'string' || typeof rec.data !== 'string') return
+      handler({ id: rec.id, data: rec.data })
+    }
+    ipcRenderer.on(IPC.ptyData, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.ptyData, listener)
+    }
+  },
+  onPtyExit: (handler) => {
+    const listener = (_: IpcRendererEvent, raw: unknown): void => {
+      if (!raw || typeof raw !== 'object') return
+      const rec = raw as { id?: unknown; exitCode?: unknown }
+      if (typeof rec.id !== 'string') return
+      handler({
+        id: rec.id,
+        exitCode: typeof rec.exitCode === 'number' ? rec.exitCode : null
+      })
+    }
+    ipcRenderer.on(IPC.ptyExit, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.ptyExit, listener)
+    }
+  },
   windowMinimize: () => ipcRenderer.invoke(IPC.windowMinimize),
   windowMaximize: () => ipcRenderer.invoke(IPC.windowMaximize),
   windowClose: () => ipcRenderer.invoke(IPC.windowClose),
@@ -103,7 +186,10 @@ const api: VyotiqApi = {
   onBrowserState: (handler) => {
     const listener = (_: IpcRendererEvent, raw: unknown): void => {
       const parsed = AgentBrowserStateSchema.safeParse(raw)
-      if (!parsed.success) return
+      if (!parsed.success) {
+        console.warn('[vyotiq] Invalid browser state dropped', parsed.error.issues[0]?.message)
+        return
+      }
       handler(parsed.data)
     }
     ipcRenderer.on(IPC.browserState, listener)
@@ -117,6 +203,12 @@ const api: VyotiqApi = {
   browserSelectTab: (tabId: string) => ipcRenderer.invoke(IPC.browserSelectTab, { tabId }),
   browserBack: () => ipcRenderer.invoke(IPC.browserBack),
   browserForward: () => ipcRenderer.invoke(IPC.browserForward),
+  browserSetBounds: (bounds) => ipcRenderer.invoke(IPC.browserSetBounds, bounds),
+  browserNavigate: (url: string) => ipcRenderer.invoke(IPC.browserNavigate, url),
+  browserReload: () => ipcRenderer.invoke(IPC.browserReload),
+  browserTakeScreenshot: (payload) => ipcRenderer.invoke(IPC.browserTakeScreenshot, payload),
+  browserClearBrowsingData: (payload) =>
+    ipcRenderer.invoke(IPC.browserClearBrowsingData, payload),
   openLogsDir: () => ipcRenderer.invoke(IPC.logsOpenDir),
   getLogsPath: () => ipcRenderer.invoke(IPC.logsGetPath),
   telemetryStatus: () => ipcRenderer.invoke(IPC.telemetryStatus),
@@ -142,12 +234,20 @@ const api: VyotiqApi = {
     ipcRenderer.invoke(IPC.marketplaceSetEnabled, { id, enabled }),
   marketplacePickLocal: () => ipcRenderer.invoke(IPC.marketplacePickLocal),
   marketplaceGetContents: (id) => ipcRenderer.invoke(IPC.marketplaceGetContents, { id }),
+  marketplaceAckRemoteInstall: (acked) =>
+    ipcRenderer.invoke(IPC.marketplaceAckRemoteInstall, { acked }),
   getSystemTheme: () => ipcRenderer.invoke(IPC.getSystemTheme),
   slashCommandsList: (payload) => ipcRenderer.invoke(IPC.slashCommandsList, payload ?? {}),
   slashCommandsResolve: (payload) => ipcRenderer.invoke(IPC.slashCommandsResolve, payload),
   slashCommandsCreateRule: (payload) =>
     ipcRenderer.invoke(IPC.slashCommandsCreateRule, payload),
   slashCommandsOpenFile: (payload) => ipcRenderer.invoke(IPC.slashCommandsOpenFile, payload),
+  workspaceSuggestPaths: (payload) => ipcRenderer.invoke(IPC.workspaceSuggestPaths, payload),
+  workspaceReadText: (payload) => ipcRenderer.invoke(IPC.workspaceReadText, payload),
+  workspaceReadImage: (payload) => ipcRenderer.invoke(IPC.workspaceReadImage, payload),
+  workspaceListDocs: (payload) => ipcRenderer.invoke(IPC.workspaceListDocs, payload),
+  workspaceListRules: (payload) => ipcRenderer.invoke(IPC.workspaceListRules, payload),
+  workspaceDiagnostics: (payload) => ipcRenderer.invoke(IPC.workspaceDiagnostics, payload),
   onSystemThemeChanged: (handler) => {
     const listener = (_: IpcRendererEvent, prefersDark: boolean): void => handler(prefersDark)
     ipcRenderer.on(IPC.themeChanged, listener)

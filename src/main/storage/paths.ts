@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { existsSync, mkdirSync, readFileSync } from 'fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from 'fs'
 import { basename, isAbsolute, join, relative, resolve } from 'path'
 import { logger } from '../../shared/logger'
 import { canonicalizeWorkspacePath } from '../../shared/workspacePath'
@@ -48,6 +48,20 @@ export function resolveRunDir(workspacePath: string, runId: string): string {
   const rel = relative(root, dir)
   if (!rel || rel.startsWith('..') || isAbsolute(rel) || rel !== basename(rel)) {
     throw new Error(`Invalid run id: ${runId}`)
+  }
+  if (existsSync(dir)) {
+    const st = lstatSync(dir)
+    if (st.isSymbolicLink()) {
+      throw new Error(`Run dir cannot be a symlink: ${runId}`)
+    }
+    if (!st.isDirectory()) {
+      throw new Error(`Run dir is not a directory: ${runId}`)
+    }
+    const real = realpathSync(dir)
+    const realRel = relative(root, real)
+    if (!realRel || realRel.startsWith('..') || isAbsolute(realRel) || realRel !== basename(realRel)) {
+      throw new Error(`Invalid run id: ${runId}`)
+    }
   }
   return dir
 }

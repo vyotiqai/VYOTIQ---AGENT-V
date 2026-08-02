@@ -18,7 +18,11 @@ export const BUDGET_SHARES: BudgetLayers = SHARED_BUDGET_SHARES
 
 export const COMPACTION_TRIGGER_RATIO = 0.7
 export const KEEP_RECENT_TURNS = 12
-export const KEEP_LAST_TOOL_RESULTS = 3
+/** Full tool bodies kept mid-run; older stubbed (Anthropic clear_tool_uses default is 3; we keep 2 from AppData history-pressure evidence). */
+export const KEEP_LAST_TOOL_RESULTS = 2
+
+/** When context approaches the soft compaction trigger, keep only this many full tool bodies. */
+export const KEEP_LAST_TOOL_RESULTS_UNDER_PRESSURE = 1
 export const MEMORY_INDEX_CAP = 3000
 export const MEMORY_STATE_CAP = 3000
 export const DEFAULT_CONTEXT_WINDOW = SHARED_DEFAULT_CONTEXT_WINDOW
@@ -66,12 +70,18 @@ export type AssembleInput = {
   priorCompaction?: CompactionRecord | null
   /** Injected when the agent loop detects repeated tool-failure steps (generic, not workspace-specific). */
   loopHint?: string
-  /** Eager marketplace skills section (pre-built markdown). */
+  /** Skills Level-1 metadata (name + description); full body via Skill tool or slash. */
   skillsSection?: string
-  /** Enabled plugin rules section (pre-built markdown). */
+  /** Plugin rules Level-1 metadata; full body via Skill tool with the rule id. */
   pluginRulesSection?: string
-  /** Ask / Plan mode overlay (null/omit for Agent). */
+  /** Ask / Plan / Agent mode overlay. */
   modeSection?: string
+  /** Approved or draft plan.md body (omit stub / empty). */
+  plan?: string
+  /** Fresh session env block (UTC + local time/tz, OS version, shell, mode) — not workspace-cached. */
+  sessionEnv?: string
+  /** Nested-agent role overlay (does not replace harness). */
+  nestedRoleSection?: string
 }
 
 export type ContextLayerBreakdown = {
@@ -82,7 +92,12 @@ export type ContextLayerBreakdown = {
 }
 
 export type AssembleResult = {
+  /** Combined stable + volatile system string (all providers). */
   system: string
+  /** Stable instruction prefix — Anthropic marks this with cache_control. */
+  systemStable: string
+  /** Volatile per-step tail (hints, snapshot, memory) — not cache-marked. */
+  systemVolatile: string
   messages: ChatMessage[]
   compaction?: CompactionRecord | null
   estimatedTokens: number
@@ -94,5 +109,8 @@ export type AssembleResult = {
     enableContextManagement: boolean
     clearToolUsesKeep: number
     compactTriggerTokens: number
+    clearToolUsesTriggerTokens: number
+    clearToolUsesAtLeastTokens: number
+    clearToolUsesExcludeTools: string[]
   }
 }

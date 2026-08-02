@@ -1,4 +1,4 @@
-import { type ButtonHTMLAttributes } from 'react'
+import { forwardRef, type ButtonHTMLAttributes } from 'react'
 import { Icon, type IconName } from '../icons'
 import { cn } from './cn'
 
@@ -28,22 +28,29 @@ const iconSizes: Record<keyof typeof iconButtonSizes, number> = {
   lg: 24
 }
 
-export function IconButton({
-  icon,
-  label,
-  variant = 'ghost',
-  size = 'md',
-  className = '',
-  type = 'button',
-  ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & {
-  icon: IconName
-  label: string
-  variant?: keyof typeof iconButtonVariants
-  size?: keyof typeof iconButtonSizes
-}) {
+export const IconButton = forwardRef<
+  HTMLButtonElement,
+  ButtonHTMLAttributes<HTMLButtonElement> & {
+    icon: IconName
+    label: string
+    variant?: keyof typeof iconButtonVariants
+    size?: keyof typeof iconButtonSizes
+  }
+>(function IconButton(
+  {
+    icon,
+    label,
+    variant = 'ghost',
+    size = 'md',
+    className = '',
+    type = 'button',
+    ...props
+  },
+  ref
+) {
   return (
     <button
+      ref={ref}
       className={cn(
         'inline-grid place-items-center rounded-md',
         interactive,
@@ -59,4 +66,4 @@ export function IconButton({
       <Icon name={icon} size={iconSizes[size]} />
     </button>
   )
-}
+})

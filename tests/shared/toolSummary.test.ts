@@ -32,4 +32,14 @@ describe('toolSummary', () => {
     )
     expect(summary).toBe('')
   })
+
+  it('summarizes mcp_list_tools with serverId or deprecated server_id', () => {
+    expect(
+      summarizeToolArgs('mcp_list_tools', JSON.stringify({ serverId: 'github' }))
+    ).toContain('github')
+    expect(
+      summarizeToolArgs('mcp_list_tools', JSON.stringify({ server_id: 'linear' }))
+    ).toContain('linear')
+    expect(summarizeToolArgs('mcp_list_tools', '{}')).toBe('mcp')
+  })
 })

@@ -1,8 +1,8 @@
 /**
  * @vitest-environment jsdom
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MessageList } from '@renderer/features/chat/components/MessageList'
 import type { UiItem } from '@shared/transcript'
 
@@ -38,7 +38,7 @@ function toolGroup(groupKey: string, summaries: string[]): UiItem[] {
 }
 
 describe('MessageList', () => {
-  it('expands and collapses tool groups independently', () => {
+  it('expands and collapses tool groups independently', async () => {
     const items: UiItem[] = [
       { kind: 'message', id: 'u-1', role: 'user', content: 'First task' },
       ...toolGroup('alpha', ['alpha-one.ts', 'alpha-two.ts']),
@@ -56,17 +56,60 @@ describe('MessageList', () => {
     expect(screen.queryByText('alpha-one.ts')).toBeNull()
     expect(screen.queryByText('beta-one.ts')).toBeNull()
 
-    fireEvent.click(toggles[0])
+    fireEvent.click(toggles[0]!)
 
-    expect(toggles[0].getAttribute('aria-expanded')).toBe('true')
-    expect(toggles[1].getAttribute('aria-expanded')).toBe('false')
-    const alphaGroup = toggles[0].parentElement as HTMLElement
+    expect(toggles[0]!.getAttribute('aria-expanded')).toBe('true')
+    expect(toggles[1]!.getAttribute('aria-expanded')).toBe('false')
+    const alphaGroup = toggles[0]!.parentElement as HTMLElement
     expect(within(alphaGroup).getByText('alpha-one.ts')).toBeTruthy()
     expect(within(alphaGroup).getByText('alpha-two.ts')).toBeTruthy()
     expect(screen.queryByText('beta-one.ts')).toBeNull()
 
-    fireEvent.click(toggles[0])
+    fireEvent.click(toggles[0]!)
+    expect(toggles[0]!.getAttribute('aria-expanded')).toBe('false')
+    await waitFor(() => {
+      expect(screen.queryByText('alpha-one.ts')).toBeNull()
+    })
+  })
+
+  it('does not reopen prior-turn tool groups when a follow-up run goes live', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u-1', role: 'user', content: 'First task' },
+      ...toolGroup('alpha', ['alpha-one.ts', 'alpha-two.ts']),
+      { kind: 'message', id: 'u-2', role: 'user', content: 'continue' }
+    ]
+
+    const { rerender } = render(<MessageList items={items} />)
+    const prior = screen.getByRole('button', { name: /Read 2 files/i })
+    expect(prior.getAttribute('aria-expanded')).toBe('false')
     expect(screen.queryByText('alpha-one.ts')).toBeNull()
+
+    rerender(<MessageList items={items} running />)
+    expect(prior.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByText('alpha-one.ts')).toBeNull()
+
+    const liveItems: UiItem[] = [
+      ...items,
+      {
+        kind: 'tool',
+        id: 'beta-0',
+        tool: { id: 'beta-0', name: 'read', summary: 'beta-one.ts', status: 'running' },
+        groupTiming: { startedAt: Date.now() }
+      },
+      {
+        kind: 'tool',
+        id: 'beta-1',
+        tool: { id: 'beta-1', name: 'read', summary: 'beta-two.ts', status: 'running' }
+      }
+    ]
+    rerender(<MessageList items={liveItems} running />)
+
+    const toggles = screen.getAllByRole('button', { name: /Read(?:ing)? 2 files/i })
+    expect(toggles).toHaveLength(2)
+    expect(toggles[0]!.getAttribute('aria-expanded')).toBe('false')
+    expect(toggles[1]!.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.queryByText('alpha-one.ts')).toBeNull()
+    expect(screen.getByText('beta-one.ts')).toBeTruthy()
   })
 
   it('does not render timestamps in the transcript', () => {

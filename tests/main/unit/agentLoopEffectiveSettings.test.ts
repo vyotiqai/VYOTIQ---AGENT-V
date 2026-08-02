@@ -32,9 +32,10 @@ vi.mock('@main/settings/settings', () => ({
     model: 'qwen2.5',
     ollamaBaseUrl: 'http://127.0.0.1:11434',
     theme: 'system',
-    telemetryEnabled: false
+    telemetryEnabled: false,
   }),
-  readLegacyWorkspacePath: () => null
+  readLegacyWorkspacePath: () => null,
+  clearSettingsCacheForTests: () => undefined
 }))
 
 vi.mock('@main/settings/secrets', () => ({
@@ -98,8 +99,8 @@ describe('runAgent effective workspace settings', () => {
     streamChat.mockReset()
     saveWorkspacesState({
       ...defaultWorkspacesState(),
-      openPaths: [],
-      activePath: null,
+      openPaths: [workspace],
+      activePath: workspace,
       recentPaths: [],
       settingsOverridesByPath: {
         [workspace]: {

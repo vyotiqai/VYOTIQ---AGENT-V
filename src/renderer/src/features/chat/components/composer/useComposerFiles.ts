@@ -1,11 +1,16 @@
 import { useState } from 'react'
-import { MAX_ATTACHMENT_BYTES, type AttachedFile } from '@shared/ipc'
+import {
+  MAX_ATTACHMENT_BYTES,
+  MAX_NATIVE_FILE_BYTES,
+  type AttachedFile,
+  type AttachedNativeFile
+} from '@shared/ipc'
 
 export const MAX_FILES = 5
 
 /** Everything the picker offers beyond images; main decides what it can parse. */
 export const ATTACHMENT_ACCEPT =
-  'image/*,.pdf,.txt,.md,.mdx,.markdown,.json,.jsonc,.yaml,.yml,.toml,.ini,.csv,.tsv,.log,.sql,.html,.xml,.css,.scss,.js,.jsx,.mjs,.cjs,.ts,.tsx,.py,.rb,.go,.rs,.java,.kt,.swift,.c,.h,.cc,.cpp,.hpp,.cs,.php,.sh,.bash,.ps1,.patch,.diff,text/*'
+  'image/*,.pdf,.txt,.md,.mdx,.markdown,.json,.jsonc,.yaml,.yml,.toml,.ini,.csv,.tsv,.log,.sql,.html,.xml,.css,.scss,.js,.jsx,.mjs,.cjs,.ts,.tsx,.py,.rb,.go,.rs,.java,.kt,.swift,.c,.h,.cc,.cpp,.hpp,.cs,.php,.sh,.bash,.ps1,.patch,.diff,text/*,audio/wav,audio/mpeg,audio/mp3,.wav,.mp3,.m4a'
 
 function readAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -24,38 +29,60 @@ export function isImageFile(file: File): boolean {
   return file.type.startsWith('image/')
 }
 
+export function isPdfFile(file: File): boolean {
+  return file.type === 'application/pdf' || /\.pdf$/i.test(file.name)
+}
+
 /**
  * Non-image attachments.
  *
- * The renderer only ships bytes; extraction (PDF text, encoding checks, caps)
- * happens in main so one implementation governs what reaches the model.
+ * When `preferNativePdf` is true (model advertises `file`), PDFs are kept as
+ * base64 `file_native` parts; otherwise main extracts text as today.
  */
-export function useComposerFiles() {
+export function useComposerFiles(opts?: {
+  preferNativePdf?: boolean
+  getPreferNativePdf?: () => boolean
+}) {
+  const preferNativePdf = (): boolean =>
+    opts?.getPreferNativePdf?.() ?? opts?.preferNativePdf === true
   const [files, setFiles] = useState<AttachedFile[]>([])
+  const [nativeFiles, setNativeFiles] = useState<AttachedNativeFile[]>([])
   const [fileError, setFileError] = useState<string | null>(null)
   const [extracting, setExtracting] = useState(false)
 
+  const totalCount = files.length + nativeFiles.length
+
   const addFiles = async (picked: File[]): Promise<void> => {
     if (!picked.length) return
-    const room = MAX_FILES - files.length
+    const room = MAX_FILES - totalCount
     if (room <= 0) {
       setFileError(`You can attach up to ${MAX_FILES} files.`)
       return
     }
 
+    const useNative = preferNativePdf()
     const problems: string[] = []
     const accepted: AttachedFile[] = []
+    const acceptedNative: AttachedNativeFile[] = []
     setExtracting(true)
     try {
       for (const file of picked.slice(0, room)) {
-        if (file.size > MAX_ATTACHMENT_BYTES) {
-          problems.push(
-            `${file.name} is over ${Math.round(MAX_ATTACHMENT_BYTES / (1024 * 1024))}MB`
-          )
+        const maxBytes = useNative && isPdfFile(file) ? MAX_NATIVE_FILE_BYTES : MAX_ATTACHMENT_BYTES
+        if (file.size > maxBytes) {
+          problems.push(`${file.name} is over ${Math.round(maxBytes / (1024 * 1024))}MB`)
           continue
         }
         try {
           const data = await readAsBase64(file)
+          if (useNative && isPdfFile(file)) {
+            acceptedNative.push({
+              type: 'file_native',
+              name: file.name,
+              mime: file.type || 'application/pdf',
+              data
+            })
+            continue
+          }
           const res = await window.vyotiq.extractAttachment({
             name: file.name,
             mime: file.type || '',
@@ -83,6 +110,9 @@ export function useComposerFiles() {
     if (picked.length > room) problems.push(`Only ${MAX_FILES} files allowed`)
     setFileError(problems.length ? problems.join(' · ') : null)
     if (accepted.length) setFiles((prev) => [...prev, ...accepted].slice(0, MAX_FILES))
+    if (acceptedNative.length) {
+      setNativeFiles((prev) => [...prev, ...acceptedNative].slice(0, MAX_FILES))
+    }
   }
 
   const removeFile = (index: number): void => {
@@ -90,10 +120,28 @@ export function useComposerFiles() {
     setFileError(null)
   }
 
-  const clearFiles = (): void => {
-    setFiles([])
+  const removeNativeFile = (index: number): void => {
+    setNativeFiles((prev) => prev.filter((_, j) => j !== index))
     setFileError(null)
   }
 
-  return { files, setFiles, fileError, setFileError, extracting, addFiles, removeFile, clearFiles }
+  const clearFiles = (): void => {
+    setFiles([])
+    setNativeFiles([])
+    setFileError(null)
+  }
+
+  return {
+    files,
+    setFiles,
+    nativeFiles,
+    setNativeFiles,
+    fileError,
+    setFileError,
+    extracting,
+    addFiles,
+    removeFile,
+    removeNativeFile,
+    clearFiles
+  }
 }

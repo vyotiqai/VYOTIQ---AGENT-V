@@ -74,4 +74,21 @@ describe('zodToJsonSchema', () => {
     const json = zodToJsonSchema(z.object({})) as { required?: string[] }
     expect(json.required).toEqual([])
   })
+
+  it('emits uuid format and string min/maxLength from Zod checks', () => {
+    const schema = z.object({
+      session_id: z.string().uuid().describe('Session UUID').optional(),
+      pattern: z.string().min(1).max(200).describe('Pattern')
+    })
+    const json = zodToJsonSchema(schema) as {
+      properties: {
+        session_id: { type: string; format?: string; description?: string }
+        pattern: { type: string; minLength?: number; maxLength?: number }
+      }
+    }
+    expect(json.properties.session_id.format).toBe('uuid')
+    expect(json.properties.session_id.description).toBe('Session UUID')
+    expect(json.properties.pattern.minLength).toBe(1)
+    expect(json.properties.pattern.maxLength).toBe(200)
+  })
 })

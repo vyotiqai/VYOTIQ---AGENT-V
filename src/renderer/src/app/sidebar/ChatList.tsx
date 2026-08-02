@@ -3,20 +3,6 @@ import { cn } from '@renderer/lib/ui'
 import { ChatRow } from './ChatRow'
 import type { WorkspaceSidebarGroup } from './types'
 
-function confirmCloseWorkspace(
-  name: string,
-  hasBackgroundRun: boolean,
-  onClose: () => void
-): void {
-  if (hasBackgroundRun) {
-    const ok = window.confirm(
-      `${name} has chats running in the background. Close this workspace anyway?`
-    )
-    if (!ok) return
-  }
-  onClose()
-}
-
 function WorkspaceHeader({
   name,
   active,
@@ -82,7 +68,7 @@ function WorkspaceHeader({
         aria-label={`Close ${name}`}
         onClick={(e) => {
           e.stopPropagation()
-          confirmCloseWorkspace(name, hasActivity, onCloseWorkspace)
+          onCloseWorkspace()
         }}
       >
         <Icon name="close" size={12} />
@@ -178,7 +164,7 @@ export function ChatList({
 
                 {workspace.expanded ? (
                   workspace.filteredRuns.length === 0 ? (
-                    <p className="m-0 ml-4 px-1 py-1 text-[11px] text-muted">
+                    <p className="m-0 ml-4 px-1 py-1 text-xs text-secondary">
                       {sessionQuery.trim() ? 'No matching chats' : 'No chats yet'}
                     </p>
                   ) : (

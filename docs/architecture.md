@@ -1,4 +1,8 @@
-# Vyotiq architecture
+﻿# Vyotiq architecture
+
+## Related research
+
+Provider/model landscape, capability gaps, and a prioritized roadmap (docs only, 2026-08-01): [docs/research/README.md](./research/README.md).
 
 ## Process boundaries
 
@@ -47,7 +51,6 @@ features/      # Product features
       MessageList.tsx
       ...
     ChatView.tsx
-    RecentsPicker.tsx
   settings/
 lib/           # Renderer-only shared code (formerly `shared/`)
   ui/          # Visual components only
@@ -85,7 +88,7 @@ logging/
 
 | Variant | When | Gutter |
 |---------|------|--------|
-| `hero` | Empty chat (welcome state) | None — parent provides `px-5 sm:px-8` |
+| `hero` | Empty chat (welcome state) | None â€” parent provides `px-5 sm:px-8` |
 | `dock` | Active transcript | `CHAT_GUTTER` + sticky bottom blur wrapper |
 
 `ChatView` renders **one** `Composer` and switches variant from transcript emptiness. Attachments and toolbar live inside `ComposerShell` (grid layout, not flex-wrap pill).
@@ -97,10 +100,10 @@ Typing `/` in the composer opens a fuzzy-filtered autocomplete menu (`SlashComma
 | Source | Examples | Resolve behavior |
 |--------|----------|------------------|
 | Built-ins | `/compact`, `/marketplace`, `/settings`, `/create-rule`, `/help`, `/undo`, `/ask`, `/plan`, `/agent` | Client actions (navigate / compact / create rule file / undo writes / mode switch) or send help text |
-| Marketplace skills | `/code-review` | Inject skill body + trailing text, then send (eager system-prompt skills unchanged) |
+| Marketplace skills | `/code-review` | Inject skill body + trailing text for this turn (explicit Level-2 activate). System prompt lists skill metadata only; the agent loads full `SKILL.md` via the `Skill` tool when relevant. |
 | Workspace commands | `.vyotiq/commands/*.md`, `.cursor/commands/*.md` | Template send (`{{input}}` supported); Vyotiq wins collisions |
 | Workspace rules | existing `.vyotiq/rules` / `.cursor/rules` stems | Open file in the system editor |
-| MCP tools | connected `mcp__…` tools | Agent-mediated send hint (no direct JSON arg forms in v1) |
+| MCP tools | connected `mcp__â€¦` tools | Agent-mediated send hint (no direct JSON arg forms in v1) |
 
 Catalog skills that are not installed or disabled appear muted with Install/Enable CTAs. IPC: `slash-commands:list`, `slash-commands:resolve`, `slash-commands:createRule`, `slash-commands:openFile`.
 
@@ -108,9 +111,9 @@ Catalog skills that are not installed or disabled appear muted with Install/Enab
 
 Tests mirror source layout under `tests/`:
 
-- `tests/shared/` — unit tests for `src/shared/*`
-- `tests/main/unit/`, `integration/`, `e2e/` — main process
-- `tests/renderer/{composer,chat,settings,app}/` — renderer features
+- `tests/shared/` â€” unit tests for `src/shared/*`
+- `tests/main/unit/`, `integration/`, `e2e/` â€” main process
+- `tests/renderer/{composer,chat,settings,app}/` â€” renderer features
 
 Run: `pnpm typecheck && pnpm test`
 
@@ -138,43 +141,47 @@ flowchart TB
 
 ### Context assembly (`src/main/agent/context/`)
 
-`assembleContext()` builds the wire payload each agent step:
+`assembleContext()` builds the wire payload each agent step as a **two-zone** system string (stable instruction prefix + volatile data tail; see [harness-handbook.md](./harness-handbook.md) and [system-prompt-best-practices-2026.md](./system-prompt-best-practices-2026.md)):
 
-| Layer | Source |
-|-------|--------|
-| Harness | `resources/harness/default.md` (role, contract, tool policy, loop, memory, safety) |
-| Tool definitions | `AGENT_TOOLS` from `schemas/tools.ts` (short capability descriptions) + MCP |
-| Contract | `sessions/{runId}/contract.md` (auto-injected) |
-| Workspace snapshot | Manifest detection + capped `git status` |
-| Memory index | `.vyotiq/memory/index.md` + `state.md` |
-| Compaction summary | `sessions/{runId}/compaction.json` (persisted) |
+| Zone | Layer | Source |
+|------|-------|--------|
+| Stable | Harness | `resources/harness/default.md` â€” `loadHarness(workspace)` prefers the workspace copy when present (e.g. after `/harness-apply`), else the bundled app copy. Applied text is seen on the next invoke / new run, not mid-step. |
+| Stable | Mode / nested role / contract / plan | Mode overlay; nested-agent role; `contract.md` / `plan.md` |
+| Stable | Skills + plugin rules (metadata) | Name/description (+ `plugin-rule:â€¦` ids); full bodies via `Skill` tool or slash |
+| Stable | Workspace rules | `AGENTS.md` / `.cursorrules` / `.cursor/rules` / `.vyotiq/rules` |
+| Volatile | Session env + workspace snapshot | Clock/OS/shell; manifest list + capped `git status` |
+| Volatile | Memory + notices + compaction | `.vyotiq/memory/*`; loop hints; `compaction.json` summary |
+| (separate) | Tool definitions | `AGENT_TOOLS` from `schemas/tools.ts` + MCP (not in the system string) |
 
-Compaction triggers at `compactionTriggerRatio` of the model content window (15% buffer reserved). Text tokens are counted with `gpt-tokenizer` (BPE); large blobs fall back to `chars/4`. From step 2 onward, compaction and the context meter prefer provider-reported `inputTokens` when available (`Math.max(estimate, provider)` with a guard against inflated early readings). The composer shows a live context-window meter via `context_usage` events. Structured summaries may auto-promote into `.vyotiq/memory/` when `memoryAutoPromote` is enabled.
+Compaction triggers at `compactionTriggerRatio` of the model content window (15% buffer reserved). Text tokens are counted with `gpt-tokenizer` (BPE); large blobs fall back to `chars/4`. From step 2 onward, compaction and the context meter prefer provider-reported `inputTokens` when available (`Math.max(estimate, provider)` with a guard against inflated early readings). The composer shows a live context-window meter via `context_usage` events. Durable facts are written with `memory_write` when the agent chooses (no auto-promote on compaction).
 
-Read-only / parallel-safe **built-in** tools (`read`, `search`, `glob`, `grep`, `list_dir`, `web_fetch`, `web_search`, `memory_list`, `memory_read`, `subagent`, `git_status`, `git_diff`, `diagnostics`, `mcp_list_tools`) may execute in parallel when tool approval is off: ordinary read/network calls allow up to 4 concurrent calls, while sub-agent loops allow up to 2. Mutating tools (`edit`, `str_replace`, `multi_edit`, `delete`, `terminal`, `todo_write`, `memory_write`) and the shared agent-browser tools (`browser_*` except via parallel-safe classification) run serially. When a tool-approval gate is active, all tools run serially so prompts do not stack. `web_fetch`, `web_search`, and all `browser_*` tools are still gated in `mutating` approval mode (network egress). **MCP tools are never parallel-safe and are never approval-exempt via `readOnlyHint`** — the hint is not trusted. In `mutating`/`all` modes MCP tools still require approval unless the user allowlists that tool for the session or workspace.
+Read-only / parallel-safe **built-in** tools (`read`, `search`, `glob`, `grep`, `list_dir`, `web_fetch`, `web_search`, `memory_list`, `memory_read`, `subagent`, `git_status`, `git_diff`, `diagnostics`, `mcp_list_tools`) may execute in parallel (up to 4 concurrent calls; sub-agents up to 2) even when tool approval is on â€” approval still gates each mutating/network/MCP call individually. Mutating tools (`edit`, `str_replace`, `multi_edit`, `delete`, `terminal`, `todo_write`, `memory_write`, `git_commit`, `generate_image`, `edit_image`) and all `browser_*` tools run serially (browser tools are never parallel-safe). MCP tools that declare `readOnlyHint: true` may also run in parallel (hint still untrusted for approval exemption). MCP resource/prompt built-ins (`mcp_list_resources`, `mcp_read_resource`, `mcp_list_prompts`, `mcp_get_prompt`) are serial and approval-exempt like `mcp_list_tools`, but not parallel-safe. `web_fetch`, `web_search`, and all `browser_*` tools are still gated in `mutating` approval mode (network egress). **MCP tools are never approval-exempt via `readOnlyHint`** â€” the hint is not trusted for approval. In `mutating`/`all` modes MCP tools still require approval unless the user allowlists that tool for the session or workspace.
 
-**Interaction modes (Ask / Plan / Agent):** Composer mode picker (also `/ask`, `/plan`, `/agent`). Ask exposes read-only built-ins (including browse/wait/history/`browser_tabs`, not click/type/fill/press_key/select_option) plus **MCP tools that declare `readOnlyHint: true`** (hint is still never trusted for parallel or approval exemption) and `mcp_list_tools`. Plan adds `todo_write` and `edit`/`str_replace` only for run artifacts `plan.md` / `contract.md`, plus the same read-only MCP filter. Agent is full tools (built-ins + all MCP). Mode is passed on `chatStart` and enforced by filtering tool defs plus a hard execute gate (`modePolicy.ts`). A short mode section is injected into the system prompt for Ask/Plan. After Plan drafts `plan.md`, the composer shows **Continue in Agent** (switches mode and prefills an implement prompt). Bundled `code-review-graph` MCP is auto-installed when missing so graph/semantic tools are available by default (requires `uv`/`uvx` on PATH). Sub-agents may use `web_fetch`, `git_status`, `git_diff`, `diagnostics`, and `memory_read` in addition to the core read tools.
+**Interaction modes (Ask / Plan / Agent):** Composer mode picker (also `/ask`, `/plan`, `/agent`). Ask exposes read-only built-ins (including browse/wait/history/`browser_tabs`, not click/type/fill/press_key/select_option) plus MCP *meta* built-ins (`mcp_list_tools`, `mcp_list_resources`, `mcp_read_resource`, `mcp_list_prompts`, `mcp_get_prompt`). **Invoking connected MCP tools (`mcp__â€¦`) is Agent-only** â€” `isMcpAllowedInMode` in `modePolicy.ts` returns true only for `agent`. `readOnlyHint` is never trusted for Ask/Plan MCP invoke, parallel exemption, or approval exemption. Plan adds `todo_write`, `diagnostics`, and `edit`/`str_replace`/`multi_edit` only for run artifacts `plan.md` / `contract.md` (not `subagent`). Agent is full tools (built-ins + all connected MCP); `edit`/`str_replace`/`read`/`multi_edit` of `contract.md` remap to the run directory, and `plan.md` remaps in Agent when a run `plan.md` already exists (Plan handoff). Mode is passed on `chatStart` and enforced by filtering tool defs plus a hard execute gate (`modePolicy.ts`). A short mode section is injected into the system prompt for Ask/Plan/Agent and kept across compaction rebuilds. After Plan drafts `plan.md`, the composer shows **Continue in Agent** (switches mode and prefills an implement prompt). Bundled `code-review-graph` MCP is auto-installed when missing so graph/semantic tools are available by default (requires `uv`/`uvx` on PATH). **Nested agents** (`subagent` tool) reuse the same main-agent loop primitives (`loadHarness`, `assembleContext`, MCP catalog, thinking, approvals) via `runNestedAgent` â€” isolated transcript under `subagents/<id>/`, depth capped at 1 (`subagent` and `switch_mode` excluded), abort linked to the parent. Parent mode filters the nested catalog (Ask nested agents stay read-oriented). Live progress streams as `subagent_event` envelopes (plus legacy `subagent_update` lines) under the parent tool row.
 
-Built-in tool descriptions are short capability blurbs in `TOOL_REGISTRY` (`src/main/agent/schemas/tools.ts`), not a harness catalog. Keep each description aligned with the handler, argument schema, limits, and classification; `tests/main/unit/toolsSchema.test.ts` enforces registry parity and the harness boundary. The harness keeps cross-cutting tool policy (MCP naming/approval, attachments, don’t narrate).
+**Home workspace:** When no project tabs are open, main opens/creates `~/Vyotiq` (`ensureHomeWorkspace`) so the composer always has a real workspace path for send and tools. Closing the last tab reopens home.
+
+Built-in tool descriptions are short capability blurbs in `TOOL_REGISTRY` (`src/main/agent/schemas/tools.ts`), not a harness catalog. Keep each description aligned with the handler, argument schema, limits, and classification; `tests/main/unit/toolsSchema.test.ts` enforces registry parity and the harness boundary. The harness keeps cross-cutting tool policy (MCP naming/approval, attachments, donâ€™t narrate).
 
 ### MCP tools (`src/main/agent/mcp/`)
 
-User-configured MCP servers expose namespaced tools: `mcp__{serverId}__{toolName}`. Transports: **stdio**, **HTTP (streamable)**, and **SSE**. Main process connects servers; tools merge with the **34** built-ins at runtime (`read`, `edit`, `str_replace`, `multi_edit`, `delete`, `search`, `glob`, `grep`, `list_dir`, `terminal`, `todo_write`, `web_fetch`, `web_search`, `browser_navigate`, `browser_snapshot`, `browser_scroll`, `browser_click`, `browser_type`, `browser_fill`, `browser_tabs`, `browser_back`, `browser_forward`, `browser_wait_for_selector`, `browser_wait_for_url`, `browser_press_key`, `browser_select_option`, `mcp_list_tools`, `subagent`, `memory_list`, `memory_read`, `memory_write`, `git_status`, `git_diff`, `diagnostics`). Server ids must not contain `__`. Use `mcp_list_tools` when MCP defs were trimmed from the model context budget.
+User-configured MCP servers expose namespaced tools: `mcp__{serverId}__{toolName}`. Transports: **stdio**, **HTTP (streamable)**, and **SSE**. Main process connects servers; tools merge with the **45** built-ins at runtime (`read`, `edit`, `str_replace`, `multi_edit`, `delete`, `search`, `glob`, `grep`, `list_dir`, `terminal`, `todo_write`, `web_fetch`, `web_search`, `browser_navigate`, `browser_snapshot`, `browser_scroll`, `browser_click`, `browser_type`, `browser_fill`, `browser_tabs`, `browser_back`, `browser_forward`, `browser_wait_for_selector`, `browser_wait_for_url`, `browser_press_key`, `browser_select_option`, `mcp_list_tools`, `request_mcp_tools`, `mcp_list_resources`, `mcp_read_resource`, `mcp_list_prompts`, `mcp_get_prompt`, `subagent`, `memory_list`, `memory_read`, `memory_write`, `Skill`, `git_status`, `git_diff`, `git_commit`, `diagnostics`, `generate_image`, `edit_image`, `ask_question`, `switch_mode`). Server ids must not contain `__`. Use `mcp_list_tools` / `request_mcp_tools` when MCP defs were trimmed from the model context budget; use `mcp_list_resources` / `mcp_list_prompts` when servers advertise resources or prompts.
 
-**Agent browser:** Multi-tab Electron `BrowserWindow`s (one window per tab) with an isolated session (`persist:vyotiq-agent-browser`). `browser_tabs` lists/opens/closes/selects tabs; optional `tab_id` on other browser tools targets a tab (default: active). `browser_navigate` loads public http(s) URLs (same SSRF policy as `web_fetch`, including sync block of private redirects/`will-navigate`, alternate IPv4 encodings, and a post-load `assertPublicUrl` check on every settled navigation); `browser_back` / `browser_forward` walk history with the same SSRF re-check; `browser_wait_for_selector` / `browser_wait_for_url` poll until ready; `browser_snapshot` returns page text, viewport, `@eN` refs, and a JPEG; `browser_click` / `browser_type` / `browser_fill` / `browser_press_key` / `browser_select_option` interact (optional `settleMs`). A composer-adjacent panel shows tab strip, Back/Forward, title, URL, loading state, snapshot preview, and Show/Close (hydrates via `browser:getState`).
+**Agent browser:** Docked right-column panel in the chat side rail (Browser / Terminal / Changes / Plan icons; no overlay). Opening a panel pushes the chat column left in layout flow; closed by default; browser auto-opens when a browser tool loads a page. Hosts multi-tab live `WebContentsView`s (isolated session `persist:vyotiq-agent-browser`). Chrome includes address bar, history/recents dropdown (persisted), reload, and a â€œâ€¦â€ menu (screenshot to run artifacts, hard reload, copy URL, bookmark-bar toggle, clear history/cookies/cache for the agent partition only). Empty state shows Recents or â€œNo page loadedâ€. `browser_tabs` lists/opens/closes/selects tabs; optional `tab_id` on other browser tools targets a tab (default: active). `browser_navigate` loads public http(s) URLs (same SSRF policy as `web_fetch`, including sync block of private redirects/`will-navigate`, alternate IPv4 encodings, and a post-load `assertPublicUrl` check on every settled navigation); `browser_back` / `browser_forward` walk history with the same SSRF re-check; `browser_wait_for_selector` / `browser_wait_for_url` poll until ready; `browser_snapshot` returns page text, viewport, and `@eN` refs (optional JPEG saved under the run dir); `browser_click` / `browser_type` / `browser_fill` / `browser_press_key` / `browser_select_option` interact (optional `settleMs`). Bounds are reported via `browser:setBounds`.
 
 **Terminal live output:** While `terminal` runs, `terminal_output_delta` events stream capped stdout/stderr into the tool card (not persisted to `events.jsonl`); the final `tool_result` replaces the card body. Background sessions still use `session_id` / `block_until_ms` / `pattern`.
 
-**Deferred gaps:** file-scoped `read_lints`, MCP resources/prompts, agent-callable `ask_question` / `switch_mode`.
+**Write checkpoints:** Before successful `edit` / `multi_edit` / `str_replace` / `delete` / `generate_image` / `edit_image`, priors are snapshotted under `sessions/{runId}/checkpoints/`. At the end of each invoke, a `writes_checkpoint` event is emitted. The Files Changed card supports per-file **Keep** / **Discard** (and Keep all / Discard all) via `runs:resolveWrites`, expandable inline diffs from tool args, and `/undo` discards all unresolved paths via `runs:resolveWrites` with action `discard` while the run is idle. (`runs:undoWrites` remains available as a main/test API that restores an entire checkpoint in one shot; the UI uses `resolveWrites`.)
 
-**Terminal shell:** Settings → Agent → **Terminal shell** (`auto` | `cmd` | `powershell` | `bash`). Default `auto` prefers PowerShell on Windows when `pwsh`/`powershell` is on PATH, else `cmd`. Unix `auto` keeps `$SHELL` / `/bin/sh`. Common Unix builtins are only blocked when the resolved shell is `cmd`.
+**Image generation:** `generate_image` / `edit_image` call OpenAI Images (`gpt-image-2`), Gemini (`gemini-3.1-flash-image` / `gemini-3-pro-image`), xAI Imagine, OpenRouter Image API (`POST /api/v1/images`, default `bytedance-seed/seedream-4.5`), or an **opt-in** custom OpenAI-compatible host (`customOpenAiBaseUrl` + `customImageEnabled`, probed for `POST /v1/images/generations`; default model `dall-e-3`) via Settings → Agent → Image provider (or tool args). Supports `preset` draft|final, OpenAI/OpenRouter/custom `size`/`quality`/`output_format`/`background`/`n` (OpenRouter may return `image/svg+xml`), Gemini/xAI/OpenRouter `aspect_ratio`/`resolution`. Ask/Plan modes dry-run only; Agent writes under a caller path (generate defaults to `.vyotiq/generated/`; edit defaults to overwriting the first reference). Works independently of the chat provider. Custom hosts that only implement Chat Completions are never auto-routed for images. **Code-native visuals** (exact SVG icons, HTML/CSS UI mocks, Mermaid diagrams) are authored with normal file tools under `.vyotiq/generated/icons|ui/` per harness — not via raster APIs. Motion in mocks is CSS/SVG with a 2–3 motion budget and `prefers-reduced-motion`; there is no `generate_video` tool yet.
 
-**Diagnostics:** `diagnostics` runs typecheck (default) or lint. Optional Settings → Agent → **Diagnostics command** overrides typecheck; otherwise package scripts (`typecheck` / `type-check` / `lint`) or `tsc`/`eslint` are used.
+**Agent interaction tools:** `ask_question` pauses the run for a structured user answer in the transcript; `switch_mode` lets the agent flip Ask / Plan / Agent mid-run (composer syncs via `mode_changed`). MCP **resources** and **prompts** are available through `mcp_list_resources` / `mcp_read_resource` / `mcp_list_prompts` / `mcp_get_prompt` when a connected server advertises those capabilities.
 
-**Write checkpoints:** Before successful `edit` / `multi_edit` / `str_replace` / `delete`, priors are snapshotted under `sessions/{runId}/checkpoints/`. At the end of each invoke, a `writes_checkpoint` event is emitted. The Files Changed card supports per-file **Keep** / **Discard** (and Keep all / Discard all) via `runs:resolveWrites`, expandable inline diffs from tool args, and `/undo` discards all unresolved paths via `runs:undoWrites`, while the run is idle.
+**Terminal:** Default calls block until exit/`timeoutMs`. Pass `block_until_ms: 0` (or any `block_until_ms`) to run a background session that returns `session_id` + `status`; poll with `{ session_id, block_until_ms, pattern? }`. Still Agent-only, serial, and approval-gated. Shell selection uses Settings `terminalShell` (`auto` / `cmd` / `powershell` / `bash`) via `getSettings().terminalShell`. `zsh` is **not** a supported preference value in this product surface.
 
-**Terminal:** Default calls block until exit/`timeoutMs`. Pass `block_until_ms: 0` (or any `block_until_ms`) to run a background session that returns `session_id` + `status`; poll with `{ session_id, block_until_ms, pattern? }`. Still Agent-only, serial, and approval-gated.
-**Marketplace** (sidebar footer storefront → top-level Marketplace view): sole UI for MCP servers (stdio / HTTP / SSE), skills, and plugins. Home shows Discover / Featured / category sections from a **curated** catalog of installable packages only (official MCP reference servers — filesystem, memory, sequential-thinking via `npx`; fetch, git, time via `uvx` with `mcp<2` pinned for fetch/time SDK compatibility; plus code-review-graph via `uvx` — and Vyotiq skills such as code-review, docs, test-writing, refactor, commit-message, debug, pr-description, security-review, frontend-design, accessibility, api-design, and plugins such as devtools, shipping, quality, electron-app). Empty search results point users to Manage → Add for external MCPs outside the curated list. Cards highlight the package being viewed and show Enabled / Connected / Disabled from install + MCP status (not just “Installed”). Package detail lists nested MCP/skills and links installed packages into Manage. Manage installs, enables, and configures MCP. **Add** supports universal paste (GitHub URL, npm name, `npx`/`uvx` command, remote MCP URL, or Cursor-style `mcpServers` JSON) via detect → preview → add & connect (`src/main/marketplace/mcpImport.ts`), plus import from Cursor/Claude local configs; advanced forms remain for stdio/remote/git/npm/path. Git/npm installs of non-Vyotiq MCP repos synthesize a `vyotiq.mcp.json` when a launch command can be detected. Settings → **Registry** holds only the optional registry URL and remote-install acknowledgement. Packages install into `{userData}/marketplace/`. Marketplace MCP packages use `vyotiq.mcp.json`. Remote MCP supports Bearer tokens in OS secure storage and **Sign in with OAuth** (Authorization Code + PKCE). Per-server `allowedTools` / `deniedTools` filter which tools are exposed and invokable. When enabled, the local MCP client connects and tools load into the agent. Skills use `skill.md` (eager system-prompt injection). Plugins (`vyotiq.plugin.json`) atomically expand nested MCP + skills + rules when enabled.
+**Diagnostics:** The `diagnostics` tool runs a project-aware check; Settings `diagnosticsCommand` overrides the auto-detected command when set.
+
+**Marketplace** (sidebar footer storefront â†’ top-level Marketplace view): sole UI for MCP servers (stdio / HTTP / SSE), skills, and plugins. Home shows Discover / Featured / category sections from a **curated** catalog of installable packages only (official MCP reference servers â€” filesystem, memory, sequential-thinking via `npx`; fetch, git, time via `uvx` with `mcp<2` pinned for fetch/time SDK compatibility; plus code-review-graph via `uvx` â€” and Vyotiq skills such as code-review, docs, test-writing, refactor, commit-message, debug, pr-description, security-review, frontend-design, accessibility, api-design, and plugins such as devtools, shipping, quality, electron-app). Empty search results point users to Manage â†’ Add for external MCPs outside the curated list. Cards highlight the package being viewed and show Enabled / Connected / Disabled from install + MCP status (not just â€œInstalledâ€). Package detail lists nested MCP/skills and links installed packages into Manage. Manage installs, enables, and configures MCP. **Add** supports universal paste (GitHub URL, npm name, `npx`/`uvx` command, remote MCP URL, or Cursor-style `mcpServers` JSON) via detect â†’ preview â†’ add & connect (`src/main/marketplace/mcpImport.ts`), plus import from Cursor/Claude local configs; advanced forms remain for stdio/remote/git/npm/path. Git/npm installs of non-Vyotiq MCP repos synthesize a `vyotiq.mcp.json` when a launch command can be detected. Settings â†’ **Registry** holds only the optional registry URL and remote-install acknowledgement. Packages install into `{userData}/marketplace/`. Marketplace MCP packages use `vyotiq.mcp.json`. Remote MCP supports Bearer tokens in OS secure storage and **Sign in with OAuth** (Authorization Code + PKCE). Per-server `allowedTools` / `deniedTools` filter which tools are exposed and invokable. When enabled, the local MCP client connects and tools load into the agent. Skills use `SKILL.md` (Level-1 metadata in the system prompt; full body via the `Skill` tool or `/slash`). Plugins (`vyotiq.plugin.json`) expand nested MCP + skills + rules when enabled; plugin rules use the same progressive-disclosure pattern (`plugin-rule:<id>/<path>` metadata, body via `Skill`).
 
 Effective MCP set for a run = configured (manual) entries + marketplace MCP packages + plugin-nested MCP, after workspace enable overrides (`src/main/marketplace/resolve.ts`).
 
@@ -182,41 +189,69 @@ Effective MCP set for a run = configured (manual) entries + marketplace MCP pack
 
 Per-workspace runs live under AppData `workspaces/{workspaceId}/sessions/{runId}/`:
 
-- `messages.jsonl` — canonical chat transcript
-- `events.jsonl` — streamed agent events (including compaction)
-- `compaction.json` — last compaction record
-- `contract.md` — goal + done-when
-- `plan.md` — Plan-mode draft (created when mode is Plan; not auto-injected into context)
-- `status.json` — run status metadata
+- `messages.jsonl` â€” canonical chat transcript
+- `events.jsonl` â€” streamed agent events (including compaction)
+- `compaction.json` â€” last compaction record
+- `contract.md` â€” goal + done-when (advisory)
+- `plan.md` â€” Plan-mode draft (auto-injected as `## Plan` when non-empty / non-stub)
+- `receipt.json` â€” end-of-run structured summary (tool stats, failure clusters, unread edits, diagnostics counts, optional `subagents[]` index of file-backed reports, contract excerpt)
+- `trajectory.jsonl` â€” observational AHE step/event flight recorder derived from `events.jsonl` (no LLM; not auto-merged into harness)
+- `prediction.json` â€” observational prediction manifest (`observed_only: true`; heuristic harness-section targets only â€” never auto-applied)
+- `status.json` â€” run status metadata (includes `mode`, `consecutiveToolFailureSteps`)
 
 Legacy `.vyotiq/runs/` folders are migrated into AppData on startup.
 
 Follow-up turns use incremental IPC (`newMessages` + `runId`); main loads prior messages from disk.
 
+### Harness editing scaffold
+
+**Harness editing scaffold** (not full Self-Harness / Meta-Harness): each runâ€™s `receipt.json` (and indexed subagent `report.md` files) can be mined with `/harness-review` into `.vyotiq/harness/proposals/*.md` via rule-based weakness extraction with **evidence buckets** (heuristic tags â€” not AHE). Optional Settings â†’ Agent â†’ `harnessProposalRewriter` (default off) may one-shot rewrite the proposed harness body via the configured model; apply stays human-gated. After a human edits the proposalâ€™s `## Proposed harness body`, `/harness-apply` (confirm dialog) writes only `resources/harness/default.md`, runs a fixed vitest subset (`HARNESS_EVAL_TESTS` in `harnessApply.ts`, including the frozen held-out grader in `harnessHeldOutEval.ts`), refuses apply when gate sources (`harnessApply.ts` + `harnessHeldOutEval.ts` + those tests) are dirty in git **or** when `.git` exists but `git status` fails (fail-closed), and reverts that file on failure. Changing evaluator code, held-out fixtures, or the gate test list is a normal PR â€” not part of `/harness-apply`. Ask mode still denies `diagnostics` on the parent and strips it from subagent tool allowlists. Operator map: [Source-linked Harness Handbook](./harness-handbook.md) (failure modes â†’ harness sections â†’ evidence sources; docs only â€” no product UI).
+
+The agent loop finishes when the model stops with no tool calls (unless truncated continue or a pending user follow-up). There are no verify-before-done, contract done-when, or read-before-edit finish/edit gates.
+
+**Sub-agent reports:** Successful (and failed) nested agent runs persist `subagents/<id>/report.md` (+ `status.json`, and when available `messages.jsonl` / `events.jsonl`) under the run directory. The tool result includes the report text and path; `read` remaps `subagents/.../report.md` to the run dir so the parent can re-read after compaction. Parent `receipt.json` may include a minimal `subagents[]` index (`id`, `status`, `reportPath`) scanned at write time. `/harness-review` rule-mines those reports into evidence bullets/buckets (no LLM summarization of report prose). Nested agents share the parent harness/`assembleContext` path with a short nested-role overlay; they are not a separate read-only mini-loop.
+
+**Sub-agent process ownership:** In-flight `subagent` tool calls register in `subagentRegistry` (child `AbortController` linked to the parent run signal). Loop invoke teardown, `chatCancelResult` / Stop, and workspace remove call `disposeSubagentsForInvoke` / `disposeSubagentsForRun` so nested work is hard-cancelled (in-process â€” not OS process trees).
+
+### Future harness research (proposed)
+
+Net-new behaviors from harness research audits. Rows marked **shipped** are in-tree; others remain **documented only; not implemented**:
+
+| Proposal | Why (evidence / source intent) | Status |
+|---|---|---|
+| Fixed-evaluator / held-out Self-Harness experiment | Need a frozen grader + held-out tasks before any auto-apply loop is trustworthy | **Shipped (experiment)** â€” `harnessHeldOutEval.ts` frozen fixtures grade receipt â†’ buckets / prediction targets; included in `HARNESS_EVAL_TESTS`; **no** autonomous apply loop |
+| AHE-style raw trajectory + prediction manifests | Observational AHE needs raw trajectories and prediction records, not only heuristic evidence buckets | **Shipped (observational)** â€” run dir `trajectory.jsonl` + `prediction.json` (`observed_only`); `/harness-review` may cite paths; **no** section auto-merge or auto-apply |
+| Source-linked Harness Handbook | Operators need a durable map from failure modes â†’ harness sections with source citations | **Shipped (docs)** â€” [harness-handbook.md](./harness-handbook.md); not a product UI; apply stays human-gated |
+| Explicit background-subagent process management | Background agent terminals already have run/invoke ownership; full subagent process trees need the same clarity | **Shipped** â€” `subagentRegistry` registers in-process children with per-child abort linked to parent; `disposeSubagentsForInvoke` / `disposeSubagentsForRun` on loop teardown, cancel, and workspace remove |
+| DGM-style autonomous self-modification | Apply surface is one file + human confirm | **Out of product scope** |
+| Unsupervised Self-Harness (auto-apply rewriter loop) | Rewriter is opt-in + human confirm only | **Out of product scope** â€” fixed evaluator + auto-merge not product scope |
+
+Do **not** treat unimplemented rows as a backlog commitment to ship those systems.
+
 ## Observability
 
 ### Local logs
 
-- **Path:** `%APPDATA%/vyotiq/logs/vyotiq.log` (Windows) — `userData/logs/vyotiq.log` via `electron-log`
-- **Rotation:** 5 MB per file, up to 5 archived copies (`vyotiq.log.old.<timestamp>`)
+- **Path:** `%APPDATA%/vyotiq/logs/vyotiq.log` (Windows) â€” `userData/logs/vyotiq.log` via `electron-log`
+- **Rotation:** `maxSize` 5 MB per file (electron-log rotates the active file; archive naming is transport-default)
 - **Levels:** `debug` in dev, `info`+ in packaged builds; renderer logs forward to main over IPC
 - **API:** `logger.debug|info|warn|error|fatal|exception` in [`src/shared/logger.ts`](../src/shared/logger.ts) with `scope`, `correlationId`, `code`, `err` fields (scrubbed before disk)
 
 ### Error taxonomy
 
-Stable codes in [`src/shared/utils/errors.ts`](../src/shared/utils/errors.ts): `IPC_VALIDATION`, `IPC_HANDLER`, `IPC_CLIENT`, `TOOL_EXEC`, `AGENT_LOOP`, `RENDERER_CRASH`, `UNCAUGHT`, etc. Use `toLogErr()` for IPC string errors so Sentry is not spammed.
+Stable codes in [`src/shared/utils/errors.ts`](../src/shared/utils/errors.ts): `IPC_VALIDATION`, `IPC_HANDLER`, `IPC_CLIENT`, `TOOL_EXEC`, `TOOL_APPROVAL`, `AGENT_LOOP`, `AGENT_QUESTION`, `SETTINGS`, `SECRETS`, `RENDERER_CRASH`, `UNCAUGHT`, etc. Use `toLogErr()` for IPC string errors so Sentry is not spammed. IPC wire results remain string-only (`IpcResult.error`); codes are for logs.
 
 ### Sentry (opt-in)
 
-Initialized only when **DSN is set at build time** and `settings.telemetryEnabled === true`. Preload does **not** init Sentry — renderer calls `initRendererSentry()` after reading settings. Main adds `release`, `environment`, and `workspaceCount` tags.
+Initialized only when **DSN is set at build time** and `settings.telemetryEnabled === true`. Preload does **not** init Sentry â€” renderer calls `initRendererSentry()` after reading settings. Main adds `release`, `environment`, and `workspaceCount` tags.
 
 ### Native crashes
 
-`crashReporter` starts at main logging init (local minidumps). Main hooks `render-process-gone`, `webContents.crashed`, and `did-fail-load`. Renderer installs `window.onerror` and `unhandledrejection` via [`src/renderer/src/logging/handlers.ts`](../src/renderer/src/logging/handlers.ts).
+`crashReporter` starts as early as possible in [`src/main/index.ts`](../src/main/index.ts) (before `app.whenReady`, so renderers are monitored). Local minidumps land under `userData/Crashpad` (`uploadToServer: false`). On Windows, hardware acceleration is disabled at startup to avoid a Chromium cascade seen in the field (`Network service crashed` â†’ `RENDERER_CRASH`). Main window logging attaches `render-process-gone` (code `RENDERER_CRASH`, includes `crashDumps` path), `unresponsive`, and `responsive` via `attachWebContentsCrashLogging`. Agent-browser navigations additionally log `did-fail-load`. Renderer installs `window.onerror` and `unhandledrejection` via [`src/renderer/src/logging/handlers.ts`](../src/renderer/src/logging/handlers.ts).
 
 ### Debugging checklist
 
-1. Reproduce the issue, then open **Settings → General → Open logs folder** (or `%APPDATA%/vyotiq/logs`)
+1. Reproduce the issue, then open **Settings â†’ General â†’ Open logs folder** (or `%APPDATA%/vyotiq/logs`)
 2. Search for `[error]` / `[fatal]` and the relevant `scope` (`ipc`, `agent`, `tools`, `chat`, `renderer`)
 3. Match `correlationId` to `runId` when debugging agent runs
 4. Enable **telemetry** in Settings only if you want events sent to Sentry (requires build-time DSN)

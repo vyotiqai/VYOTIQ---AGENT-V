@@ -10,6 +10,7 @@ import { ContextMeter, type ContextUsageState } from './ContextMeter'
 import { ModelPicker } from './ModelPicker'
 import { ModePicker } from './ModePicker'
 import { ThinkingControls } from './ThinkingControls'
+import { chromeLabelText } from './composerChrome'
 import type { ModelPickerOption } from './composerModelUtils'
 import type { ModelInfo } from '@shared/ipc'
 import type { AgentInteractionMode } from '@shared/ipc'
@@ -50,28 +51,31 @@ function ContextMeterLeaf({
 
 /** Shared compact control height for the toolbar row. */
 const iconCtl =
-  'inline-grid size-7 shrink-0 place-items-center rounded-xl text-muted vy-transition hover:bg-surface hover:text-fg disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)] disabled:hover:bg-transparent disabled:hover:text-muted'
+  'inline-grid size-7 shrink-0 place-items-center rounded-md border-0 bg-transparent text-muted vy-transition hover:bg-surface hover:text-fg disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)] disabled:hover:bg-transparent disabled:hover:text-muted'
 
 /** Size to content; truncate only when the middle zone is constrained. */
 const modelPillTrigger = cn(
-  'inline-flex h-7 max-w-full min-w-0 items-center gap-1 rounded-xl border-0 bg-transparent px-1.5 text-[11px] leading-none tracking-[var(--vy-tracking)] text-muted',
-  'hover:bg-surface hover:text-fg active:bg-surface',
+  'inline-flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-md border-0 bg-transparent px-1',
+  chromeLabelText,
+  'text-fg hover:bg-surface active:bg-surface',
   'vy-transition disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
 )
 
 const sendCtl = cn(
-  'inline-grid size-7 shrink-0 place-items-center rounded-xl vy-transition',
+  'inline-grid size-7 shrink-0 place-items-center rounded-md vy-transition',
   'disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
 )
 
+/** Shared control row — every pill/icon aligns to the same 28px baseline. */
 const zone = 'flex h-7 min-w-0 items-center gap-0.5'
 
-export type ComposerVariant = 'hero' | 'dock'
+export type ComposerVariant = 'hero' | 'dock' | 'inline'
 
 export function ComposerToolbar({
   variant,
   disabled,
   locked,
+  attachDisabled,
   imageCount,
   fileCount,
   onAttachClick,
@@ -100,11 +104,16 @@ export function ComposerToolbar({
   onStop,
   contextUsage,
   metaStore,
-  onCompactContext
+  onCompactContext,
+  onCancelEdit,
+  focusInput,
+  imageReadyHint = null
 }: {
   variant: ComposerVariant
   disabled?: boolean
   locked: boolean
+  /** When set, only blocks attach (input may stay open while settings stay locked). */
+  attachDisabled?: boolean
   imageCount: number
   fileCount: number
   onAttachClick: () => void
@@ -134,13 +143,17 @@ export function ComposerToolbar({
   contextUsage?: ContextUsageState | null
   metaStore?: ChatMetaStore
   onCompactContext?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
+  onCancelEdit?: () => void
+  focusInput?: () => void
+  imageReadyHint?: string | null
 }) {
-  void variant
   void disabled
+  const isInline = variant === 'inline'
 
   const imagesFull = imageCount >= MAX_IMAGES
   const filesFull = fileCount >= MAX_FILES
   const attachFull = imagesFull && filesFull
+  const attachBlocked = Boolean(attachDisabled ?? locked)
   const attachLabel = attachFull
     ? `Attach files (limits reached: ${MAX_IMAGES} images, ${MAX_FILES} files)`
     : imagesFull
@@ -155,27 +168,42 @@ export function ComposerToolbar({
     knownContextWindow(model, provider) ??
     (modelMeta?.contextWindow && modelMeta.contextWindow > 0 ? modelMeta.contextWindow : null)
 
-  const sendOrStop = running ? (
-    <IconButton
-      icon="stop"
-      label="Stop"
-      size="sm"
-      variant="primary"
-      className="size-7 shrink-0 rounded-xl"
-      onClick={onStop}
-    />
-  ) : (
-    <button
-      type="submit"
-      className={cn(
-        sendCtl,
-        canSend ? 'bg-accent text-accent-fg hover:bg-fg-strong' : 'bg-surface-2 text-muted'
-      )}
-      aria-label="Send"
-      disabled={!canSend}
-    >
-      <Icon name="send" size={14} weight="fill" />
-    </button>
+  const sendOrStop = (
+    <div className="flex items-center gap-0.5">
+      {isInline && onCancelEdit ? (
+        <button
+          type="button"
+          className={iconCtl}
+          aria-label="Cancel edit"
+          title="Cancel edit (Esc)"
+          onClick={onCancelEdit}
+        >
+          <Icon name="close" size={14} />
+        </button>
+      ) : null}
+      {running ? (
+        <IconButton
+          icon="stop"
+          label="Stop"
+          size="sm"
+          variant="primary"
+          className="size-7 shrink-0 rounded-xl"
+          onClick={onStop}
+        />
+      ) : null}
+      <button
+        type="submit"
+        className={cn(
+          sendCtl,
+          canSend ? 'bg-accent text-accent-fg hover:bg-fg-strong' : 'bg-surface-2 text-muted'
+        )}
+        aria-label={isInline ? 'Resend' : running ? 'Send follow-up' : 'Send'}
+        title={isInline ? 'Resend edited message' : undefined}
+        disabled={!canSend}
+      >
+        <Icon name="send" size={14} weight="fill" />
+      </button>
+    </div>
   )
 
   return (
@@ -190,7 +218,7 @@ export function ComposerToolbar({
           className={iconCtl}
           aria-label={attachLabel}
           title={attachLabel}
-          disabled={locked || attachFull}
+          disabled={attachBlocked || attachFull}
           onClick={onAttachClick}
         >
           <Icon name="paperclip" size={15} />
@@ -206,7 +234,7 @@ export function ComposerToolbar({
           running={running}
         />
         <ModelPicker
-          className="min-w-0 max-w-[10rem] shrink @max-[420px]:max-w-[min(100%,12rem)]"
+          className="min-w-0 max-w-[16rem] shrink @max-[420px]:max-w-[min(100%,16rem)]"
           triggerClassName={modelPillTrigger}
           providers={providers}
           optionsByProvider={optionsByProvider}
@@ -225,15 +253,25 @@ export function ComposerToolbar({
           onBrowseProvider={onBrowseProvider}
           catalogLoading={catalogLoading}
           disabled={locked}
+          focusInput={focusInput}
         />
         <ThinkingControls
           provider={provider}
           model={model}
+          modelMeta={modelMeta}
           chatSettings={chatSettings}
           onChatSettingsChange={onChatSettingsChange}
           disabled={locked}
           running={running}
         />
+        {imageReadyHint ? (
+          <span
+            className="hidden max-w-[9rem] truncate px-1 text-[10px] text-tertiary @min-[520px]:inline"
+            title={imageReadyHint}
+          >
+            {imageReadyHint}
+          </span>
+        ) : null}
       </div>
 
       {/* Right: context + send, always trailing */}

@@ -2,6 +2,33 @@ import { type ReactNode } from 'react'
 import { IconButton } from './IconButton'
 import { cn } from './cn'
 
+const URL_RE = /https?:\/\/[^\s<>"')\]]+/g
+
+/** Split plain text so http(s) URLs become clickable external links. */
+export function linkifyAlertText(text: string, onOpenUrl: (url: string) => void): ReactNode {
+  const nodes: ReactNode[] = []
+  let last = 0
+  let match: RegExpExecArray | null
+  const re = new RegExp(URL_RE.source, 'g')
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > last) nodes.push(text.slice(last, match.index))
+    const url = match[0]
+    nodes.push(
+      <button
+        key={`${match.index}:${url}`}
+        type="button"
+        className="underline underline-offset-2 hover:opacity-90"
+        onClick={() => onOpenUrl(url)}
+      >
+        {url}
+      </button>
+    )
+    last = match.index + url.length
+  }
+  if (last < text.length) nodes.push(text.slice(last))
+  return nodes.length === 1 ? nodes[0]! : nodes
+}
+
 export function Alert({
   children,
   variant = 'danger',
@@ -15,6 +42,13 @@ export function Alert({
   dismissLabel?: string
   className?: string
 }) {
+  const body =
+    typeof children === 'string'
+      ? linkifyAlertText(children, (url) => {
+          void window.vyotiq?.shellOpenExternal?.(url)
+        })
+      : children
+
   return (
     <div
       className={cn(
@@ -24,7 +58,7 @@ export function Alert({
       )}
       role="alert"
     >
-      <div className="m-0 min-w-0 flex-1">{children}</div>
+      <div className="m-0 min-w-0 flex-1">{body}</div>
       {onDismiss ? (
         <IconButton
           icon="close"

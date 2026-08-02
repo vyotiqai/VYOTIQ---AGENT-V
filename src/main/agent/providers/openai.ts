@@ -1,14 +1,17 @@
 import type { ChatMessage, ContentPart, MessageContent, ModelInfo, ProviderId } from '../../../shared/ipc'
 import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
-import { normalizeOllamaHost } from '../../../shared/providers'
-import { parseProviderReasoningState, normalizeEffortForOpenAiCompatReasoning } from '../../../shared/reasoning'
+import { isOllamaCloudHost, ollamaNativeHost } from '../../../shared/providers'
+import { parseProviderReasoningState, normalizeEffortForOpenAiCompatReasoning, normalizeEffortForDeepSeek, coerceEffortToAllowed, normalizeEffortForOllamaThink } from '../../../shared/reasoning'
 import { serviceTierForApiBody } from '../../../shared/domain/serviceTier'
 import {
   baseModelInfo,
   looksLikeChatModel,
   normalizeOpenAiStyleModels,
-  parseDataUrl
+  parseDataUrl,
+  thinkingPartialFromCatalogRow,
+  wireSupportedInputModalities,
+  wireSupportedOutputModalities
 } from './normalize'
 import type {
   LlmProvider,
@@ -24,10 +27,23 @@ import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
+import { assertAllowedUrl, fetchWithValidatedRedirects } from '@main/agent/tools/webFetch'
 import {
   formatProviderHttpError,
-  parseOpenRouterAffordableOutputTokens
+  parseOpenRouterAffordableOutputTokens,
+  scrubProviderErrorSnippet,
+  shouldRetryOpenRouterCompatBody
 } from './httpErrors'
+import {
+  resolveSystemZones,
+  volatileSessionMessage,
+  supportsExplicitPromptCache,
+  markOpenAiChatCacheBreakpoint,
+  attachTrailingHistoryCacheBreakpoint
+} from './systemZones'
+
+/** Re-export for callers/tests that imported from openai. */
+export { supportsExplicitPromptCache } from './systemZones'
 
 export function openAiCompatMessageReasoningDelta(
   messageReasoning: string,
@@ -59,6 +75,10 @@ export type OpenAiCompatOptions = {
   deepseekThinking?: boolean
   /** OpenRouter: unified reasoning parameter. */
   openRouterReasoning?: boolean
+  /** Allow chat/catalog without an API key (local custom gateways). */
+  optionalApiKey?: boolean
+  /** Allow loopback / private hosts (SSRF allowlist). */
+  allowLocal?: boolean
 }
 
 /** Exported for tests — gate OpenAI `stream_options.include_usage` per provider. */
@@ -69,15 +89,100 @@ export function compatStreamOptions(
   return { stream_options: { include_usage: true } }
 }
 
+// eslint-disable-next-line no-control-regex
+const URL_CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F]/
+const URL_HOST_CHARS = /^[\da-zA-Z\-_.:]+$/
+
+/**
+ * Synchronous structural check for provider base URLs: scheme, host,
+ * credentials, fragments, query strings, and non-ASCII control characters.
+ * Rejects values that should never reach a cache key or HTTP request.
+ */
+export function assertValidProviderBaseUrl(raw: string | undefined): URL {
+  if (!raw || typeof raw !== 'string') {
+    throw new Error('Provider base URL is empty')
+  }
+  if (URL_CONTROL_CHARS.test(raw)) {
+    throw new Error('Provider base URL contains control characters')
+  }
+
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    throw new Error(`Invalid provider base URL: ${raw}`)
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`Provider base URL must use http(s): ${raw}`)
+  }
+  if (url.username || url.password) {
+    throw new Error(`Provider base URL must not contain credentials: ${raw}`)
+  }
+  if (url.hash) {
+    throw new Error(`Provider base URL must not contain a fragment: ${raw}`)
+  }
+  if (url.search) {
+    throw new Error(`Provider base URL must not contain a query string: ${raw}`)
+  }
+
+  const host = url.hostname
+  if (!host) {
+    throw new Error(`Provider base URL is missing a host: ${raw}`)
+  }
+  if (!URL_HOST_CHARS.test(host)) {
+    throw new Error(`Provider base URL host contains invalid characters: ${host}`)
+  }
+
+  return url
+}
+
+/** Full base URL validation: structural checks plus DNS/SSRF via assertAllowedUrl. */
+export async function validateProviderBaseUrl(raw: string, allowLocal = false): Promise<URL> {
+  assertValidProviderBaseUrl(raw)
+  return assertAllowedUrl(raw, allowLocal)
+}
+
 function toOpenAiContent(
   content: MessageContent,
   opts: { ollamaVision?: boolean }
 ): string | Array<Record<string, unknown>> {
   if (typeof content === 'string') return content
   const parts: Array<Record<string, unknown>> = []
-  for (const p of providerContentParts(content)) {
+  for (const p of providerContentParts(content, {
+    image: true,
+    audio: !opts.ollamaVision,
+    fileNative: false
+  })) {
     if (p.type === 'text') {
       parts.push({ type: 'text', text: p.text })
+      continue
+    }
+    if (p.type === 'audio') {
+      const data = parseDataUrl(p.url)
+      if (!data) {
+        parts.push({
+          type: 'text',
+          text: '[audio omitted: OpenAI requires a base64 data URL]'
+        })
+        continue
+      }
+      const format = data.mediaType.includes('wav')
+        ? 'wav'
+        : data.mediaType.includes('mpeg') || data.mediaType.includes('mp3')
+          ? 'mp3'
+          : 'wav'
+      parts.push({
+        type: 'input_audio',
+        input_audio: { data: data.data, format }
+      })
+      continue
+    }
+    if (p.type === 'file_native') {
+      parts.push({
+        type: 'text',
+        text: `[file omitted: use a Responses-capable model for native file "${p.name}"]`
+      })
       continue
     }
     if (opts.ollamaVision && !p.url.startsWith('data:')) {
@@ -94,39 +199,74 @@ function toOpenAiContent(
     : parts
 }
 
-function openAiCompatReasoningFromMessage(message: ChatMessage): {
+function openAiCompatReasoningFromMessage(
+  message: ChatMessage,
+  opts: { stripReasoningReplay?: boolean }
+): {
   reasoningContent?: string
   reasoningDetails?: unknown
 } {
+  if (opts.stripReasoningReplay) return {}
   const state = parseProviderReasoningState(message.reasoningState)
   if (state?.kind !== 'openai_compat') return {}
   return {
     reasoningContent: state.reasoningContent,
-    reasoningDetails: state.reasoningDetails
+    // Encrypted reasoning_details must not be replayed via OpenRouter — upstream
+    // providers reject unverifiable rs_* blocks with HTTP 400 "Provider returned error".
+    reasoningDetails: undefined
   }
 }
 
-function toOpenAiMessages(
+/** Exported for tests — map chat messages + system zones to OpenAI-compat wire shape. */
+export function toOpenAiMessages(
   messages: ChatMessage[],
   system: string | undefined,
-  opts: { ollamaVision?: boolean }
+  opts: {
+    ollamaVision?: boolean
+    stripReasoningReplay?: boolean
+    /** Prefer stable leading system + trailing volatile over a combined `system` string. */
+    systemStable?: string
+    systemVolatile?: string
+    /** GPT-5.6+: mark the end of the stable system prefix for explicit cache mode. */
+    explicitPromptCache?: boolean
+  } = {}
 ) {
+  const zones = resolveSystemZones({
+    system,
+    systemStable: opts.systemStable,
+    systemVolatile: opts.systemVolatile
+  })
   const out: Array<Record<string, unknown>> = []
-  if (system) out.push({ role: 'system', content: system })
+  if (zones.stable) {
+    if (opts.explicitPromptCache) {
+      out.push({
+        role: 'system',
+        content: [
+          {
+            type: 'text',
+            text: zones.stable,
+            prompt_cache_breakpoint: { mode: 'explicit' }
+          }
+        ]
+      })
+    } else {
+      out.push({ role: 'system', content: zones.stable })
+    }
+  }
   for (const m of messages) {
     if (m.role === 'tool') {
+      if (!m.toolCallId) continue
       out.push({
         role: 'tool',
         tool_call_id: m.toolCallId,
         content: typeof m.content === 'string' ? m.content : contentToText(m.content)
       })
     } else if (m.role === 'assistant' && m.toolCalls?.length) {
-      const { reasoningContent, reasoningDetails } = openAiCompatReasoningFromMessage(m)
+      const { reasoningContent } = openAiCompatReasoningFromMessage(m, opts)
       out.push({
         role: 'assistant',
         content: typeof m.content === 'string' ? m.content || null : contentToText(m.content) || null,
         ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
-        ...(reasoningDetails !== undefined ? { reasoning_details: reasoningDetails } : {}),
         tool_calls: m.toolCalls.map((t) => ({
           id: t.id,
           type: 'function',
@@ -134,12 +274,17 @@ function toOpenAiMessages(
         }))
       })
     } else if (m.role === 'assistant') {
-      const { reasoningContent, reasoningDetails } = openAiCompatReasoningFromMessage(m)
+      const { reasoningContent } = openAiCompatReasoningFromMessage(m, opts)
       out.push({
         role: 'assistant',
         content: typeof m.content === 'string' ? m.content : contentToText(m.content),
-        ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
-        ...(reasoningDetails !== undefined ? { reasoning_details: reasoningDetails } : {})
+        ...(reasoningContent ? { reasoning_content: reasoningContent } : {})
+      })
+    } else if (m.role === 'system') {
+      // Rare in-loop system rows stay in history order (not re-merged into the prefix).
+      out.push({
+        role: 'system',
+        content: typeof m.content === 'string' ? m.content : contentToText(m.content)
       })
     } else {
       out.push({
@@ -147,6 +292,13 @@ function toOpenAiMessages(
         content: toOpenAiContent(m.content, opts)
       })
     }
+  }
+  if (opts.explicitPromptCache) {
+    // Second breakpoint: longest reusable prefix = stable system + history (before volatile).
+    attachTrailingHistoryCacheBreakpoint(out, markOpenAiChatCacheBreakpoint)
+  }
+  if (zones.volatile) {
+    out.push(volatileSessionMessage(zones.volatile))
   }
   return out
 }
@@ -209,25 +361,45 @@ export function parseOpenAiCompatUsage(raw: unknown): TokenUsage | undefined {
   }
 }
 
+/** GET JSON for model-catalog probes only (not chat streams). */
 async function fetchJson(
   url: string,
   headers: Record<string, string>,
   signal?: AbortSignal,
-  providerId?: ProviderId
+  providerId?: ProviderId,
+  opts?: { quiet?: boolean }
 ): Promise<unknown> {
+  const logProvider = providerId ?? 'openai-compat'
+  const allowLocal = providerId === 'ollama'
   let res: Response
   try {
-    res = await fetchWithRetry(url, { method: 'GET', headers, signal })
+    res = (
+      await fetchWithValidatedRedirects(
+        new URL(url),
+        signal ?? new AbortController().signal,
+        headers,
+        allowLocal
+      )
+    ).response
   } catch (err) {
     if (signal?.aborted) throw err
-    logProviderFailure('openai-compat', 'network', {})
+    // Local Ollama (or any catalog host) being down is expected — warn, don't ERROR-spam startup.
+    // Callers that try multiple endpoints (Ollama /v1 + /api/tags) pass quiet and log once.
+    if (!opts?.quiet) {
+      logProviderFailure(logProvider, 'network', {}, { soft: true })
+    }
     throw new Error(formatError(err))
   }
   if (!res.ok) {
     const text = await res.text().catch(() => '')
-    logProviderFailure('openai-compat', 'http', {
-      status: res.status
-    })
+    if (!opts?.quiet) {
+      logProviderFailure(
+        logProvider,
+        'http',
+        { status: res.status, message: scrubProviderErrorSnippet(text) || undefined },
+        { soft: true }
+      )
+    }
     throw new Error(formatProviderHttpError(res.status, text, providerId))
   }
   return res.json()
@@ -239,10 +411,14 @@ function modelsFromOllamaTags(data: unknown): ModelInfo[] {
     .map((m) => m.name)
     .filter((n): n is string => Boolean(n))
   return names.map((name) =>
-    baseModelInfo(name, {
-      supportsTools: true,
-      supportsVision: /llava|vision/i.test(name)
-    })
+    baseModelInfo(
+      name,
+      {
+        supportsTools: true,
+        supportsVision: /llava|vision/i.test(name)
+      },
+      'ollama'
+    )
   )
 }
 
@@ -252,10 +428,14 @@ function mergeOllamaTagNames(models: ModelInfo[], names: string[]): ModelInfo[] 
   for (const name of names) {
     if (seen.has(name)) continue
     out.push(
-      baseModelInfo(name, {
-        supportsTools: true,
-        supportsVision: /llava|vision/i.test(name)
-      })
+      baseModelInfo(
+        name,
+        {
+          supportsTools: true,
+          supportsVision: /llava|vision/i.test(name)
+        },
+        'ollama'
+      )
     )
     seen.add(name)
   }
@@ -285,6 +465,7 @@ function normalizeXaiLanguageModels(data: unknown): ModelInfo[] {
       ? (row.input_modalities as string[])
       : ['text']
     const supportsVision = inputMods.includes('image')
+    const thinkingPartial = thinkingPartialFromCatalogRow(row, 'xai')
     out.push(
       baseModelInfo(id, {
         displayName: typeof row.name === 'string' ? row.name : id,
@@ -294,15 +475,12 @@ function normalizeXaiLanguageModels(data: unknown): ModelInfo[] {
             : typeof row.context_length === 'number'
               ? row.context_length
               : undefined,
-        inputModalities: inputMods.filter((m) =>
-          ['text', 'image', 'audio', 'file'].includes(m)
-        ) as ModelInfo['inputModalities'],
-        outputModalities: outputMods.filter((m) =>
-          ['text', 'image'].includes(m)
-        ) as ModelInfo['outputModalities'],
+        inputModalities: wireSupportedInputModalities(inputMods, supportsVision, 'xai'),
+        outputModalities: wireSupportedOutputModalities(outputMods),
         supportsTools: true,
-        supportsVision
-      })
+        supportsVision,
+        ...thinkingPartial
+      }, 'xai')
     )
   }
   return out
@@ -315,9 +493,11 @@ async function listOpenAiCompatModels(
   signal?: AbortSignal,
   providerId?: ProviderId
 ): Promise<ModelInfo[]> {
+  const catalogProvider = providerId ?? (opts.ollamaVision ? 'ollama' : undefined)
+
   if (opts.listLanguageModels) {
     try {
-      const data = await fetchJson(`${base}/language-models`, headers, signal)
+      const data = await fetchJson(`${base}/language-models`, headers, signal, catalogProvider)
       const models = normalizeXaiLanguageModels(data)
       if (models.length) return models
     } catch {
@@ -327,17 +507,20 @@ async function listOpenAiCompatModels(
 
   // Ollama: prefer OpenAI /v1/models, fall back to native /api/tags when unreachable.
   if (opts.ollamaVision) {
-    const host = normalizeOllamaHost(base)
+    const host = ollamaNativeHost(base)
     const openAiBase = `${host}/v1`
+    const ollamaId = catalogProvider ?? 'ollama'
+    const cloud = isOllamaCloudHost(host)
+    const quiet = { quiet: true as const }
     let openAiErr: unknown
     try {
-      const data = await fetchJson(`${openAiBase}/models`, headers, signal, providerId ?? 'ollama')
+      const data = await fetchJson(`${openAiBase}/models`, headers, signal, ollamaId, quiet)
       let models = normalizeOpenAiStyleModels(data, {
         requireToolsParam: opts.requireToolsParam,
-        providerId: providerId ?? 'ollama'
+        providerId: ollamaId
       })
       try {
-        const tags = await fetchJson(`${host}/api/tags`, {}, signal)
+        const tags = await fetchJson(`${host}/api/tags`, headers, signal, ollamaId, quiet)
         const names = modelsFromOllamaTags(tags).map((m) => m.id)
         models = mergeOllamaTagNames(models, names)
       } catch {
@@ -349,18 +532,30 @@ async function listOpenAiCompatModels(
     }
 
     try {
-      const tags = await fetchJson(`${host}/api/tags`, {}, signal)
+      const tags = await fetchJson(`${host}/api/tags`, headers, signal, ollamaId, quiet)
       const models = modelsFromOllamaTags(tags)
       if (models.length) return models
       throw new Error('Ollama /api/tags returned no models')
     } catch (tagsErr) {
+      // One soft catalog warn after both endpoints fail (not per attempt).
+      const detail = openAiErr ?? tagsErr
+      logProviderFailure(
+        ollamaId,
+        'network',
+        { message: formatError(detail) },
+        { soft: true }
+      )
       if (openAiErr) {
         throw new Error(
-          `Cannot reach Ollama at ${host} (${formatError(openAiErr)}). Start the Ollama app or check the base URL.`
+          cloud
+            ? `Cannot reach Ollama Cloud at ${host} (${formatError(openAiErr)}). Check the base URL and API key.`
+            : `Cannot reach Ollama at ${host} (${formatError(openAiErr)}). Start the Ollama app, or save an Ollama API key in Settings to use Ollama Cloud automatically.`
         )
       }
       throw new Error(
-        `Ollama at ${host} returned no models (${formatError(tagsErr)}). Pull a model with \`ollama pull\`.`
+        cloud
+          ? `Ollama Cloud at ${host} returned no models (${formatError(tagsErr)}). Verify your API key at ollama.com/settings/keys.`
+          : `Ollama at ${host} returned no models (${formatError(tagsErr)}). Pull a model with \`ollama pull\`, or save an Ollama API key to use Cloud.`
       )
     }
   }
@@ -382,10 +577,13 @@ async function listOpenAiCompatModels(
 export function buildOpenAiCompatBody(
   req: ProviderChatRequest,
   opts: OpenAiCompatOptions,
-  providerId?: ProviderId
+  providerId?: ProviderId,
+  overrides?: { strictTools?: boolean; omitReasoning?: boolean }
 ): Record<string, unknown> {
   const strictTools =
-    req.strictTools !== false && req.tools.length > 0 && !opts.ollamaVision
+    overrides?.strictTools !== undefined
+      ? overrides.strictTools
+      : req.strictTools !== false && req.tools.length > 0 && !opts.ollamaVision
   const tools = req.tools.map((t) => ({
     type: 'function',
     function: {
@@ -395,9 +593,18 @@ export function buildOpenAiCompatBody(
       ...(strictTools ? { strict: true } : {})
     }
   }))
+  const stripReasoningReplay = opts.openRouterReasoning || providerId === 'openrouter'
+  const explicitCache =
+    Boolean(opts.enablePromptCache) && supportsExplicitPromptCache(req.model)
   const body: Record<string, unknown> = {
     model: req.model,
-    messages: toOpenAiMessages(req.messages, req.system, { ollamaVision: opts.ollamaVision }),
+    messages: toOpenAiMessages(req.messages, req.system, {
+      ollamaVision: opts.ollamaVision,
+      stripReasoningReplay,
+      systemStable: req.systemStable,
+      systemVolatile: req.systemVolatile,
+      explicitPromptCache: explicitCache
+    }),
     tools: tools.length ? tools : undefined,
     ...(tools.length
       ? {
@@ -422,33 +629,76 @@ export function buildOpenAiCompatBody(
     stream: true,
     ...(req.maxOutputTokens && req.maxOutputTokens > 0 ? { max_tokens: req.maxOutputTokens } : {}),
     ...(opts.enablePromptCache && req.promptCacheKey
-      ? { prompt_cache_key: req.promptCacheKey }
+      ? {
+          prompt_cache_key: req.promptCacheKey,
+          ...(explicitCache ? { prompt_cache_options: { mode: 'explicit', ttl: '30m' } } : {})
+        }
       : {}),
     ...compatStreamOptions(opts)
   }
 
-  if (req.thinking?.enabled) {
+  if (req.thinking?.enabled && !overrides?.omitReasoning) {
+    const allowed = req.modelInfo?.supportedThinkingEfforts
+    const effort = coerceEffortToAllowed(req.thinking.effort, allowed)
     if (opts.deepseekThinking || providerId === 'deepseek') {
       body.thinking = { type: 'enabled' }
-      if (req.thinking.effort) body.reasoning_effort = req.thinking.effort
+      body.reasoning_effort = normalizeEffortForDeepSeek(effort)
     } else if (opts.openRouterReasoning || providerId === 'openrouter') {
-      body.reasoning = {
-        effort: req.thinking.effort ?? 'medium',
-        ...(req.thinking.maxTokens ? { max_tokens: req.thinking.maxTokens } : {})
+      const reasoning: Record<string, unknown> = { effort }
+      if (
+        req.thinking.maxTokens &&
+        (req.modelInfo?.thinkingSupportsTokenBudget || req.thinking.maxTokens)
+      ) {
+        reasoning.max_tokens = req.thinking.maxTokens
       }
+      body.reasoning = reasoning
     } else if (providerId === 'groq') {
-      body.reasoning_effort = normalizeEffortForOpenAiCompatReasoning(req.thinking.effort, 'groq')
-      body.include_reasoning = true
-      body.reasoning_format = req.thinking.display === 'omitted' ? 'hidden' : 'parsed'
+      body.reasoning_effort = normalizeEffortForOpenAiCompatReasoning(effort, 'groq')
+      // include_reasoning and reasoning_format are mutually exclusive (Groq docs).
+      if (req.thinking.display === 'omitted') {
+        body.reasoning_format = 'hidden'
+      } else {
+        body.include_reasoning = true
+      }
     } else if (providerId === 'xai') {
-      body.reasoning_effort = normalizeEffortForOpenAiCompatReasoning(req.thinking.effort, 'xai')
+      body.reasoning_effort = normalizeEffortForOpenAiCompatReasoning(effort, 'xai')
     } else if (providerId === 'ollama') {
-      body.think = true
+      const mode = req.modelInfo?.thinkingMode
+      const efforts = req.modelInfo?.supportedThinkingEfforts
+      if (mode === 'effort' || (efforts && efforts.length > 0)) {
+        body.think = normalizeEffortForOllamaThink(effort, efforts)
+      } else {
+        body.think = true
+      }
     }
+  } else if (req.thinking?.enabled === false && providerId === 'ollama') {
+    if (req.modelInfo?.thinkingCanDisable === false) {
+      const efforts = req.modelInfo.supportedThinkingEfforts
+      body.think = normalizeEffortForOllamaThink('low', efforts)
+    } else {
+      body.think = false
+    }
+  } else if (
+    req.thinking?.enabled === false &&
+    (opts.deepseekThinking || providerId === 'deepseek')
+  ) {
+    body.thinking = { type: 'disabled' }
+  } else if (
+    req.thinking?.enabled === false &&
+    (opts.openRouterReasoning || providerId === 'openrouter') &&
+    req.modelInfo?.thinkingCanDisable !== false &&
+    req.modelInfo?.supportsThinking
+  ) {
+    body.reasoning = { effort: 'none' }
   }
 
   const tier = serviceTierForApiBody(req.serviceTier)
-  if (tier) body.service_tier = tier
+  if (tier) {
+    const supported = req.modelInfo?.supportedServiceTiers
+    if (!Array.isArray(supported) || supported.includes(tier)) {
+      body.service_tier = tier
+    }
+  }
 
   return body
 }
@@ -463,42 +713,66 @@ export function createOpenAiCompatibleProvider(
   return {
     id,
     async listModels(req: ListModelsRequest): Promise<ModelInfo[]> {
-      // Ollama is local and must never send Bearer auth (some proxies reject it).
-      // Cloud OpenAI-compat providers need a key; calling without one yields opaque 401s
-      // (e.g. DeepSeek "Authentication Fails (governor)").
-      if (!opts.ollamaVision && !req.apiKey?.trim()) {
+      // Local Ollama: no key required (Bearer can break some local proxies).
+      // Ollama Cloud / other OpenAI-compat: require a key; omit Bearer only when unset.
+      if (!opts.ollamaVision && !opts.optionalApiKey && !req.apiKey?.trim()) {
         throw new Error(`${id} API key not set`)
       }
+      if (
+        opts.ollamaVision &&
+        isOllamaCloudHost(req.baseUrl || opts.defaultBaseUrl) &&
+        !req.apiKey?.trim()
+      ) {
+        throw new Error('Ollama Cloud API key not set')
+      }
       const raw = (req.baseUrl || opts.defaultBaseUrl).replace(/\/$/, '')
-      const base = opts.ollamaVision ? `${normalizeOllamaHost(raw)}/v1` : raw
+      const base = opts.ollamaVision ? `${ollamaNativeHost(raw)}/v1` : raw
+      await validateProviderBaseUrl(base, opts.allowLocal === true || id === 'ollama')
       const headers: Record<string, string> = { ...(opts.extraHeaders ?? {}) }
-      if (!opts.ollamaVision && req.apiKey) {
-        headers.Authorization = `Bearer ${req.apiKey}`
+      if (req.apiKey?.trim()) {
+        headers.Authorization = `Bearer ${req.apiKey.trim()}`
       }
       return listOpenAiCompatModels(base, headers, opts, req.signal, id)
     },
     async *streamChat(req: ProviderChatRequest): AsyncGenerator<StreamChunk> {
-      if (!opts.ollamaVision && !req.apiKey?.trim()) {
+      if (!opts.ollamaVision && !opts.optionalApiKey && !req.apiKey?.trim()) {
         yield { type: 'error', error: `${id} API key not set` }
         return
       }
+      if (
+        opts.ollamaVision &&
+        isOllamaCloudHost(req.baseUrl || opts.defaultBaseUrl) &&
+        !req.apiKey?.trim()
+      ) {
+        yield { type: 'error', error: 'Ollama Cloud API key not set' }
+        return
+      }
       const raw = (req.baseUrl || opts.defaultBaseUrl).replace(/\/$/, '')
-      const base = opts.ollamaVision ? `${normalizeOllamaHost(raw)}/v1` : raw
+      const base = opts.ollamaVision ? `${ollamaNativeHost(raw)}/v1` : raw
+      const allowLocal = opts.allowLocal === true || id === 'ollama'
+      await validateProviderBaseUrl(base, allowLocal)
       const url = `${base}/chat/completions`
 
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
         ...(opts.extraHeaders ?? {})
       }
-      if (!opts.ollamaVision && req.apiKey) {
-        headers.Authorization = `Bearer ${req.apiKey}`
+      if (req.apiKey?.trim()) {
+        headers.Authorization = `Bearer ${req.apiKey.trim()}`
       }
 
       let maxOutputTokens = req.maxOutputTokens
       let res: Response | undefined
+      let bodyOverrides: { strictTools?: boolean; omitReasoning?: boolean } | undefined
+      let lastHttpErrorText = ''
 
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const body = buildOpenAiCompatBody({ ...req, maxOutputTokens }, opts, id)
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const body = buildOpenAiCompatBody(
+          { ...req, maxOutputTokens },
+          opts,
+          id,
+          bodyOverrides
+        )
         try {
           res = await fetchWithRetry(url, {
             method: 'POST',
@@ -509,13 +783,14 @@ export function createOpenAiCompatibleProvider(
         } catch (err) {
           if (req.signal.aborted) throw err
           logProviderFailure(id, 'network', {})
-          yield { type: 'error', error: formatError(err) }
+          yield { type: 'error', error: formatError(err), errorCode: 'PROVIDER_NETWORK' }
           return
         }
 
         if (res.ok) break
 
         const text = await res.text().catch(() => '')
+        lastHttpErrorText = text
         const affordable =
           id === 'openrouter' && res.status === 402
             ? parseOpenRouterAffordableOutputTokens(text)
@@ -529,12 +804,44 @@ export function createOpenAiCompatibleProvider(
           continue
         }
 
-        logProviderFailure(id, 'http', { status: res.status })
-        yield { type: 'error', error: formatProviderHttpError(res.status, text, id) }
+        // OpenRouter/OpenAI-compat: one fallback without strict tools, then
+        // without reasoning — mirrors Anthropic's 400 field-stripping retries.
+        // Also retry on 404 "no endpoints" (privacy/params often report as 404).
+        if (
+          (id === 'openrouter' || opts.openRouterReasoning) &&
+          shouldRetryOpenRouterCompatBody(res.status, text)
+        ) {
+          if (bodyOverrides?.strictTools !== false && req.tools.length > 0 && !bodyOverrides) {
+            bodyOverrides = { strictTools: false }
+            continue
+          }
+          if (!bodyOverrides?.omitReasoning && req.thinking?.enabled) {
+            bodyOverrides = { strictTools: false, omitReasoning: true }
+            continue
+          }
+        }
+
+        const message = formatProviderHttpError(res.status, text, id)
+        logProviderFailure(id, 'http', {
+          status: res.status,
+          message: scrubProviderErrorSnippet(text) || message,
+          model: req.model
+        })
+        yield { type: 'error', error: message, errorCode: 'PROVIDER_HTTP' }
         return
       }
 
-      if (!res?.ok) return
+      if (!res?.ok) {
+        const status = res?.status ?? 0
+        const message = formatProviderHttpError(status, lastHttpErrorText, id)
+        logProviderFailure(id, 'http', {
+          status,
+          message: scrubProviderErrorSnippet(lastHttpErrorText) || message,
+          model: req.model
+        })
+        yield { type: 'error', error: message, errorCode: 'PROVIDER_HTTP' }
+        return
+      }
 
       const pending = new Map<number, ToolCall>()
       let lastUsage: TokenUsage | undefined
@@ -682,9 +989,10 @@ export const openaiProvider: LlmProvider = {
     enablePromptCache: true
   }),
   async *streamChat(req: ProviderChatRequest): AsyncGenerator<StreamChunk> {
+    // Responses-first for reasoning-family models (better cache + tool loops).
     const useResponses =
-      req.thinking?.enabled === true &&
-      (req.modelInfo?.thinkingApi === 'responses' || /^(o[34]|gpt-5)/i.test(req.model))
+      req.modelInfo?.thinkingApi === 'responses' ||
+      /^(o[34](?:-|$)|gpt-5(?:\.|-|$))/i.test(req.model)
     if (useResponses) {
       yield* streamOpenAiResponses(req)
       return
@@ -727,6 +1035,13 @@ export const mistralProvider = createOpenAiCompatibleProvider('mistral', {
   defaultBaseUrl: 'https://api.mistral.ai/v1',
   /** Mistral rejects OpenAI `stream_options.include_usage`. */
   includeUsage: false
+})
+
+/** Bring-your-own OpenAI-compatible host (Cerebras, Fireworks, Together, vLLM, …). */
+export const customProvider = createOpenAiCompatibleProvider('custom', {
+  defaultBaseUrl: 'http://127.0.0.1:8080/v1',
+  optionalApiKey: true,
+  allowLocal: true
 })
 
 /** Exported for tests / multimodal mapping checks. */

@@ -2,14 +2,17 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
-import type { UiItem } from '@shared/transcript'
+import type { UiAgentQuestionAnswer, UiItem } from '@shared/transcript'
 import type { ToolApprovalDecision } from '@shared/ipc'
 import {
   CHAT_COLUMN,
   CHAT_GUTTER,
+  CHAT_STAGE_INSET,
   TOOL_BODY_CLAMP_PX,
+  TOOL_GROUP_LIST_MAX_PX,
   TRANSCRIPT_ROW_GAP,
   TRANSCRIPT_TURN_GAP,
+  TRANSCRIPT_WORK_PAIR_GAP,
   TRANSCRIPT_WORK_ROW_GAP
 } from '@renderer/lib/utils/layout'
 import {
@@ -25,20 +28,37 @@ import { ChangeSummary } from './ChangeSummary'
 import { MessageFooter } from './MessageFooter'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolApprovalCard } from './ToolApprovalCard'
+import { AskQuestionPanel } from './AskQuestionPanel'
 import { ToolCard } from './ToolCard'
 import { ToolGroup } from './ToolGroup'
 import { TurnSummary } from './TurnSummary'
 import { UserPrompt } from './UserPrompt'
 import { MarkdownContent } from '@renderer/lib/ui'
 import { shouldRenderThinking } from '@shared/transcript'
+import { toolHasBody } from '../toolUi'
 
-/** ~chars per visual line in the 720px chat column at text-sm. */
-const CHARS_PER_LINE = 56
+/** Stable id on the first work row of a turn (region landmark / tests). */
+function turnWorkPanelId(
+  row: TranscriptRow,
+  rows: readonly TranscriptRow[],
+  index: number
+): string | undefined {
+  if (!isTurnWorkRow(row)) return undefined
+  for (let i = 0; i < index; i += 1) {
+    const prior = rows[i]!
+    if (isTurnWorkRow(prior) && prior.turnIndex === row.turnIndex) return undefined
+  }
+  return `turn-work-${row.turnIndex}`
+}
+
+/** ~chars per visual line in the 840px chat column at text-sm. */
+const CHARS_PER_LINE = 65
+/** Line height for text-sm (1.69 line-height × 13px). */
 const LINE_PX = 22
 
 /**
  * First-paint height guesses for the virtualizer.
- * Collapsed Thought/Read stay near disclosure height (~44–52). Text/user/card
+ * Collapsed Thought/Read stay near disclosure height (~44–52). Text/user
  * must not under-estimate — that stacks absolute rows on top of each other.
  */
 export function estimateTranscriptRowSize(
@@ -50,7 +70,7 @@ export function estimateTranscriptRowSize(
     case 'turn':
       return 40
     case 'thinking':
-      return row.item.thinkingStreaming ? 112 : 44
+      return row.item.thinkingStreaming || row.item.thinkingExpanded ? 116 : 44
     case 'user': {
       const len = row.item.content?.length ?? 0
       const media =
@@ -75,22 +95,27 @@ export function estimateTranscriptRowSize(
       const live = row.tools.some((t) => t.tool.status === 'running')
       const groupExpanded = row.tools[0]?.groupExpanded === true
       const toolExpanded = row.tools.some((t) => t.toolExpanded === true)
-      if (live || groupExpanded || toolExpanded) {
-        return toolExpanded ? 56 + TOOL_BODY_CLAMP_PX : 140
+      const multi = row.tools.length > 1
+      if (multi) {
+        // Collapsed multi-tool groups ignore stale per-tool expand flags.
+        if (live || groupExpanded) return 48 + TOOL_GROUP_LIST_MAX_PX
+        return 48
       }
+      // Lone running tools auto-expand via familyDefaultExpanded.
+      if (live || toolExpanded || groupExpanded) return 56 + TOOL_BODY_CLAMP_PX
       return 48
     }
     case 'card': {
       const live = row.item.tool.status === 'running'
-      const expanded = row.item.toolExpanded === true
-      const hasBody = Boolean(
-        row.item.tool.content ||
-          row.item.tool.argsPreview ||
-          (row.item.subagent && row.item.subagent.length > 0)
-      )
+      const expanded = row.item.toolExpanded === true || (live && row.item.toolExpanded !== false)
+      const hasBody = toolHasBody(row.item.tool, {
+        subagent: row.item.subagent,
+        subagentContextUsage: row.item.subagentContextUsage,
+        nestedAgent: row.item.nestedAgent
+      })
       if (expanded) return 56 + TOOL_BODY_CLAMP_PX + 80
       // ProminentChrome still paints clamped body when collapsed + hasBody.
-      if (hasBody || live) return 56 + TOOL_BODY_CLAMP_PX
+      if (hasBody) return 56 + TOOL_BODY_CLAMP_PX
       return 56
     }
     case 'changes':
@@ -101,6 +126,8 @@ export function estimateTranscriptRowSize(
       )
     case 'approval':
       return 120
+    case 'question':
+      return 160
     default: {
       const _exhaustive: never = row
       return _exhaustive
@@ -192,12 +219,17 @@ function ImageLightbox({ url, label, onClose }: { url: string; label: string; on
 }
 
 /** Spacing as padding (not margin) so row rhythm stays consistent. */
-function rowSpacingClass(row: TranscriptRow): string {
+function rowSpacingClass(row: TranscriptRow, next?: TranscriptRow): string {
   if (row.kind === 'turn') {
     return cn('pt-1', TRANSCRIPT_ROW_GAP)
   }
-  const gap =
-    row.kind === 'activity' || row.kind === 'thinking' || row.kind === 'card'
+  const isWork = row.kind === 'activity' || row.kind === 'thinking' || row.kind === 'card'
+  const tightPair =
+    (row.kind === 'thinking' && (next?.kind === 'activity' || next?.kind === 'card')) ||
+    ((row.kind === 'activity' || row.kind === 'card') && next?.kind === 'thinking')
+  const gap = tightPair
+    ? TRANSCRIPT_WORK_PAIR_GAP
+    : isWork
       ? TRANSCRIPT_WORK_ROW_GAP
       : TRANSCRIPT_ROW_GAP
   return cn(gap, rowLeadingGap(row) > 0 && TRANSCRIPT_TURN_GAP)
@@ -205,6 +237,7 @@ function rowSpacingClass(row: TranscriptRow): string {
 
 const TranscriptRowBlock = memo(function TranscriptRowBlock({
   row,
+  displayRows,
   onImageClick,
   onLoadToolContent,
   onThinkingToggle,
@@ -212,20 +245,29 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   onGroupToggle,
   onTurnToggle,
   onApprovalDecision,
+  onQuestionSubmit,
   turnCollapsed = false,
   showThinking = true,
+  live = false,
   mcpServerNames,
   canUndoWrites = false,
   undoBusy = false,
   onUndoWrites,
   writeFileResolutions,
+  writeResolvablePaths,
   onKeepWriteFile,
   onDiscardWriteFile,
   onKeepAllWrites,
+  resolveBlockedReason = null,
   fileDiffs,
-  onDiffExpandChange
+  onDiffExpandChange,
+  onOpenChanges,
+  editingUserMessageIndex = null,
+  editComposer,
+  onBeginEditUserMessage
 }: {
   row: TranscriptRow
+  displayRows: readonly TranscriptRow[]
   onImageClick: (url: string, label: string) => void
   onLoadToolContent?: (toolCallId: string) => Promise<string | null>
   onThinkingToggle?: (messageId: string, expanded: boolean) => void
@@ -233,21 +275,49 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
   onTurnToggle?: (turnIndex: number) => void
   onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
+  onQuestionSubmit?: (requestId: string, answers: UiAgentQuestionAnswer[]) => void | Promise<void>
   turnCollapsed?: boolean
   showThinking?: boolean
+  live?: boolean
   mcpServerNames?: ReadonlyMap<string, string>
   canUndoWrites?: boolean
   undoBusy?: boolean
   onUndoWrites?: () => void | Promise<unknown>
   writeFileResolutions?: ReadonlyMap<string, 'kept' | 'discarded' | undefined>
+  writeResolvablePaths?: ReadonlySet<string>
   onKeepWriteFile?: (path: string) => void | Promise<unknown>
   onDiscardWriteFile?: (path: string) => void | Promise<unknown>
   onKeepAllWrites?: () => void | Promise<unknown>
+  resolveBlockedReason?: string | null
   fileDiffs?: ReadonlyMap<string, import('../toolUi').DiffLine[]>
   onDiffExpandChange?: (hasExpanded: boolean) => void
+  onOpenChanges?: () => void
+  editingUserMessageIndex?: number | null
+  editComposer?: ReactNode
+  onBeginEditUserMessage?: (messageIndex: number) => void
 }) {
   if (row.kind === 'user') {
-    return <UserPrompt item={row.item} onImageClick={onImageClick} />
+    return (
+      <UserPrompt
+        item={row.item}
+        onImageClick={onImageClick}
+        editing={editingUserMessageIndex != null && row.item.id === `user-${editingUserMessageIndex}`}
+        editComposer={
+          editingUserMessageIndex != null && row.item.id === `user-${editingUserMessageIndex}`
+            ? editComposer
+            : undefined
+        }
+        onBeginEdit={
+          onBeginEditUserMessage && editingUserMessageIndex == null
+            ? () => {
+                const match = /^user-(\d+)$/.exec(row.item.id)
+                if (!match) return
+                onBeginEditUserMessage(Number(match[1]))
+              }
+            : undefined
+        }
+      />
+    )
   }
 
   if (row.kind === 'turn') {
@@ -255,7 +325,6 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
       <TurnSummary
         span={row.span}
         collapsed={turnCollapsed}
-        panelId={`turn-work-${row.turnIndex}`}
         onToggle={() => onTurnToggle?.(row.turnIndex)}
       />
     )
@@ -285,19 +354,29 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   }
 
   if (row.kind === 'changes') {
+    // Last changes row gets Keep/Discard + diffs when a write checkpoint is active;
+    // older rows stay a compact "Open Changes" link.
+    if (canUndoWrites) {
+      return (
+        <ChangeSummary
+          files={row.files}
+          fileDiffs={fileDiffs}
+          fileResolutions={writeFileResolutions}
+          resolvablePaths={writeResolvablePaths}
+          canResolve
+          resolveBusy={undoBusy}
+          resolveBlockedReason={resolveBlockedReason}
+          onKeepFile={onKeepWriteFile}
+          onDiscardFile={onDiscardWriteFile}
+          onKeepAll={onKeepAllWrites}
+          onDiscardAll={onUndoWrites}
+          onDiffExpandChange={onDiffExpandChange}
+          onOpenChanges={onOpenChanges}
+        />
+      )
+    }
     return (
-      <ChangeSummary
-        files={row.files}
-        fileDiffs={fileDiffs}
-        fileResolutions={writeFileResolutions}
-        canResolve={canUndoWrites}
-        resolveBusy={undoBusy}
-        onKeepFile={onKeepWriteFile}
-        onDiscardFile={onDiscardWriteFile}
-        onKeepAll={onKeepAllWrites}
-        onDiscardAll={onUndoWrites}
-        onDiffExpandChange={onDiffExpandChange}
-      />
+      <ChangeSummary files={row.files} compact onOpenChanges={onOpenChanges} />
     )
   }
 
@@ -305,41 +384,45 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
     return <ToolApprovalCard approval={row.approval} onDecide={onApprovalDecision} />
   }
 
+  if (row.kind === 'question') {
+    return <AskQuestionPanel question={row.question} onSubmit={onQuestionSubmit} />
+  }
+
   if (row.kind === 'activity') {
-    // Only pass expandedToolIds once a tool has an explicit expand flag.
-    // An empty Set would make Set.has() return false and block defaultExpanded
-    // auto-open for pending multi-tool groups (?? does not treat false as missing).
-    const anyExplicit = row.tools.some((tool) => typeof tool.toolExpanded === 'boolean')
-    const expandedToolIds = anyExplicit
-      ? new Set(row.tools.filter((tool) => tool.toolExpanded).map((tool) => tool.id))
-      : undefined
+    // Prefer per-item toolExpanded so siblings keep familyDefaultExpanded when
+    // only one tool has an explicit expand flag (do not pass a Set that blanks them).
     const anchor = row.tools[0]!
     return (
       <ToolGroup
         tools={row.tools}
-        expandedToolIds={expandedToolIds}
         groupExpanded={anchor.groupExpanded}
+        live={live}
         onGroupToggle={
           onGroupToggle ? (expanded) => onGroupToggle(anchor.id, expanded) : undefined
         }
         onToolToggle={onToolToggle}
+        onLoadFullContent={onLoadToolContent}
+        onApprovalDecision={onApprovalDecision}
+        mcpServerNames={mcpServerNames}
+      />
+    )
+  }
+
+  if (row.kind === 'card') {
+    return (
+      <ToolCard
+        item={row.item}
+        expanded={row.item.toolExpanded}
+        // Without a host that persists the choice the card owns its own state,
+        // so it still opens instead of swallowing the click.
+        onToggle={onToolToggle ? (next) => onToolToggle(row.item.id, next) : undefined}
         onLoadFullContent={onLoadToolContent}
         mcpServerNames={mcpServerNames}
       />
     )
   }
 
-  return (
-    <ToolCard
-      item={row.item}
-      expanded={row.item.toolExpanded}
-      // Without a host that persists the choice the card owns its own state,
-      // so it still opens instead of swallowing the click.
-      onToggle={onToolToggle ? (next) => onToolToggle(row.item.id, next) : undefined}
-      onLoadFullContent={onLoadToolContent}
-      mcpServerNames={mcpServerNames}
-    />
-  )
+  return null
 })
 
 export function MessageList({
@@ -355,6 +438,7 @@ export function MessageList({
   onGroupToggle,
   onTurnToggle,
   onApprovalDecision,
+  onQuestionSubmit,
   collapsedTurns,
   showThinking = true,
   mcpServerNames,
@@ -365,9 +449,16 @@ export function MessageList({
   undoBusy = false,
   onUndoWrites,
   writeFileResolutions,
+  writeResolvablePaths,
   onKeepWriteFile,
   onDiscardWriteFile,
-  onKeepAllWrites
+  onKeepAllWrites,
+  resolveBlockedReason = null,
+  onOpenChanges,
+  sideRailPad = true,
+  editingUserMessageIndex = null,
+  editComposer,
+  onBeginEditUserMessage
 }: {
   items: UiItem[]
   reserveComposerSpace?: boolean
@@ -382,6 +473,7 @@ export function MessageList({
   onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
   onTurnToggle?: (turnIndex: number) => void
   onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
+  onQuestionSubmit?: (requestId: string, answers: UiAgentQuestionAnswer[]) => void | Promise<void>
   /** Persisted turn-summary collapse state from the chat stream controller. */
   collapsedTurns?: ReadonlySet<number>
   showThinking?: boolean
@@ -394,9 +486,17 @@ export function MessageList({
   undoBusy?: boolean
   onUndoWrites?: () => void | Promise<unknown>
   writeFileResolutions?: ReadonlyMap<string, 'kept' | 'discarded' | undefined>
+  writeResolvablePaths?: ReadonlySet<string>
   onKeepWriteFile?: (path: string) => void | Promise<unknown>
   onDiscardWriteFile?: (path: string) => void | Promise<unknown>
   onKeepAllWrites?: () => void | Promise<unknown>
+  resolveBlockedReason?: string | null
+  onOpenChanges?: () => void
+  /** When false, use symmetric gutter (immersive Agent — no floating side rail). */
+  sideRailPad?: boolean
+  editingUserMessageIndex?: number | null
+  editComposer?: ReactNode
+  onBeginEditUserMessage?: (messageIndex: number) => void
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const appliedRestoreRef = useRef<number | null>(null)
@@ -415,11 +515,16 @@ export function MessageList({
   )
   const prevStructuralKeyRef = useRef<string | null>(null)
   const prevRowsRef = useRef<TranscriptRow[] | null>(null)
-  /** After a live run in this mount, keep flow layout until the list remounts. */
-  const stayInFlowAfterLiveRef = useRef(false)
-  if (pendingRun || running) {
-    stayInFlowAfterLiveRef.current = true
-  }
+  /** After a live run, keep flow layout briefly so height settles before virtualizing. */
+  const [stayInFlowAfterLive, setStayInFlowAfterLive] = useState(false)
+  useEffect(() => {
+    if (pendingRun || running) {
+      setStayInFlowAfterLive(true)
+      return
+    }
+    const timer = window.setTimeout(() => setStayInFlowAfterLive(false), 800)
+    return () => window.clearTimeout(timer)
+  }, [pendingRun, running])
 
   const itemsStructuralKey = useMemo(() => structuralKey(items), [items])
   const allRows = useMemo(() => {
@@ -432,7 +537,7 @@ export function MessageList({
     const visible = collapsedTurnSet.size === 0
       ? allRows
       : allRows.filter((row) => !(collapsedTurnSet.has(row.turnIndex) && isTurnWorkRow(row)))
-    // Drop thinking rows that would render null — they still reserved virtual slots / padding.
+    // Hide thinking when showThinking is off; otherwise drop empty rows ThinkingBlock skips.
     if (!showThinking) {
       return visible.filter((row) => row.kind !== 'thinking')
     }
@@ -488,7 +593,7 @@ export function MessageList({
       programmaticScrollRef.current = true
       el.scrollTop = top
       const contentTall = el.scrollHeight > el.clientHeight + nearBottomPxRef.current
-      pinnedToBottomRef.current = !contentTall || distanceFromBottom(el) < nearBottomPxRef.current
+      pinnedToBottomRef.current = !contentTall || distanceFromBottom(el) <= nearBottomPxRef.current
       appliedRestoreRef.current = scrollRestoreToken ?? 0
       setScrollRestored(true)
       restorePendingRef.current = false
@@ -514,7 +619,7 @@ export function MessageList({
       programmaticScrollRef.current = true
       el.scrollTop = top
       const contentTall = el.scrollHeight > el.clientHeight + nearBottomPxRef.current
-      pinnedToBottomRef.current = !contentTall || distanceFromBottom(el) < nearBottomPxRef.current
+      pinnedToBottomRef.current = !contentTall || distanceFromBottom(el) <= nearBottomPxRef.current
       restorePendingRef.current = false
       window.requestAnimationFrame(() => {
         programmaticScrollRef.current = false
@@ -556,8 +661,9 @@ export function MessageList({
       autoScrollRafRef.current = null
       if (!scrollRestored || restorePendingRef.current || !pinnedToBottomRef.current) return
       const el = containerRef.current
-      // Already within pin slack — avoid yanking on every height tick.
-      if (el && distanceFromBottom(el) <= nearBottomPxRef.current) return
+      // Only skip when already flush at the absolute bottom. Skipping for the
+      // whole dock slack lets streaming growth sit under the floating composer.
+      if (el && distanceFromBottom(el) < 1) return
       followTail('auto')
     })
   }, [followTail, scrollRestored])
@@ -567,7 +673,7 @@ export function MessageList({
     if (!reserveComposerSpace || dockReservePx == null) return
     if (!scrollRestored || restorePendingRef.current || !pinnedToBottomRef.current) return
     const el = containerRef.current
-    if (el && distanceFromBottom(el) <= nearBottomPxRef.current) return
+    if (el && distanceFromBottom(el) < 1) return
     followTail('auto')
   }, [dockReservePx, reserveComposerSpace, followTail, scrollRestored])
 
@@ -583,8 +689,6 @@ export function MessageList({
     if (!el || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(() => {
       if (!scrollRestored || restorePendingRef.current || !pinnedToBottomRef.current) return
-      const current = containerRef.current
-      if (current && distanceFromBottom(current) <= nearBottomPxRef.current) return
       scheduleTailFollow()
     })
     ro.observe(el)
@@ -597,7 +701,7 @@ export function MessageList({
     (scrollTop: number) => {
       const el = containerRef.current
       if (el && !programmaticScrollRef.current) {
-        pinnedToBottomRef.current = distanceFromBottom(el) < nearBottomPxRef.current
+        pinnedToBottomRef.current = distanceFromBottom(el) <= nearBottomPxRef.current
         restorePendingRef.current = false
       }
       onScrollTopChange?.(scrollTop)
@@ -605,17 +709,52 @@ export function MessageList({
     [onScrollTopChange]
   )
 
-  const dockReserveStyle = reserveComposerSpace
-    ? ({ paddingBottom: 'var(--vy-dock-h, 8rem)' } as const)
-    : undefined
+  // Prefer the measured px from ChatView so reserve cannot desync from --vy-dock-h.
+  const dockReserveStyle = (() => {
+    if (!reserveComposerSpace) return undefined
+    const pad =
+      dockReservePx != null && dockReservePx > 0
+        ? `${dockReservePx}px`
+        : 'var(--vy-dock-h, 8rem)'
+    return {
+      paddingBottom: pad,
+      scrollPaddingBottom: pad
+    } as const
+  })()
 
   const streamingAnnouncement = useMemo(() => {
     for (const row of displayRows) {
       if (row.kind === 'text' && row.item.streaming) return 'Assistant is responding'
       if (row.kind === 'thinking' && row.item.thinkingStreaming) return 'Assistant is thinking'
     }
+    // When thinking rows are hidden or the turn is collapsed, the timeline still
+    // shows phase via deriveRunActivity — keep aria-live in sync with that.
+    for (let i = allRows.length - 1; i >= 0; i--) {
+      const row = allRows[i]
+      if (row?.kind !== 'turn' || !row.span.activity) continue
+      const phase = row.span.activity
+      switch (phase.kind) {
+        case 'thinking':
+          return 'Assistant is thinking'
+        case 'writing':
+          return 'Assistant is responding'
+        case 'planning':
+        case 'working':
+          return 'Assistant is working'
+        case 'tool':
+          return `Assistant is using ${phase.label}`
+        case 'awaiting_approval':
+          return 'Waiting for tool approval'
+        case 'awaiting_question':
+          return 'Waiting for your answer'
+        default: {
+          const _exhaustive: never = phase
+          return _exhaustive
+        }
+      }
+    }
     return ''
-  }, [displayRows])
+  }, [displayRows, allRows])
 
   const rowsContentRevision = useMemo(
     () => transcriptRowsContentRevision(displayRows),
@@ -653,7 +792,7 @@ export function MessageList({
   const shouldVirtualize =
     !pendingRun &&
     !running &&
-    !stayInFlowAfterLiveRef.current &&
+    !stayInFlowAfterLive &&
     displayRows.length >= VIRTUALIZE_MIN_ROWS
 
   const rowVirtualizer = useVirtualizer({
@@ -690,18 +829,23 @@ export function MessageList({
   useLayoutEffect(() => {
     if (!shouldVirtualize) return
     remasureMountedRows()
-  }, [rowsContentRevision, shouldVirtualize, remasureMountedRows])
+  }, [rowsContentRevision, expandedDiffRowIds, shouldVirtualize, remasureMountedRows])
 
   useLayoutEffect(() => {
     if (!scrollRestored || displayRows.length === 0) return
     if (restoreScrollTop && restoreScrollTop > 0) return
     if (shouldVirtualize) {
-      // Remasure visible rows first so scrollToEnd uses real heights, not cold estimates.
+      // Remasure visible rows first so end scroll uses real heights, not cold estimates.
       remasureMountedRows()
-      rowVirtualizer.scrollToEnd()
-    } else {
-      const el = containerRef.current
-      if (el) el.scrollTop = el.scrollHeight
+    }
+    // Scroll to scrollHeight (includes paddingBottom) so the last row clears the
+    // floating composer. Avoid virtualizer scrollToEnd — it aligns to the client
+    // bottom and can leave rows under the dock. Do not use followTail here: it
+    // sets programmaticScrollRef and can swallow the user's immediate unpin scroll.
+    const el = containerRef.current
+    if (el) {
+      el.scrollTop = el.scrollHeight
+      pinnedToBottomRef.current = true
     }
     // Pin once after restore/surface — followOnAppend handles stream growth.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot pin
@@ -715,9 +859,21 @@ export function MessageList({
     return null
   }, [displayRows])
 
+  // Only the active turn stays auto-expanded while the run is live. Prior turns
+  // must not reopen when the user sends a follow-up (that flipped run-wide live).
+  const activeLiveTurnIndex = useMemo(() => {
+    if (!(pendingRun || running)) return null
+    let max = -1
+    for (const row of allRows) {
+      if (row.turnIndex > max) max = row.turnIndex
+    }
+    return max < 0 ? null : max
+  }, [allRows, pendingRun, running])
+
   const renderRow = (row: TranscriptRow): ReactNode => (
     <TranscriptRowBlock
       row={row}
+      displayRows={displayRows}
       onImageClick={onImageClick}
       onLoadToolContent={onLoadToolContent}
       onThinkingToggle={onThinkingToggle}
@@ -725,8 +881,10 @@ export function MessageList({
       onGroupToggle={onGroupToggle}
       onTurnToggle={handleTurnToggle}
       onApprovalDecision={onApprovalDecision}
+      onQuestionSubmit={onQuestionSubmit}
       turnCollapsed={collapsedTurnSet.has(row.turnIndex)}
       showThinking={showThinking}
+      live={activeLiveTurnIndex != null && row.turnIndex === activeLiveTurnIndex}
       mcpServerNames={mcpServerNames}
       canUndoWrites={Boolean(
         canUndoWrites && lastChangesRowId && row.kind === 'changes' && row.id === lastChangesRowId
@@ -734,10 +892,16 @@ export function MessageList({
       undoBusy={undoBusy}
       onUndoWrites={onUndoWrites}
       writeFileResolutions={writeFileResolutions}
+      writeResolvablePaths={writeResolvablePaths}
       onKeepWriteFile={onKeepWriteFile}
       onDiscardWriteFile={onDiscardWriteFile}
       onKeepAllWrites={onKeepAllWrites}
+      resolveBlockedReason={resolveBlockedReason}
       fileDiffs={row.kind === 'changes' ? turnFileDiffs.get(row.turnIndex) : undefined}
+      onOpenChanges={onOpenChanges}
+      editingUserMessageIndex={editingUserMessageIndex}
+      editComposer={editComposer}
+      onBeginEditUserMessage={onBeginEditUserMessage}
       onDiffExpandChange={
         row.kind === 'changes'
           ? (hasExpanded) => {
@@ -758,7 +922,10 @@ export function MessageList({
       <div
         ref={containerRef}
         data-transcript-scroll
-        className={cn('min-h-0 flex-1 overflow-auto pt-4', CHAT_GUTTER)}
+        className={cn(
+          'relative min-h-0 flex-1 overflow-auto pt-4 [scrollbar-gutter:stable]',
+          sideRailPad ? CHAT_STAGE_INSET : CHAT_GUTTER
+        )}
         style={dockReserveStyle}
         onScroll={(e) => handleScroll(e.currentTarget.scrollTop)}
       >
@@ -772,7 +939,6 @@ export function MessageList({
               'flex min-h-[12rem] flex-col items-center justify-center gap-2 text-sm text-muted'
             )}
             role="status"
-            aria-live="polite"
             aria-busy="true"
           >
             <Icon name="loader" size={16} className="motion-safe:animate-spin" />
@@ -789,43 +955,66 @@ export function MessageList({
               !shouldVirtualize ||
               (virtualItems.length === 0 && displayRows.length > 0 && allowFullFallback)
 
+            const loadingOverlay =
+              transcriptLoading && items.length > 0 ? (
+                <div
+                  className="pointer-events-none absolute inset-x-0 top-2 z-10 flex justify-center"
+                  role="status"
+                  aria-busy="true"
+                >
+                  <span className="inline-flex items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-1 text-[11px] text-muted shadow-sm">
+                    <Icon name="loader" size={12} className="motion-safe:animate-spin" />
+                    Loading chat…
+                  </span>
+                </div>
+              ) : null
+
             if (useFlowLayout) {
               return (
-                <div className={cn('flex w-full flex-col', CHAT_COLUMN)} data-chat-column>
-                  {displayRows.map((row) => (
-                    <div
-                      key={row.id}
-                      id={isTurnWorkRow(row) ? `turn-work-${row.turnIndex}` : undefined}
-                      className={rowSpacingClass(row)}
-                    >
-                      {renderRow(row)}
-                    </div>
-                  ))}
-                </div>
+                <>
+                  {loadingOverlay}
+                  <div className={cn('flex w-full flex-col', CHAT_COLUMN)} data-chat-column>
+                    {displayRows.map((row, index) => (
+                      <div
+                        key={row.id}
+                        id={turnWorkPanelId(row, displayRows, index)}
+                        className={rowSpacingClass(row, displayRows[index + 1])}
+                      >
+                        {renderRow(row)}
+                      </div>
+                    ))}
+                  </div>
+                </>
               )
             }
             return (
-              <div
-                className={cn('relative w-full', CHAT_COLUMN)}
-                data-chat-column
-                style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
-              >
-                {virtualItems.map((virtualItem) => {
-                  const row = displayRows[virtualItem.index]!
-                  return (
-                    <div
-                      key={virtualItem.key}
-                      data-index={virtualItem.index}
-                      ref={rowVirtualizer.measureElement}
-                      id={isTurnWorkRow(row) ? `turn-work-${row.turnIndex}` : undefined}
-                      className={cn('absolute left-0 top-0 w-full', rowSpacingClass(row))}
-                      style={{ transform: `translateY(${virtualItem.start}px)` }}
-                    >
-                      {renderRow(row)}
-                    </div>
-                  )
-                })}
-              </div>
+              <>
+                {loadingOverlay}
+                <div
+                  className={cn('relative w-full', CHAT_COLUMN)}
+                  data-chat-column
+                  style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+                >
+                  {virtualItems.map((virtualItem) => {
+                    const row = displayRows[virtualItem.index]!
+                    return (
+                      <div
+                        key={virtualItem.key}
+                        data-index={virtualItem.index}
+                        ref={rowVirtualizer.measureElement}
+                        id={turnWorkPanelId(row, displayRows, virtualItem.index)}
+                        className={cn(
+                          'absolute left-0 top-0 w-full',
+                          rowSpacingClass(row, displayRows[virtualItem.index + 1])
+                        )}
+                        style={{ transform: `translateY(${virtualItem.start}px)` }}
+                      >
+                        {renderRow(row)}
+                      </div>
+                    )
+                  })}
+                </div>
+              </>
             )
           })()
         )}

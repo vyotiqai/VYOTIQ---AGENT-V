@@ -6,7 +6,6 @@ import type {
   McpServerStatus
 } from '@shared/ipc'
 import { Button, Input, cn } from '@renderer/lib/ui'
-import { Icon } from '@renderer/lib/icons'
 import { PackageIcon } from './PackageIcon'
 import { MarketplaceFeedbackBanner } from './MarketplaceFeedbackBanner'
 import { categoryTitle, kindLabel } from './marketplaceLabels'
@@ -18,6 +17,8 @@ import {
 import type { MarketplaceController } from './useMarketplaceController'
 
 const CATEGORY_INITIAL_VISIBLE = 4
+
+const KIND_ORDER: MarketplaceKind[] = ['mcp', 'skill', 'plugin']
 
 const CARD_BUTTON =
   'vy-transition hover:border-border-strong hover:bg-surface-2 focus-visible:vy-focus-ring'
@@ -32,124 +33,63 @@ function activityFor(
   return packageActivity(entry, installedById.get(entry.id), mcpStatusById.get(entry.id))
 }
 
+function catalogEntryForInstalled(
+  item: MarketplaceInstalledItem,
+  catalogById: Map<string, MarketplaceCatalogEntry>
+): MarketplaceCatalogEntry {
+  const fromCatalog = catalogById.get(item.id)
+  if (fromCatalog) return fromCatalog
+  return {
+    id: item.id,
+    name: item.name,
+    version: item.version,
+    description: item.description,
+    kind: item.kind,
+    source: item.installSource === 'bundled' ? 'bundled' : 'remote',
+    installable: true
+  }
+}
+
+function matchesBrowseFilters(
+  entry: { id: string; name: string; description: string; kind: MarketplaceKind },
+  kindFilter: MarketplaceKind | 'all',
+  query: string
+): boolean {
+  if (kindFilter !== 'all' && entry.kind !== kindFilter) return false
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  return (
+    entry.id.toLowerCase().includes(q) ||
+    entry.name.toLowerCase().includes(q) ||
+    entry.description.toLowerCase().includes(q)
+  )
+}
+
 function PackageCard({
   entry,
   activity,
   selected,
-  onOpen
-}: {
-  entry: MarketplaceCatalogEntry
-  activity: PackageActivity
-  selected: boolean
-  onOpen: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      aria-current={selected ? 'true' : undefined}
-      className={cn(
-        'flex w-full items-start gap-3 rounded-lg border border-border bg-surface px-3 py-3 text-left',
-        CARD_BUTTON,
-        selected && CARD_SELECTED
-      )}
-    >
-      <PackageIcon name={entry.name} iconUrl={entry.iconUrl} size={40} />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
-          <p className="m-0 truncate text-sm font-medium text-fg">{entry.name}</p>
-          {entry.verified ? (
-            <span className="inline-flex shrink-0 items-center">
-              <Icon name="check" size={12} className="text-secondary" />
-              <span className="sr-only">Verified</span>
-            </span>
-          ) : null}
-        </div>
-        <p className="m-0 mt-0.5 line-clamp-2 text-xs text-secondary">
-          {entry.description || '—'}
-        </p>
-        <p className={cn('m-0 mt-1 text-[11px] text-muted', activity.className)}>
-          {kindLabel(entry.kind)}
-          {entry.publisher ? ` · ${entry.publisher}` : ''}
-          {activity.kind !== 'available' ? ` · ${activity.label}` : ''}
-        </p>
-      </div>
-    </button>
-  )
-}
-
-function DiscoverStrip({
-  entries,
-  installedById,
-  mcpStatusById,
-  selectedEntryId,
-  onOpen
-}: {
-  entries: MarketplaceCatalogEntry[]
-  installedById: Map<string, MarketplaceInstalledItem>
-  mcpStatusById: Map<string, McpServerStatus>
-  selectedEntryId: string | null
-  onOpen: (entry: MarketplaceCatalogEntry) => void
-}) {
-  if (entries.length === 0) return null
-  return (
-    <section className="flex flex-col gap-2">
-      <h2 className="m-0 text-sm font-medium text-fg">Discover</h2>
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {entries.map((entry) => {
-          const activity = activityFor(entry, installedById, mcpStatusById)
-          const selected = selectedEntryId === entry.id
-          return (
-            <button
-              key={`${entry.source}-${entry.id}`}
-              type="button"
-              onClick={() => onOpen(entry)}
-              aria-current={selected ? 'true' : undefined}
-              className={cn(
-                'flex w-[200px] shrink-0 flex-col gap-2 rounded-lg border border-border bg-surface p-3 text-left',
-                CARD_BUTTON,
-                selected && CARD_SELECTED
-              )}
-            >
-              <PackageIcon name={entry.name} iconUrl={entry.iconUrl} size={36} />
-              <div className="min-w-0">
-                <p className="m-0 truncate text-sm font-medium text-fg">{entry.name}</p>
-                <p className="m-0 mt-0.5 line-clamp-2 text-[11px] text-secondary">
-                  {entry.description || '—'}
-                </p>
-                <p className={cn('m-0 mt-1 text-[10px] text-muted', activity.className)}>
-                  {activity.kind === 'available' ? kindLabel(entry.kind) : activity.label}
-                </p>
-              </div>
-            </button>
-          )
-        })}
-      </div>
-    </section>
-  )
-}
-
-function FeaturedRow({
-  entry,
-  activity,
-  selected,
   formLocked,
+  showAdd,
   onOpen,
   onAdd
 }: {
   entry: MarketplaceCatalogEntry
   activity: PackageActivity
   selected: boolean
-  formLocked: boolean
+  formLocked?: boolean
+  showAdd?: boolean
   onOpen: () => void
-  onAdd: () => void
+  onAdd?: () => void
 }) {
   const comingSoon = activity.kind === 'coming-soon'
   const installed = activity.kind !== 'available' && activity.kind !== 'coming-soon'
+  const locked = Boolean(formLocked)
+
   return (
     <div
       className={cn(
-        'flex items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5',
+        'flex items-start gap-3 rounded-lg border border-border bg-surface px-3 py-3',
         selected && CARD_SELECTED
       )}
     >
@@ -157,37 +97,53 @@ function FeaturedRow({
         type="button"
         onClick={onOpen}
         aria-current={selected ? 'true' : undefined}
-        className="flex min-w-0 flex-1 items-center gap-3 text-left vy-transition hover:opacity-90 focus-visible:vy-focus-ring"
+        className={cn(
+          'flex min-w-0 flex-1 items-start gap-3 text-left',
+          CARD_BUTTON,
+          'border-0 bg-transparent p-0 hover:bg-transparent'
+        )}
       >
-        <PackageIcon name={entry.name} iconUrl={entry.iconUrl} size={36} />
+        <PackageIcon name={entry.name} iconUrl={entry.iconUrl} size={40} />
         <div className="min-w-0 flex-1">
           <p className="m-0 truncate text-sm font-medium text-fg">{entry.name}</p>
-          <p className="m-0 mt-0.5 line-clamp-1 text-xs text-secondary">
+          <p className="m-0 mt-0.5 line-clamp-2 text-xs text-secondary">
             {entry.description || '—'}
+          </p>
+          <p className={cn('m-0 mt-1 text-[11px] text-muted', activity.className)}>
+            {kindLabel(entry.kind)}
+            {entry.publisher ? ` · ${entry.publisher}` : ''}
+            {activity.kind !== 'available' ? ` · ${activity.label}` : ''}
           </p>
         </div>
       </button>
-      {comingSoon ? (
-        <Button variant="subtle" disabled>
-          Coming soon
-        </Button>
-      ) : installed ? (
-        <Button variant="subtle" disabled className={activity.className}>
-          {installedActionLabel(activity)}
-        </Button>
-      ) : (
-        <Button
-          variant="subtle"
-          pending={formLocked}
-          disabled={formLocked}
-          onClick={(e) => {
-            e.stopPropagation()
-            onAdd()
-          }}
-        >
-          {formLocked ? 'Installing…' : 'Add'}
-        </Button>
-      )}
+      {showAdd ? (
+        comingSoon ? (
+          <Button variant="subtle" disabled className="shrink-0 self-center">
+            Coming soon
+          </Button>
+        ) : installed ? (
+          <Button
+            variant="subtle"
+            disabled
+            className={cn('shrink-0 self-center', activity.className)}
+          >
+            {installedActionLabel(activity)}
+          </Button>
+        ) : (
+          <Button
+            variant="subtle"
+            className="shrink-0 self-center"
+            pending={locked}
+            disabled={locked}
+            onClick={(e) => {
+              e.stopPropagation()
+              onAdd?.()
+            }}
+          >
+            {locked ? 'Installing…' : 'Add'}
+          </Button>
+        )
+      ) : null}
     </div>
   )
 }
@@ -263,7 +219,6 @@ export function MarketplaceHome({
     feedback,
     formLocked,
     installFromCatalog,
-    reload,
     refreshCatalog
   } = controller
 
@@ -273,31 +228,49 @@ export function MarketplaceHome({
     return map
   }, [installed.items])
 
-  const discover = useMemo(
-    () => catalog.filter((e) => e.sections?.includes('discover')),
-    [catalog]
-  )
+  const catalogById = useMemo(() => {
+    const map = new Map<string, MarketplaceCatalogEntry>()
+    for (const entry of catalog) map.set(entry.id, entry)
+    return map
+  }, [catalog])
+
+  const installedEntries = useMemo(() => {
+    const entries = installed.items
+      .map((item) => catalogEntryForInstalled(item, catalogById))
+      .filter((entry) => matchesBrowseFilters(entry, kindFilter, query))
+    entries.sort((a, b) => {
+      const ki = KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind)
+      if (ki !== 0) return ki
+      return a.name.localeCompare(b.name)
+    })
+    return entries
+  }, [installed.items, catalogById, kindFilter, query])
 
   const featured = useMemo(
     () =>
       catalog
-        .filter((e) => e.sections?.includes('featured'))
+        .filter((e) => e.sections?.includes('featured') && !installedById.has(e.id))
         .sort((a, b) => (a.featuredRank ?? 999) - (b.featuredRank ?? 999)),
-    [catalog]
+    [catalog, installedById]
   )
+
+  const featuredIds = useMemo(() => new Set(featured.map((e) => e.id)), [featured])
 
   const byCategory = useMemo(() => {
     const map = new Map<string, MarketplaceCatalogEntry[]>()
     for (const entry of catalog) {
+      if (installedById.has(entry.id) || featuredIds.has(entry.id)) continue
       const key = entry.category?.trim() || 'other'
       const list = map.get(key) ?? []
       list.push(entry)
       map.set(key, list)
     }
     return [...map.entries()].sort(([a], [b]) => a.localeCompare(b))
-  }, [catalog])
+  }, [catalog, featuredIds, installedById])
 
   const filteredEmpty = Boolean(query.trim()) || kindFilter !== 'all'
+  const hasBrowseContent =
+    installedEntries.length > 0 || featured.length > 0 || byCategory.length > 0
 
   return (
     <div className="flex flex-col gap-6">
@@ -327,16 +300,13 @@ export function MarketplaceHome({
         >
           {catalogLoading ? 'Refreshing…' : 'Refresh'}
         </Button>
-        <Button variant="subtle" onClick={onOpenManage}>
-          Manage
-        </Button>
       </div>
 
       <MarketplaceFeedbackBanner feedback={feedback} />
 
-      {catalogLoading && catalog.length === 0 ? (
+      {catalogLoading && catalog.length === 0 && installed.items.length === 0 ? (
         <p className="m-0 text-sm text-muted">Loading catalog…</p>
-      ) : catalog.length === 0 ? (
+      ) : !hasBrowseContent ? (
         filteredEmpty ? (
           <div className="flex flex-col gap-2 rounded-md border border-border bg-surface px-3 py-3">
             <p className="m-0 text-sm text-fg">No matching packages in the curated catalog.</p>
@@ -359,25 +329,41 @@ export function MarketplaceHome({
         )
       ) : (
         <>
-          <DiscoverStrip
-            entries={discover}
-            installedById={installedById}
-            mcpStatusById={mcpStatusById}
-            selectedEntryId={selectedEntryId}
-            onOpen={onOpenDetail}
-          />
+          {installedEntries.length > 0 ? (
+            <section className="flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="m-0 text-sm font-medium text-fg">Installed</h2>
+                <Button variant="subtle" onClick={onOpenManage}>
+                  Manage
+                </Button>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {installedEntries.map((entry) => (
+                  <PackageCard
+                    key={`installed-${entry.source}-${entry.id}`}
+                    entry={entry}
+                    activity={activityFor(entry, installedById, mcpStatusById)}
+                    selected={selectedEntryId === entry.id}
+                    showAdd
+                    onOpen={() => onOpenDetail(entry)}
+                  />
+                ))}
+              </div>
+            </section>
+          ) : null}
 
           {featured.length > 0 ? (
             <section className="flex flex-col gap-2">
               <h2 className="m-0 text-sm font-medium text-fg">Featured</h2>
               <div className="grid gap-2 sm:grid-cols-2">
                 {featured.map((entry) => (
-                  <FeaturedRow
+                  <PackageCard
                     key={`${entry.source}-${entry.id}`}
                     entry={entry}
                     activity={activityFor(entry, installedById, mcpStatusById)}
                     selected={selectedEntryId === entry.id}
                     formLocked={formLocked}
+                    showAdd
                     onOpen={() => onOpenDetail(entry)}
                     onAdd={() => void installFromCatalog(entry)}
                   />

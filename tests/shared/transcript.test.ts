@@ -800,6 +800,64 @@ describe('applyEventTimestamps', () => {
     }
   })
 
+  it('replays subagent_event envelopes onto the nested agent panel', () => {
+    const items = messagesToUiItems([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'subagent', arguments: '{"task":"look"}' }]
+      },
+      {
+        role: 'tool',
+        toolCallId: 'c1',
+        toolName: 'subagent',
+        content: 'report',
+        ok: true
+      }
+    ])
+    const enriched = applyEventTimestamps(items, [
+      {
+        at: '2026-07-24T12:00:00.000Z',
+        event: {
+          type: 'subagent_event',
+          runId: 'r1',
+          parentToolCallId: 'c1',
+          subagentId: 'ab12',
+          event: {
+            type: 'text_delta',
+            runId: 'r1',
+            text: 'Hello'
+          }
+        }
+      },
+      {
+        at: '2026-07-24T12:00:01.000Z',
+        event: {
+          type: 'subagent_event',
+          runId: 'r1',
+          parentToolCallId: 'c1',
+          subagentId: 'ab12',
+          event: {
+            type: 'tool_start',
+            runId: 'r1',
+            toolCallId: 'n1',
+            name: 'read',
+            summary: 'a.ts'
+          }
+        }
+      }
+    ])
+    const tool = enriched.find((i) => i.kind === 'tool')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind === 'tool') {
+      expect(tool.nestedAgent?.subagentId).toBe('ab12')
+      expect(tool.nestedAgent?.leaves.some((l) => l.kind === 'text' && l.text.includes('Hello'))).toBe(
+        true
+      )
+      expect(tool.nestedAgent?.leaves.some((l) => l.kind === 'tool' && l.id === 'n1')).toBe(true)
+    }
+  })
+
   it('replays subagent_context_usage onto the parent tool row', () => {
     const items = messagesToUiItems([
       {
@@ -872,6 +930,37 @@ describe('applyPersistedLiveTools', () => {
     expect(tool).toMatchObject({
       id: 'c1',
       tool: { name: 'read', status: 'running', argsPreview: '{"path":"a.ts"}' }
+    })
+  })
+
+  it('accumulates every persisted argument fragment for one tool call', () => {
+    const items = messagesToUiItems([{ role: 'user', content: 'go' }])
+    const events = [
+      {
+        at: '2026-07-28T12:00:00.000Z',
+        event: {
+          type: 'tool_call_delta' as const,
+          runId: 'r1',
+          toolCallId: 'c1',
+          name: 'read',
+          argumentsDelta: '{"pa'
+        }
+      },
+      {
+        at: '2026-07-28T12:00:00.010Z',
+        event: {
+          type: 'tool_call_delta' as const,
+          runId: 'r1',
+          toolCallId: 'c1',
+          name: 'read',
+          argumentsDelta: 'th":"a.ts"}'
+        }
+      }
+    ]
+    const tool = applyPersistedLiveTools(items, events).find((item) => item.kind === 'tool')
+    expect(tool).toMatchObject({
+      id: 'c1',
+      tool: { argsPreview: '{"path":"a.ts"}' }
     })
   })
 
@@ -999,6 +1088,49 @@ describe('finalizeHydratedTranscript', () => {
     const tool = finalized.find((item) => item.kind === 'tool')
     expect(tool?.kind).toBe('tool')
     if (tool?.kind === 'tool') expect(tool.tool.status).toBe('running')
+  })
+
+  it('clears nestedAgent streaming leaves and fails in-flight nested tools', () => {
+    const events = [
+      { at: '2024-01-01T00:00:00.000Z', event: { type: 'status', runId: 'r1', status: 'cancelled' } }
+    ]
+    const items = [
+      {
+        kind: 'tool' as const,
+        id: 'parent-1',
+        tool: {
+          id: 'parent-1',
+          name: 'subagent',
+          summary: 'Investigate',
+          status: 'done' as const,
+          content: 'report'
+        },
+        nestedAgent: {
+          subagentId: 'ab12',
+          leaves: [
+            { kind: 'text' as const, id: 't1', text: 'mid-stream', streaming: true },
+            {
+              kind: 'tool' as const,
+              id: 'n1',
+              tool: {
+                id: 'n1',
+                name: 'read',
+                summary: 'a.ts',
+                status: 'running' as const
+              }
+            }
+          ]
+        }
+      }
+    ]
+    const finalized = finalizeHydratedTranscript(items, events)
+    const tool = finalized.find((item) => item.kind === 'tool')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind !== 'tool') return
+    const text = tool.nestedAgent?.leaves.find((l) => l.kind === 'text')
+    expect(text?.kind === 'text' && text.streaming).toBe(false)
+    const nestedTool = tool.nestedAgent?.leaves.find((l) => l.kind === 'tool')
+    expect(nestedTool?.kind === 'tool' && nestedTool.tool.status).toBe('fail')
   })
 })
 

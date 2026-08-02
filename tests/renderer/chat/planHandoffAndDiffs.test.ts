@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { UiItem } from '@shared/transcript'
 import { buildTranscriptRows } from '@renderer/features/chat/utils/transcriptRows'
 import { collectTurnFileDiffs } from '@renderer/features/chat/utils/turnFileDiffs'
-import { isPlanDraftReady, PLAN_STUB } from '@renderer/features/chat/components/composer/PlanHandoff'
+import { isPlanDraftReady, PLAN_STUB, planHandoffPreview } from '@renderer/features/chat/components/composer/PlanHandoff'
 
 function tool(
   id: string,
@@ -55,13 +55,50 @@ describe('collectTurnFileDiffs', () => {
   })
 })
 
+describe('collectLastTurnChangedFiles', () => {
+  it('only includes writing tools after the last user message', async () => {
+    const { collectLastTurnChangedFiles, collectSessionChangedFiles } = await import(
+      '@renderer/features/chat/utils/turnFileDiffs'
+    )
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'first', at: 1 },
+      tool('t1', 'edit', { path: 'old.ts', contents: 'a\nb\n' }),
+      { kind: 'message', id: 'u2', role: 'user', content: 'second', at: 2 },
+      tool('t2', 'edit', { path: 'new.ts', contents: 'x\ny\n' })
+    ]
+    const last = collectLastTurnChangedFiles(items)
+    const session = collectSessionChangedFiles(items)
+    expect(session.some((f) => f.path === 'old.ts')).toBe(true)
+    expect(last.some((f) => f.path === 'old.ts')).toBe(false)
+    expect(last.some((f) => f.path === 'new.ts')).toBe(true)
+  })
+})
+
 describe('isPlanDraftReady', () => {
   it('rejects empty and stub plan.md', () => {
     expect(isPlanDraftReady(null)).toBe(false)
     expect(isPlanDraftReady(PLAN_STUB)).toBe(false)
   })
 
+  it('rejects outline-only templates without body text', () => {
+    expect(
+      isPlanDraftReady(
+        '# Plan\n\n_Draft the plan here. Update as you learn._\n\n## Goal\n\n## Approach\n'
+      )
+    ).toBe(false)
+  })
+
   it('accepts a drafted plan', () => {
     expect(isPlanDraftReady('# Plan\n\n1. Do the thing\n')).toBe(true)
+  })
+})
+
+describe('planHandoffPreview', () => {
+  it('skips stub hints and bare headings', () => {
+    const preview = planHandoffPreview(
+      '# Plan\n\n_Draft the plan here. Update as you learn._\n\n## Goal\n\nShip the feature\n\n## Approach\n\nUse tests\n'
+    )
+    expect(preview).toBe('Ship the feature · Use tests')
+    expect(preview).not.toMatch(/Draft the plan|##/)
   })
 })

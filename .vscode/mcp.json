@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "code-review-graph": {
+      "command": "C:\\Users\\admin\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\\uvx.exe",
+      "args": [
+        "code-review-graph",
+        "serve"
+      ],
+      "cwd": "C:\\Users\\admin\\Documents\\VYOTIQ - AGENT V",
+      "type": "stdio"
+    }
+  }
+}

@@ -8,10 +8,12 @@ import type {
 import { formatSkillInvocation } from '../../../shared/slashCommands'
 import { effectiveMarketplaceEnabled } from '../../../shared/domain/marketplaceEnablement'
 import { parseSkillFrontmatter } from '../skills/parse'
+import { isSkillMdFilename, resolveSkillMdPath } from '../skills/paths'
 import { browseCatalog } from '../../marketplace/catalog'
 import { readMarketplaceIndex } from '../../marketplace/indexStore'
 import { findCatalogEntry, getPackageContents } from '../../marketplace/packageContents'
-import { marketplacePackagesRoot, bundledPackagePath } from '../../marketplace/paths'
+import { bundledPackagePath, resolveInstalledPackageRoot } from '../../marketplace/paths'
+import { resolveInsidePackageRoot } from '../../marketplace/safePath'
 
 type SkillCandidate = {
   id: string
@@ -20,21 +22,41 @@ type SkillCandidate = {
   description: string
   packageId: string
   availability: SlashCommandDescriptor['availability']
-  /** Absolute path to skill.md when known. */
+  /** Absolute path to SKILL.md when known. */
   skillPath?: string
 }
 
 function skillPathForInstalled(packagePath: string, nestedRel?: string): string | undefined {
-  const root = join(marketplacePackagesRoot(), packagePath)
-  if (nestedRel) {
-    const nested = join(root, nestedRel, 'skill.md')
-    if (existsSync(nested)) return nested
-    const alt = join(root, nestedRel)
-    if (existsSync(alt) && alt.endsWith('skill.md')) return alt
+  let root: string
+  try {
+    root = resolveInstalledPackageRoot(packagePath)
+  } catch {
     return undefined
   }
-  const p = join(root, 'skill.md')
-  return existsSync(p) ? p : undefined
+  if (nestedRel) {
+    try {
+      const nestedDir = resolveInsidePackageRoot(root, nestedRel)
+      const fromDir = resolveSkillMdPath(nestedDir)
+      if (fromDir) return fromDir
+      if (existsSync(nestedDir) && isSkillMdFilename(nestedDir)) return nestedDir
+    } catch {
+      return undefined
+    }
+    return undefined
+  }
+  return resolveSkillMdPath(root)
+}
+
+function skillPathForBundled(bundledPath: string, nestedRel?: string): string | undefined {
+  try {
+    const root = bundledPackagePath(bundledPath)
+    if (nestedRel) {
+      return resolveSkillMdPath(join(root, nestedRel))
+    }
+    return resolveSkillMdPath(root)
+  } catch {
+    return undefined
+  }
 }
 
 function readSkillBody(path: string): { name: string; description: string; body: string } | null {
@@ -123,8 +145,7 @@ export async function listSkillCommands(
       const trigger = (skill?.name ?? entry.id).toLowerCase()
       let skillPath: string | undefined
       if (entry.bundledPath) {
-        const p = join(bundledPackagePath(entry.bundledPath), 'skill.md')
-        if (existsSync(p)) skillPath = p
+        skillPath = skillPathForBundled(entry.bundledPath)
       }
       upsert({
         id: `skill:${entry.id}`,
@@ -144,8 +165,7 @@ export async function listSkillCommands(
         if (byTrigger.has(key)) continue
         let skillPath: string | undefined
         if (entry.bundledPath && skill.path) {
-          const p = join(bundledPackagePath(entry.bundledPath), skill.path, 'skill.md')
-          if (existsSync(p)) skillPath = p
+          skillPath = skillPathForBundled(entry.bundledPath, skill.path)
         }
         upsert({
           id: `skill:${entry.id}/${skill.name}`,
@@ -207,15 +227,13 @@ function resolveSkillPath(id: string): string | null {
   const entry = findCatalogEntry(packageId)
   if (entry?.bundledPath) {
     if (entry.kind === 'skill') {
-      const p = join(bundledPackagePath(entry.bundledPath), 'skill.md')
-      return existsSync(p) ? p : null
+      return skillPathForBundled(entry.bundledPath) ?? null
     }
     if (skillName) {
       const contents = getPackageContents(packageId)
       const match = contents?.skills.find((s) => s.name === skillName)
       if (match?.path) {
-        const p = join(bundledPackagePath(entry.bundledPath), match.path, 'skill.md')
-        return existsSync(p) ? p : null
+        return skillPathForBundled(entry.bundledPath, match.path) ?? null
       }
     }
   }

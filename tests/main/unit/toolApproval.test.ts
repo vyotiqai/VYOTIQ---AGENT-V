@@ -1,11 +1,13 @@
-import { describe, expect, it, beforeEach } from 'vitest'
+import { describe, expect, it, beforeEach, vi } from 'vitest'
 import {
   cancelPendingApprovals,
   createApprovalGate,
   isToolGated,
+  listPendingToolApprovals,
   registerApprovalSender,
   resetToolApprovalForTests,
-  resolveToolApproval
+  resolveToolApproval,
+  TOOL_APPROVAL_TIMEOUT_MS
 } from '@main/agent/toolApproval'
 import type { ToolApprovalRequest } from '@shared/ipc'
 
@@ -121,7 +123,7 @@ describe('createApprovalGate', () => {
     expect(seen[0]!.name).toBe('edit')
     expect(seen[0]!.mutating).toBe(true)
 
-    expect(resolveToolApproval({ requestId: seen[0]!.requestId, decision: 'once' })).toBe(true)
+    expect(resolveToolApproval({ requestId: seen[0]!.requestId, runId: 'run-1', decision: 'once' })).toBe(true)
     expect(await verdict).toEqual({ allowed: true })
   })
 
@@ -196,7 +198,82 @@ describe('createApprovalGate', () => {
     cancelPendingApprovals('run-1', 1)
     await expect(oldVerdict).rejects.toMatchObject({ name: 'AbortError' })
 
-    resolveToolApproval({ requestId: requests[1]!.requestId, decision: 'once' })
+    resolveToolApproval({ requestId: requests[1]!.requestId, runId: 'run-1', decision: 'once' })
     expect((await newVerdict).allowed).toBe(true)
+  })
+
+  it('lists pending approvals for remount restore', async () => {
+    const seen: ToolApprovalRequest[] = []
+    registerApprovalSender('run-1', (request) => {
+      seen.push(request)
+    })
+    const gate = createApprovalGate({
+      runId: 'run-1',
+      mode: 'mutating',
+      workspaceAllowlist: [],
+      signal: new AbortController().signal
+    })
+
+    const verdict = gate.authorize(WRITE)
+    await Promise.resolve()
+    expect(listPendingToolApprovals('run-1')).toHaveLength(1)
+    expect(listPendingToolApprovals('run-1')[0]!.name).toBe('edit')
+    expect(listPendingToolApprovals('other')).toEqual([])
+
+    // Re-registering re-pushes still-pending approvals.
+    registerApprovalSender('run-1', (request) => {
+      seen.push(request)
+    })
+    expect(seen).toHaveLength(2)
+
+    expect(resolveToolApproval({ requestId: seen[0]!.requestId, runId: 'run-1', decision: 'once' })).toBe(true)
+    await expect(verdict).resolves.toEqual({ allowed: true })
+    expect(listPendingToolApprovals('run-1')).toEqual([])
+  })
+
+  it('rejects resolve when runId does not match pending entry', async () => {
+    const requests: ToolApprovalRequest[] = []
+    registerApprovalSender('run-1', (request) => {
+      requests.push(request)
+    })
+    const gate = createApprovalGate({
+      runId: 'run-1',
+      mode: 'mutating',
+      workspaceAllowlist: [],
+      signal: new AbortController().signal
+    })
+    const verdict = gate.authorize(WRITE)
+    await Promise.resolve()
+    expect(
+      resolveToolApproval({
+        requestId: requests[0]!.requestId,
+        runId: 'other-run',
+        decision: 'once'
+      })
+    ).toBe(false)
+    expect(resolveToolApproval({ requestId: requests[0]!.requestId, runId: 'run-1', decision: 'once' })).toBe(
+      true
+    )
+    expect(await verdict).toEqual({ allowed: true })
+  })
+
+  it('auto-denies after the approval timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      registerApprovalSender('run-1', () => {})
+      const gate = createApprovalGate({
+        runId: 'run-1',
+        mode: 'mutating',
+        workspaceAllowlist: [],
+        signal: new AbortController().signal
+      })
+      const verdict = gate.authorize(WRITE)
+      await vi.advanceTimersByTimeAsync(TOOL_APPROVAL_TIMEOUT_MS)
+      const result = await verdict
+      expect(result.allowed).toBe(false)
+    } finally {
+      vi.useRealTimers()
+      resetToolApprovalForTests()
+    }
   })
 })

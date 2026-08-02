@@ -30,7 +30,7 @@ describe('ErrorBoundary', () => {
 
     expect(screen.getByRole('alert')).toBeTruthy()
     expect(screen.getByText(/Something went wrong/i)).toBeTruthy()
-    expect(screen.getByText(/boundary-test-crash/i)).toBeTruthy()
+    expect(screen.queryByText(/boundary-test-crash/i)).toBeNull()
     expect(screen.getByRole('button', { name: /Try again/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Reload/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Open logs/i })).toBeTruthy()

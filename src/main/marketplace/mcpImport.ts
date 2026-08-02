@@ -7,7 +7,7 @@ import {
   writeFileSync
 } from 'fs'
 import { homedir, tmpdir } from 'os'
-import { join } from 'path'
+import { basename, isAbsolute, join, relative, resolve } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { randomUUID } from 'crypto'
@@ -32,7 +32,8 @@ import { remoteMcpIdFromUrl } from '../../shared/utils/mcpAuth'
 import { getSettings, setSettings } from '../settings/settings'
 import { getWorkspaces } from '../workspace/workspaces'
 import { getInstalledItem, readMarketplaceIndex } from './indexStore'
-import { marketplacePackagesRoot } from './paths'
+import { resolveInstalledPackageRoot } from './paths'
+import { sanitizeMcpManifestEnv } from './sanitizeMcpEnv'
 
 const execFileAsync = promisify(execFile)
 
@@ -97,7 +98,7 @@ function listDedupeCandidates(): Array<
   > = [...(settings.mcpServers ?? [])]
   for (const item of readMarketplaceIndex().items) {
     if (item.kind !== 'plugin' || !item.enabled) continue
-    const root = join(marketplacePackagesRoot(), item.packagePath)
+    const root = resolveInstalledPackageRoot(item.packagePath)
     const manifestPath = join(root, 'vyotiq.plugin.json')
     if (!existsSync(manifestPath)) continue
     try {
@@ -475,7 +476,7 @@ function tryReadVyotiqMcp(root: string): DetectedMcpServer | null {
       transport: manifest.transport ?? 'stdio',
       command: manifest.command,
       args: manifest.args,
-      env: manifest.env,
+      env: sanitizeMcpManifestEnv(manifest.env),
       url: manifest.url,
       enabled: true,
       source: 'manual'
@@ -553,7 +554,7 @@ export function synthesizeVyotiqMcpManifest(root: string): boolean {
     transport: s.transport ?? 'stdio',
     ...(s.command ? { command: s.command } : {}),
     ...(s.args?.length ? { args: s.args } : {}),
-    ...(s.env ? { env: s.env } : {}),
+    ...(s.env ? { env: sanitizeMcpManifestEnv(s.env) } : {}),
     ...(s.url ? { url: s.url } : {})
   }
   // Avoid __ in id
@@ -597,11 +598,14 @@ function normalizeGitHubUrl(input: string): string {
 }
 
 function requiresRemoteAck(servers: DetectedMcpServer[]): boolean {
-  return servers.some((s) => Boolean((s.url ?? '').trim()))
+  // Any untrusted MCP registration (stdio host process or remote URL) needs ack.
+  return servers.some(
+    (s) => Boolean((s.url ?? '').trim()) || Boolean((s.command ?? '').trim())
+  )
 }
 
 const REMOTE_ACK_WARNING =
-  'Acknowledge remote marketplace installs in Settings → Registry before adding remote MCP URLs.'
+  'Acknowledge marketplace / MCP installs in Settings → Registry before adding MCP servers.'
 
 export async function detectMcpInput(rawInput: unknown): Promise<McpDetectResult> {
   const { input } = McpDetectRequestSchema.parse(rawInput)
@@ -703,6 +707,7 @@ export async function detectMcpInput(rawInput: unknown): Promise<McpDetectResult
       }
       if (
         existsSync(join(cloned.root, 'vyotiq.plugin.json')) ||
+        existsSync(join(cloned.root, 'SKILL.md')) ||
         existsSync(join(cloned.root, 'skill.md'))
       ) {
         return withDuplicateFlag({
@@ -759,7 +764,8 @@ export function applyDetectedManualMcp(raw: unknown): McpApplyDetectedResult {
   const server = DetectedMcpServerSchema.parse({
     ...req.server,
     source: 'manual',
-    enabled: req.server.enabled ?? true
+    enabled: req.server.enabled ?? true,
+    env: sanitizeMcpManifestEnv(req.server.env)
   })
   if (!(server.command ?? '').trim() && !(server.url ?? '').trim()) {
     throw new Error('Command or URL is required before adding')
@@ -773,6 +779,11 @@ export function applyDetectedManualMcp(raw: unknown): McpApplyDetectedResult {
   }
 
   const settings = getSettings()
+  if (!settings.marketplace?.remoteInstallAcked) {
+    throw new Error(
+      'Acknowledge marketplace / MCP installs in Settings → Registry before adding MCP servers.'
+    )
+  }
   const list = [...(settings.mcpServers ?? [])]
   const idx = list.findIndex((s) => s.id === server.id)
   if (idx >= 0) {
@@ -827,11 +838,62 @@ export function defaultExternalConfigPaths(workspacePath?: string | null): strin
   return paths
 }
 
+const ALLOWED_EXTERNAL_MCP_BASENAMES = new Set(['mcp.json', 'claude_desktop_config.json'])
+
+function isPathUnderRoot(candidate: string, root: string): boolean {
+  const rel = relative(root, candidate)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+/**
+ * Only allow known MCP config filenames under home / AppData / open workspaces
+ * (or exact default scan paths). Blocks arbitrary filesystem reads via IPC.
+ */
+export function isAllowedExternalMcpConfigPath(filePath: string): boolean {
+  const resolved = resolve(filePath)
+  const name = basename(resolved).toLowerCase()
+  if (!ALLOWED_EXTERNAL_MCP_BASENAMES.has(name)) return false
+
+  const defaults = defaultExternalConfigPaths().map((p) => resolve(p))
+  if (defaults.includes(resolved)) return true
+
+  const roots: string[] = [resolve(homedir())]
+  if (process.env.APPDATA) roots.push(resolve(process.env.APPDATA))
+  if (process.env.LOCALAPPDATA) roots.push(resolve(process.env.LOCALAPPDATA))
+  try {
+    const state = getWorkspaces()
+    if (state.activePath) roots.push(resolve(state.activePath))
+    for (const p of state.openPaths ?? []) roots.push(resolve(p))
+    for (const p of state.recentPaths ?? []) roots.push(resolve(p))
+  } catch {
+    // workspaces unavailable in some unit fixtures
+  }
+
+  return roots.some((root) => isPathUnderRoot(resolved, root))
+}
+
+function filterExternalMcpPaths(paths: string[], warnings: string[]): string[] {
+  const out: string[] = []
+  for (const path of paths) {
+    if (isAllowedExternalMcpConfigPath(path)) {
+      out.push(path)
+      continue
+    }
+    warnings.push(
+      `${path}: skipped — only mcp.json / claude_desktop_config.json under home, AppData, or an open workspace are allowed`
+    )
+  }
+  return out
+}
+
 export function scanExternalMcpConfigs(raw?: unknown): McpImportExternalResult {
   const req = McpScanExternalRequestSchema.parse(raw ?? {})
-  const scannedPaths = req.paths?.length ? req.paths : defaultExternalConfigPaths()
-  const byId = new Map<string, DetectedMcpServer>()
   const warnings: string[] = []
+  const scannedPaths = filterExternalMcpPaths(
+    req.paths?.length ? req.paths : defaultExternalConfigPaths(),
+    warnings
+  )
+  const byId = new Map<string, DetectedMcpServer>()
 
   for (const path of scannedPaths) {
     if (!existsSync(path)) continue
@@ -856,13 +918,16 @@ export function scanExternalMcpConfigs(raw?: unknown): McpImportExternalResult {
 
 export function importExternalMcpServers(raw: unknown): McpImportExternalResult {
   const req = McpImportExternalRequestSchema.parse(raw)
-  const scannedPaths = req.paths?.length
-    ? req.paths
-    : req.json || req.servers?.length
-      ? []
-      : defaultExternalConfigPaths()
-  const byId = new Map<string, DetectedMcpServer>()
   const warnings: string[] = []
+  const scannedPaths = filterExternalMcpPaths(
+    req.paths?.length
+      ? req.paths
+      : req.json || req.servers?.length
+        ? []
+        : defaultExternalConfigPaths(),
+    warnings
+  )
+  const byId = new Map<string, DetectedMcpServer>()
 
   if (req.servers?.length) {
     for (const s of req.servers) {
@@ -928,12 +993,16 @@ export function importExternalMcpServers(raw: unknown): McpImportExternalResult 
       }
       const idx = existingIdx >= 0 ? existingIdx : fpIdx
       if (idx >= 0) {
-        list[idx] = { ...server, source: 'manual' } as McpServer
+        list[idx] = { ...server, source: 'manual', env: sanitizeMcpManifestEnv(server.env) } as McpServer
         applied += 1
         continue
       }
     }
-    list.push({ ...server, source: 'manual' } as McpServer)
+    list.push({
+      ...server,
+      source: 'manual',
+      env: sanitizeMcpManifestEnv(server.env)
+    } as McpServer)
     applied += 1
   }
 

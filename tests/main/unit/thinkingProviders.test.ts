@@ -58,8 +58,18 @@ describe('openai compat thinking body', () => {
       'groq'
     )
     expect(body.reasoning_effort).toBe('high')
-    expect(body.include_reasoning).toBe(true)
     expect(body.reasoning_format).toBe('hidden')
+    expect(body.include_reasoning).toBeUndefined()
+  })
+
+  it('adds Groq include_reasoning when display is summarized', () => {
+    const body = buildOpenAiCompatBody(
+      baseReq({ thinking: { enabled: true, effort: 'medium', display: 'summarized' } }),
+      { defaultBaseUrl: 'https://api.groq.com/openai/v1' },
+      'groq'
+    )
+    expect(body.include_reasoning).toBe(true)
+    expect(body.reasoning_format).toBeUndefined()
   })
 
   it('adds xAI reasoning_effort when enabled', () => {
@@ -68,7 +78,7 @@ describe('openai compat thinking body', () => {
       { defaultBaseUrl: 'https://api.x.ai/v1' },
       'xai'
     )
-    expect(body.reasoning_effort).toBe('none')
+    expect(body.reasoning_effort).toBe('low')
   })
 
   it('adds Ollama think flag when enabled', () => {
@@ -78,6 +88,15 @@ describe('openai compat thinking body', () => {
       'ollama'
     )
     expect(body.think).toBe(true)
+  })
+
+  it('normalizes DeepSeek effort values', () => {
+    const body = buildOpenAiCompatBody(
+      baseReq({ thinking: { enabled: true, effort: 'minimal' } }),
+      { defaultBaseUrl: 'https://api.deepseek.com/v1', deepseekThinking: true },
+      'deepseek'
+    )
+    expect(body.reasoning_effort).toBe('low')
   })
 })
 
@@ -90,10 +109,35 @@ describe('anthropic thinking fields', () => {
     expect(fields.output_config).toEqual({ effort: 'high' })
   })
 
-  it('uses manual budget on Sonnet 4.6', () => {
+  it('uses adaptive thinking on Sonnet 4.6', () => {
     const fields = anthropicThinkingFields(
-      baseReq({ model: 'claude-sonnet-4-6', thinking: { enabled: true, maxTokens: 8000 } })
+      baseReq({ model: 'claude-sonnet-4-6', thinking: { enabled: true, effort: 'medium' } })
     )
-    expect(fields.thinking).toEqual({ type: 'enabled', budget_tokens: 8000 })
+    expect(fields.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(fields.output_config).toEqual({ effort: 'medium' })
+  })
+
+  it('maps minimal effort to low on Anthropic adaptive', () => {
+    const fields = anthropicThinkingFields(
+      baseReq({ model: 'claude-opus-4-7', thinking: { enabled: true, effort: 'minimal' } })
+    )
+    expect(fields.output_config).toEqual({ effort: 'low' })
+  })
+
+  it('disables thinking explicitly on adaptive models when off', () => {
+    const fields = anthropicThinkingFields(
+      baseReq({ model: 'claude-sonnet-4-6', thinking: { enabled: false } })
+    )
+    expect(fields.thinking).toEqual({ type: 'disabled' })
+  })
+
+  it('uses manual budget on older Claude models', () => {
+    const fields = anthropicThinkingFields(
+      baseReq({
+        model: 'claude-sonnet-4-5',
+        thinking: { enabled: true, effort: 'high' }
+      })
+    )
+    expect(fields.thinking).toEqual({ type: 'enabled', budget_tokens: 16384 })
   })
 })

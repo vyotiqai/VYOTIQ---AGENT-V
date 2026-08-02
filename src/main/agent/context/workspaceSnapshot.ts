@@ -1,6 +1,7 @@
 import { execFile as execFileCallback, execFileSync } from 'child_process'
 import { promisify } from 'util'
 import { existsSync, readdirSync, statSync } from 'fs'
+import { readdir, stat } from 'fs/promises'
 import { join } from 'path'
 
 const execFile = promisify(execFileCallback)
@@ -159,18 +160,20 @@ async function buildWorkspaceSnapshotTemplateAsync(workspacePath: string): Promi
   }
 
   try {
-    const all = readdirSync(workspacePath)
-    const entries = all
-      .filter((name) => !name.startsWith('.') || name === '.vyotiq')
-      .slice(0, MAX_ENTRIES)
-      .map((name) => {
-        try {
-          const st = statSync(join(workspacePath, name))
-          return `${st.isDirectory() ? 'dir' : 'file'}  ${name}`
-        } catch {
-          return `?  ${name}`
-        }
-      })
+    const all = await readdir(workspacePath)
+    const entries = await Promise.all(
+      all
+        .filter((name) => !name.startsWith('.') || name === '.vyotiq')
+        .slice(0, MAX_ENTRIES)
+        .map(async (name) => {
+          try {
+            const st = await stat(join(workspacePath, name))
+            return `${st.isDirectory() ? 'dir' : 'file'}  ${name}`
+          } catch {
+            return `?  ${name}`
+          }
+        })
+    )
     lines.push('', '### Top-level')
     lines.push(...entries)
     if (all.length > MAX_ENTRIES) {
@@ -218,13 +221,21 @@ function workspaceFingerprint(workspacePath: string): string {
   return parts.join('|')
 }
 
+const GIT_ENV = {
+  ...process.env,
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_OPTIONAL_LOCKS: '0',
+  GCM_INTERACTIVE: 'never'
+}
+
 async function runGit(args: string[], cwd: string, timeout: number): Promise<string> {
   const { stdout } = await execFile('git', args, {
     cwd,
     encoding: 'utf8',
     timeout,
     maxBuffer: GIT_MAX_BUFFER,
-    windowsHide: true
+    windowsHide: true,
+    env: GIT_ENV
   })
   return stdout
 }

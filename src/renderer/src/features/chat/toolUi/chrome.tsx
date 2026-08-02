@@ -2,12 +2,12 @@ import { memo } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
 import {
+  DISCLOSURE_ROW,
+  TOOL_BODY_CLAMP_PX,
   TOOL_CARD_BODY,
   TOOL_CARD_HEADER,
-  TOOL_CARD_SURFACE,
-  TOOL_BODY_CLAMP_PX
+  TOOL_CARD_SURFACE
 } from '@renderer/lib/utils/layout'
-import { DISCLOSURE_ROW } from '@renderer/lib/utils/layout'
 import { TextShimmer } from '../components/TextShimmer'
 
 export function ProminentChrome({
@@ -17,6 +17,7 @@ export function ProminentChrome({
   hasBody,
   running,
   clampWhenCollapsed = true,
+  ariaLabel,
   onToggle
 }: {
   header: React.ReactNode
@@ -26,10 +27,11 @@ export function ProminentChrome({
   running: boolean
   /** When false, the collapsed preview is not height-clamped (e.g. task checklists). */
   clampWhenCollapsed?: boolean
+  ariaLabel?: string
   onToggle: () => void
 }) {
   return (
-    <div className={cn(TOOL_CARD_SURFACE, 'w-full')}>
+    <div className={cn(TOOL_CARD_SURFACE, 'w-full')} aria-busy={running || undefined}>
       <button
         type="button"
         className={cn(
@@ -38,6 +40,7 @@ export function ProminentChrome({
           hasBody && 'hover:bg-surface/60'
         )}
         onClick={onToggle}
+        aria-label={ariaLabel}
         aria-expanded={hasBody ? expanded : undefined}
         disabled={!hasBody}
       >
@@ -46,7 +49,7 @@ export function ProminentChrome({
           <Icon
             name="chevronRight"
             size={14}
-            className={cn('ml-auto shrink-0 text-tertiary vy-transition', expanded && 'rotate-90')}
+            className={cn('shrink-0 text-tertiary vy-transition', expanded && 'rotate-90')}
           />
         ) : null}
       </button>
@@ -58,11 +61,6 @@ export function ProminentChrome({
           }
         >
           {body}
-        </div>
-      ) : null}
-      {!hasBody && running ? (
-        <div className="border-t border-border bg-surface px-3 py-2 text-[11px] text-tertiary">
-          <TextShimmer>Working…</TextShimmer>
         </div>
       ) : null}
     </div>
@@ -86,17 +84,21 @@ export const CompactRow = memo(function CompactRow({
   interrupted?: boolean
   onToggle: () => void
 }) {
+  const disclosureLabel = hasBody
+    ? `${expanded ? 'Collapse' : 'Expand'} ${title}${subtitle ? `: ${subtitle}` : ''}`
+    : title
   return (
     <button
       type="button"
       className={cn(DISCLOSURE_ROW, 'w-full text-left', !hasBody && 'cursor-default')}
+      aria-label={disclosureLabel}
       aria-expanded={hasBody ? expanded : undefined}
       disabled={!hasBody}
       onClick={onToggle}
     >
       <span
         className={cn(
-          'flex shrink-0 items-center gap-1.5 font-medium',
+          'flex shrink-0 items-center gap-1.5 font-medium tool-status-morph',
           interrupted || status === 'fail' ? 'text-danger' : 'text-fg'
         )}
       >
@@ -110,13 +112,17 @@ export const CompactRow = memo(function CompactRow({
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         {interrupted ? <span className="text-danger">interrupted</span> : null}
         {!interrupted && status === 'fail' ? (
-          <Icon name="warning" size={14} className="shrink-0 text-danger" />
+          <Icon
+            name="warning"
+            size={14}
+            className="shrink-0 text-danger tool-status-morph"
+          />
         ) : null}
         {hasBody ? (
           <Icon
             name="chevronRight"
             size={14}
-            className={cn('text-tertiary vy-transition', expanded && 'rotate-90')}
+            className={cn('shrink-0 text-tertiary vy-transition', expanded && 'rotate-90')}
           />
         ) : null}
       </span>

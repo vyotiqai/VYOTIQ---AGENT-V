@@ -8,7 +8,7 @@ type ZodDef = {
   type?: ZodTypeAny
   shape?: () => Record<string, ZodTypeAny>
   values?: string[]
-  checks?: Array<{ kind: string; value?: number }>
+  checks?: Array<{ kind: string; value?: number | string }>
   minLength?: { value: number } | null
   maxLength?: { value: number } | null
 }
@@ -82,13 +82,30 @@ function numberSchema(s: ZodTypeAny, description: string | undefined): Record<st
   return withDescription(out, description)
 }
 
+function stringSchema(s: ZodTypeAny, description: string | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = { type: 'string' }
+  const checks = defOf(s).checks
+  if (checks) {
+    for (const c of checks) {
+      if (c.kind === 'uuid') out.format = 'uuid'
+      if (c.kind === 'min' && typeof c.value === 'number') out.minLength = c.value
+      if (c.kind === 'max' && typeof c.value === 'number') out.maxLength = c.value
+      if (c.kind === 'length' && typeof c.value === 'number') {
+        out.minLength = c.value
+        out.maxLength = c.value
+      }
+    }
+  }
+  return withDescription(out, description)
+}
+
 /** Minimal Zod → JSON Schema for tool / compaction definitions. */
 export function zodToJsonSchema(schema: ZodTypeAny): Record<string, unknown> {
   const { inner: s, description } = unwrapWithDescription(schema)
   const typeName = defOf(s).typeName
 
   if (typeName === 'ZodString') {
-    return withDescription({ type: 'string' }, description)
+    return stringSchema(s, description)
   }
   if (typeName === 'ZodNumber') {
     return numberSchema(s, description)

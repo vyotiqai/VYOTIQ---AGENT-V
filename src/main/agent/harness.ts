@@ -1,58 +1,80 @@
 import { app } from 'electron'
 import { existsSync, readFileSync, unlinkSync } from 'fs'
 import { join } from 'path'
-import { canonicalizeWorkspacePath } from '../../shared/workspacePath'
-import { workspaceId, workspaceMetaDir } from '../storage/paths'
+import { logger } from '../../shared/logger'
 
 const FALLBACK_ONELINER = 'You are Agent V, an agentic coding agent.'
 
-/** Bundled system harness — the only authoritative copy. */
-export function getHarnessPath(): string {
-  if (app.isPackaged) {
-    return join(process.resourcesPath, 'harness', 'default.md')
-  }
-  return join(app.getAppPath(), 'resources', 'harness', 'default.md')
+function bundledHarnessPath(): string {
+  const base = app.isPackaged ? process.resourcesPath : join(app.getAppPath(), 'resources')
+  return join(base, 'harness', 'default.md')
 }
 
-export function loadHarness(): string {
-  const path = getHarnessPath()
-  if (!existsSync(path)) return FALLBACK_ONELINER
+function workspaceHarnessPath(workspaceRoot: string): string {
+  return join(workspaceRoot, 'resources', 'harness', 'default.md')
+}
+
+/**
+ * Read the system harness. Prefers workspace `resources/harness/default.md` when
+ * present (e.g. after `/harness-apply`), else the bundled copy, else a one-liner.
+ * Loaded once per invoke — applied text is seen on the next invoke / new run, not mid-step.
+ */
+export function loadHarness(workspaceRoot?: string): string {
+  if (workspaceRoot) {
+    const wsPath = workspaceHarnessPath(workspaceRoot)
+    try {
+      if (existsSync(wsPath)) {
+        const text = readFileSync(wsPath, 'utf8')
+        if (text.trim() && /^#{1,6}\s+/m.test(text)) return text
+        logger.warn('Workspace harness appears malformed; trying bundled', {
+          scope: 'harness',
+          path: wsPath
+        })
+      }
+    } catch (err) {
+      logger.warn('Workspace harness unreadable; trying bundled', {
+        scope: 'harness',
+        path: wsPath,
+        err
+      })
+    }
+  }
+
+  const harnessPath = bundledHarnessPath()
   try {
-    return readFileSync(path, 'utf8')
-  } catch {
+    if (!existsSync(harnessPath)) {
+      logger.warn('Bundled harness missing; using fallback', {
+        scope: 'harness',
+        path: harnessPath
+      })
+      return FALLBACK_ONELINER
+    }
+    const text = readFileSync(harnessPath, 'utf8')
+    if (!text.trim() || !/^#{1,6}\s+/m.test(text)) {
+      logger.warn('Bundled harness appears malformed; using fallback', {
+        scope: 'harness',
+        path: harnessPath
+      })
+      return FALLBACK_ONELINER
+    }
+    return text
+  } catch (err) {
+    logger.warn('Bundled harness unreadable; using fallback', {
+      scope: 'harness',
+      path: harnessPath,
+      err
+    })
     return FALLBACK_ONELINER
   }
 }
 
-/** Drop mistaken per-workspace / userData harness copies from earlier versions. */
-export function cleanupLegacyHarnessArtifacts(workspaceRoot: string): void {
-  const legacyProject = join(workspaceRoot, '.vyotiq', 'harness.md')
-  if (existsSync(legacyProject)) {
-    try {
-      unlinkSync(legacyProject)
-    } catch {
-      // ignore
-    }
-  }
-
-  const canonical = canonicalizeWorkspacePath(workspaceRoot)
-  const legacyUserData = join(workspaceMetaDir(workspaceId(canonical)), 'harness.md')
-  if (existsSync(legacyUserData)) {
-    try {
-      unlinkSync(legacyUserData)
-    } catch {
-      // ignore
-    }
-  }
-}
-
-export function cleanupAllLegacyHarnessArtifacts(workspacePaths: string[]): void {
-  const seen = new Set<string>()
-  for (const root of workspacePaths) {
-    if (!root) continue
-    const key = process.platform === 'win32' ? root.toLowerCase() : root
-    if (seen.has(key)) continue
-    seen.add(key)
-    cleanupLegacyHarnessArtifacts(root)
+/** Drop mistaken per-workspace harness copies from earlier versions. */
+export function purgeLegacyProjectHarness(workspaceRoot: string): void {
+  const legacy = join(workspaceRoot, '.vyotiq', 'harness.md')
+  if (!existsSync(legacy)) return
+  try {
+    unlinkSync(legacy)
+  } catch {
+    // ignore
   }
 }

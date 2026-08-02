@@ -16,7 +16,6 @@ const chatSettings: EffectiveChatSettings = {
   model: 'qwen2.5',
   compactionTriggerRatio: DEFAULT_SETTINGS.compactionTriggerRatio,
   keepRecentTurns: DEFAULT_SETTINGS.keepRecentTurns,
-  memoryAutoPromote: DEFAULT_SETTINGS.memoryAutoPromote,
   thinkingEnabled: DEFAULT_SETTINGS.thinkingEnabled,
   thinkingEffort: DEFAULT_SETTINGS.thinkingEffort,
   showThinking: DEFAULT_SETTINGS.showThinking
@@ -87,15 +86,16 @@ describe('Composer', () => {
       />
     )
 
-    const ta = screen.getByRole('textbox', { name: /^Message$/i }) as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: 'keep me' } })
+    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    ta.textContent = 'keep me'
+    fireEvent.input(ta)
     fireEvent.click(screen.getByRole('button', { name: /^Send$/i }))
 
     await waitFor(() => {
-      expect(onSend).toHaveBeenCalledWith('keep me', undefined, undefined)
+      expect(onSend).toHaveBeenCalledWith('keep me', undefined, undefined, undefined)
     })
     await waitFor(() => {
-      expect(ta.value).toBe('keep me')
+      expect(ta.textContent).toBe('keep me')
     })
   })
 
@@ -108,10 +108,10 @@ describe('Composer', () => {
     render(
       <Composer
         provider="openai"
-        model="gpt-4.1"
+        model="gpt-5.6"
         running={false}
         hasWorkspace
-        chatSettings={{ ...chatSettings, provider: 'openai', model: 'gpt-4.1' }}
+        chatSettings={{ ...chatSettings, provider: 'openai', model: 'gpt-5.6' }}
         onChatSettingsChange={vi.fn()}
         onProviderModel={vi.fn()}
         onSend={vi.fn()}
@@ -130,8 +130,9 @@ describe('Composer', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Select model/i }))
     const listbox = screen.getByRole('listbox')
-    expect(within(listbox).queryByText('gpt-4.1')).toBeNull()
-    expect(within(listbox).getByText('gpt-4o')).toBeTruthy()
+    // Offline → OpenAI seeds; all mid-2026 seeds are vision-capable.
+    expect(within(listbox).getByText('gpt-5.6')).toBeTruthy()
+    expect(within(listbox).getByText('gpt-5.6-terra')).toBeTruthy()
   })
 
   it('attaches a document and sends its extracted text', async () => {
@@ -167,9 +168,12 @@ describe('Composer', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /^Send$/i }))
     await waitFor(() => {
-      expect(onSend).toHaveBeenCalledWith('', undefined, [
-        { type: 'file', name: 'spec.md', mime: 'text/markdown', text: 'rules here' }
-      ])
+      expect(onSend).toHaveBeenCalledWith(
+        '',
+        undefined,
+        [{ type: 'file', name: 'spec.md', mime: 'text/markdown', text: 'rules here' }],
+        undefined
+      )
     })
   })
 
@@ -202,12 +206,13 @@ describe('Composer', () => {
     })
   })
 
-  it('disables textarea while a run is in progress', () => {
+  it('keeps composer editable while a run is in progress and shows Send with Stop', () => {
     render(
       <Composer
         provider="ollama"
         model="qwen2.5"
         running
+        hasWorkspace
         chatSettings={chatSettings}
         onChatSettingsChange={vi.fn()}
         onProviderModel={vi.fn()}
@@ -216,8 +221,32 @@ describe('Composer', () => {
       />
     )
 
-    const ta = screen.getByRole('textbox', { name: /^Message$/i }) as HTMLTextAreaElement
-    expect(ta.disabled).toBe(true)
+    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    expect(ta.getAttribute('contenteditable')).toBe('true')
     expect(screen.getByRole('button', { name: /^Stop$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Send follow-up$/i })).toBeTruthy()
+  })
+
+  it('shows queued follow-ups with remove', () => {
+    const onRemoveFollowUp = vi.fn()
+    render(
+      <Composer
+        provider="ollama"
+        model="qwen2.5"
+        running
+        hasWorkspace
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+        onProviderModel={vi.fn()}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+        pendingFollowUps={[{ id: 'fu-1', itemId: 'item-1', preview: 'Steer left' }]}
+        onRemoveFollowUp={onRemoveFollowUp}
+      />
+    )
+
+    expect(screen.getByText(/Queued: Steer left/i)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^Remove queued follow-up$/i }))
+    expect(onRemoveFollowUp).toHaveBeenCalledWith('fu-1')
   })
 })
