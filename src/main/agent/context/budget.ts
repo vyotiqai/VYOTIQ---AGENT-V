@@ -4,6 +4,7 @@ import {
   allocateBudgetShares,
   contentWindowFromRaw,
   compactionTriggerFromRaw,
+  toolsBudgetFromRaw,
   DEFAULT_CONTEXT_WINDOW,
   type BudgetLayerShares
 } from '../../../shared/domain/contextBudget'
@@ -36,4 +37,9 @@ export function compactionTriggerTokens(
   triggerRatio = COMPACTION_TRIGGER_RATIO
 ): number {
   return compactionTriggerFromRaw(contextWindowFor(model), triggerRatio)
+}
+
+/** Soft-capped tools budget for provider catalogs (not the raw 18% share). */
+export function toolsBudgetTokens(model: ModelInfo): number {
+  return toolsBudgetFromRaw(contextWindowFor(model))
 }

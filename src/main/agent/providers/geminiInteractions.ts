@@ -13,6 +13,7 @@ import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
 import { formatProviderHttpError } from './httpErrors'
 import { parseDataUrl } from './normalize'
+import { resolveSystemZones, volatileSessionMessage } from './systemZones'
 
 export function serializeToolArgs(value: unknown): string {
   if (value == null) return ''
@@ -56,11 +57,17 @@ function imageContentFromUrl(url: string): Record<string, unknown> | null {
 export function toInteractionsInput(
   messages: ChatMessage[],
   system: string | undefined,
-  continuing: boolean
+  continuing: boolean,
+  opts?: { systemStable?: string; systemVolatile?: string }
 ): string | Array<Record<string, unknown>> {
   const source = continuing ? trailingToolMessages(messages) : messages
+  const zones = resolveSystemZones({
+    system,
+    systemStable: opts?.systemStable,
+    systemVolatile: opts?.systemVolatile
+  })
   const parts: Array<Record<string, unknown>> = []
-  if (!continuing && system) parts.push({ type: 'text', text: system })
+  if (!continuing && zones.stable) parts.push({ type: 'text', text: zones.stable })
 
   for (const m of source) {
     if (m.role === 'user') {
@@ -131,6 +138,10 @@ export function toInteractionsInput(
     }
   }
 
+  if (!continuing && zones.volatile) {
+    parts.push({ type: 'text', text: volatileSessionMessage(zones.volatile).content })
+  }
+
   if (parts.length === 1 && parts[0].type === 'text') return String(parts[0].text)
   return parts
 }
@@ -159,7 +170,10 @@ export async function* streamGeminiInteractions(
 
   const body: Record<string, unknown> = {
     model: req.model,
-    input: toInteractionsInput(req.messages, req.system, continuing),
+    input: toInteractionsInput(req.messages, req.system, continuing, {
+      systemStable: req.systemStable,
+      systemVolatile: req.systemVolatile
+    }),
     stream: true,
     store: true,
   }

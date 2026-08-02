@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   emptyStepUsageTotals,
   mergeStepUsageTotals,
-  stepUsageFromEvent
+  stepUsageFromEvent,
+  stepUsageTotalsFromPersistedEvents
 } from '@shared/utils/runTelemetry'
 
 describe('runTelemetry', () => {
@@ -10,7 +11,7 @@ describe('runTelemetry', () => {
     expect(stepUsageFromEvent({ type: 'status', runId: 'r1', status: 'running' })).toBeNull()
   })
 
-  it('keeps the latest input window and sums output across steps', () => {
+  it('keeps the latest input window, sums billed input, and sums output across steps', () => {
     const first = stepUsageFromEvent({
       type: 'step_usage',
       runId: 'r1',
@@ -33,11 +34,15 @@ describe('runTelemetry', () => {
     expect(second).not.toBeNull()
     expect(mergeStepUsageTotals(first!, second!)).toEqual({
       inputTokens: 300,
+      billedInputTokens: 800,
+      peakInputTokens: 500,
       outputTokens: 30,
       cachedInputTokens: 200,
+      billedCachedInputTokens: 600,
       cacheCreationInputTokens: 0,
       reasoningTokens: 16,
-      steps: 2
+      steps: 2,
+      stepsWithCacheReport: 2
     })
   })
 
@@ -62,6 +67,7 @@ describe('runTelemetry', () => {
     expect(mergeStepUsageTotals(first!, second!)).toMatchObject({
       cachedInputTokens: 280,
       cacheCreationInputTokens: 450,
+      billedInputTokens: 800,
       steps: 2
     })
   })
@@ -70,22 +76,31 @@ describe('runTelemetry', () => {
     const totals = mergeStepUsageTotals(
       {
         inputTokens: 900,
+        billedInputTokens: 900,
+        peakInputTokens: 900,
         outputTokens: 5,
         cachedInputTokens: 700,
+        billedCachedInputTokens: 700,
         cacheCreationInputTokens: 100,
         reasoningTokens: 3,
-        steps: 1
+        steps: 1,
+        stepsWithCacheReport: 1
       },
       {
         inputTokens: 0,
+        billedInputTokens: 0,
+        peakInputTokens: 0,
         outputTokens: 7,
         cachedInputTokens: 0,
+        billedCachedInputTokens: 0,
         cacheCreationInputTokens: 0,
         reasoningTokens: 2,
-        steps: 1
+        steps: 1,
+        stepsWithCacheReport: 0
       }
     )
     expect(totals.inputTokens).toBe(900)
+    expect(totals.billedInputTokens).toBe(900)
     expect(totals.cachedInputTokens).toBe(700)
     expect(totals.cacheCreationInputTokens).toBe(100)
     expect(totals.outputTokens).toBe(12)
@@ -102,16 +117,52 @@ describe('runTelemetry', () => {
     })
     expect(usage?.reasoningTokens).toBe(0)
     expect(usage?.cacheCreationInputTokens).toBe(0)
+    expect(usage?.billedInputTokens).toBe(100)
   })
 
   it('starts from an empty total', () => {
     expect(emptyStepUsageTotals()).toEqual({
       inputTokens: 0,
+      billedInputTokens: 0,
+      peakInputTokens: 0,
       outputTokens: 0,
       cachedInputTokens: 0,
+      billedCachedInputTokens: 0,
       cacheCreationInputTokens: 0,
       reasoningTokens: 0,
-      steps: 0
+      steps: 0,
+      stepsWithCacheReport: 0
     })
+  })
+
+  it('rebuilds cumulative totals from persisted events without trusting process-local billed fields', () => {
+    const totals = stepUsageTotalsFromPersistedEvents([
+      {
+        event: {
+          type: 'step_usage',
+          runId: 'r1',
+          step: 1,
+          inputTokens: 1000,
+          outputTokens: 5,
+          cachedInputTokens: 100,
+          billedInputTokens: 1000
+        }
+      },
+      {
+        event: {
+          type: 'step_usage',
+          runId: 'r1',
+          step: 2,
+          inputTokens: 400,
+          outputTokens: 3,
+          cachedInputTokens: 50,
+          billedInputTokens: 400
+        }
+      }
+    ])
+    expect(totals.billedInputTokens).toBe(1400)
+    expect(totals.billedCachedInputTokens).toBe(150)
+    expect(totals.peakInputTokens).toBe(1000)
+    expect(totals.steps).toBe(2)
   })
 })

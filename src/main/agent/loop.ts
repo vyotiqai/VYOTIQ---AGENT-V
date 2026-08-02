@@ -9,9 +9,8 @@ import type {
 } from '../../shared/ipc'
 import { DEFAULT_SETTINGS } from '../../shared/ipc'
 import { contentDisplayText, contentToText } from '../../shared/ipc'
-import { userMessageDisplayText } from '../../shared/slashCommands'
+import { runGoalFromUserText, findAbsolutePathsInText, outsideWorkspacePathGuidance, stubPastSkillInvocationsInMessages } from '../../shared/slashCommands'
 import {
-  providerNeedsKey,
   resolveProviderChatBaseUrl,
   seedModelsFor
 } from '../../shared/providers'
@@ -34,6 +33,7 @@ import { persistAlwaysAllow } from './toolApprovalStore'
 import { getSecret, hasStoredSecretBlob, secretStatus } from '@main/settings/secrets'
 import { getSettings } from '@main/settings/settings'
 import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/workspace/workspaces'
+import { preflightChatProviderAuth, preflightImageProviderWarning } from './providers/preflight'
 import {
   assembleContext,
   allocateBudget,
@@ -44,7 +44,9 @@ import {
   estimateTextTokensAsync,
   preserveRecentMessagesAsync,
   applyFoldedMessagesWatermark,
+  toolsBudgetTokens,
   trimToolsToBudget,
+  toolCatalogFingerprint,
   type CompactionRecord
 } from './context'
 import { CONTEXT_TRIM_WATERMARK_SUMMARY, isTrimWatermarkCompaction } from './context/types'
@@ -52,8 +54,12 @@ import { executeStepToolCalls } from './executeStepTools'
 import { loadHarness } from './harness'
 import {
   combineLoopHints,
+  loopHintForEvictedMcpTools,
+  loopHintForMcpNotInCatalogFailFast,
   loopHintForOmittedMcpTools,
+  MCP_NOT_IN_CATALOG_FAIL_FAST_THRESHOLD,
   maxParallelReadToolsForFailureStreak,
+  runNoticeForOmittedMcpTools,
   seedKnownPathsFromMessages
 } from './loopPolicy'
 import { MAX_PARALLEL_READ_TOOLS } from './tools/classify'
@@ -87,12 +93,14 @@ import {
   loadEvents,
   loadMessages,
   loadStatus,
+  loadToolCatalogSticky,
   readContract,
   readContractAsync,
   readPlanAsync,
   DEFAULT_PLAN_STUB,
   resumeRun,
   saveCompaction,
+  saveToolCatalogSticky,
   syncMessagesAsync,
   updateStatus,
   flushEventAppends,
@@ -103,12 +111,31 @@ import {
 } from './state'
 import { writeRunReceiptBestEffort } from './runReceipt'
 import { writeTrajectoryArtifactsBestEffort } from './runTrajectory'
+import {
+  emptyStepUsageTotals,
+  mergeStepUsageTotals,
+  stepUsageFromEvent,
+  stepUsageTotalsFromPersistedEvents,
+  type StepUsageTotals
+} from '../../shared/utils/runTelemetry'
+import {
+  billedCacheHitRate,
+  classifyTokenCostHotspot,
+  countKeptToolResultChars,
+  evaluateTokenCostWarnings,
+  stepCacheHitRate,
+  topToolsByCallCount,
+  userFacingTokenCostHint
+} from '../../shared/utils/tokenCost'
+import { finalizeTodosOnRunEnd } from './tools/todo'
 import { toolResultEventForIpc, toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
 import { AGENT_TOOLS } from './types'
 import {
   getMcpServerStatus,
+  isGitMcpNotARepoError,
   listMcpToolDefinitions,
   parseMcpToolName,
+  setMcpStdioWorkspace,
   syncMcpServers
 } from './mcp'
 import { resolveEffectiveMcpServers, resolveMcpServersForSessionMap, mcpSessionMapFingerprint } from '../marketplace/resolve'
@@ -346,8 +373,15 @@ export async function* runAgent(input: {
   let runDir: string | null = null
   let checkpointFlushed = false
   let messages: ChatMessage[] = []
+  let costTotals: StepUsageTotals = emptyStepUsageTotals()
+  let compactionCountThisRun = 0
+  let costLogProvider: ProviderId | string = settings.provider
+  let costLogModel = settings.model
   const writeStatus = (patch: Parameters<typeof updateStatus>[1]): void => {
     if (!runDir || !isCurrentInvoke(runId, invokeId)) return
+    if (patch.status === 'done' || patch.status === 'error' || patch.status === 'cancelled') {
+      finalizeTodosOnRunEnd(runDir, patch.status)
+    }
     updateStatus(runDir, patch)
   }
   const flushWriteCheckpoint = function* (opts?: {
@@ -375,14 +409,14 @@ export async function* runAgent(input: {
     const lastUser = [...(input.messages ?? input.newMessages ?? [])]
       .reverse()
       .find((m) => m.role === 'user')
-    // Prefer what the user typed: an attachment's quoted text would make a
-    // useless goal line for the workspace snapshot and the run list.
-    // Collapse skill/MCP slash injections so sidebar goals aren't the full body blob.
-    const goal = lastUser
-      ? userMessageDisplayText(
-          contentDisplayText(lastUser.content) || contentToText(lastUser.content)
-        ).slice(0, 200)
-      : 'chat'
+    // Prefer what the user typed: do not fall back to contentToText (attachment
+    // dumps) for the durable goal. Collapse skill/MCP slash injections so
+    // sidebar goals aren't the full body blob. Absolute paths are scrubbed from
+    // the goal; outsideWorkspacePathGuidance stays a loop hint only.
+    const displayText = lastUser ? contentDisplayText(lastUser.content) : ''
+    const goal = lastUser ? runGoalFromUserText(displayText) : 'chat'
+    const outsidePaths = lastUser ? findAbsolutePathsInText(displayText) : []
+    const outsidePathHint = outsideWorkspacePathGuidance(outsidePaths)
     let initialStep = 0
 
     if (input.resume) {
@@ -401,6 +435,9 @@ export async function* runAgent(input: {
         messages = diskMessages.map((m) => ({ ...m }))
       }
       await syncMessagesAsync(runDir, messages)
+      // Seed cumulative billed totals from durable step_usage so resume does not
+      // undercount vs the full events.jsonl series (OTel: accumulate per invocation).
+      costTotals = stepUsageTotalsFromPersistedEvents(loadEvents(runDir, runId))
     } else {
       messages = (input.messages ?? []).map((m) => ({ ...m }))
       runDir = createRun(workspace, runId, goal)
@@ -408,7 +445,7 @@ export async function* runAgent(input: {
       await flushMessageAppends(runDir)
     }
 
-    writeStatus({ mode: agentMode, invokeId, error: undefined })
+    writeStatus({ status: 'running', mode: agentMode, invokeId, error: undefined })
     beginWriteCheckpoint(runDir, workspace, lastUserMessageIndex(messages))
 
     if (agentMode === 'plan') {
@@ -469,39 +506,65 @@ export async function* runAgent(input: {
 
     yield { type: 'status', runId, invokeId, status: 'running' }
     appendEvent(runDir, { type: 'status', runId, invokeId, status: 'running' })
+    // Flush so interim receipt sees invokeId (status patches are coalesced).
+    await flushStatusWrites(runDir)
+    // Interim receipt so PlanPanel does not keep a prior invoke's done receipt while live.
+    writeRunReceiptBestEffort({
+      runDir,
+      runId,
+      loadStatus,
+      loadMessages: () => loadMessages(workspace, runId),
+      loadEvents,
+      readContract
+    })
 
     const harness = loadHarness(workspace)
     const providerId: ProviderId = settings.provider
     const provider = getProvider(providerId)
+    costLogProvider = providerId
+    costLogModel = settings.model
 
     let apiKey: string | null = getSecret(providerId)
     const baseUrl = resolveProviderChatBaseUrl(providerId, settings, apiKey)
-    if (providerNeedsKey(providerId, baseUrl ?? settings.ollamaBaseUrl) && !apiKey) {
+    {
       const status = secretStatus()
       const storedBlob = hasStoredSecretBlob(providerId)
-      const message = !status.encryptionAvailable
-        ? 'OS secure storage is unavailable. API keys cannot be decrypted on this system.'
-        : storedBlob
-          ? `API key for ${providerId} is stored but cannot be decrypted. Re-enter it in Settings or restore OS keychain access.`
-          : `API key for ${providerId} is not set. Add it in Settings.`
-      const code = !status.encryptionAvailable
-        ? 'PROVIDER_KEYCHAIN'
-        : storedBlob
-          ? 'PROVIDER_KEY_DECRYPT'
-          : 'PROVIDER_AUTH'
-      logger.warn(message, {
-        scope: 'agent',
-        code,
-        correlationId: runId,
-        provider: providerId
+      const preflight = preflightChatProviderAuth({
+        providerId,
+        apiKey,
+        baseUrl: baseUrl ?? settings.ollamaBaseUrl,
+        encryptionAvailable: status.encryptionAvailable,
+        hasStoredBlob: storedBlob
       })
-      yield { type: 'error', runId, invokeId, message, code }
-      yield* flushWriteCheckpoint()
-      yield { type: 'status', runId, invokeId, status: 'error' }
-      writeStatus({ status: 'error', error: message })
-      appendEvent(runDir, { type: 'error', runId, invokeId, message, code })
-      appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
-      return
+      if (preflight) {
+        logger.warn(preflight.message, {
+          scope: 'agent',
+          code: preflight.code,
+          correlationId: runId,
+          provider: providerId
+        })
+        yield { type: 'error', runId, invokeId, message: preflight.message, code: preflight.code }
+        yield* flushWriteCheckpoint()
+        yield { type: 'status', runId, invokeId, status: 'error' }
+        writeStatus({ status: 'error', error: preflight.message })
+        appendEvent(runDir, {
+          type: 'error',
+          runId,
+          invokeId,
+          message: preflight.message,
+          code: preflight.code
+        })
+        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+        return
+      }
+      const imageWarn = preflightImageProviderWarning(settings)
+      if (imageWarn) {
+        logger.warn(imageWarn, {
+          scope: 'agent',
+          code: 'PROVIDER_AUTH',
+          correlationId: runId
+        })
+      }
     }
 
     let step = initialStep
@@ -593,30 +656,89 @@ export async function* runAgent(input: {
     let toolDefs: { name: string; description: string; parameters: Record<string, unknown> }[] = []
     let toolsJsonEstimate = 0
     let omittedMcpHint: string | undefined
+    let evictedMcpHint: string | undefined
     let lastMcpRefreshFp = ''
     let lastMcpCatalogFp = ''
+    /** Dedup UI notices when the omitted set is unchanged across refreshes. */
+    let lastOmittedMcpNoticeKey = ''
+    let pendingMcpOmittedEv: AgentEvent | null = null
     /** One forced reconnect attempt per run when enabled servers previously failed. */
     let mcpFailureRetried = false
     /** MCP tool names in the current step's provider catalog (post budget trim). */
     let stepMcpToolNames = new Set<string>()
     /** Agent-requested MCP tools to prefer in trimToolsToBudget on later steps. */
     const runPinnedMcpToolNames = new Set<string>()
+    /** Last step each MCP tool was pinned or invoked (idle TTL / LRU). */
+    const mcpLastUsedByName = new Map<string, number>()
+    /** Per-tool not-in-catalog rejection counts (fail-fast after repeats). */
+    const mcpNotInCatalogCounts = new Map<string, number>()
+    /** Kept tool names from the last budget pass — sticky for prompt-cache stability. */
+    let runStickyToolNames: Set<string> | null = null
+    let lastToolCatalogFingerprint = ''
+    const stickyDisk = loadToolCatalogSticky(runDir)
+    if (stickyDisk && stickyDisk.keptNames.length > 0) {
+      runStickyToolNames = new Set(stickyDisk.keptNames)
+      lastToolCatalogFingerprint = stickyDisk.fingerprint
+      const seedStep = Math.max(initialStep, 1)
+      const restoredLastUsed = stickyDisk.mcpLastUsedByName
+      for (const name of stickyDisk.keptNames) {
+        if (name.startsWith('mcp__')) {
+          runPinnedMcpToolNames.add(name)
+          const stamped = restoredLastUsed?.[name]
+          // Prefer persisted last-used so idle TTL survives resume; fall back to
+          // current step when older catalogs omit stamps (avoid instant eviction).
+          mcpLastUsedByName.set(
+            name,
+            typeof stamped === 'number' && stamped >= 1 ? stamped : seedStep
+          )
+        }
+      }
+      logger.info('Restored sticky tool catalog from disk', {
+        scope: 'agent',
+        code: 'TOKEN_COST',
+        runId,
+        keptCount: stickyDisk.keptNames.length,
+        mcpLastUsedRestored: restoredLastUsed ? Object.keys(restoredLastUsed).length : 0,
+        fingerprint: stickyDisk.fingerprint.slice(0, 200)
+      })
+    }
     const invalidateMcpToolCatalogCache = (): void => {
       lastMcpCatalogFp = ''
     }
+
+    const mcpNotInCatalogFailFastHint = (): string | undefined => {
+      const hit = [...mcpNotInCatalogCounts.entries()]
+        .filter(([, n]) => n >= MCP_NOT_IN_CATALOG_FAIL_FAST_THRESHOLD)
+        .map(([name]) => name)
+      return loopHintForMcpNotInCatalogFailFast(hit)
+    }
+
+    const flushPendingMcpOmittedNotice = function* (): Generator<AgentEvent, void> {
+      if (!pendingMcpOmittedEv) return
+      const ev = pendingMcpOmittedEv
+      pendingMcpOmittedEv = null
+      yield ev
+    }
+
+    // Bind stdio MCP cwd / git --repository once per run (not on every step refresh).
+    setMcpStdioWorkspace(workspace)
 
     const refreshMcpToolsForStep = async (): Promise<void> => {
       // Session map unions every open workspace so Force-off only disconnects when
       // no workspace still needs the server. Skip sync when config fingerprint is
       // unchanged (still rebuild tool defs from connected sessions).
-      const refreshFp = `${mcpSessionMapFingerprint()}::${JSON.stringify(marketplaceOverrides ?? null)}`
+      const refreshFp = `${mcpSessionMapFingerprint()}::${JSON.stringify(marketplaceOverrides ?? null)}::${workspace}`
       const configUnchanged = refreshFp === lastMcpRefreshFp
       lastMcpRefreshFp = refreshFp
       const sessionServers = resolveMcpServersForSessionMap()
       const needsFailureRetry =
         !mcpFailureRetried &&
         getMcpServerStatus(sessionServers).some(
-          (s) => s.enabled && !s.connected && Boolean(s.error)
+          (s) =>
+            s.enabled &&
+            !s.connected &&
+            Boolean(s.error) &&
+            !isGitMcpNotARepoError(s.error)
         )
       if (!configUnchanged || needsFailureRetry) {
         if (needsFailureRetry) mcpFailureRetried = true
@@ -639,9 +761,10 @@ export async function* runAgent(input: {
           ])
       )
       const pinnedKey = [...runPinnedMcpToolNames].sort().join(',')
-      const catalogFp = `${refreshFp}::${agentMode}::${settings.autoModeSwitch ? 1 : 0}::${modelInfo.supportsTools === false ? 0 : 1}::${pinnedKey}`
+      const catalogStep = Math.max(step, 1)
+      const catalogFp = `${refreshFp}::${agentMode}::${settings.autoModeSwitch ? 1 : 0}::${modelInfo.supportsTools === false ? 0 : 1}::${pinnedKey}::${catalogStep}`
       if (configUnchanged && catalogFp === lastMcpCatalogFp && lastMcpCatalogFp !== '') {
-        // Fingerprint + mode + pins + tools support unchanged — reuse prior trimmed defs.
+        // Fingerprint + mode + pins + tools support + step unchanged — reuse prior trimmed defs.
         return
       }
       lastMcpCatalogFp = catalogFp
@@ -658,28 +781,100 @@ export async function* runAgent(input: {
               autoModeSwitch: settings.autoModeSwitch
             })
           : []
-      const toolBudget = allocateBudget(modelInfo).tools
+      const toolBudget = toolsBudgetTokens(modelInfo)
       const trimmedTools = trimToolsToBudget(allToolDefs, toolBudget, {
-        pinnedMcpNames: runPinnedMcpToolNames
+        pinnedMcpNames: runPinnedMcpToolNames,
+        deferUnpinnedMcp: true,
+        currentStep: catalogStep,
+        mcpLastUsedByName,
+        ...(runStickyToolNames ? { stickyKeptNames: runStickyToolNames } : {})
       })
+      if (trimmedTools.evictedMcpNames.length > 0) {
+        for (const name of trimmedTools.evictedMcpNames) {
+          runPinnedMcpToolNames.delete(name)
+          mcpLastUsedByName.delete(name)
+        }
+        evictedMcpHint = loopHintForEvictedMcpTools(trimmedTools.evictedMcpNames)
+        logger.info('Evicted idle/excess pinned MCP from sticky catalog', {
+          scope: 'agent',
+          code: 'TOKEN_COST',
+          runId,
+          evictedMcp: trimmedTools.evictedMcpNames.length,
+          evictedPreview: trimmedTools.evictedMcpNames.slice(0, 8).join(', '),
+          pinnedRemaining: runPinnedMcpToolNames.size,
+          step: catalogStep
+        })
+      } else {
+        evictedMcpHint = undefined
+      }
       toolDefs = trimmedTools.tools.map((t) => ({
         name: t.name,
         description: t.description,
         parameters: t.parameters as Record<string, unknown>
       }))
       toolsJsonEstimate = trimmedTools.estimate
+      runStickyToolNames = new Set(trimmedTools.tools.map((t) => t.name))
+      const catalogFinger = trimmedTools.fingerprint || toolCatalogFingerprint(trimmedTools.tools)
+      if (catalogFinger !== lastToolCatalogFingerprint) {
+        logger.info('Tool catalog fingerprint changed', {
+          scope: 'agent',
+          code: 'TOKEN_COST',
+          runId,
+          keptCount: trimmedTools.tools.length,
+          omittedMcp: trimmedTools.omittedMcp,
+          evictedMcp: trimmedTools.evictedMcpNames.length,
+          fingerprint: catalogFinger.slice(0, 200),
+          priorFingerprint: lastToolCatalogFingerprint
+            ? lastToolCatalogFingerprint.slice(0, 200)
+            : undefined
+        })
+        lastToolCatalogFingerprint = catalogFinger
+      }
+      if (runDir) {
+        // Always persist kept names + last-used stamps (TTL must survive resume/crash).
+        saveToolCatalogSticky(
+          runDir,
+          trimmedTools.tools.map((t) => t.name),
+          catalogFinger,
+          mcpLastUsedByName
+        )
+      }
       omittedMcpHint = loopHintForOmittedMcpTools(trimmedTools.omittedMcpNames)
+      if (
+        runNoticeForOmittedMcpTools(trimmedTools.omittedMcp) &&
+        trimmedTools.omittedMcp > 0
+      ) {
+        const noticeKey = `${trimmedTools.omittedMcp}:${trimmedTools.omittedMcpNames.slice(0, 8).join(',')}`
+        if (noticeKey !== lastOmittedMcpNoticeKey) {
+          lastOmittedMcpNoticeKey = noticeKey
+          const ev: AgentEvent = {
+            type: 'mcp_tools_omitted',
+            runId,
+            invokeId,
+            omittedCount: trimmedTools.omittedMcp,
+            omittedPreview: trimmedTools.omittedMcpNames.slice(0, 8).join(', ') || undefined
+          }
+          if (runDir) appendEvent(runDir, ev)
+          pendingMcpOmittedEv = ev
+        }
+      }
       stepMcpToolNames = new Set(
         toolDefs.map((t) => t.name).filter((n) => parseMcpToolName(n) != null)
       )
     }
 
     await refreshMcpToolsForStep()
+    yield* flushPendingMcpOmittedNotice()
     let consecutiveToolFailureSteps = loadStatus(runDir)?.consecutiveToolFailureSteps ?? 0
     const knownPaths = seedKnownPathsFromMessages(messages)
     let overflowRetryUsed = false
     let truncationContinues = 0
     const MAX_TRUNCATION_CONTINUES = 2
+    let costWarnOnce = new Set<string>()
+    const thinkingEffortHigh =
+      settings.thinkingEffort === 'high' ||
+      settings.thinkingEffort === 'xhigh' ||
+      settings.thinkingEffort === 'max'
 
     while (true) {
       if (controller.signal.aborted) break
@@ -706,8 +901,27 @@ export async function* runAgent(input: {
       setStreamInterrupt(runId, stepSoftAbort)
       try {
       writeStatus({ step, status: 'running' })
-      // Steps after the first pick up MCP servers enabled/reconnected mid-run.
-      if (step > 1) await refreshMcpToolsForStep()
+      // Persist skill-body stubs once the invoking turn has follow-up messages.
+      {
+        const skillStub = stubPastSkillInvocationsInMessages(messages)
+        if (skillStub.stubbedCount > 0) {
+          messages = skillStub.messages
+          await syncMessagesAsync(runDir, messages)
+          logger.info('Stubbed past skill invocation bodies in durable history', {
+            scope: 'agent',
+            code: 'TOKEN_COST',
+            runId,
+            stubbedCount: skillStub.stubbedCount
+          })
+        }
+      }
+      // Steps after the first of this invoke pick up MCP servers enabled/reconnected mid-run.
+      // On resume (initialStep >= 1), skip the duplicate sync that would otherwise hit
+      // immediately after the pre-loop refreshMcpToolsForStep.
+      if (step > initialStep + 1) {
+        await refreshMcpToolsForStep()
+        yield* flushPendingMcpOmittedNotice()
+      }
 
       let assistantText = ''
       let thinkingText = ''
@@ -761,7 +975,12 @@ export async function* runAgent(input: {
         pluginRulesSection,
         modeSection:
           modeSectionMarkdown(agentMode, { autoModeSwitch: settings.autoModeSwitch }) ?? undefined,
-        loopHint: combineLoopHints(omittedMcpHint),
+        loopHint: combineLoopHints(
+          omittedMcpHint,
+          evictedMcpHint,
+          mcpNotInCatalogFailFastHint(),
+          outsidePathHint
+        ),
         providerId,
         provider,
         apiKey,
@@ -793,7 +1012,10 @@ export async function* runAgent(input: {
         }
       }
       const { saved: watermarkSaved, event: compactionEv } = emitCompaction(compactionWithWatermark)
-      if (compactionEv) yield compactionEv
+      if (compactionEv) {
+        compactionCountThisRun++
+        yield compactionEv
+      }
       // Working-set / foldedMessages advance only after a successful watermark save
       // (or when there was nothing to persist).
       if (assembled.contextShrunk && watermarkSaved) {
@@ -868,7 +1090,12 @@ export async function* runAgent(input: {
             modeSection:
               modeSectionMarkdown(agentMode, { autoModeSwitch: settings.autoModeSwitch }) ??
               undefined,
-            loopHint: combineLoopHints(omittedMcpHint),
+            loopHint: combineLoopHints(
+          omittedMcpHint,
+          evictedMcpHint,
+          mcpNotInCatalogFailFastHint(),
+          outsidePathHint
+        ),
             providerId,
             provider,
             apiKey,
@@ -1003,8 +1230,12 @@ export async function* runAgent(input: {
         streamAttempt++
         // Any prior attempt may have streamed text, thinking, or tool deltas —
         // tell the UI to drop all of it before the retry starts clean.
+        // Persist the reset so hydrate does not rebuild stale tool_call_delta chrome.
         if (streamAttempt > 1) {
-          yield { type: 'stream_reset', runId, step }
+          const resetEv: AgentEvent = { type: 'stream_reset', runId, step }
+          if (runDir) appendEvent(runDir, resetEv)
+          persistedLiveToolIds.clear()
+          yield resetEv
         }
         assistantText = ''
         thinkingText = ''
@@ -1023,6 +1254,8 @@ export async function* runAgent(input: {
           messages: assembled.messages,
           tools: toolDefs,
           system: assembled.system,
+          systemStable: assembled.systemStable,
+          systemVolatile: assembled.systemVolatile,
           signal: streamSignalFor(runId, controller.signal),
           apiKey,
           baseUrl,
@@ -1115,7 +1348,17 @@ export async function* runAgent(input: {
             }
             if (chunk.usage) {
               lastUsage = chunk.usage
-              const usageEv: AgentEvent = {
+              const cacheFieldsPresent =
+                chunk.usage.cachedInputTokens != null ||
+                chunk.usage.cacheCreationInputTokens != null
+              const layers = {
+                system: assembled.layers.system,
+                history: assembled.layers.history,
+                tools: assembled.layers.tools,
+                buffer: assembled.layers.buffer
+              }
+              const hotspot = classifyTokenCostHotspot(layers)
+              const stepPartial = stepUsageFromEvent({
                 type: 'step_usage',
                 runId,
                 step,
@@ -1124,9 +1367,103 @@ export async function* runAgent(input: {
                 cachedInputTokens: chunk.usage.cachedInputTokens,
                 cacheCreationInputTokens: chunk.usage.cacheCreationInputTokens,
                 reasoningTokens: chunk.usage.reasoningTokens
+              })
+              if (stepPartial) {
+                if (cacheFieldsPresent && stepPartial.stepsWithCacheReport === 0) {
+                  stepPartial.stepsWithCacheReport = 1
+                }
+                costTotals = mergeStepUsageTotals(costTotals, stepPartial)
+              }
+              const usageEv: AgentEvent = {
+                type: 'step_usage',
+                runId,
+                step,
+                inputTokens: chunk.usage.inputTokens,
+                outputTokens: chunk.usage.outputTokens,
+                cachedInputTokens: chunk.usage.cachedInputTokens,
+                cacheCreationInputTokens: chunk.usage.cacheCreationInputTokens,
+                reasoningTokens: chunk.usage.reasoningTokens,
+                billedInputTokens: costTotals.billedInputTokens,
+                peakInputTokens: costTotals.peakInputTokens,
+                cacheReported: cacheFieldsPresent,
+                hotspot,
+                messagesCount: assembled.messages.length,
+                toolDefCount: toolDefs.length,
+                toolResultCharsKept: countKeptToolResultChars(assembled.messages),
+                compactionCountThisRun,
+                layers
               }
               appendEvent(runDir, usageEv)
               yield usageEv
+              const hitRate = stepCacheHitRate(
+                chunk.usage.inputTokens,
+                chunk.usage.cachedInputTokens,
+                cacheFieldsPresent
+              )
+              logger.info('Token cost step', {
+                scope: 'agent',
+                correlationId: runId,
+                provider: providerId,
+                model: settings.model,
+                step,
+                inputTokens: chunk.usage.inputTokens,
+                outputTokens: chunk.usage.outputTokens,
+                reasoningTokens: chunk.usage.reasoningTokens,
+                cachedInputTokens: chunk.usage.cachedInputTokens,
+                cacheCreationInputTokens: chunk.usage.cacheCreationInputTokens,
+                cacheReported: cacheFieldsPresent,
+                cacheHitRateStep: hitRate,
+                billedInputTokens: costTotals.billedInputTokens,
+                peakInputTokens: costTotals.peakInputTokens,
+                hotspot,
+                layers,
+                messagesCount: assembled.messages.length,
+                toolDefCount: toolDefs.length,
+                toolResultCharsKept: countKeptToolResultChars(assembled.messages),
+                compactionCountThisRun
+              })
+              for (const warn of evaluateTokenCostWarnings({
+                estimatedTokens: chunk.usage.inputTokens ?? assembled.estimatedTokens,
+                compactionTrigger,
+                contentWindow: effectiveContentWindow,
+                compactedThisRun: compactionCountThisRun > 0,
+                cacheHitRate: hitRate,
+                stepsWithCacheReport: costTotals.stepsWithCacheReport,
+                largeInput: (chunk.usage.inputTokens ?? 0) >= 20_000,
+                thinkingEnabled: Boolean(settings.thinkingEnabled),
+                thinkingEffortHigh,
+                step,
+                billedInputTokens: costTotals.billedInputTokens
+              })) {
+                // High thinking / long-run boundary re-notify on buckets; other kinds once.
+                const warnOnceKey =
+                  warn.kind === 'high_thinking_on_long_run'
+                    ? `${warn.kind}:${Math.floor(step / 15)}`
+                    : warn.kind === 'long_run_task_boundary'
+                      ? `${warn.kind}:${Math.floor(step / 40)}`
+                      : warn.kind
+                if (costWarnOnce.has(warnOnceKey)) continue
+                costWarnOnce.add(warnOnceKey)
+                logger.warn(`Token cost: ${warn.message}`, {
+                  scope: 'agent',
+                  code: 'TOKEN_COST',
+                  correlationId: runId,
+                  kind: warn.kind,
+                  step
+                })
+                const userMsg = userFacingTokenCostHint(warn.kind, step)
+                if (userMsg) {
+                  const hintEv: AgentEvent = {
+                    type: 'token_cost_hint',
+                    runId,
+                    invokeId,
+                    kind: warn.kind,
+                    message: userMsg
+                  }
+                  appendEvent(runDir, hintEv)
+                  yield hintEv
+                }
+              }
               const providerContextEv: AgentEvent = {
                 type: 'context_usage',
                 runId,
@@ -1138,10 +1475,7 @@ export async function* runAgent(input: {
                 compactionTrigger,
                 source: 'provider',
                 ...(assembled.overflow ? { overflow: true } : {})
-                // Omit pre-stream layers — they are estimate splits and mislead
-                // when paired with provider-reported inputTokens.
               }
-              // Persist so reload/hydration keeps provider-accurate meter (latest wins per step).
               appendEvent(runDir, providerContextEv)
               yield providerContextEv
               if (
@@ -1617,7 +1951,10 @@ export async function* runAgent(input: {
         mcpToolPolicies,
         stepMcpToolNames,
         runPinnedMcpToolNames,
+        mcpLastUsedByName,
+        currentStep: step,
         invalidateMcpToolCatalogCache,
+        mcpNotInCatalogCounts,
         emitLiveEvent: (ev: AgentEvent) => {
           liveEvents.push(ev)
           if (
@@ -1819,6 +2156,34 @@ export async function* runAgent(input: {
           loadEvents,
           receipt
         })
+        if (costTotals.steps > 0) {
+          const avgInput =
+            costTotals.steps > 0
+              ? Math.round(costTotals.billedInputTokens / costTotals.steps)
+              : 0
+          const billedHit = billedCacheHitRate(
+            costTotals.billedInputTokens,
+            costTotals.billedCachedInputTokens
+          )
+          logger.info('Token cost run summary', {
+            scope: 'agent',
+            correlationId: runId,
+            provider: costLogProvider,
+            model: costLogModel,
+            steps: costTotals.steps,
+            billedInputTokens: costTotals.billedInputTokens,
+            peakInputTokens: costTotals.peakInputTokens,
+            avgInputTokensPerStep: avgInput,
+            latestInputTokens: costTotals.inputTokens,
+            outputTokens: costTotals.outputTokens,
+            reasoningTokens: costTotals.reasoningTokens,
+            billedCachedInputTokens: costTotals.billedCachedInputTokens,
+            cacheCreationInputTokens: costTotals.cacheCreationInputTokens,
+            billedCacheHitRate: billedHit,
+            compactionCountThisRun,
+            topToolsByCalls: topToolsByCallCount(receipt?.toolStats?.byName)
+          })
+        }
       }
     } catch (flushErr) {
       logger.warn('Agent run finally persistence failed', {

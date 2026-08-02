@@ -1,8 +1,13 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { cn } from '@renderer/lib/ui/cn'
-import type { ModelInfo, ProviderId, ThinkingEffort } from '@shared/ipc'
+import type { ModelInfo, ProviderId, ThinkingEffort, ThinkingMode } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
-import { modelSupportsThinking } from '@shared/reasoning'
+import { modelSupportsThinking, ollamaThinkingHeuristicFields } from '@shared/reasoning'
+import {
+  nextLowerThinkingEffort,
+  shouldSuggestLowerThinkingEffort,
+  HIGH_THINKING_LONG_RUN_STEP_THRESHOLD
+} from '@shared/utils/tokenCost'
 import { chromePillButton } from './composerChrome'
 
 const ALL_EFFORT_OPTIONS: { value: ThinkingEffort; label: string; short: string }[] = [
@@ -14,19 +19,32 @@ const ALL_EFFORT_OPTIONS: { value: ThinkingEffort; label: string; short: string 
   { value: 'max', label: 'Max', short: 'Max' }
 ]
 
-type ThinkingMode =
+type ThinkingModeOption =
   | { enabled: false; effort: ThinkingEffort | null; label: string; short: string }
   | { enabled: true; effort: ThinkingEffort; label: string; short: string }
 
 function buildModes(
   allowed: readonly ThinkingEffort[] | undefined,
-  canDisable: boolean
-): ThinkingMode[] {
+  canDisable: boolean,
+  thinkingMode: ThinkingMode | undefined,
+  defaultEffort: ThinkingEffort = 'medium'
+): ThinkingModeOption[] {
+  if (thinkingMode === 'boolean') {
+    const on: ThinkingModeOption = {
+      enabled: true,
+      effort: defaultEffort,
+      label: 'On',
+      short: 'On'
+    }
+    if (!canDisable) return [on]
+    return [{ enabled: false, effort: null, label: 'Off', short: 'Off' }, on]
+  }
+
   const options =
     allowed && allowed.length > 0
       ? ALL_EFFORT_OPTIONS.filter((o) => allowed.includes(o.value))
       : ALL_EFFORT_OPTIONS
-  const effortModes: ThinkingMode[] = options.map((o) => ({
+  const effortModes: ThinkingModeOption[] = options.map((o) => ({
     enabled: true as const,
     effort: o.value,
     label: o.label,
@@ -36,7 +54,11 @@ function buildModes(
   return [{ enabled: false, effort: null, label: 'Off', short: 'Off' }, ...effortModes]
 }
 
-function modeIndex(modes: ThinkingMode[], enabled: boolean, effort: ThinkingEffort): number {
+function modeIndex(
+  modes: ThinkingModeOption[],
+  enabled: boolean,
+  effort: ThinkingEffort
+): number {
   if (!enabled) {
     const off = modes.findIndex((m) => !m.enabled)
     return off >= 0 ? off : 0
@@ -47,10 +69,43 @@ function modeIndex(modes: ThinkingMode[], enabled: boolean, effort: ThinkingEffo
   return firstOn >= 0 ? firstOn : 0
 }
 
-function nextMode(modes: ThinkingMode[], index: number, reverse: boolean): ThinkingMode {
+function nextMode(
+  modes: ThinkingModeOption[],
+  index: number,
+  reverse: boolean
+): ThinkingModeOption {
   const len = modes.length
   const next = reverse ? (index - 1 + len) % len : (index + 1) % len
   return modes[next]!
+}
+
+/** Resolve catalog fields with Ollama heuristic fallback when API omits thinking mode. */
+function resolveThinkingUiMeta(
+  provider: ProviderId,
+  model: string,
+  modelMeta?: ModelInfo | null
+): {
+  thinkingMode?: ThinkingMode
+  supportedThinkingEfforts?: ThinkingEffort[]
+  thinkingCanDisable: boolean
+  thinkingDefaultEffort: ThinkingEffort
+} {
+  const ollamaFallback =
+    provider === 'ollama' &&
+    (modelMeta?.supportsThinking === true ||
+      (modelMeta?.supportsThinking !== false && modelSupportsThinking(model, 'ollama')))
+      ? ollamaThinkingHeuristicFields(model)
+      : undefined
+
+  return {
+    thinkingMode: modelMeta?.thinkingMode ?? ollamaFallback?.thinkingMode,
+    supportedThinkingEfforts:
+      modelMeta?.supportedThinkingEfforts ?? ollamaFallback?.supportedThinkingEfforts,
+    thinkingCanDisable:
+      modelMeta?.thinkingCanDisable ?? ollamaFallback?.thinkingCanDisable ?? true,
+    thinkingDefaultEffort:
+      modelMeta?.thinkingDefaultEffort ?? ollamaFallback?.thinkingDefaultEffort ?? 'medium'
+  }
 }
 
 /** Catalog true wins; explicit false hides; missing meta/field falls back to ID heuristic. */
@@ -72,6 +127,7 @@ export function ThinkingControls({
   onChatSettingsChange,
   disabled,
   running = false,
+  runSteps = 0,
   className
 }: {
   provider: ProviderId
@@ -82,13 +138,26 @@ export function ThinkingControls({
   onChatSettingsChange: (patch: ChatSettingsPatch) => void
   disabled?: boolean
   running?: boolean
+  /** Cumulative agent steps this run — gates the optional “Lower” suggestion chip. */
+  runSteps?: number
   className?: string
 }) {
-  const canDisable = modelMeta?.thinkingCanDisable !== false
-  const modes = useMemo(
-    () => buildModes(modelMeta?.supportedThinkingEfforts, canDisable),
-    [modelMeta?.supportedThinkingEfforts, canDisable]
+  const ui = useMemo(
+    () => resolveThinkingUiMeta(provider, model, modelMeta),
+    [provider, model, modelMeta]
   )
+  const modes = useMemo(
+    () =>
+      buildModes(
+        ui.supportedThinkingEfforts,
+        ui.thinkingCanDisable,
+        ui.thinkingMode,
+        ui.thinkingDefaultEffort
+      ),
+    [ui.supportedThinkingEfforts, ui.thinkingCanDisable, ui.thinkingMode, ui.thinkingDefaultEffort]
+  )
+
+  const [dismissedSuggestKey, setDismissedSuggestKey] = useState<string | null>(null)
 
   const advance = useCallback(
     (reverse: boolean) => {
@@ -122,13 +191,64 @@ export function ThinkingControls({
       ? `Thinking ${current.label}. Click for ${upcoming.label}.`
       : `Thinking off. Click for ${upcoming.label}.`
 
+  const costHint =
+    on &&
+    (current.effort === 'high' || current.effort === 'xhigh' || current.effort === 'max')
+      ? ' Higher effort bills more reasoning tokens on every step.'
+      : ''
+
+  const suggestKey =
+    on && current.effort
+      ? `${provider}:${model}:${current.effort}:${runSteps >= HIGH_THINKING_LONG_RUN_STEP_THRESHOLD ? 'long' : 'short'}`
+      : null
+  const lowerTarget =
+    on && current.effort
+      ? (nextLowerThinkingEffort(current.effort, ui.supportedThinkingEfforts) as ThinkingEffort | null)
+      : null
+  const showSuggestLower =
+    Boolean(lowerTarget) &&
+    suggestKey != null &&
+    dismissedSuggestKey !== suggestKey &&
+    shouldSuggestLowerThinkingEffort({
+      thinkingEnabled: on,
+      thinkingEffort: current.effort,
+      steps: runSteps,
+      thinkingMode: ui.thinkingMode
+    })
+
+  const applyLower = (): void => {
+    if (!lowerTarget || disabled) return
+    onChatSettingsChange({
+      thinkingEnabled: true,
+      thinkingEffort: lowerTarget
+    })
+  }
+
+  const dismissSuggest = (): void => {
+    if (suggestKey) setDismissedSuggestKey(suggestKey)
+  }
+
+  const lowerLabel =
+    lowerTarget != null
+      ? ALL_EFFORT_OPTIONS.find((o) => o.value === lowerTarget)?.short ?? lowerTarget
+      : ''
+
+  const lowerLocked = Boolean(disabled)
+  const lowerTitle = running
+    ? `Queue ${lowerLabel} for the next message — this run keeps its current effort (never auto-changed).`
+    : `Lower thinking to ${lowerLabel}. Applies only when you click — never automatic.`
+
   return (
-    <div className={cn('relative flex h-7 shrink-0 items-center', className)}>
+    <div className={cn('relative flex h-7 shrink-0 items-center gap-0.5', className)}>
       <button
         type="button"
         disabled={locked}
         aria-label={ariaLabel}
-        title={running ? ariaLabel : `${ariaLabel} Shift-click for previous.`}
+        title={
+          running
+            ? ariaLabel
+            : `${ariaLabel} Shift-click for previous.${costHint}`
+        }
         className={cn(chromePillButton, 'gap-0', on ? 'text-fg' : 'text-muted')}
         onClick={(e) => {
           e.preventDefault()
@@ -142,6 +262,43 @@ export function ThinkingControls({
           <span className={on ? 'text-fg' : 'text-tertiary'}>{current.short}</span>
         </span>
       </button>
+      {showSuggestLower ? (
+        <span
+          className="inline-flex h-7 items-center gap-0.5 rounded-md border border-warning/40 bg-warning/10 px-1 text-[10px] leading-tight text-warning"
+          role="status"
+        >
+          <button
+            type="button"
+            disabled={lowerLocked}
+            className={cn(
+              'rounded px-1 font-medium vy-transition hover:bg-warning/20',
+              'disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
+            )}
+            title={lowerTitle}
+            aria-label={`Lower thinking effort to ${lowerLabel}`}
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              applyLower()
+            }}
+          >
+            Lower · {lowerLabel}
+          </button>
+          <button
+            type="button"
+            className="rounded px-0.5 text-warning/80 vy-transition hover:bg-warning/20 hover:text-warning"
+            aria-label="Dismiss lower-thinking suggestion"
+            title="Dismiss"
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              dismissSuggest()
+            }}
+          >
+            ×
+          </button>
+        </span>
+      ) : null}
     </div>
   )
 }

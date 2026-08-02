@@ -34,6 +34,13 @@ import { clearWorkspaceSnapshotCache } from '../context/workspaceSnapshot'
 import { commitAll } from '@main/git/git'
 import { invalidateGitStatusCache } from '@main/git/gitStatusCache'
 import { clearGitignoreMatcherCache } from './gitignore'
+import type { ToolApprovalGate } from '../toolApproval'
+import {
+  MCP_NOT_IN_CATALOG_FAIL_FAST_THRESHOLD,
+  mcpNotInCatalogErrorMessage,
+  mcpNotInCatalogFailFastMessage,
+  recordMcpNotInCatalogFailure
+} from '../loopPolicy'
 import {
   assertToolAllowedInMode,
   isPlanArtifactPath,
@@ -125,11 +132,25 @@ export type ToolExecutionContext = {
    * Applied on the next refresh/trim (not mid-stream).
    */
   runPinnedMcpToolNames?: Set<string>
+  /** Last step each MCP tool was pinned or invoked (idle TTL / LRU). */
+  mcpLastUsedByName?: Map<string, number>
+  /** Current agent step (for pin / invoke last-used stamps). */
+  currentStep?: number
   /** Invalidate the loop MCP catalog cache after pinning. */
   invalidateMcpToolCatalogCache?: () => void
+  /**
+   * Run-scoped counts of MCP not-in-catalog rejections (per full tool name).
+   * Used to fail-fast after repeated retries of the same omitted tool.
+   */
+  mcpNotInCatalogCounts?: Map<string, number>
   /** Nested attribution for ask_question / approval UI under the parent tool row. */
   parentToolCallId?: string
   subagentId?: string
+  /**
+   * Parent tool-approval gate. Nested agents must reuse this so session allowlists
+   * and pending prompts stay shared with the main run.
+   */
+  approval?: ToolApprovalGate
 }
 
 type ToolHandler = (
@@ -755,7 +776,14 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       unknown.push(name)
     }
 
-    if (newlyPinned.length > 0) context.invalidateMcpToolCatalogCache?.()
+    if (newlyPinned.length > 0) {
+      const stamp = Math.max(context.currentStep ?? 1, 1)
+      const lastUsed = context.mcpLastUsedByName
+      if (lastUsed) {
+        for (const name of newlyPinned) lastUsed.set(name, stamp)
+      }
+      context.invalidateMcpToolCatalogCache?.()
+    }
 
     const lines = [
       newlyPinned.length
@@ -763,11 +791,102 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
         : 'No new tools pinned.',
       already.length ? `Already pinned: ${already.join(', ')}` : '',
       unknown.length ? `Unknown / unresolved: ${unknown.join(', ')}` : '',
-      'Definitions are offered on the next model step if they fit the tools token budget.'
+      'Definitions are append-admitted into the sticky catalog on the next model step (prior tool order kept). Idle pins may later unload (TTL / soft max); call release_mcp_tools when done.'
     ].filter(Boolean)
     return toolOk(
       'request_mcp_tools',
       `${newlyPinned.length} pinned`,
+      lines.join('\n')
+    )
+  },
+  release_mcp_tools: (_workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    const pinned = context.runPinnedMcpToolNames
+    if (!pinned) {
+      return toolFail(
+        'release_mcp_tools',
+        'release',
+        'release_mcp_tools requires an active agent run.'
+      )
+    }
+    const serverId =
+      (typeof args.serverId === 'string' && args.serverId.trim()) ||
+      (typeof args.server_id === 'string' && args.server_id.trim()) ||
+      ''
+    const requested = Array.isArray(args.tools)
+      ? args.tools.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+      : []
+    if (!serverId && requested.length === 0) {
+      return toolFail(
+        'release_mcp_tools',
+        'release',
+        'Provide tools: string[] and/or serverId to release pinned MCP tools.'
+      )
+    }
+
+    const toRelease = new Set<string>()
+    const unknown: string[] = []
+
+    if (serverId) {
+      const needle = serverId.toLowerCase()
+      let found = 0
+      for (const name of pinned) {
+        const parsed = parseMcpToolName(name)
+        if (parsed?.serverId.toLowerCase() === needle) {
+          toRelease.add(name)
+          found++
+        }
+      }
+      if (found === 0) {
+        return toolFail(
+          'release_mcp_tools',
+          serverId,
+          `No pinned MCP tools for serverId=${serverId}.`
+        )
+      }
+    }
+
+    for (const raw of requested) {
+      const name = raw.trim()
+      if (pinned.has(name) || toRelease.has(name)) {
+        toRelease.add(name)
+        continue
+      }
+      const bareMatches = [...pinned].filter((full) => {
+        const parsed = parseMcpToolName(full)
+        return parsed?.toolName === name
+      })
+      if (bareMatches.length === 1) {
+        toRelease.add(bareMatches[0]!)
+        continue
+      }
+      if (bareMatches.length > 1) {
+        unknown.push(`${name} (ambiguous: ${bareMatches.join(', ')})`)
+        continue
+      }
+      unknown.push(name)
+    }
+
+    const released: string[] = []
+    for (const name of toRelease) {
+      if (!pinned.has(name)) continue
+      pinned.delete(name)
+      context.mcpLastUsedByName?.delete(name)
+      released.push(name)
+    }
+
+    if (released.length > 0) context.invalidateMcpToolCatalogCache?.()
+
+    const lines = [
+      released.length
+        ? `Released (${released.length}): ${released.join(', ')}`
+        : 'No pinned tools released.',
+      unknown.length ? `Unknown / unresolved: ${unknown.join(', ')}` : '',
+      'Schemas drop from the sticky catalog on the next model step. Re-pin with request_mcp_tools if needed.'
+    ].filter(Boolean)
+    return toolOk(
+      'release_mcp_tools',
+      `${released.length} released`,
       lines.join('\n')
     )
   },
@@ -859,6 +978,7 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
         runId: context.runId,
         invokeId: context.invokeId,
         parentToolCallId: context.toolCallId,
+        approval: context.approval,
         emit: context.onProgress,
         emitAgentEvent: context.emitAgentEvent,
         onContextUsage: context.onSubagentContextUsage
@@ -871,13 +991,24 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       ? `Persisted report: ${outcome.reportRel} (re-read with \`read\` after compaction).\n\n`
       : ''
     if (!outcome.ok) return toolFail('subagent', summary, `${persisted}${outcome.report}`)
-    return toolOk('subagent', summary, `${persisted}${outcome.report}`)
+    // When the full report is on disk, keep only a short inline preview in parent
+    // history — otherwise every later parent step re-sends up to ~6k chars (AppData).
+    const SUBAGENT_INLINE_PREVIEW_CHARS = 480
+    const reportInline =
+      outcome.reportRel && outcome.report.length > SUBAGENT_INLINE_PREVIEW_CHARS
+        ? `${outcome.report.slice(0, SUBAGENT_INLINE_PREVIEW_CHARS)}\n…(full report on disk; re-read with \`read\`)`
+        : outcome.report
+    return toolOk('subagent', summary, `${persisted}${reportInline}`)
   },
   ask_question: async (_workspace, args, signal, context) => {
     throwIfAborted(signal)
     const normalized = normalizeAskQuestionArgs(args as Record<string, unknown>)
     if (!normalized.ok) {
-      return toolFail('ask_question', 'question', normalized.error)
+      return toolFail(
+        'ask_question',
+        'invalid question',
+        `${normalized.error} Fix the question payload (title/options) and call ask_question again - this is not a user dismissal.`
+      )
     }
     const { form } = normalized
     const summary = askQuestionSummary(form)
@@ -902,14 +1033,20 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
         return toolFail(
           'ask_question',
           summary,
-          'Question timed out without a response. Continue without waiting, or ask again.'
+          'Question timed out or was dismissed without answers. Continue with a reasonable default, or ask again with a shorter question.'
         )
       }
       return toolOk('ask_question', summary, formatQuestionAnswers(form, answers))
     } catch (err) {
       if (isAbortError(err)) throw err
       const message = err instanceof Error ? err.message : 'Question failed'
-      return toolFail('ask_question', summary, message)
+      return toolFail(
+        'ask_question',
+        summary,
+        /window is listening|none is listening/i.test(message)
+          ? `${message} This is transient - retry ask_question once the UI is ready.`
+          : message
+      )
     }
   },
   switch_mode: async (_workspace, args, signal, context) => {
@@ -1240,10 +1377,19 @@ export async function executeTool(
       )
     }
     if (context.stepMcpToolNames && !context.stepMcpToolNames.has(name)) {
+      const counts = context.mcpNotInCatalogCounts
+      const failureCount = counts
+        ? recordMcpNotInCatalogFailure(counts, name)
+        : 1
+      if (failureCount >= MCP_NOT_IN_CATALOG_FAIL_FAST_THRESHOLD) {
+        return toolFail(name, name, mcpNotInCatalogFailFastMessage(name, failureCount))
+      }
       return toolFail(
         name,
         name,
-        `MCP tool "${name}" is not in this step's tool catalog (omitted by context budget or mode). Use mcp_list_tools then request_mcp_tools to pin it for the next step.`
+        mcpNotInCatalogErrorMessage(name, {
+          alreadyPinned: context.runPinnedMcpToolNames?.has(name) === true
+        })
       )
     }
     const policy = context.mcpToolPolicies?.get(mcp.serverId)
@@ -1270,6 +1416,8 @@ export async function executeTool(
       })
       return toolFail(name, 'invalid args', checked.error)
     }
+    const stamp = Math.max(context.currentStep ?? 1, 1)
+    context.mcpLastUsedByName?.set(name, stamp)
     return invokeMcpTool(
       mcp.serverId,
       mcp.toolName,

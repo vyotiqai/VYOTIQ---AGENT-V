@@ -232,6 +232,64 @@ describe('ThinkingControls', () => {
     })
   })
 
+  it('shows Off/On for Ollama boolean think models including cloud IDs', () => {
+    const onChatSettingsChange = vi.fn()
+    render(
+      <ThinkingControls
+        provider="ollama"
+        model="deepseek-v3.1:671b-cloud"
+        chatSettings={{
+          ...chatSettings,
+          provider: 'ollama',
+          model: 'deepseek-v3.1:671b-cloud',
+          thinkingEnabled: false
+        }}
+        onChatSettingsChange={onChatSettingsChange}
+      />
+    )
+    expect(thinkingButton().textContent).toMatch(/Off/)
+    fireEvent.click(thinkingButton())
+    expect(onChatSettingsChange).toHaveBeenCalledWith({
+      thinkingEnabled: true,
+      thinkingEffort: 'medium'
+    })
+  })
+
+  it('shows low/medium/high without Off for Ollama gpt-oss cloud', () => {
+    const onChatSettingsChange = vi.fn()
+    render(
+      <ThinkingControls
+        provider="ollama"
+        model="gpt-oss:120b-cloud"
+        modelMeta={{
+          id: 'gpt-oss:120b-cloud',
+          inputModalities: ['text'],
+          outputModalities: ['text'],
+          supportsTools: true,
+          supportsVision: false,
+          supportsThinking: true,
+          thinkingMode: 'effort',
+          thinkingCanDisable: false,
+          supportedThinkingEfforts: ['low', 'medium', 'high'],
+          thinkingDefaultEffort: 'medium'
+        }}
+        chatSettings={{
+          ...chatSettings,
+          provider: 'ollama',
+          model: 'gpt-oss:120b-cloud',
+          thinkingEffort: 'medium'
+        }}
+        onChatSettingsChange={onChatSettingsChange}
+      />
+    )
+    expect(thinkingButton().textContent).toMatch(/Med/)
+    fireEvent.click(thinkingButton())
+    expect(onChatSettingsChange).toHaveBeenCalledWith({
+      thinkingEnabled: true,
+      thinkingEffort: 'high'
+    })
+  })
+
   it('does not clip short Think label with overflow-hidden', () => {
     render(
       <ThinkingControls
@@ -248,5 +306,87 @@ describe('ThinkingControls', () => {
     expect(label!.className).not.toMatch(/\btruncate\b/)
     expect(label!.className).toMatch(/leading-tight/)
     expect(button.textContent).toMatch(/Think/)
+  })
+
+  it('shows Lower chip on high effort after long-run step threshold', () => {
+    const onChatSettingsChange = vi.fn()
+    render(
+      <ThinkingControls
+        provider="openai"
+        model="gpt-5.6"
+        chatSettings={{ ...chatSettings, thinkingEffort: 'high' }}
+        onChatSettingsChange={onChatSettingsChange}
+        runSteps={10}
+      />
+    )
+    const lower = screen.getByRole('button', { name: /Lower thinking effort to Med/i })
+    fireEvent.click(lower)
+    expect(onChatSettingsChange).toHaveBeenCalledWith({
+      thinkingEnabled: true,
+      thinkingEffort: 'medium'
+    })
+  })
+
+  it('hides Lower chip below step threshold and for medium effort', () => {
+    const { rerender } = render(
+      <ThinkingControls
+        provider="openai"
+        model="gpt-5.6"
+        chatSettings={{ ...chatSettings, thinkingEffort: 'high' }}
+        onChatSettingsChange={vi.fn()}
+        runSteps={9}
+      />
+    )
+    expect(screen.queryByRole('button', { name: /Lower thinking effort/i })).toBeNull()
+
+    rerender(
+      <ThinkingControls
+        provider="openai"
+        model="gpt-5.6"
+        chatSettings={{ ...chatSettings, thinkingEffort: 'medium' }}
+        onChatSettingsChange={vi.fn()}
+        runSteps={20}
+      />
+    )
+    expect(screen.queryByRole('button', { name: /Lower thinking effort/i })).toBeNull()
+  })
+
+  it('dismisses Lower chip without changing settings', () => {
+    const onChatSettingsChange = vi.fn()
+    render(
+      <ThinkingControls
+        provider="openai"
+        model="gpt-5.6"
+        chatSettings={{ ...chatSettings, thinkingEffort: 'max' }}
+        onChatSettingsChange={onChatSettingsChange}
+        runSteps={12}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Dismiss lower-thinking suggestion/i }))
+    expect(onChatSettingsChange).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: /Lower thinking effort/i })).toBeNull()
+  })
+
+  it('allows Lower while running so next message can use queued effort', () => {
+    const onChatSettingsChange = vi.fn()
+    render(
+      <ThinkingControls
+        provider="openai"
+        model="gpt-5.6"
+        chatSettings={{ ...chatSettings, thinkingEffort: 'xhigh' }}
+        onChatSettingsChange={onChatSettingsChange}
+        running
+        runSteps={15}
+      />
+    )
+    expect(screen.getByRole('button', { name: /locked while running/i })).toHaveProperty(
+      'disabled',
+      true
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Lower thinking effort to High/i }))
+    expect(onChatSettingsChange).toHaveBeenCalledWith({
+      thinkingEnabled: true,
+      thinkingEffort: 'high'
+    })
   })
 })

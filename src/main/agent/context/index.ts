@@ -1,5 +1,5 @@
 export { assembleContext, clearSystemPromptCache, estimateToolsJson } from './assemble'
-export { allocateBudget, contextWindowFor, effectiveWindow, compactionTriggerTokens, contentWindow } from './budget'
+export { allocateBudget, contextWindowFor, effectiveWindow, compactionTriggerTokens, contentWindow, toolsBudgetTokens } from './budget'
 export { compactMessages, preserveRecentMessages, preserveRecentMessagesAsync } from './compact'
 export {
   estimateContentTokens,
@@ -32,8 +32,13 @@ export {
   writeMemoryFile,
   memoryRoot
 } from './memory'
-export { trimToolsToBudget } from './toolsBudget'
+export { trimToolsToBudget, toolCatalogFingerprint, selectMcpPinsToEvict } from './toolsBudget'
 export { trimToolResults } from './toolTrim'
+export {
+  COMPACTION_LLM_MIN_FOLD_TOKENS,
+  residualFloorAfterFold,
+  shouldInvokeCompactionLlm
+} from './compactionPayback'
 export { estimateSubagentOverheadTokens } from './subagentContext'
 export {
   applyFoldedMessagesWatermark,

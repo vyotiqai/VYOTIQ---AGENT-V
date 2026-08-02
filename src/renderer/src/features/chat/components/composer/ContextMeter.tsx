@@ -8,6 +8,7 @@ import {
   type ContextUsageState
 } from '@shared/utils/contextUsage'
 import type { StepUsageTotals } from '@shared/utils/runTelemetry'
+import { shouldShowTaskBoundaryTip } from '@shared/utils/tokenCost'
 import {
   clampComposerDropdownPanel,
   composerDropdownSectionHeader
@@ -126,6 +127,12 @@ export function cacheHitPct(totals: StepUsageTotals): number | null {
   return Math.round((totals.cachedInputTokens / totals.inputTokens) * 100)
 }
 
+/** Run-level cache hit share from summed step cache / billed input. */
+export function billedCacheHitPct(totals: StepUsageTotals): number | null {
+  if (totals.billedCachedInputTokens <= 0 || totals.billedInputTokens <= 0) return null
+  return Math.round((totals.billedCachedInputTokens / totals.billedInputTokens) * 100)
+}
+
 function PromptCacheSection({ totals }: { totals: StepUsageTotals }) {
   const hitPct = cacheHitPct(totals)
   const hasHit = totals.cachedInputTokens > 0
@@ -185,18 +192,34 @@ function PromptCacheSection({ totals }: { totals: StepUsageTotals }) {
 }
 
 function StepUsageSection({ totals }: { totals: StepUsageTotals }) {
-  if (totals.steps <= 0 && totals.outputTokens <= 0 && totals.reasoningTokens <= 0) {
+  if (
+    totals.steps <= 0 &&
+    totals.outputTokens <= 0 &&
+    totals.reasoningTokens <= 0 &&
+    totals.billedInputTokens <= 0
+  ) {
     return null
   }
   const reasoningPct =
     totals.reasoningTokens > 0 && totals.outputTokens > 0
       ? Math.round((totals.reasoningTokens / totals.outputTokens) * 100)
       : null
+  const runHit = billedCacheHitPct(totals)
+  const taskBoundary = shouldShowTaskBoundaryTip({
+    steps: totals.steps,
+    billedInputTokens: totals.billedInputTokens
+  })
 
   return (
     <PanelSection title="Step usage" className="border-t border-border">
       <div className="flex flex-col gap-1.5">
         {totals.steps > 0 ? <MetricRow label="Steps" value={String(totals.steps)} /> : null}
+        {totals.billedInputTokens > 0 ? (
+          <MetricRow label="Billed input" value={formatTokens(totals.billedInputTokens)} />
+        ) : null}
+        {totals.peakInputTokens > 0 ? (
+          <MetricRow label="Peak input" value={formatTokens(totals.peakInputTokens)} />
+        ) : null}
         {totals.outputTokens > 0 ? (
           <MetricRow label="Output" value={formatTokens(totals.outputTokens)} />
         ) : null}
@@ -204,7 +227,23 @@ function StepUsageSection({ totals }: { totals: StepUsageTotals }) {
           <MetricRow
             label="Reasoning"
             value={`${formatTokens(totals.reasoningTokens)}${reasoningPct != null ? ` · ${reasoningPct}%` : ''}`}
+            tone={reasoningPct != null && reasoningPct >= 40 ? 'text-warning' : undefined}
           />
+        ) : null}
+        {reasoningPct != null && reasoningPct >= 40 ? (
+          <p className="m-0 text-[10px] leading-snug text-secondary">
+            Reasoning is a large share of output — lower Think effort for simpler work (settings are
+            never changed automatically).
+          </p>
+        ) : null}
+        {runHit != null ? (
+          <MetricRow label="Run cache hit" value={`${runHit}%`} tone="text-success" />
+        ) : null}
+        {taskBoundary ? (
+          <p className="m-0 text-[10px] leading-snug text-warning" role="status">
+            Long run — /clear (new chat) zeros history for an unrelated task; /compact keeps
+            continuity on this one.
+          </p>
         ) : null}
       </div>
     </PanelSection>
@@ -353,8 +392,13 @@ function ContextMeterPanel({
           ) : null}
           {usage.overflow ? (
             <p className="m-0 mt-2 text-[10px] leading-snug text-danger" role="alert">
-              Context still exceeds the model window after compaction. Older turns may need manual
-              compacting, or start a new chat.
+              Context still exceeds the model window after compaction. Run /compact with a focus, or
+              /clear (new chat) when starting an unrelated task.
+            </p>
+          ) : usage.used >= usage.compactionTrigger ? (
+            <p className="m-0 mt-2 text-[10px] leading-snug text-warning" role="status">
+              Past the compaction line — /compact keeps continuity; /clear is free when switching
+              tasks.
             </p>
           ) : null}
         </PanelSection>

@@ -456,6 +456,21 @@ const requestMcpToolsArgs = z.object({
   server_id: z.string().describe('Deprecated alias for serverId').optional()
 })
 
+const releaseMcpToolsArgs = z.object({
+  tools: z
+    .array(z.string().min(1).max(200))
+    .max(32)
+    .describe(
+      'Full MCP tool names (mcp__server__tool) and/or bare tool names to release from the sticky catalog'
+    )
+    .optional(),
+  serverId: z
+    .string()
+    .describe('Release every pinned tool from this MCP server id')
+    .optional(),
+  server_id: z.string().describe('Deprecated alias for serverId').optional()
+})
+
 const mcpListResourcesArgs = z.object({
   serverId: z
     .string()
@@ -873,6 +888,11 @@ const TOOL_REGISTRY = {
     description:
       'Pin MCP tool definitions into the next step provider catalog (budget-permitting). Effect applies on the following step, not mid-stream. Pass full mcp__server__tool names and/or a serverId.',
     schema: requestMcpToolsArgs
+  },
+  release_mcp_tools: {
+    description:
+      'Unpin MCP tool definitions so they drop from the sticky step catalog on the next model step (frees schema tokens). Re-pin with request_mcp_tools if needed. Pass full mcp__server__tool names and/or a serverId.',
+    schema: releaseMcpToolsArgs
   },
   mcp_list_resources: {
     description:

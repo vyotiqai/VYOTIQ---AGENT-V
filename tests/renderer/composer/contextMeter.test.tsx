@@ -22,11 +22,15 @@ const baseUsage: ContextUsageState = {
   layers: { system: 5000, history: 32000, tools: 7000, buffer: 19200 },
   stepUsage: {
     inputTokens: 45000,
+    billedInputTokens: 120000,
+    peakInputTokens: 45000,
     outputTokens: 1200,
     cachedInputTokens: 20000,
+    billedCachedInputTokens: 50000,
     cacheCreationInputTokens: 0,
     reasoningTokens: 0,
-    steps: 3
+    steps: 3,
+    stepsWithCacheReport: 3
   },
   updatedAt: '2026-01-01T12:00:00.000Z'
 }
@@ -74,8 +78,9 @@ describe('ContextMeter', () => {
     expect(screen.getByText(/^Layers$/i)).toBeTruthy()
     expect(screen.getByText(/^Telemetry$/i)).toBeTruthy()
     expect(screen.getByText(/^Prompt cache$/i)).toBeTruthy()
-    expect(screen.getByText(/Cache hit/i)).toBeTruthy()
+    expect(screen.getAllByText(/Cache hit/i).length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText(/Step usage/i)).toBeTruthy()
+    expect(screen.getByText(/Billed input/i)).toBeTruthy()
     expect(screen.getByText(/Compaction at/i)).toBeTruthy()
     expect(screen.getByText(/Content budget/i)).toBeTruthy()
     expect(screen.getByText(/Step 3 · 128k window/i)).toBeTruthy()
@@ -126,6 +131,23 @@ describe('ContextMeter', () => {
     expect(screen.getByText(/^Delta$/i)).toBeTruthy()
     expect(screen.getByText('+1k')).toBeTruthy()
   })
+
+  it('shows task-boundary tip when billed input or steps cross thresholds', () => {
+    render(
+      <ContextMeter
+        usage={{
+          ...baseUsage,
+          stepUsage: {
+            ...baseUsage.stepUsage,
+            steps: 40,
+            billedInputTokens: 1_200_000
+          }
+        }}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /context window/i }))
+    expect(screen.getByText(/Long run — \/clear/i)).toBeTruthy()
+  })
 })
 
 describe('cacheHitPct', () => {
@@ -133,11 +155,15 @@ describe('cacheHitPct', () => {
     expect(
       cacheHitPct({
         inputTokens: 1000,
+        billedInputTokens: 1000,
+        peakInputTokens: 1000,
         outputTokens: 0,
         cachedInputTokens: 0,
+        billedCachedInputTokens: 0,
         cacheCreationInputTokens: 100,
         reasoningTokens: 0,
-        steps: 1
+        steps: 1,
+        stepsWithCacheReport: 1
       })
     ).toBeNull()
   })
@@ -146,11 +172,15 @@ describe('cacheHitPct', () => {
     expect(
       cacheHitPct({
         inputTokens: 45000,
+        billedInputTokens: 45000,
+        peakInputTokens: 45000,
         outputTokens: 0,
         cachedInputTokens: 20000,
+        billedCachedInputTokens: 20000,
         cacheCreationInputTokens: 0,
         reasoningTokens: 0,
-        steps: 1
+        steps: 1,
+        stepsWithCacheReport: 1
       })
     ).toBe(44)
   })

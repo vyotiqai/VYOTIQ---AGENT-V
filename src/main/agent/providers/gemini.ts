@@ -17,6 +17,7 @@ import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
 import { formatProviderHttpError } from './httpErrors'
 import { streamGeminiInteractions } from './geminiInteractions'
+import { resolveSystemZones, volatileSessionMessage } from './systemZones'
 
 /** Exported for tests — parse Gemini usage metadata including implicit cache hits. */
 export function parseGeminiUsage(usageMetadata: Record<string, unknown>): TokenUsage {
@@ -172,8 +173,13 @@ export function geminiFunctionCallingMode(
 
 /** Exported for tests — build Gemini generateContent request body. */
 export function buildGeminiBody(req: ProviderChatRequest): Record<string, unknown> {
+  const zones = resolveSystemZones({
+    system: req.system,
+    systemStable: req.systemStable,
+    systemVolatile: req.systemVolatile
+  })
   const systemParts = [
-    ...(req.system ? [req.system] : []),
+    ...(zones.stable ? [zones.stable] : []),
     ...req.messages
       .filter((m) => m.role === 'system')
       .map((m) => (typeof m.content === 'string' ? m.content : contentToText(m.content)))
@@ -198,8 +204,13 @@ export function buildGeminiBody(req: ProviderChatRequest): Record<string, unknow
     generationConfig.responseMimeType = 'application/json'
     generationConfig.responseSchema = req.responseFormat.schema
   }
+  const contents = toGeminiContents(req.messages)
+  if (zones.volatile) {
+    const vol = volatileSessionMessage(zones.volatile)
+    contents.push({ role: 'user', parts: [{ text: vol.content }] })
+  }
   return {
-    contents: toGeminiContents(req.messages),
+    contents,
     systemInstruction: systemParts.length
       ? { parts: systemParts.map((t) => ({ text: t })) }
       : undefined,

@@ -160,15 +160,30 @@ function toAnthropicMessages(messages: ChatMessage[]): {
 }
 
 function applyCacheControl(
-  system: string | undefined,
+  system: string | { stable: string; volatile: string } | undefined,
   messages: Array<Record<string, unknown>>
 ): {
   system: Array<Record<string, unknown>> | undefined
   messages: Array<Record<string, unknown>>
 } {
-  const systemBlocks = system
-    ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
-    : undefined
+  let systemBlocks: Array<Record<string, unknown>> | undefined
+  if (system && typeof system === 'object') {
+    systemBlocks = []
+    if (system.stable) {
+      // Stable prefix only — volatile loop hints / snapshot must not bust the cache.
+      systemBlocks.push({
+        type: 'text',
+        text: system.stable,
+        cache_control: { type: 'ephemeral' }
+      })
+    }
+    if (system.volatile) {
+      systemBlocks.push({ type: 'text', text: system.volatile })
+    }
+    if (!systemBlocks.length) systemBlocks = undefined
+  } else if (typeof system === 'string' && system) {
+    systemBlocks = [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
+  }
 
   // Mark the last non-empty user/assistant content block for cache breakpoint
   const cloned = messages.map((m) => ({ ...m, content: m.content }))
@@ -278,14 +293,12 @@ async function postAnthropicMessages(
 
 /** Exported for tests — build Anthropic messages request body. */
 export function buildAnthropicBody(req: ProviderChatRequest): Record<string, unknown> {
-  const converted = toAnthropicMessages([
-    ...(req.system ? [{ role: 'system' as const, content: req.system }] : []),
-    ...req.messages
-  ])
-  const cached = applyCacheControl(
-    typeof converted.system === 'string' ? converted.system : undefined,
-    converted.messages
-  )
+  const converted = toAnthropicMessages(req.messages)
+  const systemForCache =
+    req.systemStable !== undefined || req.systemVolatile !== undefined
+      ? { stable: req.systemStable ?? '', volatile: req.systemVolatile ?? '' }
+      : req.system
+  const cached = applyCacheControl(systemForCache, converted.messages)
   const tools = req.tools.map((t) => ({
     name: t.name,
     description: t.description,
@@ -379,15 +392,14 @@ export const anthropicProvider: LlmProvider = {
       return
     }
 
-    const converted = toAnthropicMessages([
-      ...(req.system ? [{ role: 'system' as const, content: req.system }] : []),
-      ...req.messages
-    ])
+    const converted = toAnthropicMessages(req.messages)
 
-    const cached = applyCacheControl(
-      typeof converted.system === 'string' ? converted.system : undefined,
-      converted.messages
-    )
+    const systemForCache =
+      req.systemStable !== undefined || req.systemVolatile !== undefined
+        ? { stable: req.systemStable ?? '', volatile: req.systemVolatile ?? '' }
+        : req.system
+
+    const cached = applyCacheControl(systemForCache, converted.messages)
 
     const tools = req.tools.map((t) => ({
       name: t.name,
@@ -430,12 +442,32 @@ export const anthropicProvider: LlmProvider = {
     }
 
     if (native && native.enableContextManagement) {
-      const edits: Array<Record<string, unknown>> = [
-        {
-          type: 'clear_tool_uses_20250919',
-          keep: { type: 'tool_uses', value: native.clearToolUsesKeep }
+      const clearEdit: Record<string, unknown> = {
+        type: 'clear_tool_uses_20250919',
+        keep: { type: 'tool_uses', value: native.clearToolUsesKeep }
+      }
+      if (
+        typeof native.clearToolUsesTriggerTokens === 'number' &&
+        native.clearToolUsesTriggerTokens > 0
+      ) {
+        clearEdit.trigger = {
+          type: 'input_tokens',
+          value: native.clearToolUsesTriggerTokens
         }
-      ]
+      }
+      if (
+        typeof native.clearToolUsesAtLeastTokens === 'number' &&
+        native.clearToolUsesAtLeastTokens > 0
+      ) {
+        clearEdit.clear_at_least = {
+          type: 'input_tokens',
+          value: native.clearToolUsesAtLeastTokens
+        }
+      }
+      if (native.clearToolUsesExcludeTools && native.clearToolUsesExcludeTools.length > 0) {
+        clearEdit.exclude_tools = [...native.clearToolUsesExcludeTools]
+      }
+      const edits: Array<Record<string, unknown>> = [clearEdit]
       const compactTrigger = native.compactTriggerTokens ?? 8_000
       edits.push({
         type: 'compact_20260112',

@@ -17,6 +17,7 @@ import {
   toolArgsFromCall,
   unreadExistingEditPaths
 } from './loopPolicy'
+import { hasJavaScriptProject, hasTypeScriptProject } from './tools/diagnostics'
 
 /** Soft ADW nudge: mutations without diagnostics in the same step are not a hard gate. */
 export const SOFT_WARN_MUTATION_WITHOUT_DIAGNOSTICS =
@@ -66,7 +67,13 @@ export type ToolStepContext = {
   stepMcpToolNames?: ReadonlySet<string>
   /** Run-scoped MCP tools pinned via request_mcp_tools. */
   runPinnedMcpToolNames?: Set<string>
+  /** Last step each MCP tool was pinned or invoked. */
+  mcpLastUsedByName?: Map<string, number>
+  /** Current agent step for last-used stamps. */
+  currentStep?: number
   invalidateMcpToolCatalogCache?: () => void
+  /** Run-scoped MCP not-in-catalog rejection counts (per full tool name). */
+  mcpNotInCatalogCounts?: Map<string, number>
   /** Nesting level: 0 for top-level run, 1 inside a nested agent. */
   depth?: number
   /** Nested attribution for approvals / ask_question UI routing. */
@@ -199,7 +206,10 @@ async function runSingleTool(
         (call.name === 'generate_image' || call.name === 'edit_image') &&
         (agentMode === 'ask' || agentMode === 'plan')
       if (!dryRunImage) {
-        const verdict = await ctx.approval.authorize(call)
+        const verdict = await ctx.approval.authorize(call, {
+          ...(ctx.parentToolCallId ? { parentToolCallId: ctx.parentToolCallId } : {}),
+          ...(ctx.subagentId ? { subagentId: ctx.subagentId } : {})
+        })
         if (!verdict.allowed) {
           const toolMsg: ChatMessage = {
             role: 'tool',
@@ -253,9 +263,13 @@ async function runSingleTool(
       mcpToolPolicies: ctx.mcpToolPolicies,
       stepMcpToolNames: ctx.stepMcpToolNames,
       runPinnedMcpToolNames: ctx.runPinnedMcpToolNames,
+      mcpLastUsedByName: ctx.mcpLastUsedByName,
+      currentStep: ctx.currentStep,
       invalidateMcpToolCatalogCache: ctx.invalidateMcpToolCatalogCache,
+      mcpNotInCatalogCounts: ctx.mcpNotInCatalogCounts,
       parentToolCallId: ctx.parentToolCallId,
       subagentId: ctx.subagentId,
+      approval: ctx.approval,
       onProgress: ctx.emitLiveEvent
         ? (update) =>
             ctx.emitLiveEvent?.({
@@ -462,13 +476,26 @@ export async function executeStepToolCalls(
   let stepToolsOk = true
   // Approval gates individual tools; do not force all reads serial.
   const parallelLimit = ctx.maxParallelReadTools ?? MAX_PARALLEL_READ_TOOLS
+  const hasDiagnosticsSurface =
+    Boolean(ctx.diagnosticsCommand?.trim()) ||
+    hasJavaScriptProject(ctx.workspace) ||
+    hasTypeScriptProject(ctx.workspace)
   const softDiagnosticsNudge =
+    hasDiagnosticsSurface &&
     calls.some((c) => isFileMutationToolName(c.name)) &&
     !calls.some((c) => c.name === 'diagnostics')
   const stepFlags = softDiagnosticsNudge ? { softDiagnosticsNudge: true } : undefined
 
   const groups: ToolCall[][] = []
   let batch: ToolCall[] = []
+  // Approval gate can park network tools; never open multiple cards in parallel.
+  const hasApprovalGate = Boolean(ctx.approval)
+
+  const canParallelBatch = (name: string): boolean => {
+    if (!isParallelSafeTool(name)) return false
+    if (hasApprovalGate && (name === 'web_fetch' || name === 'web_search')) return false
+    return true
+  }
 
   const batchLimitFor = (name: string): number =>
     name === 'subagent' ? MAX_PARALLEL_SUBAGENTS : parallelLimit
@@ -482,7 +509,7 @@ export async function executeStepToolCalls(
   }
 
   for (const call of calls) {
-    if (isParallelSafeTool(call.name)) {
+    if (canParallelBatch(call.name)) {
       if (batch.length > 0 && batch[0]!.name !== call.name) {
         flushBatch()
       }
@@ -512,7 +539,7 @@ export async function executeStepToolCalls(
     }
 
     const parallel =
-      group.length > 1 && group.every((c) => isParallelSafeTool(c.name))
+      group.length > 1 && group.every((c) => canParallelBatch(c.name))
     if (parallel) {
       const batchLimit = batchLimitFor(group[0]!.name)
       const batch = await runParallelBatch(group, ctx, batchLimit, stepFlags)

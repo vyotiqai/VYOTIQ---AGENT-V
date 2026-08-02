@@ -2,7 +2,7 @@ import type { ChatMessage, ContentPart, MessageContent, ModelInfo, ProviderId } 
 import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
 import { isOllamaCloudHost, ollamaNativeHost } from '../../../shared/providers'
-import { parseProviderReasoningState, normalizeEffortForOpenAiCompatReasoning, normalizeEffortForDeepSeek, coerceEffortToAllowed } from '../../../shared/reasoning'
+import { parseProviderReasoningState, normalizeEffortForOpenAiCompatReasoning, normalizeEffortForDeepSeek, coerceEffortToAllowed, normalizeEffortForOllamaThink } from '../../../shared/reasoning'
 import { serviceTierForApiBody } from '../../../shared/domain/serviceTier'
 import {
   baseModelInfo,
@@ -34,6 +34,16 @@ import {
   scrubProviderErrorSnippet,
   shouldRetryOpenRouterCompatBody
 } from './httpErrors'
+import {
+  resolveSystemZones,
+  volatileSessionMessage,
+  supportsExplicitPromptCache,
+  markOpenAiChatCacheBreakpoint,
+  attachTrailingHistoryCacheBreakpoint
+} from './systemZones'
+
+/** Re-export for callers/tests that imported from openai. */
+export { supportsExplicitPromptCache } from './systemZones'
 
 export function openAiCompatMessageReasoningDelta(
   messageReasoning: string,
@@ -207,13 +217,42 @@ function openAiCompatReasoningFromMessage(
   }
 }
 
-function toOpenAiMessages(
+/** Exported for tests — map chat messages + system zones to OpenAI-compat wire shape. */
+export function toOpenAiMessages(
   messages: ChatMessage[],
   system: string | undefined,
-  opts: { ollamaVision?: boolean; stripReasoningReplay?: boolean }
+  opts: {
+    ollamaVision?: boolean
+    stripReasoningReplay?: boolean
+    /** Prefer stable leading system + trailing volatile over a combined `system` string. */
+    systemStable?: string
+    systemVolatile?: string
+    /** GPT-5.6+: mark the end of the stable system prefix for explicit cache mode. */
+    explicitPromptCache?: boolean
+  } = {}
 ) {
+  const zones = resolveSystemZones({
+    system,
+    systemStable: opts.systemStable,
+    systemVolatile: opts.systemVolatile
+  })
   const out: Array<Record<string, unknown>> = []
-  if (system) out.push({ role: 'system', content: system })
+  if (zones.stable) {
+    if (opts.explicitPromptCache) {
+      out.push({
+        role: 'system',
+        content: [
+          {
+            type: 'text',
+            text: zones.stable,
+            prompt_cache_breakpoint: { mode: 'explicit' }
+          }
+        ]
+      })
+    } else {
+      out.push({ role: 'system', content: zones.stable })
+    }
+  }
   for (const m of messages) {
     if (m.role === 'tool') {
       if (!m.toolCallId) continue
@@ -241,12 +280,25 @@ function toOpenAiMessages(
         content: typeof m.content === 'string' ? m.content : contentToText(m.content),
         ...(reasoningContent ? { reasoning_content: reasoningContent } : {})
       })
+    } else if (m.role === 'system') {
+      // Rare in-loop system rows stay in history order (not re-merged into the prefix).
+      out.push({
+        role: 'system',
+        content: typeof m.content === 'string' ? m.content : contentToText(m.content)
+      })
     } else {
       out.push({
         role: m.role,
         content: toOpenAiContent(m.content, opts)
       })
     }
+  }
+  if (opts.explicitPromptCache) {
+    // Second breakpoint: longest reusable prefix = stable system + history (before volatile).
+    attachTrailingHistoryCacheBreakpoint(out, markOpenAiChatCacheBreakpoint)
+  }
+  if (zones.volatile) {
+    out.push(volatileSessionMessage(zones.volatile))
   }
   return out
 }
@@ -314,7 +366,8 @@ async function fetchJson(
   url: string,
   headers: Record<string, string>,
   signal?: AbortSignal,
-  providerId?: ProviderId
+  providerId?: ProviderId,
+  opts?: { quiet?: boolean }
 ): Promise<unknown> {
   const logProvider = providerId ?? 'openai-compat'
   const allowLocal = providerId === 'ollama'
@@ -331,17 +384,22 @@ async function fetchJson(
   } catch (err) {
     if (signal?.aborted) throw err
     // Local Ollama (or any catalog host) being down is expected — warn, don't ERROR-spam startup.
-    logProviderFailure(logProvider, 'network', {}, { soft: true })
+    // Callers that try multiple endpoints (Ollama /v1 + /api/tags) pass quiet and log once.
+    if (!opts?.quiet) {
+      logProviderFailure(logProvider, 'network', {}, { soft: true })
+    }
     throw new Error(formatError(err))
   }
   if (!res.ok) {
     const text = await res.text().catch(() => '')
-    logProviderFailure(
-      logProvider,
-      'http',
-      { status: res.status, message: scrubProviderErrorSnippet(text) || undefined },
-      { soft: true }
-    )
+    if (!opts?.quiet) {
+      logProviderFailure(
+        logProvider,
+        'http',
+        { status: res.status, message: scrubProviderErrorSnippet(text) || undefined },
+        { soft: true }
+      )
+    }
     throw new Error(formatProviderHttpError(res.status, text, providerId))
   }
   return res.json()
@@ -453,15 +511,16 @@ async function listOpenAiCompatModels(
     const openAiBase = `${host}/v1`
     const ollamaId = catalogProvider ?? 'ollama'
     const cloud = isOllamaCloudHost(host)
+    const quiet = { quiet: true as const }
     let openAiErr: unknown
     try {
-      const data = await fetchJson(`${openAiBase}/models`, headers, signal, ollamaId)
+      const data = await fetchJson(`${openAiBase}/models`, headers, signal, ollamaId, quiet)
       let models = normalizeOpenAiStyleModels(data, {
         requireToolsParam: opts.requireToolsParam,
         providerId: ollamaId
       })
       try {
-        const tags = await fetchJson(`${host}/api/tags`, headers, signal, ollamaId)
+        const tags = await fetchJson(`${host}/api/tags`, headers, signal, ollamaId, quiet)
         const names = modelsFromOllamaTags(tags).map((m) => m.id)
         models = mergeOllamaTagNames(models, names)
       } catch {
@@ -473,11 +532,19 @@ async function listOpenAiCompatModels(
     }
 
     try {
-      const tags = await fetchJson(`${host}/api/tags`, headers, signal, ollamaId)
+      const tags = await fetchJson(`${host}/api/tags`, headers, signal, ollamaId, quiet)
       const models = modelsFromOllamaTags(tags)
       if (models.length) return models
       throw new Error('Ollama /api/tags returned no models')
     } catch (tagsErr) {
+      // One soft catalog warn after both endpoints fail (not per attempt).
+      const detail = openAiErr ?? tagsErr
+      logProviderFailure(
+        ollamaId,
+        'network',
+        { message: formatError(detail) },
+        { soft: true }
+      )
       if (openAiErr) {
         throw new Error(
           cloud
@@ -527,11 +594,16 @@ export function buildOpenAiCompatBody(
     }
   }))
   const stripReasoningReplay = opts.openRouterReasoning || providerId === 'openrouter'
+  const explicitCache =
+    Boolean(opts.enablePromptCache) && supportsExplicitPromptCache(req.model)
   const body: Record<string, unknown> = {
     model: req.model,
     messages: toOpenAiMessages(req.messages, req.system, {
       ollamaVision: opts.ollamaVision,
-      stripReasoningReplay
+      stripReasoningReplay,
+      systemStable: req.systemStable,
+      systemVolatile: req.systemVolatile,
+      explicitPromptCache: explicitCache
     }),
     tools: tools.length ? tools : undefined,
     ...(tools.length
@@ -559,9 +631,7 @@ export function buildOpenAiCompatBody(
     ...(opts.enablePromptCache && req.promptCacheKey
       ? {
           prompt_cache_key: req.promptCacheKey,
-          ...(/^gpt-5\.6/i.test(req.model)
-            ? { prompt_cache_options: { mode: 'explicit', ttl: '30m' } }
-            : {})
+          ...(explicitCache ? { prompt_cache_options: { mode: 'explicit', ttl: '30m' } } : {})
         }
       : {}),
     ...compatStreamOptions(opts)
@@ -593,10 +663,21 @@ export function buildOpenAiCompatBody(
     } else if (providerId === 'xai') {
       body.reasoning_effort = normalizeEffortForOpenAiCompatReasoning(effort, 'xai')
     } else if (providerId === 'ollama') {
-      body.think = true
+      const mode = req.modelInfo?.thinkingMode
+      const efforts = req.modelInfo?.supportedThinkingEfforts
+      if (mode === 'effort' || (efforts && efforts.length > 0)) {
+        body.think = normalizeEffortForOllamaThink(effort, efforts)
+      } else {
+        body.think = true
+      }
     }
   } else if (req.thinking?.enabled === false && providerId === 'ollama') {
-    body.think = false
+    if (req.modelInfo?.thinkingCanDisable === false) {
+      const efforts = req.modelInfo.supportedThinkingEfforts
+      body.think = normalizeEffortForOllamaThink('low', efforts)
+    } else {
+      body.think = false
+    }
   } else if (
     req.thinking?.enabled === false &&
     (opts.deepseekThinking || providerId === 'deepseek')

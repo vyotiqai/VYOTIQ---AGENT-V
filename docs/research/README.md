@@ -22,6 +22,7 @@ This package is **documentation only**. It does not change product behavior. Mod
 | [agentic-adw-jun-aug-2026/](./agentic-adw-jun-aug-2026/README.md) | ADW framing (≈ Jul 2026) + still-governing earlier-2026 labs; [tool-loop](./agentic-adw-jun-aug-2026/11-tool-use-loop-behaviours.md); [source integrity](./agentic-adw-jun-aug-2026/10-source-integrity.md) — **freeze-ready** (2026-08-02); VYOTIQ mapping + audit |
 | [caching-jun-aug-2026/](./caching-jun-aug-2026/README.md) | **Jun–Aug 2026** provider prompt-cache + **existing** app caches map; harden-only (no new tiers) — freeze-ready 2026-08-02 |
 | [thinking-effort-jun-aug-2026/](./thinking-effort-jun-aug-2026/README.md) | **Jun–Aug 2026** thinking/reasoning effort contracts, catalog discovery, VYOTIQ gaps — freeze-ready 2026-08-02; Phase B = catalog-driven `ModelInfo` |
+| [token-cost-jun-aug-2026/](./token-cost-jun-aug-2026/README.md) | **Jun–Aug 2026** token/cost practices + VYOTIQ burn audit; cumulative billed-input telemetry + soft-cap hold (shipped) |
 
 ## How to use
 

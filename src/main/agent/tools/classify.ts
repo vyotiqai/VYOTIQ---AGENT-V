@@ -14,7 +14,8 @@ const PARALLEL_SAFE_BUILTIN = new Set([
   'git_status',
   'git_diff',
   'mcp_list_tools',
-  'request_mcp_tools'
+  'request_mcp_tools',
+  'release_mcp_tools'
 ])
 
 /** Serial MCP meta tools — approval-exempt like mcp_list_tools, but not parallel-safe. */

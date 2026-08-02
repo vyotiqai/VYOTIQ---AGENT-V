@@ -13,11 +13,15 @@ import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
 import { formatProviderHttpError } from './httpErrors'
+import {
+  resolveSystemZones,
+  supportsExplicitPromptCache,
+  volatileSessionMessage,
+  markResponsesCacheBreakpoint,
+  attachTrailingHistoryCacheBreakpoint
+} from './systemZones'
 
-/** GPT-5.6+ supports explicit prompt_cache_breakpoint / prompt_cache_options. */
-export function supportsExplicitPromptCache(modelId: string): boolean {
-  return /^gpt-5\.6/i.test(modelId.trim())
-}
+export { supportsExplicitPromptCache } from './systemZones'
 
 function toolOutputsFromMessages(messages: ChatMessage[]): Array<Record<string, unknown>> {
   return messages
@@ -33,28 +37,37 @@ export function toResponsesInput(
   messages: ChatMessage[],
   system: string | undefined,
   priorState?: ProviderReasoningState,
-  opts?: { explicitPromptCache?: boolean }
+  opts?: {
+    explicitPromptCache?: boolean
+    systemStable?: string
+    systemVolatile?: string
+  }
 ): Array<Record<string, unknown>> {
   // Stateful continuation: server retains prior turn via previous_response_id.
   if (priorState?.kind === 'openai_responses' && priorState.responseId) {
     return toolOutputsFromMessages(trailingToolMessages(messages))
   }
 
+  const zones = resolveSystemZones({
+    system,
+    systemStable: opts?.systemStable,
+    systemVolatile: opts?.systemVolatile
+  })
   const out: Array<Record<string, unknown>> = []
-  if (system) {
+  if (zones.stable) {
     if (opts?.explicitPromptCache) {
       out.push({
         role: 'developer',
         content: [
           {
             type: 'input_text',
-            text: system,
+            text: zones.stable,
             prompt_cache_breakpoint: { mode: 'explicit' }
           }
         ]
       })
     } else {
-      out.push({ role: 'developer', content: system })
+      out.push({ role: 'developer', content: zones.stable })
     }
   }
 
@@ -93,6 +106,15 @@ export function toResponsesInput(
     if (m.role === 'user') {
       out.push({ role: 'user', content: toResponsesUserContent(m.content) })
     }
+  }
+  if (opts?.explicitPromptCache) {
+    // Second breakpoint after history so volatile session context stays outside the cache prefix.
+    // Avoid function_call_output breakpoints (accepted but do not write cache).
+    attachTrailingHistoryCacheBreakpoint(out, markResponsesCacheBreakpoint)
+  }
+  if (zones.volatile) {
+    const vol = volatileSessionMessage(zones.volatile)
+    out.push({ role: 'user', content: vol.content })
   }
   return out
 }
@@ -164,7 +186,9 @@ export async function* streamOpenAiResponses(
   const body: Record<string, unknown> = {
     model: req.model,
     input: toResponsesInput(req.messages, req.system, priorState, {
-      explicitPromptCache: explicitCache
+      explicitPromptCache: explicitCache,
+      systemStable: req.systemStable,
+      systemVolatile: req.systemVolatile
     }),
     stream: true,
     store: true,

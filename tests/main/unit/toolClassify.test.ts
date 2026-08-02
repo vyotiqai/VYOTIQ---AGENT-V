@@ -74,6 +74,13 @@ describe('tool classify', () => {
     expect(isApprovalExemptTool('mcp_list_tools')).toBe(true)
   })
 
+  it('treats request_mcp_tools and release_mcp_tools as parallel-safe and approval-exempt', () => {
+    expect(isParallelSafeTool('request_mcp_tools')).toBe(true)
+    expect(isApprovalExemptTool('request_mcp_tools')).toBe(true)
+    expect(isParallelSafeTool('release_mcp_tools')).toBe(true)
+    expect(isApprovalExemptTool('release_mcp_tools')).toBe(true)
+  })
+
   it('treats MCP resource/prompt built-ins as serial and approval-exempt', () => {
     for (const name of [
       'mcp_list_resources',

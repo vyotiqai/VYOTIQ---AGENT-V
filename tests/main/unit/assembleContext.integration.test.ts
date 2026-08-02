@@ -36,6 +36,13 @@ describe('assembleContext integration', () => {
     expect(result.system).toContain('## Context')
     expect(result.system).toContain('## Run contract')
     expect(result.system).toContain('Build feature')
+    expect(result.systemStable).toContain('## Context')
+    expect(result.systemStable).toContain('Build feature')
+    expect(result.system).toBe(
+      result.systemVolatile
+        ? `${result.systemStable}\n\n${result.systemVolatile}`
+        : result.systemStable
+    )
   })
 
   it('preserves prior compaction in system prompt', async () => {
@@ -192,6 +199,42 @@ describe('assembleContext integration', () => {
     expect(session).toBeGreaterThan(plugins)
     expect(notice).toBeGreaterThan(session)
     expect(prior).toBeGreaterThan(notice)
+  })
+
+  it('holds estimate at or under soft compaction trigger on huge windows', async () => {
+    // History that fits the 40% history budget on a 1M window (~400k tokens) but
+    // exceeds the 64k soft compaction trigger — soft-cap hold must pull it down.
+    const longHistory: import('@shared/ipc').ChatMessage[] = Array.from({ length: 60 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      content: `turn ${i} ${'x'.repeat(12_000)}`
+    }))
+    for (let i = 0; i < 12; i++) {
+      longHistory.push({
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: `tc${i}`, name: 'read', arguments: '{}' }]
+      })
+      longHistory.push({
+        role: 'tool',
+        toolCallId: `tc${i}`,
+        toolName: 'read',
+        content: 'BODY'.repeat(4_000)
+      })
+    }
+    const result = await assembleContext({
+      harness: 'harness',
+      messages: longHistory,
+      workspacePath: null,
+      goal: 'hi',
+      model: { ...model, contextWindow: 1_000_000 },
+      toolsJsonEstimate: 13_000,
+      providerId: 'ollama',
+      provider: mockProvider,
+      signal: new AbortController().signal,
+      keepRecentTurns: 20
+    })
+    expect(result.estimatedTokens).toBeLessThanOrEqual(64_000)
+    expect(result.contextShrunk).toBe(true)
   })
 
   it('reuses stable prefix cache when only volatile session env changes', async () => {

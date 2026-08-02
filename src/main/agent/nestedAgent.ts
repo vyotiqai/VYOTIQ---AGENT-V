@@ -20,6 +20,20 @@ import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
 import { formatError, isAbortError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
 import { stripToolShapedAssistantText } from '../../shared/transcript'
+import {
+  emptyStepUsageTotals,
+  mergeStepUsageTotals,
+  stepUsageFromEvent,
+  type StepUsageTotals
+} from '../../shared/utils/runTelemetry'
+import {
+  billedCacheHitRate,
+  classifyTokenCostHotspot,
+  countKeptToolResultChars,
+  evaluateTokenCostWarnings,
+  stepCacheHitRate,
+  userFacingTokenCostHint
+} from '../../shared/utils/tokenCost'
 import { getSecret, hasStoredSecretBlob, secretStatus } from '@main/settings/secrets'
 import { getSettings } from '@main/settings/settings'
 import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/workspace/workspaces'
@@ -32,12 +46,14 @@ import {
   contextWindowFor,
   estimateTextTokensAsync,
   preserveRecentMessagesAsync,
-  trimToolsToBudget
+  toolsBudgetTokens,
+  trimToolsToBudget,
+  toolCatalogFingerprint
 } from './context'
 import { CONTEXT_TRIM_WATERMARK_SUMMARY, type CompactionRecord } from './context/types'
 import { executeStepToolCalls } from './executeStepTools'
 import { loadHarness } from './harness'
-import { combineLoopHints, loopHintForOmittedMcpTools, maxParallelReadToolsForFailureStreak, seedKnownPathsFromMessages } from './loopPolicy'
+import { combineLoopHints, loopHintForEvictedMcpTools, loopHintForMcpNotInCatalogFailFast, loopHintForOmittedMcpTools, MCP_NOT_IN_CATALOG_FAIL_FAST_THRESHOLD, maxParallelReadToolsForFailureStreak, seedKnownPathsFromMessages } from './loopPolicy'
 import { MAX_PARALLEL_READ_TOOLS } from './tools/classify'
 import { getProvider } from './providers'
 import { resolveModelInfo } from './modelResolve'
@@ -63,7 +79,7 @@ import {
   saveCompaction
 } from './state'
 import { AGENT_TOOLS } from './types'
-import { listMcpToolDefinitions, parseMcpToolName, syncMcpServers } from './mcp'
+import { listMcpToolDefinitions, parseMcpToolName, syncMcpServers, setMcpStdioWorkspace, getMcpServerStatus, isGitMcpNotARepoError } from './mcp'
 import {
   resolveEffectiveMcpServers,
   resolveMcpServersForSessionMap,
@@ -334,22 +350,23 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
   const pluginRulesSection = loadPluginRules(marketplaceOverrides)
 
   const approvalSettings = settings.toolApproval ?? DEFAULT_SETTINGS.toolApproval
+  // Prefer the parent gate (shared session allowlist). If the parent omitted it but
+  // approvals are on, still build a gate — including when options.runId is falsy
+  // (use the resolved runId so nested tools are not silently ungated).
   const approvalGate: ToolApprovalGate | undefined =
     options.approval ??
     (approvalSettings.mode === 'off'
       ? undefined
-      : options.runId
-        ? createApprovalGate({
-            runId: options.runId,
-            invokeId: options.invokeId,
-            mode: approvalSettings.mode,
-            workspaceAllowlist: approvalSettings.allowlist,
-            signal: options.signal,
-            persistAlways: (toolName) => persistAlwaysAllow(options.workspace, toolName),
-            parentToolCallId: options.parentToolCallId,
-            subagentId: options.subagentId
-          })
-        : undefined)
+      : createApprovalGate({
+          runId,
+          invokeId: options.invokeId,
+          mode: approvalSettings.mode,
+          workspaceAllowlist: approvalSettings.allowlist,
+          signal: options.signal,
+          persistAlways: (toolName) => persistAlwaysAllow(options.workspace, toolName),
+          parentToolCallId: options.parentToolCallId,
+          subagentId: options.subagentId
+        }))
 
   let agentMode: AgentInteractionMode = parentMode
   let messages: ChatMessage[] = [
@@ -380,20 +397,51 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
   let toolDefs: { name: string; description: string; parameters: Record<string, unknown> }[] = []
   let toolsJsonEstimate = 0
   let omittedMcpHint: string | undefined
+  let evictedMcpHint: string | undefined
   let lastMcpRefreshFp = ''
   let lastMcpCatalogFp = ''
   let stepMcpToolNames = new Set<string>()
+  let mcpFailureRetried = false
   const runPinnedMcpToolNames = new Set<string>()
+  const mcpLastUsedByName = new Map<string, number>()
+  const mcpNotInCatalogCounts = new Map<string, number>()
+  let runStickyToolNames: Set<string> | null = null
+  let lastToolCatalogFingerprint = ''
+  /** Nested step counter — declared before refresh so TTL eviction can read it. */
+  let step = 0
   const invalidateMcpToolCatalogCache = (): void => {
     lastMcpCatalogFp = ''
   }
+  const mcpNotInCatalogFailFastHint = (): string | undefined => {
+    const hit = [...mcpNotInCatalogCounts.entries()]
+      .filter(([, n]) => n >= MCP_NOT_IN_CATALOG_FAIL_FAST_THRESHOLD)
+      .map(([name]) => name)
+    return loopHintForMcpNotInCatalogFailFast(hit)
+  }
+
+  // Bind stdio MCP cwd / git --repository (same as parent loop).
+  setMcpStdioWorkspace(options.workspace)
 
   const refreshMcpToolsForStep = async (): Promise<void> => {
-    const refreshFp = `${mcpSessionMapFingerprint()}::${JSON.stringify(marketplaceOverrides ?? null)}`
+    const refreshFp = `${mcpSessionMapFingerprint()}::${JSON.stringify(marketplaceOverrides ?? null)}::${options.workspace}`
     const configUnchanged = refreshFp === lastMcpRefreshFp
     lastMcpRefreshFp = refreshFp
-    if (!configUnchanged) {
-      await syncMcpServers(resolveMcpServersForSessionMap())
+    const sessionServers = resolveMcpServersForSessionMap()
+    const needsFailureRetry =
+      !mcpFailureRetried &&
+      getMcpServerStatus(sessionServers).some(
+        (s) =>
+          s.enabled &&
+          !s.connected &&
+          Boolean(s.error) &&
+          !isGitMcpNotARepoError(s.error)
+      )
+    if (!configUnchanged || needsFailureRetry) {
+      if (needsFailureRetry) mcpFailureRetried = true
+      await syncMcpServers(
+        sessionServers,
+        needsFailureRetry ? { forceRetryFailures: true } : undefined
+      )
     }
     const runMcpServers = resolveEffectiveMcpServers(marketplaceOverrides)
     runEnabledMcpIds = new Set(runMcpServers.filter((s) => s.enabled).map((s) => s.id))
@@ -409,7 +457,8 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
         ])
     )
     const pinnedKey = [...runPinnedMcpToolNames].sort().join(',')
-    const catalogFp = `${refreshFp}::${agentMode}::${settings.autoModeSwitch ? 1 : 0}::${modelInfo.supportsTools === false ? 0 : 1}::${pinnedKey}::nested`
+    const catalogStep = Math.max(step, 1)
+    const catalogFp = `${refreshFp}::${agentMode}::${settings.autoModeSwitch ? 1 : 0}::${modelInfo.supportsTools === false ? 0 : 1}::${pinnedKey}::${catalogStep}::nested`
     if (configUnchanged && catalogFp === lastMcpCatalogFp && lastMcpCatalogFp !== '') {
       return
     }
@@ -427,26 +476,68 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
             autoModeSwitch: false
           }).filter((t) => !NESTED_EXCLUDED_TOOLS.has(t.name))
         : []
-    const toolBudget = allocateBudget(modelInfo).tools
+    const toolBudget = toolsBudgetTokens(modelInfo)
     const trimmedTools = trimToolsToBudget(allToolDefs, toolBudget, {
-      pinnedMcpNames: runPinnedMcpToolNames
+      pinnedMcpNames: runPinnedMcpToolNames,
+      deferUnpinnedMcp: true,
+      currentStep: catalogStep,
+      mcpLastUsedByName,
+      ...(runStickyToolNames ? { stickyKeptNames: runStickyToolNames } : {})
     })
+    if (trimmedTools.evictedMcpNames.length > 0) {
+      for (const name of trimmedTools.evictedMcpNames) {
+        runPinnedMcpToolNames.delete(name)
+        mcpLastUsedByName.delete(name)
+      }
+      evictedMcpHint = loopHintForEvictedMcpTools(trimmedTools.evictedMcpNames)
+      logger.info('Evicted idle/excess pinned MCP from sticky catalog', {
+        scope: 'agent',
+        code: 'TOKEN_COST',
+        runId,
+        nested: true,
+        evictedMcp: trimmedTools.evictedMcpNames.length,
+        evictedPreview: trimmedTools.evictedMcpNames.slice(0, 8).join(', '),
+        pinnedRemaining: runPinnedMcpToolNames.size,
+        step: catalogStep
+      })
+    } else {
+      evictedMcpHint = undefined
+    }
     toolDefs = trimmedTools.tools.map((t) => ({
       name: t.name,
       description: t.description,
       parameters: t.parameters as Record<string, unknown>
     }))
     toolsJsonEstimate = trimmedTools.estimate
+    runStickyToolNames = new Set(trimmedTools.tools.map((t) => t.name))
+    const catalogFinger = trimmedTools.fingerprint || toolCatalogFingerprint(trimmedTools.tools)
+    if (catalogFinger !== lastToolCatalogFingerprint) {
+      logger.info('Tool catalog fingerprint changed', {
+        scope: 'agent',
+        code: 'TOKEN_COST',
+        nested: true,
+        keptCount: trimmedTools.tools.length,
+        omittedMcp: trimmedTools.omittedMcp,
+        evictedMcp: trimmedTools.evictedMcpNames.length,
+        fingerprint: catalogFinger.slice(0, 200),
+        priorFingerprint: lastToolCatalogFingerprint
+          ? lastToolCatalogFingerprint.slice(0, 200)
+          : undefined
+      })
+      lastToolCatalogFingerprint = catalogFinger
+    }
     omittedMcpHint = loopHintForOmittedMcpTools(trimmedTools.omittedMcpNames)
     stepMcpToolNames = new Set(
       toolDefs.map((t) => t.name).filter((n) => parseMcpToolName(n) != null)
     )
   }
 
+  let costTotals: StepUsageTotals = emptyStepUsageTotals()
+  let compactionCountThisRun = 0
+
   try {
   await refreshMcpToolsForStep()
 
-  let step = 0
   let lastUsage: TokenUsage | undefined
   const compactionState: { current: CompactionRecord | null } = { current: null }
   let foldedMessages = 0
@@ -454,6 +545,11 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
   let truncationContinues = 0
   const MAX_TRUNCATION_CONTINUES = 2
   let consecutiveToolFailureSteps = 0
+  const costWarnOnce = new Set<string>()
+  const thinkingEffortHigh =
+    settings.thinkingEffort === 'high' ||
+    settings.thinkingEffort === 'xhigh' ||
+    settings.thinkingEffort === 'max'
   const knownPaths = seedKnownPathsFromMessages(messages)
   let lastText = ''
   const goal = options.task.slice(0, 500)
@@ -508,7 +604,7 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
       pluginRulesSection,
       modeSection:
         modeSectionMarkdown(agentMode, { autoModeSwitch: false }) ?? undefined,
-      loopHint: combineLoopHints(omittedMcpHint),
+      loopHint: combineLoopHints(omittedMcpHint, evictedMcpHint, mcpNotInCatalogFailFastHint()),
       providerId,
       provider,
       apiKey,
@@ -554,6 +650,15 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
         })
       } else {
         compactionState.current = compactionWithWatermark
+        if (assembled.compaction && assembled.compaction.summary !== priorCompactionSummary) {
+          compactionCountThisRun++
+          emitParent({
+            type: 'compaction',
+            runId,
+            summary: assembled.compaction.summary,
+            tokenEstimate: assembled.compaction.tokenEstimate
+          })
+        }
         if (assembled.contextShrunk) {
           foldedMessages += droppedThisStep
           messages = assembled.messages
@@ -637,7 +742,7 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
           pluginRulesSection,
           modeSection:
             modeSectionMarkdown(agentMode, { autoModeSwitch: false }) ?? undefined,
-          loopHint: combineLoopHints(omittedMcpHint),
+          loopHint: combineLoopHints(omittedMcpHint, evictedMcpHint, mcpNotInCatalogFailFastHint()),
           providerId,
           provider,
           apiKey,
@@ -679,6 +784,7 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
               messages = retry.messages
               lastUsage = { inputTokens: retry.estimatedTokens }
               if (retry.compaction) {
+                compactionCountThisRun++
                 emitParent({
                   type: 'compaction',
                   runId,
@@ -762,6 +868,8 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
           messages: assembled.messages,
           tools: toolDefs,
           system: assembled.system,
+          systemStable: assembled.systemStable,
+          systemVolatile: assembled.systemVolatile,
           signal: options.signal,
           apiKey,
           baseUrl,
@@ -843,6 +951,122 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
             if (chunk.stopReason) stepStopReason = chunk.stopReason
             if (chunk.usage) {
               lastUsage = chunk.usage
+              const cacheFieldsPresent =
+                chunk.usage.cachedInputTokens != null ||
+                chunk.usage.cacheCreationInputTokens != null
+              const layers = {
+                system: assembled.layers.system,
+                history: assembled.layers.history,
+                tools: assembled.layers.tools,
+                buffer: assembled.layers.buffer
+              }
+              const hotspot = classifyTokenCostHotspot(layers)
+              const stepPartial = stepUsageFromEvent({
+                type: 'step_usage',
+                runId,
+                step,
+                inputTokens: chunk.usage.inputTokens,
+                outputTokens: chunk.usage.outputTokens,
+                cachedInputTokens: chunk.usage.cachedInputTokens,
+                cacheCreationInputTokens: chunk.usage.cacheCreationInputTokens,
+                reasoningTokens: chunk.usage.reasoningTokens
+              })
+              if (stepPartial) {
+                if (cacheFieldsPresent && stepPartial.stepsWithCacheReport === 0) {
+                  stepPartial.stepsWithCacheReport = 1
+                }
+                costTotals = mergeStepUsageTotals(costTotals, stepPartial)
+              }
+              const usageEv: AgentEvent = {
+                type: 'step_usage',
+                runId,
+                step,
+                inputTokens: chunk.usage.inputTokens,
+                outputTokens: chunk.usage.outputTokens,
+                cachedInputTokens: chunk.usage.cachedInputTokens,
+                cacheCreationInputTokens: chunk.usage.cacheCreationInputTokens,
+                reasoningTokens: chunk.usage.reasoningTokens,
+                billedInputTokens: costTotals.billedInputTokens,
+                peakInputTokens: costTotals.peakInputTokens,
+                cacheReported: cacheFieldsPresent,
+                hotspot,
+                messagesCount: assembled.messages.length,
+                toolDefCount: toolDefs.length,
+                toolResultCharsKept: countKeptToolResultChars(assembled.messages),
+                compactionCountThisRun,
+                layers
+              }
+              emitParent(usageEv)
+              const hitRate = stepCacheHitRate(
+                chunk.usage.inputTokens,
+                chunk.usage.cachedInputTokens,
+                cacheFieldsPresent
+              )
+              logger.info('Token cost step', {
+                scope: 'agent',
+                correlationId: runId,
+                nested: true,
+                subagentId: options.subagentId,
+                provider: providerId,
+                model: modelId,
+                step,
+                inputTokens: chunk.usage.inputTokens,
+                outputTokens: chunk.usage.outputTokens,
+                reasoningTokens: chunk.usage.reasoningTokens,
+                cachedInputTokens: chunk.usage.cachedInputTokens,
+                cacheCreationInputTokens: chunk.usage.cacheCreationInputTokens,
+                cacheReported: cacheFieldsPresent,
+                cacheHitRateStep: hitRate,
+                billedInputTokens: costTotals.billedInputTokens,
+                peakInputTokens: costTotals.peakInputTokens,
+                hotspot,
+                layers,
+                messagesCount: assembled.messages.length,
+                toolDefCount: toolDefs.length,
+                toolResultCharsKept: countKeptToolResultChars(assembled.messages),
+                compactionCountThisRun
+              })
+              for (const warn of evaluateTokenCostWarnings({
+                estimatedTokens: chunk.usage.inputTokens ?? assembled.estimatedTokens,
+                compactionTrigger,
+                contentWindow: contentWin,
+                compactedThisRun: compactionCountThisRun > 0,
+                cacheHitRate: hitRate,
+                stepsWithCacheReport: costTotals.stepsWithCacheReport,
+                largeInput: (chunk.usage.inputTokens ?? 0) >= 20_000,
+                thinkingEnabled: Boolean(thinkingEnabled),
+                thinkingEffortHigh,
+                step,
+                billedInputTokens: costTotals.billedInputTokens
+              })) {
+                const warnOnceKey =
+                  warn.kind === 'high_thinking_on_long_run'
+                    ? `${warn.kind}:${Math.floor(step / 15)}`
+                    : warn.kind === 'long_run_task_boundary'
+                      ? `${warn.kind}:${Math.floor(step / 40)}`
+                      : warn.kind
+                if (costWarnOnce.has(warnOnceKey)) continue
+                costWarnOnce.add(warnOnceKey)
+                logger.warn(`Token cost: ${warn.message}`, {
+                  scope: 'agent',
+                  code: 'TOKEN_COST',
+                  correlationId: runId,
+                  nested: true,
+                  subagentId: options.subagentId,
+                  kind: warn.kind,
+                  step
+                })
+                const userMsg = userFacingTokenCostHint(warn.kind, step)
+                if (userMsg) {
+                  emitParent({
+                    type: 'token_cost_hint',
+                    runId,
+                    ...(options.invokeId != null ? { invokeId: options.invokeId } : {}),
+                    kind: warn.kind,
+                    message: `Nested agent: ${userMsg}`
+                  })
+                }
+              }
               const providerContextEv: AgentEvent = {
                 type: 'context_usage',
                 runId,
@@ -852,8 +1076,8 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
                 contextWindow: window,
                 contentWindow: contentWin,
                 compactionTrigger,
-                source: 'provider'
-                // Omit estimate layers — not aligned with provider inputTokens.
+                source: 'provider',
+                ...(assembled.overflow ? { overflow: true } : {})
               }
               emitParent(providerContextEv)
               options.onContextUsage?.({
@@ -901,6 +1125,7 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
                   foldedMessages = nextFoldedAnthropic
                   messages = kept
                 }
+                compactionCountThisRun++
                 emitParent({
                   type: 'compaction',
                   runId,
@@ -1151,7 +1376,10 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
       mcpToolPolicies,
       stepMcpToolNames,
       runPinnedMcpToolNames,
+      mcpLastUsedByName,
+      currentStep: step,
       invalidateMcpToolCatalogCache,
+      mcpNotInCatalogCounts,
       parentToolCallId: options.parentToolCallId,
       subagentId: options.subagentId,
       emitLiveEvent: (ev: AgentEvent) => {
@@ -1219,6 +1447,32 @@ export async function runNestedAgent(options: NestedAgentOptions): Promise<Subag
     steps: step
   }, childDir)
   } finally {
+    if (costTotals.steps > 0) {
+      const avgInput = Math.round(costTotals.billedInputTokens / costTotals.steps)
+      const billedHit = billedCacheHitRate(
+        costTotals.billedInputTokens,
+        costTotals.billedCachedInputTokens
+      )
+      logger.info('Token cost run summary', {
+        scope: 'agent',
+        correlationId: runId,
+        nested: true,
+        subagentId: options.subagentId,
+        provider: providerId,
+        model: modelId,
+        steps: costTotals.steps,
+        billedInputTokens: costTotals.billedInputTokens,
+        peakInputTokens: costTotals.peakInputTokens,
+        avgInputTokensPerStep: avgInput,
+        latestInputTokens: costTotals.inputTokens,
+        outputTokens: costTotals.outputTokens,
+        reasoningTokens: costTotals.reasoningTokens,
+        billedCachedInputTokens: costTotals.billedCachedInputTokens,
+        cacheCreationInputTokens: costTotals.cacheCreationInputTokens,
+        billedCacheHitRate: billedHit,
+        compactionCountThisRun
+      })
+    }
     try {
       await flushChildTranscript(childDir)
     } catch (flushErr) {

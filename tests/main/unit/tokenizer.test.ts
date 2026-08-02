@@ -241,6 +241,26 @@ describe('estimateMessagesTokens', () => {
     expect(rich).toBeGreaterThan(bare)
   })
 
+  it('does not double-count thinking when reasoningState is present', () => {
+    const longThink = 'a long chain of reasoning about the problem '.repeat(20)
+    const withBoth = estimateMessagesTokens([
+      {
+        role: 'assistant',
+        content: 'ok',
+        thinking: longThink,
+        reasoningState: { kind: 'openai_compat', reasoningContent: longThink }
+      }
+    ])
+    const stateOnly = estimateMessagesTokens([
+      {
+        role: 'assistant',
+        content: 'ok',
+        reasoningState: { kind: 'openai_compat', reasoningContent: longThink }
+      }
+    ])
+    expect(withBoth).toBe(stateOnly)
+  })
+
   it('counts tool message content once (not double-counted with toolName)', () => {
     const body = 'TOOL_BODY_'.repeat(50)
     const withTool = estimateMessagesTokens([

@@ -10,6 +10,7 @@ import {
   trimHistoryToBudget
 } from '@main/agent/context/historyTrim'
 import { anthropicNativeOptions } from '@main/agent/context/anthropicContext'
+import { stripThinkingForCompaction } from '@main/agent/context/assemble'
 import type { ChatMessage } from '@shared/ipc'
 
 describe('context budget + trim', () => {
@@ -63,6 +64,28 @@ describe('context budget + trim', () => {
     const tools = trimmed.filter((m) => m.role === 'tool')
     expect(tools[0].content).toContain('cleared')
     expect(String(tools[1].content)).not.toContain('cleared')
+  })
+
+  it('caps kept tool bodies at 8k chars (and subagent at 6k when trimmed)', () => {
+    const fat = 'z'.repeat(20_000)
+    const msgs: ChatMessage[] = [
+      { role: 'user', content: 'a' },
+      { role: 'assistant', content: '', toolCalls: [{ id: '1', name: 'read', arguments: '{}' }] },
+      { role: 'tool', toolCallId: '1', toolName: 'read', content: fat },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: '2', name: 'subagent', arguments: '{}' }]
+      },
+      { role: 'tool', toolCallId: '2', toolName: 'subagent', content: fat }
+    ]
+    const kept = trimToolResults(msgs, 2)
+    const read = kept.find((m) => m.role === 'tool' && m.toolName === 'read')
+    expect(String(read?.content).length).toBeLessThanOrEqual(8_050)
+    expect(String(read?.content)).toContain('[truncated]')
+    const subKept = trimToolResults(msgs, 2, { trimSubagent: true })
+    const sub = subKept.find((m) => m.role === 'tool' && m.toolName === 'subagent')
+    expect(String(sub?.content).length).toBeLessThanOrEqual(6_050)
   })
 
   it('preserves subagent reports from clearing and char trim', () => {
@@ -213,7 +236,26 @@ describe('context budget + trim', () => {
     })
     expect(opts.compactTriggerTokens).toBeGreaterThanOrEqual(8_000)
     expect(opts.compactTriggerTokens).toBeLessThan(50_000)
-    expect(opts.clearToolUsesKeep).toBe(3)
+    expect(opts.clearToolUsesKeep).toBe(2)
+    expect(opts.clearToolUsesTriggerTokens).toBeGreaterThanOrEqual(32_000)
+    expect(opts.clearToolUsesAtLeastTokens).toBe(5_000)
+    expect(opts.clearToolUsesExcludeTools).toEqual(
+      expect.arrayContaining(['read', 'memory_read', 'todo_write', 'ask_question'])
+    )
+  })
+
+  it('overflow strip drops reasoningState as well as thinking', () => {
+    const stripped = stripThinkingForCompaction([
+      {
+        role: 'assistant',
+        content: 'ok',
+        thinking: 'ui only',
+        reasoningState: { kind: 'openai_compat', reasoningContent: 'wire replay' }
+      },
+      { role: 'user', content: 'hi' }
+    ])
+    expect(stripped[0]).toEqual({ role: 'assistant', content: 'ok' })
+    expect(stripped[1]).toEqual({ role: 'user', content: 'hi' })
   })
 
   it('strips images when model lacks vision', async () => {

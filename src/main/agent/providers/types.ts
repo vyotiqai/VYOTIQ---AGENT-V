@@ -76,6 +76,16 @@ export interface ProviderChatRequest {
   messages: ChatMessage[]
   tools: ToolDefinition[]
   system?: string
+  /**
+   * Stable/volatile system split for prompt caching.
+   * - Anthropic: stable gets `cache_control`; volatile is unmarked in system blocks.
+   * - OpenAI-compat / Gemini / DeepSeek: stable is the leading system/developer
+   *   instruction; volatile is appended *after* history so the clock/snapshot do
+   *   not bust the cacheable tools+system+history prefix.
+   * When set, preferred over a single combined `system` string.
+   */
+  systemStable?: string
+  systemVolatile?: string
   signal: AbortSignal
   apiKey?: string | null
   baseUrl?: string
@@ -86,6 +96,12 @@ export interface ProviderChatRequest {
     enableContextManagement: boolean
     clearToolUsesKeep: number
     compactTriggerTokens?: number
+    /** Server clear_tool_uses input_tokens trigger (Anthropic context editing). */
+    clearToolUsesTriggerTokens?: number
+    /** Min tokens cleared per activation — avoids cache-busting micro-clears. */
+    clearToolUsesAtLeastTokens?: number
+    /** Tool names whose uses/results are never server-cleared. */
+    clearToolUsesExcludeTools?: string[]
   }
   responseFormat?: ResponseFormat
   toolChoice?: 'auto' | 'none' | 'required'

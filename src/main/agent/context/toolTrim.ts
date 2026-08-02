@@ -2,8 +2,8 @@ import type { ChatMessage } from '../../../shared/ipc'
 import { contentToText } from '../../../shared/ipc'
 import { KEEP_LAST_TOOL_RESULTS } from './types'
 
-const MAX_TOOL_CHARS = 12_000
-const MAX_SUBAGENT_CHARS = 8_000
+const MAX_TOOL_CHARS = 8_000
+const MAX_SUBAGENT_CHARS = 6_000
 const STUB = '[cleared: re-read with tools]'
 
 /** Match the durable path line written by the subagent tool handler. */

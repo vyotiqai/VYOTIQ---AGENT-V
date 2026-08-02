@@ -110,6 +110,7 @@ describe('mcp_list_tools filtering', () => {
   it('pins tools for the next step via request_mcp_tools', async () => {
     const pinned = new Set<string>()
     let invalidated = false
+    const lastUsed = new Map<string, number>()
     const result = await executeTool(
       'request_mcp_tools',
       JSON.stringify({ tools: ['mcp__github__create_issue'] }),
@@ -118,6 +119,8 @@ describe('mcp_list_tools filtering', () => {
       {
         runEnabledMcpIds: new Set(['github', 'gitlab']),
         runPinnedMcpToolNames: pinned,
+        mcpLastUsedByName: lastUsed,
+        currentStep: 4,
         invalidateMcpToolCatalogCache: () => {
           invalidated = true
         }
@@ -125,6 +128,48 @@ describe('mcp_list_tools filtering', () => {
     )
     expect(result.ok).toBe(true)
     expect(pinned.has('mcp__github__create_issue')).toBe(true)
+    expect(lastUsed.get('mcp__github__create_issue')).toBe(4)
     expect(invalidated).toBe(true)
+  })
+
+  it('releases pinned tools via release_mcp_tools', async () => {
+    const pinned = new Set(['mcp__github__create_issue', 'mcp__github__list_issues'])
+    const lastUsed = new Map([
+      ['mcp__github__create_issue', 2],
+      ['mcp__github__list_issues', 3]
+    ])
+    let invalidated = false
+    const result = await executeTool(
+      'release_mcp_tools',
+      JSON.stringify({ tools: ['mcp__github__create_issue'] }),
+      '/tmp/ws',
+      new AbortController().signal,
+      {
+        runPinnedMcpToolNames: pinned,
+        mcpLastUsedByName: lastUsed,
+        invalidateMcpToolCatalogCache: () => {
+          invalidated = true
+        }
+      }
+    )
+    expect(result.ok).toBe(true)
+    expect(pinned.has('mcp__github__create_issue')).toBe(false)
+    expect(pinned.has('mcp__github__list_issues')).toBe(true)
+    expect(lastUsed.has('mcp__github__create_issue')).toBe(false)
+    expect(invalidated).toBe(true)
+  })
+
+  it('releases all pinned tools for a serverId', async () => {
+    const pinned = new Set(['mcp__github__create_issue', 'mcp__gitlab__list_issues'])
+    const result = await executeTool(
+      'release_mcp_tools',
+      JSON.stringify({ serverId: 'github' }),
+      '/tmp/ws',
+      new AbortController().signal,
+      { runPinnedMcpToolNames: pinned }
+    )
+    expect(result.ok).toBe(true)
+    expect(pinned.has('mcp__github__create_issue')).toBe(false)
+    expect(pinned.has('mcp__gitlab__list_issues')).toBe(true)
   })
 })

@@ -41,6 +41,8 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   browser_press_key: { running: 'Pressing', done: 'Pressed' },
   browser_select_option: { running: 'Selecting', done: 'Selected' },
   mcp_list_tools: { running: 'Listing MCP', done: 'MCP tools' },
+  request_mcp_tools: { running: 'Pinning MCP', done: 'Pinned MCP' },
+  release_mcp_tools: { running: 'Releasing MCP', done: 'Released MCP' },
   mcp_list_resources: { running: 'Listing MCP resources', done: 'MCP resources' },
   mcp_read_resource: { running: 'Reading MCP resource', done: 'MCP resource' },
   mcp_list_prompts: { running: 'Listing MCP prompts', done: 'MCP prompts' },
@@ -196,6 +198,23 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
           ? args.server_id
           : null
     if (serverId) return truncate(serverId)
+    return 'mcp'
+  }
+  if (name === 'request_mcp_tools' || name === 'release_mcp_tools') {
+    const serverId =
+      typeof args.serverId === 'string' && args.serverId.trim()
+        ? args.serverId
+        : typeof args.server_id === 'string' && args.server_id.trim()
+          ? args.server_id
+          : null
+    if (serverId) return truncate(serverId)
+    const tools = args.tools
+    if (Array.isArray(tools) && tools.length > 0) {
+      const first = tools.find((t): t is string => typeof t === 'string' && t.trim().length > 0)
+      if (first) {
+        return tools.length === 1 ? truncate(first) : truncate(`${first} +${tools.length - 1}`)
+      }
+    }
     return 'mcp'
   }
   if (name === 'mcp_list_resources' || name === 'mcp_list_prompts') {

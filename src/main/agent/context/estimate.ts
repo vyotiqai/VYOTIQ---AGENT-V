@@ -115,9 +115,12 @@ export async function estimateMessagesTokensAsync(
         else texts.push({ text: part.text, encoding })
       }
     }
-    if (message.thinking) texts.push({ text: message.thinking, encoding })
+    // Prefer reasoningState (wire replay) over UI thinking when both exist —
+    // counting both double-counts the same reasoning and triggers compaction early.
     if (message.reasoningState) {
       texts.push({ text: JSON.stringify(message.reasoningState), encoding })
+    } else if (message.thinking) {
+      texts.push({ text: message.thinking, encoding })
     }
     if (message.toolCalls) {
       for (const toolCall of message.toolCalls) {
@@ -149,9 +152,10 @@ function estimateOneMessageTokens(message: ChatMessage, encoding: EncodingName):
   if (cached && cached.encoding === encoding) return cached.tokens
 
   let n = countContentTokens(message.content, encoding)
-  if (message.thinking) n += countTextTokens(message.thinking, encoding)
   if (message.reasoningState) {
     n += countTextTokens(JSON.stringify(message.reasoningState), encoding)
+  } else if (message.thinking) {
+    n += countTextTokens(message.thinking, encoding)
   }
   if (message.toolCalls) {
     for (const toolCall of message.toolCalls) {
@@ -190,9 +194,10 @@ async function estimateOneMessageTokensAsync(
       else texts.push({ text: part.text, encoding })
     }
   }
-  if (message.thinking) texts.push({ text: message.thinking, encoding })
   if (message.reasoningState) {
     texts.push({ text: JSON.stringify(message.reasoningState), encoding })
+  } else if (message.thinking) {
+    texts.push({ text: message.thinking, encoding })
   }
   if (message.toolCalls) {
     for (const toolCall of message.toolCalls) {

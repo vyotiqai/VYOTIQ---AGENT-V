@@ -3,6 +3,10 @@ import { AGENT_TOOLS } from '../types'
 import { MCP_TOOL_PREFIX } from '../mcp'
 import { estimateTextTokens } from './estimate'
 import { logger } from '../../../shared/logger'
+import {
+  MCP_PIN_IDLE_TTL_STEPS,
+  MCP_PINNED_SOFT_MAX
+} from '../../../shared/domain/contextBudget'
 
 const BUILTIN_NAMES = new Set(AGENT_TOOLS.map((t) => t.name))
 
@@ -30,23 +34,122 @@ function estimateToolDefTokens(tool: ToolDefinition): number {
   }
 }
 
-/**
- * Fit tool definitions into the tools token budget.
- * Required builtins stay; optional builtins may shed for MCP; pinned MCP preferred.
- */
-export function trimToolsToBudget(
-  tools: ToolDefinition[],
-  budgetTokens: number,
-  options?: { pinnedMcpNames?: ReadonlySet<string> }
-): {
+/** Stable fingerprint of a kept tool catalog (names only, order-sensitive). */
+export function toolCatalogFingerprint(tools: ReadonlyArray<{ name: string }>): string {
+  return tools.map((t) => t.name).join('|')
+}
+
+export type TrimToolsOptions = {
+  pinnedMcpNames?: ReadonlySet<string>
+  /**
+   * When true (default), unpinned MCP tools are never kept in the step catalog.
+   * Agents discover via mcp_list_tools and pin with request_mcp_tools.
+   */
+  deferUnpinnedMcp?: boolean
+  /**
+   * Names kept on a prior step in this run. When set, restore that intersection
+   * in order; newly pinned MCP may append (no reshuffle / no optional shedding).
+   */
+  stickyKeptNames?: ReadonlySet<string>
+  /** Current agent step (1-based). Required for idle TTL / LRU eviction. */
+  currentStep?: number
+  /** Last step each MCP tool was pinned or invoked. */
+  mcpLastUsedByName?: ReadonlyMap<string, number>
+  /** Idle steps before a pinned MCP may be evicted (default MCP_PIN_IDLE_TTL_STEPS). */
+  mcpPinIdleTtlSteps?: number
+  /** Soft max pinned MCP in the catalog (default MCP_PINNED_SOFT_MAX). */
+  mcpPinnedSoftMax?: number
+}
+
+export type TrimToolsResult = {
   tools: ToolDefinition[]
   estimate: number
   omittedMcp: number
   omittedMcpNames: string[]
-} {
+  fingerprint: string
+  /** MCP names removed from the sticky catalog this pass (idle TTL / soft max). */
+  evictedMcpNames: string[]
+}
+
+/**
+ * Choose pinned MCP names to drop from the catalog (idle TTL, then LRU soft max).
+ * Never touches builtins. Pure helper for tests + sticky trim.
+ */
+export function selectMcpPinsToEvict(
+  pinnedMcpInCatalog: readonly string[],
+  opts: {
+    currentStep: number
+    lastUsedByName?: ReadonlyMap<string, number>
+    idleTtlSteps?: number
+    softMax?: number
+  }
+): string[] {
+  if (pinnedMcpInCatalog.length === 0) return []
+  const idleTtl = opts.idleTtlSteps ?? MCP_PIN_IDLE_TTL_STEPS
+  const softMax = opts.softMax ?? MCP_PINNED_SOFT_MAX
+  const lastUsed = opts.lastUsedByName
+  const step = opts.currentStep
+
+  const withAge = pinnedMcpInCatalog.map((name, index) => {
+    const used = lastUsed?.get(name) ?? 0
+    const idle = Math.max(0, step - used)
+    return { name, idle, used, index }
+  })
+
+  const toEvict = new Set<string>()
+  for (const row of withAge) {
+    if (idleTtl > 0 && row.idle >= idleTtl) toEvict.add(row.name)
+  }
+
+  const remaining = withAge.filter((r) => !toEvict.has(r.name))
+  if (softMax > 0 && remaining.length > softMax) {
+    // LRU: lowest lastUsed first; stable by original index.
+    const sorted = [...remaining].sort((a, b) => {
+      if (a.used !== b.used) return a.used - b.used
+      return a.index - b.index
+    })
+    const overflow = sorted.length - softMax
+    for (let i = 0; i < overflow; i++) {
+      toEvict.add(sorted[i]!.name)
+    }
+  }
+
+  return pinnedMcpInCatalog.filter((n) => toEvict.has(n))
+}
+
+/**
+ * Fit tool definitions into the tools token budget.
+ * Required builtins stay; optional builtins may shed for MCP; pinned MCP preferred.
+ * Unpinned MCP are deferred by default (pin via request_mcp_tools) — Claude Code practice.
+ *
+ * When `stickyKeptNames` is set (prior step's kept set), restore that catalog in
+ * order (no optional shedding / no reshuffle). Newly pinned MCP tools are
+ * **append-admitted** onto the sticky set so `request_mcp_tools` works mid-run
+ * without rebuilding the whole catalog (defer_loading spirit; explicit prefix
+ * growth only when pins change). Idle / over-soft-max pinned MCP may be
+ * **evicted** (capability preserved via re-pin).
+ */
+export function trimToolsToBudget(
+  tools: ToolDefinition[],
+  budgetTokens: number,
+  options?: TrimToolsOptions
+): TrimToolsResult {
+  const sticky = options?.stickyKeptNames
+  if (sticky && sticky.size > 0) {
+    return trimToolsSticky(tools, budgetTokens, sticky, options)
+  }
+  return trimToolsFresh(tools, budgetTokens, options)
+}
+
+function trimToolsFresh(
+  tools: ToolDefinition[],
+  budgetTokens: number,
+  options?: TrimToolsOptions
+): TrimToolsResult {
   const builtins = tools.filter((t) => BUILTIN_NAMES.has(t.name))
   const mcp = tools.filter((t) => t.name.startsWith(MCP_TOOL_PREFIX))
   const pinnedNames = options?.pinnedMcpNames
+  const deferUnpinnedMcp = options?.deferUnpinnedMcp !== false
 
   const required = builtins.filter((t) => !OPTIONAL_BUILTIN_NAMES.has(t.name))
   const optional = builtins.filter((t) => OPTIONAL_BUILTIN_NAMES.has(t.name))
@@ -85,18 +188,20 @@ export function trimToolsToBudget(
     tryKeep(tool)
   }
 
-  // Pinned MCP first (agent-requested), then greedy smallest-first fill.
+  // Pinned MCP first (agent-requested), then optional unpinned fill when not deferred.
   for (const tool of pinned) {
     if (tryKeep(tool)) continue
     if (shedOptionalBuiltinsFor(tool)) tryKeep(tool)
   }
 
-  const sortedUnpinned = [...unpinned].sort(
-    (a, b) => estimateToolDefTokens(a) - estimateToolDefTokens(b)
-  )
-  for (const tool of sortedUnpinned) {
-    if (tryKeep(tool)) continue
-    if (shedOptionalBuiltinsFor(tool)) tryKeep(tool)
+  if (!deferUnpinnedMcp) {
+    const sortedUnpinned = [...unpinned].sort(
+      (a, b) => estimateToolDefTokens(a) - estimateToolDefTokens(b)
+    )
+    for (const tool of sortedUnpinned) {
+      if (tryKeep(tool)) continue
+      if (shedOptionalBuiltinsFor(tool)) tryKeep(tool)
+    }
   }
 
   function shedOptionalBuiltinsFor(incoming: ToolDefinition): boolean {
@@ -114,6 +219,131 @@ export function trimToolsToBudget(
     return estimate + need <= budgetTokens
   }
 
+  const afterEvict = applyPinnedMcpEviction(kept, options)
+  return finishResult(
+    afterEvict.kept,
+    mcp,
+    budgetTokens,
+    deferUnpinnedMcp,
+    afterEvict.kept.reduce((n, t) => n + estimateToolDefTokens(t), 0),
+    afterEvict.evictedMcpNames
+  )
+}
+
+function trimToolsSticky(
+  tools: ToolDefinition[],
+  budgetTokens: number,
+  stickyKeptNames: ReadonlySet<string>,
+  options?: TrimToolsOptions
+): TrimToolsResult {
+  const pinnedNames = options?.pinnedMcpNames
+  const deferUnpinnedMcp = options?.deferUnpinnedMcp !== false
+  const mcp = tools.filter((t) => t.name.startsWith(MCP_TOOL_PREFIX))
+  const required = tools.filter(
+    (t) => BUILTIN_NAMES.has(t.name) && !OPTIONAL_BUILTIN_NAMES.has(t.name)
+  )
+
+  // Preserve prior catalog order from the current tools list intersection.
+  const keptNames = new Set<string>()
+  const kept: ToolDefinition[] = []
+  let estimate = 0
+
+  const pushKeep = (tool: ToolDefinition): void => {
+    if (keptNames.has(tool.name)) return
+    kept.push(tool)
+    keptNames.add(tool.name)
+    estimate += estimateToolDefTokens(tool)
+  }
+
+  for (const tool of required) pushKeep(tool)
+
+  for (const tool of tools) {
+    if (!stickyKeptNames.has(tool.name)) continue
+    if (keptNames.has(tool.name)) continue
+    // Do not re-admit deferred unpinned MCP via sticky if pins were cleared.
+    if (
+      deferUnpinnedMcp &&
+      tool.name.startsWith(MCP_TOOL_PREFIX) &&
+      pinnedNames &&
+      !pinnedNames.has(tool.name)
+    ) {
+      continue
+    }
+    pushKeep(tool)
+  }
+
+  // Append-admit newly pinned MCP without reshuffling prior sticky order or shedding
+  // optionals (capability-preserving mid-run pin recovery). Soft budget like sticky restore.
+  if (pinnedNames && pinnedNames.size > 0) {
+    const admitted: string[] = []
+    for (const tool of mcp) {
+      if (!pinnedNames.has(tool.name) || keptNames.has(tool.name)) continue
+      pushKeep(tool)
+      admitted.push(tool.name)
+    }
+    if (admitted.length > 0) {
+      logger.info('Sticky tool catalog admitted pinned MCP tools', {
+        scope: 'agent',
+        code: 'TOKEN_COST',
+        admittedCount: admitted.length,
+        admittedPreview: admitted.slice(0, 8).join(', ')
+      })
+    }
+  }
+
+  const afterEvict = applyPinnedMcpEviction(kept, options)
+  // Sticky restore / pin admit can exceed budget if schemas grew; keep set for
+  // capability + prefix stability (budget is soft for sticky path).
+  return finishResult(
+    afterEvict.kept,
+    mcp,
+    budgetTokens,
+    deferUnpinnedMcp,
+    afterEvict.kept.reduce((n, t) => n + estimateToolDefTokens(t), 0),
+    afterEvict.evictedMcpNames
+  )
+}
+
+function applyPinnedMcpEviction(
+  kept: ToolDefinition[],
+  options?: TrimToolsOptions
+): { kept: ToolDefinition[]; evictedMcpNames: string[] } {
+  const currentStep = options?.currentStep
+  if (currentStep == null || currentStep < 1) {
+    return { kept, evictedMcpNames: [] }
+  }
+  const mcpNames = kept
+    .filter((t) => t.name.startsWith(MCP_TOOL_PREFIX))
+    .map((t) => t.name)
+  const evictedMcpNames = selectMcpPinsToEvict(mcpNames, {
+    currentStep,
+    lastUsedByName: options?.mcpLastUsedByName,
+    idleTtlSteps: options?.mcpPinIdleTtlSteps,
+    softMax: options?.mcpPinnedSoftMax
+  })
+  if (evictedMcpNames.length === 0) return { kept, evictedMcpNames: [] }
+  const drop = new Set(evictedMcpNames)
+  logger.info('Evicted idle / over-cap pinned MCP from tool catalog', {
+    scope: 'agent',
+    code: 'TOKEN_COST',
+    evictedCount: evictedMcpNames.length,
+    evictedPreview: evictedMcpNames.slice(0, 8).join(', '),
+    currentStep
+  })
+  return {
+    kept: kept.filter((t) => !drop.has(t.name)),
+    evictedMcpNames
+  }
+}
+
+function finishResult(
+  kept: ToolDefinition[],
+  mcp: ToolDefinition[],
+  budgetTokens: number,
+  deferUnpinnedMcp: boolean,
+  estimate: number,
+  evictedMcpNames: string[] = []
+): TrimToolsResult {
   const keptMcpNames = new Set(
     kept.filter((t) => t.name.startsWith(MCP_TOOL_PREFIX)).map((t) => t.name)
   )
@@ -126,11 +356,20 @@ export function trimToolsToBudget(
       omittedMcp,
       budgetTokens,
       estimate,
-      omittedPreview: omittedMcpNames.slice(0, 10).join(', ')
+      deferUnpinnedMcp,
+      omittedPreview: omittedMcpNames.slice(0, 10).join(', '),
+      evictedMcp: evictedMcpNames.length
     })
   }
 
-  return { tools: kept, estimate, omittedMcp, omittedMcpNames }
+  return {
+    tools: kept,
+    estimate,
+    omittedMcp,
+    omittedMcpNames,
+    fingerprint: toolCatalogFingerprint(kept),
+    evictedMcpNames
+  }
 }
 
 function truncateToolDescription(
